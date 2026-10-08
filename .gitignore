@@ -1,0 +1,27 @@
+## .NET
+bin/
+obj/
+*.user
+*.suo
+.vs/
+.idea/
+*.swp
+*.swo
+
+## Build outputs
+publish/
+artifacts/
+out/
+
+## Logs
+*.log
+
+## Demo run output
+.run/
+
+## Logs
+logs/
+
+## OS
+.DS_Store
+Thumbs.db
