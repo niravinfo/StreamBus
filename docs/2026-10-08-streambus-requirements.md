@@ -26,6 +26,7 @@ database.
 - Error stream ("dead letter" destination) with idempotent replay
 - Effectively-once read-process-write via offset-as-publishing-id (DES-07)
 - Supervising connect loop, per-call-site readiness gate, health checks
+- Broker-owned consumer offset tracking (`ConsumeOffset`), see FR-10
 - Serialized, cached topology declaration
 - DI hosting (`AddStreamBus`), `IHealthCheck` and `IHostedService` integration
 
@@ -64,8 +65,9 @@ official client's namespace.
 | FR-2.2 | The delegate overload (`ConsumeAsync(stream, options, handler)`) works and is not deprecated | Both paths covered by tests |
 | FR-2.3 | Consumers sharing one `Reference` form one SAC group and split partitions across instances | Super stream of 6 partitions, 4 instances → all 6 partitions owned, every message consumed exactly once |
 | FR-2.4 | Consumers NOT sharing a `Reference` each receive every message | Broadcast semantics verified |
-| FR-2.5 | On becoming ACTIVE, a consumer resumes from its last processed offset, not from offset 0 | Promotion scenario: total consumed == total published, no entity processed twice |
+| FR-2.5 | On becoming ACTIVE, and on every reconnect, a consumer resumes from the offset the broker has stored for its (reference, partition) — never from offset 0, and never from a local, in-memory, or last-dispatched value. The offset is resolved on every attach (create, promote, reconnect) and is never cached across one | Promotion scenario and reconnect scenario: total consumed == total published, no entity processed twice |
 | FR-2.6 | Strict per-key ordering holds across SAC promotion | Every entity's sequence arrives in order on the promoting instance |
+| FR-2.7 | An offset is stored only when it is greater than the highest value already stored for that (reference, partition). A candidate that is not greater is rejected locally — never sent — and reported. Only the ACTIVE consumer for a (reference, partition) stores an offset | A demoted or stale instance's store is rejected and counted in the metrics; a verification read shows the stored value never regresses |
 
 ### FR-3 Ordering
 
@@ -143,21 +145,47 @@ official client's namespace.
 | FR-9.2 | Connection state transitions are observable so readiness probes work | Transitions emitted and reflected in health |
 | FR-9.3 | Hot-key starvation is detectable from the metrics | A saturated key is visible as retry-blocked / elevated lag on one partition |
 
+### FR-10 Offset tracking
+
+Offsets are the broker's record of how far a consumer group has progressed, addressed by
+`(reference, stream)`. For a super stream the second half is the **partition** stream, so
+each partition carries its own stored offset. The library reads that record on every attach
+and writes it only after a successful message. Callers configure behaviour; they do not
+touch the mechanics.
+
+| ID | Requirement | Acceptance |
+|---|---|---|
+| FR-10.1 | A consumer's offset behaviour is one `ConsumeOffset` value: `ResumeOrFirst` (default), `ResumeOrNext`, `ResumeOrFail`, `AlwaysFirst`, `AlwaysNext`. Nothing else is needed to get the correct default | `ResumeOrFirst` yields broker-resume with no other configuration |
+| FR-10.2 | `ResumeOrFirst`, `ResumeOrNext` and `ResumeOrFail` all resolve the resume point from the broker-stored offset for the consumer's (reference, partition) | Broker value observed on create, on promote and on reconnect |
+| FR-10.3 | The three differ only in the no-stored-offset case: `First` replays from the head, `Next` attaches at the tail, `Fail` throws a configuration error naming the reference and the partition | All three branches exercised, including the fallback |
+| FR-10.4 | The broker read happens on consumer creation, on SAC promotion and on reconnect. It is never cached across an attach, and never performed on the hot path | Reconnect during a `Strict` retry resumes from the stored offset, not from a last-dispatched value |
+| FR-10.5 | The resolved offset is `stored + 1`, or the no-stored-offset branch. The library never produces `OffsetTypeNext` except through an explicit `AlwaysNext` | No code path returns `OffsetTypeNext` implicitly |
+| FR-10.6 | The stored offset never exceeds the last successfully processed offset of that (reference, partition) | A handler that throws does not advance the stored offset |
+| FR-10.7 | Monotonicity: an offset is stored only when greater than the highest value already written for that (reference, partition), per FR-2.7 | A lower candidate is rejected locally, counted, and never sent to the broker |
+| FR-10.8 | Store cadence is configurable (`OffsetStoreOptions.EveryMessages`, `MaxInterval`) and defaults to storing after every successful message | Default and both options tested |
+| FR-10.9 | Stores go through the per-partition consumer obtained inside the message handler. `RawSuperStreamConsumer.StoreOffset` throws `NotImplementedException`, so the super-stream entity is never a store path | No call to the super-stream store path exists |
+| FR-10.10 | `Reference` is mandatory, auto-derived, stable and unique per consumer group — never a GUID, and never shared between two consumer types on one stream | Two consumer types on one stream get distinct references; the value survives a restart |
+| FR-10.11 | `Reference` is validated against the broker's 255-byte limit at configuration time with an actionable message | An over-long reference fails in our configuration error, not as a broker `PreconditionFailed` |
+| FR-10.12 | Whenever the library falls back because the broker has no stored offset, it logs a warning naming the reference, the partition, the branch taken and the resolved offset, and publishes it to the metrics and health surface | The fallback is observable. It is never silent |
+| FR-10.13 | `GetConsumerOffsetAsync(reference, partition)` returns `ulong?` (null when nothing is stored) and `SetConsumerOffsetAsync(reference, partition, offset)` seeds it. Neither is used internally on the per-message path | Escape hatches exist and are not on the hot path |
+| FR-10.14 | A consumer used for effectively-once read-process-write stores no offset on its source: the publishing ID is the resume point (FR-6.1, FR-6.7) | No store is observed on the effectively-once source reference |
+
 ## 2. Non-functional requirements
 
 | ID | Requirement |
 |---|---|
 | NFR-1 | Ordering is the primary guarantee. A correct-but-slow result beats a fast-and-wrong one |
 | NFR-2 | No database, no external scheduler, no MassTransit dependency |
-| NFR-3 | The library owns offset-on-promotion (FR-2.5). Official repo examples show `OffsetTypeFirst()`, which replays from 0 and breaks ordering; callers must not be able to opt into that |
+| NFR-3 | The library owns offset-on-promotion and on-reconnect (FR-2.5). Official repo examples show `OffsetTypeFirst()`, which replays from 0. The client's own fallback when the promotion listener throws or returns null is `OffsetTypeNext`, which attaches at the tail and skips the partition's entire backlog — the more dangerous of the two. Callers must not be able to opt into either |
 | NFR-4 | Hot-key starvation is documented, not auto-solved. See §4 |
 | NFR-5 | Leader locator and replica placement follow the client's automatic behavior; the library MUST NOT override it |
 | NFR-6 | Streams have no TTL, no DLX, no per-message priority. Any design implying otherwise is wrong |
+| NFR-7 | Consumer offsets are the broker's record. The library reads them on every attach, writes only forward, and never infers a resume point from local state |
 
 ## 3. Acceptance summary
 
-v1 is done when all FR-1 through FR-9 pass against a real broker, and gates
-G-1 through G-4 (§5) pass.
+v1 is done when all FR-1 through FR-10 pass against a real broker, and gates
+G-1 through G-5 (§5) pass.
 
 ## 4. Hot-key starvation (NFR-4)
 
@@ -189,6 +217,7 @@ These are **not** assumed to work. Each is a release blocker for its phase.
 | G-2 | Effectively-once read-process-write is correct end to end | FR-6.8, phase 7 | Design §7 is unverified end to end |
 | G-3 | `x-queue-leader-locator` and replica placement behave as documented on a 3-node cluster | FR-7.3, NFR-5, phase 8 | All measurements so far were on a single node, where both are no-ops |
 | G-4 | Mid-stream SAC failover preserves offsets and ordering | FR-2.5, FR-2.6, phase 5 | Only same-broker promotion was measured |
+| G-5 | A reconnect that lands while a `Strict` retry is pending does not skip the unprocessed message, and a stale instance cannot regress a stored offset | FR-2.5, FR-2.7, FR-10.4, FR-10.7, phase 5 | The client's reliable layer resumes a reconnect from an in-memory last-dispatched offset that it advances even when the handler threw, and the broker's `store_offset` accepts any value without responding |
 
 **G-3 is an environment requirement: a 3-node cluster is needed before any claim
 that leader placement works.** Do not assert those behaviours from single-node

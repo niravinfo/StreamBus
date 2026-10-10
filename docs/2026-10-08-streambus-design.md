@@ -187,6 +187,21 @@ STRICT ORDERING PER KEY: HOLDS
 the documentation examples in the official repo show the `OffsetTypeFirst()` pattern.
 `InitialCredits = 1` was also used to keep dispatch serialized.
 
+Correction, from the client source: `InitialCredits` is prefetch measured in **chunks**,
+not messages, and it is not what serializes dispatch. `ProcessChunks` is a single task that
+reads a chunk, `await ParseChunk(chunk)`, then reads the next, so dispatch is sequential per
+subscription at any credit value. The value only bounds how many chunks the broker may have
+in flight to us. A chunk holds many messages, so `InitialCredits = 1` still allows a whole
+chunk of messages to be dispatched one at a time, and a stall on a hot key holds up the rest
+of that chunk, not just the rest of its own key.
+
+The same rule governs reconnect. The reliable consumer resolves a reconnect offset from its
+own in-memory last-dispatched value, and it writes that value **after** the handler's
+exception has been caught and logged. Under `FailureMode.Strict` a handler still retrying
+has not stored its offset, so a reconnect in that window starts past the unprocessed
+message. The library therefore resolves the offset itself, from the broker, on every attach
+— see §12 and gate **G-5**.
+
 ### 4.5 Partition count is fixed
 
 Set at creation, no rebalancing. Sizing guidance:
@@ -230,6 +245,16 @@ Streams have **no TTL, no DLX, no per-message priority**. An error queue is a re
 stream that we publish to by hand, with `x-max-age` retention as the only mechanism
 preventing unbounded growth. Retention is not optional there; it is the design.
 See **FR-5.2**.
+
+The stored offset never exceeds the last successfully processed offset of that
+(reference, partition): **FR-2.7** (see §12). The client's `Reliable` consumer
+tracks its own last-dispatched offset in memory and advances it even when the handler
+throws, which is why the library does not delegate the resume decision to it (**G-5**).
+
+The two modes differ only in the store point. Under `Strict` nothing is stored until the
+handler succeeds, so a crash mid-retry redelivers. Under `SkipAfterDeadline` the offset
+advances exactly once, at the moment the message is handed to the error stream.
+`StoreOffset` is called explicitly in both cases, and only after the handler has returned.
 
 ## 6. Error stream (dead letter destination)
 
@@ -335,9 +360,15 @@ ConsumeOptions {
     IsSuperStream, Reference,          // shared Reference = one SAC group
     SingleActiveConsumer = true,
     Ordering = Strict,                  // library owns offset-on-promotion
+    Offset = ConsumeOffset.ResumeOrFirst,   // FR-10, see §12
+    OffsetStore = OffsetStoreOptions,        // cadence; default = after every success
     Retry = RetryPolicy,                // carries FailureMode, per consumer
     ErrorStream = "<stream>.error",
 }
+
+// offsets, for operators and migrations - never on the per-message path
+IStreamBus.GetConsumerOffsetAsync(reference, partition)          -> ulong?
+IStreamBus.SetConsumerOffsetAsync(reference, partition, offset)
 
 // consume - typed, DI-resolved (FR-2.1)
 services.AddStreamBusConsumer<OrderCreated, OrderCreatedConsumer>();
@@ -373,7 +404,7 @@ Hosting: `services.AddStreamBus(config)` with `IHealthCheck` and
 | 2 | Risk spike — largely done (sections 4, 8) | — | G-1, G-3, G-4 |
 | 3 | Bus core: supervising connect loop, readiness gate, health | FR-8, FR-9.2 | — |
 | 4 | Producer registry: N producers, confirms | FR-1 | — |
-| 5 | Consumer registry: N consumers, offset tracking, SAC, the promotion fix from 4.4 | FR-2 | G-4 |
+| 5 | Consumer registry: N consumers, offset tracking, SAC, the promotion fix from 4.4 | FR-2, FR-10 | G-4, G-5 |
 | 6 | Retry + error stream + replay | FR-4, FR-5 | **G-1** |
 | 7 | Effectively-once read-process-write | FR-6 | **G-2**, G-3 |
 | 8 | Topology with serialized declaration | FR-7 | G-3 |
@@ -442,3 +473,96 @@ A **3-node cluster is required** before claiming either works. This is gate
 **G-3** and it blocks phase 8 (topology).
 
 Requirements: **FR-7.3**, **NFR-5**.
+
+## 12. Offset tracking
+
+Offsets are the broker's record of how far a consumer group has progressed. This section
+is the mechanics behind **FR-10** and **NFR-7**; callers never see any of it.
+
+### 12.1 What the broker and the client actually do
+
+All verified in source, client main branch and `rabbitmq-server` main branch.
+
+| Concern | Fact |
+|---|---|
+| Addressing | One stored value per `(reference, stream)`. For a super stream the second half is the **partition** stream, so each partition has its own value |
+| Reading | `StreamSystem.TryQueryOffset(reference, stream)` returns `Task<ulong?>`, null when the broker answers `OffsetNotFound`. `QueryOffset` throws `OffsetNotFoundException` in the same case |
+| Writing, per partition | `RawConsumer.StoreOffset(offset)` from inside the message handler. It keys on that consumer's own reference and stream, so a partition consumer stores against its own partition |
+| Writing, super stream | `RawSuperStreamConsumer.StoreOffset` throws `NotImplementedException("use the store offset on the stream consumer, instead")`. The super-stream entity is never a store path |
+| Broker response | **None.** The broker's `store_offset` handler resolves the leader and calls `osiris:write_tracking/3`, then returns. No response code, no confirmation, no rejection. A client cannot tell whether a store landed, and the broker will happily write a lower value over a higher one |
+| Leader lookup | If the stream leader cannot be resolved at store time the handler logs and returns, so the store is a silent no-op |
+| Reference length | 255 bytes (`IS_INVALID_REF(Ref)` is `byte_size(Ref) > 255`). A longer reference is rejected at `subscribe` with `PreconditionFailed`; at `store_offset` it is logged and dropped. Distinct from FR-6.4's 255 producer *names per stream* |
+| Promotion listener | `Func<string, string, bool, Task<IOffsetType>>`. Parameter order is **(reference, stream, promotedAsActive)**. Throwing, or returning null, makes the client fall back to `OffsetTypeNext` |
+| Client offset tracking | The reliable consumer keeps an in-memory last-dispatched offset and uses it for reconnects, writing it even when the handler threw. It is not a source of truth and the library does not use it |
+
+### 12.2 Resolution rule
+
+Used unchanged on all three attach points: create, promote, reconnect.
+
+```
+ResolveOffset(reference, partition) -> IOffsetType
+    stored  = broker.TryQueryOffset(reference, partition)   // attach only, never per message
+    local   = localWater[reference, partition] ?? 0
+
+    switch (ConsumeOffset):
+        AlwaysFirst: return OffsetTypeFirst()               // ignores the broker entirely
+        AlwaysNext:  return OffsetTypeNext()                // ignores the broker entirely
+
+    // ResumeOrFirst / ResumeOrNext / ResumeOrFail: the broker is the source of truth
+    if stored == null:
+        switch (ConsumeOffset):
+            ResumeOrFirst: log warning(name this); return OffsetTypeFirst()
+            ResumeOrNext:  log warning(name this); return OffsetTypeNext()
+            ResumeOrFail:  throw OffsetConfigurationException(reference, partition)
+
+    // The broker wins even when it holds less than we last wrote: that means our store
+    // was lost (leader outage) or that something regressed it. Replaying is the safe
+    // direction here, a gap is not.
+    if local > stored: log warning(name this)
+    return OffsetTypeOffset(stored + 1)
+```
+
+`TryQueryOffset` is called only on attach. `AlwaysFirst` and `AlwaysNext` bypass the read
+entirely and are the escapes for replay and tail-attach.
+
+### 12.3 Write rule and monotonicity
+
+```
+StoreOffset(reference, partition, candidate)
+    if candidate <= localWater[reference, partition]:
+        log warning(name this) + increment streambus_offset_store_rejected_total
+        return                                                     // never sent
+    partitionConsumer.StoreOffset(candidate)                       // fire and forget
+    localWater[reference, partition] = candidate
+```
+
+The broker cannot be relied on to reject a lower value, so the rejection happens locally
+before the frame is written (**FR-2.7**). `localWater` survives demotion, so a zombie that
+wakes with a stale view still cannot write below what it last wrote. A demoted consumer
+stores nothing at all: SAC delivers chunks to the active consumer only, so a non-active
+instance has no offsets to store.
+
+`StoreOffset` is not confirmed, so monotonicity is not verifiable on the wire. The
+verification is a read-back: after the first store on attach, compare
+`TryQueryOffset` with `localWater` and record `streambus_offset_regressed_total` if the
+broker holds less. That counter being non-zero means something regressed the group's
+resume point, which is a loud operational signal rather than a silently duplicated batch.
+
+### 12.4 Who owns reconnect
+
+The client's reliable reconnect resolves an offset from its in-memory last-dispatched
+value. Under `Strict` that value can be ahead of what was stored, so a reconnect during a
+retry window skips the unprocessed message. **G-5** exists because of this, and the
+consequence is that the wrapper owns the reconnect: it recreates the consumer with the
+offset resolved by §12.2 rather than letting the client resume on its own. This is the
+same supervision the entity-death case needs, so the two share one loop.
+
+### 12.5 Traps
+
+| Trap | Consequence | Guard |
+|---|---|---|
+| A stored offset below the stream's retained first offset | The broker falls back to the first retained offset, so retention loss looks like a small replay, not a gap | Compare the resolved offset against `StreamStats.FirstOffset()` on startup diagnostic |
+| `ResumeOrNext` on a first run | Attaches at the tail and silently discards the backlog | FR-10.12 requires the warning; the branch taken is in the health surface |
+| A store during a leader outage | Silently dropped, no error anywhere | Monotonicity plus the attach-time re-read; the regression counter above |
+| An over-long reference | `PreconditionFailed` at subscribe, or a silently ignored store | FR-10.11, validated at configuration time |
+| Promotion listener throwing, or returning null | `OffsetTypeNext`: the partition's backlog is skipped | The listener must be O(1) and must not throw; covered by **G-1** |
