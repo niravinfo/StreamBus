@@ -62,15 +62,19 @@ So the registry is keyed by (bus type, vhost):
 
 ```
 IStreamBusRegistry
-  GetOrCreateBus<TBus>(vhost) -> IStreamBus<TBus>   (wrapper cached per (TBus, vhost))
-  // one StreamSystem (locator + pools) cached per vhost and shared by all TBus bound to it
+  GetOrCreateBus(vhost) -> IStreamBus                 (wrapper cached per vhost; single-bus path)
+  GetOrCreateBus<TBus>(vhost) -> IStreamBus<TBus>     (wrapper cached per (TBus, vhost); multi-bus path)
+  // one StreamSystem (locator + pools) cached per vhost and shared by all buses bound to it
 ```
 
-`TBus` is a caller-supplied marker type (MassTransit multi-bus concept). The same
-marker type MUST NOT be registered twice; a duplicate `AddStreamBus<TBus>` fails at
-configuration time. `IStreamBus<TBus>` exposes `PublishAsync(stream, ...)` /
-`ConsumeAsync(stream, ...)`; the non-generic `IStreamBus` is `IStreamBus<DefaultBus>`
-for single-bus apps. Callers never see `StreamSystem`.
+Single-bus services use the non-generic path only and never supply a marker type:
+`services.AddStreamBus(vhost, cfg)` registers `IStreamBus` (backed internally by a
+`DefaultBus` marker). Multi-bus services use `services.AddStreamBus<TBus>(vhost, cfg)`
+per bus, where `TBus` is a caller-supplied marker type (MassTransit multi-bus concept),
+and inject `IStreamBus<TBus>`. Each overload may be used at most once per marker:
+a duplicate `AddStreamBus(...)` or `AddStreamBus<SameTBus>(...)` in one service fails
+at configuration time. One default plus N marker buses may coexist. Callers never see
+`StreamSystem`.
 
 A `StreamSystem` owns a locator connection plus pools of producer and consumer
 connections. Callers never see it.
@@ -79,7 +83,7 @@ connections. Callers never see it.
 
 `ProducersPerConnection` and `ConsumersPerConnection` both default to **1**, i.e. one
 TCP connection per producer and per consumer, via `StreamBusConnectionOptions`
-(overridable per `AddStreamBus<TBus>`). The client's own comment says higher
+(overridable per `AddStreamBus` / `AddStreamBus<TBus>`). The client's own comment says higher
 values "is not the best for performance". Leave at 1 unless measured otherwise.
 
 ### 2.3 Leader/replica placement
@@ -127,7 +131,7 @@ only the readiness wait.
 
 Startup blocking is separate and user-configurable (MassTransit `HostOptions`-style).
 `StreamBusHostOptions { BlockStartupUntilReady = false (default), StartupTimeout }`
-is set per `AddStreamBus<TBus>`. When false (default), `IHostedService.StartAsync`
+is set per `AddStreamBus` / `AddStreamBus<TBus>`. When false (default), `IHostedService.StartAsync`
 returns without waiting; the supervising loop keeps retrying in the background and
 readiness stays visible via health. When true, startup waits until every registered
 bus reports `Ready`, bounded by `StartupTimeout`; on timeout `StartAsync` surfaces
@@ -402,20 +406,24 @@ kept, so a low-traffic stream retains data well past `x-max-age`. Lower
 ## 9. Public API sketch
 
 ```csharp
-// bus per (type, vhost); TBus marker must be unique per registration
-IStreamBusRegistry.GetOrCreateBus<TBus>(vhost) -> IStreamBus<TBus>
+// single-bus: no marker type. multi-bus: one marker type per bus.
+IStreamBusRegistry.GetOrCreateBus(vhost) -> IStreamBus                   // single-bus path
+IStreamBusRegistry.GetOrCreateBus<TBus>(vhost) -> IStreamBus<TBus>       // multi-bus path
+IStreamBus.WaitUntilReadyAsync(ReadinessPolicy) -> BusReadiness
 IStreamBus<TBus>.WaitUntilReadyAsync(ReadinessPolicy) -> BusReadiness
-// non-generic IStreamBus is IStreamBus<DefaultBus> for single-bus apps
 
-// publish
+// publish (same shape on both)
+IStreamBus.PublishAsync(stream, message, PublishOptions)
 IStreamBus<TBus>.PublishAsync(stream, message, PublishOptions)
 PublishOptions { ReadinessPolicy, RoutingKey, DeduplicationName, Timeout /* confirm timeout only */ }
 
 // effectively-once result path (FR-6 only, separate from ConsumeContext)
+IStreamBus.PublishResultAsync(targetStream, result, sourceOffset, producerName, ...)
 IStreamBus<TBus>.PublishResultAsync(targetStream, result, sourceOffset, producerName, ...)
 // enforces publishing-id = sourceOffset and stable producer-name selection
 
 // consume - delegate overload, the lower-level path
+IStreamBus.ConsumeAsync(stream, ConsumeOptions, handler)
 IStreamBus<TBus>.ConsumeAsync(stream, ConsumeOptions, handler)
 ConsumeOptions {
     IsSuperStream, Reference = null,     // null = auto-derived (default); shared Reference = one SAC group
@@ -429,12 +437,15 @@ ConsumeOptions {
 
 // offsets, for operators and migrations - never on the per-message path
 // partition is the 0-based partition index for super streams; 0 for plain streams
-IStreamBus<TBus>.GetConsumerOffsetAsync(reference, partition)          -> ulong?
+IStreamBus.GetConsumerOffsetAsync(reference, partition)          -> ulong?
+IStreamBus.SetConsumerOffsetAsync(reference, partition, offset)
+IStreamBus<TBus>.GetConsumerOffsetAsync(reference, partition)    -> ulong?
 IStreamBus<TBus>.SetConsumerOffsetAsync(reference, partition, offset)
 
 // consume - typed, DI-resolved MassTransit-style IConsumer<T> (FR-2.1)
 // stream binding is explicit at registration; no convention magic
-services.AddStreamBusConsumer<TBus, OrderCreated, OrderCreatedConsumer>(stream: "orders", configure: opts => { ... });
+services.AddStreamBusConsumer<OrderCreated, OrderCreatedConsumer>(stream: "orders", configure: opts => { ... });              // single-bus
+services.AddStreamBusConsumer<TBus, OrderCreated, OrderCreatedConsumer>(stream: "orders", configure: opts => { ... });       // multi-bus
 
 public interface IConsumer<T> {
     Task Consume(ConsumeContext<T> context, CancellationToken ct);
@@ -468,10 +479,13 @@ Error destinations: per-stream error streams use `ErrorStreamOptions { Stream =
 
 Sagas and out-of-process consumers are explicitly out of v1 (requirements §0.2).
 
-Hosting: `services.AddStreamBus<TBus>(vhost, cfg => { BlockStartupUntilReady = false;
-StartupTimeout = ...; })` with `IHealthCheck` and `IHostedService` integration.
-Duplicate `AddStreamBus<SameTBus>` fails at configuration time. One `StreamSystem`
-per vhost is shared by all `TBus` bound to it.
+Hosting (MassTransit-style, DI-resolvable as `IStreamBus` and `IStreamBus<TBus>`):
+`services.AddStreamBus(vhost, cfg => { ... })` for single-bus (at most once per service),
+`services.AddStreamBus<TBus>(vhost, cfg => { BlockStartupUntilReady = false;
+StartupTimeout = ...; })` per marker bus (each `TBus` at most once; one default plus N
+markers may coexist) with `IHealthCheck` and `IHostedService` integration.
+A duplicate registration of the same overload/marker fails at configuration time. One
+`StreamSystem` per vhost is shared by all buses bound to it.
 
 ## 10. Phases
 

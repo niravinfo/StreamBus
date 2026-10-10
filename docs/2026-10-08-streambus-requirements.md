@@ -61,7 +61,7 @@ official client's namespace.
 
 | ID | Requirement | Acceptance |
 |---|---|---|
-| FR-2.1 | A typed MassTransit-style `IConsumer<T>` registered in DI with an explicit stream binding (`AddStreamBusConsumer<TBus, T, TConsumer>(stream, ...)`) is invoked for `T` messages on that stream | Consumer receives deserialized `T`; stream binding is explicit, no convention magic |
+| FR-2.1 | A typed MassTransit-style `IConsumer<T>` registered in DI with an explicit stream binding is invoked for `T` messages on that stream — single-bus `AddStreamBusConsumer<T, TConsumer>(stream, ...)` (inject `IStreamBus`), multi-bus `AddStreamBusConsumer<TBus, T, TConsumer>(stream, ...)` (inject `IStreamBus<TBus>`) | Consumer receives deserialized `T`; stream binding is explicit, no convention magic |
 | FR-2.2 | The delegate overload (`ConsumeAsync(stream, options, handler)`) works and is not deprecated | Both paths covered by tests |
 | FR-2.3 | Consumers sharing one `Reference` form one SAC group and split partitions across instances | Super stream of 6 partitions, 4 instances → all 6 partitions owned, every message consumed exactly once |
 | FR-2.4 | Consumers NOT sharing a `Reference` each receive every message | Broadcast semantics verified |
@@ -127,7 +127,7 @@ official client's namespace.
 
 | ID | Requirement | Acceptance |
 |---|---|---|
-| FR-8.1 | A `StreamSystem` binds to exactly one vhost. There is no per-producer or per-consumer vhost override. Buses are .NET marker types (`IStreamBus<TBus>`): the same `TBus` MUST NOT be registered twice (duplicate `AddStreamBus<SameTBus>` fails at configuration time); one `StreamSystem` per vhost is shared by all `TBus` bound to it | API offers no override; duplicate bus-type registration fails fast |
+| FR-8.1 | A `StreamSystem` binds to exactly one vhost. There is no per-producer or per-consumer vhost override. Single-bus services use `AddStreamBus(vhost, cfg)` / `IStreamBus` with no marker type; multi-bus services use `AddStreamBus<TBus>(vhost, cfg)` / `IStreamBus<TBus>` per marker type. The non-generic overload may be used at most once per service and each `TBus` at most once (one default plus N markers may coexist); any duplicate fails at configuration time. One `StreamSystem` per vhost is shared by all buses bound to it | API offers no override; duplicate registration fails fast; DI resolves `IStreamBus` and each `IStreamBus<TBus>` |
 | FR-8.2 | One bus instance serves many streams | Two streams, one bus, both confirmed |
 | FR-8.3 | The initial connect is supervised and retries forever with exponential backoff plus jitter, capped | Broker down at startup, up later → connects, no unhandled error surfaced |
 | FR-8.4 | `ProtocolException`, `SslException`, `AuthMechanismNotSupportedException`, and authentication failures (any `AuthenticationFailure*`, including the `guest`/loopback rejection) are fatal and MUST NOT be retried | Fatal error surfaces promptly, not after backoff exhaustion |
@@ -227,12 +227,15 @@ evidence.
 
 ## 6. Hosting
 
-`services.AddStreamBus<TBus>(vhost, cfg)` with `IHealthCheck` and `IHostedService`
-integration. The same `TBus` marker type MUST NOT be registered twice. `IStreamBusRegistry`
-is keyed by (bus type, vhost):
+Single-bus: `services.AddStreamBus(vhost, cfg)` registers DI-resolvable `IStreamBus`
+(at most once per service). Multi-bus (MassTransit-style): each
+`services.AddStreamBus<TBus>(vhost, cfg)` registers DI-resolvable `IStreamBus<TBus>`
+(each `TBus` at most once; one default plus N markers may coexist). Any duplicate
+registration fails at configuration time. `IStreamBusRegistry` exposes both:
 
 ```
-GetOrCreateBus<TBus>(vhost) -> IStreamBus<TBus>   (wrapper cached per (TBus, vhost))
+GetOrCreateBus(vhost) -> IStreamBus                 (single-bus path)
+GetOrCreateBus<TBus>(vhost) -> IStreamBus<TBus>     (multi-bus path)
 ```
 
 `StreamBusHostOptions { BlockStartupUntilReady = false (default), StartupTimeout }`
