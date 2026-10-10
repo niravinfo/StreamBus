@@ -56,14 +56,19 @@ per-consumer vhost override** in the API. Verified by connecting a second
 One `StreamSystem` serves many streams. Verified: two producers targeting two
 different streams from one bus instance, both confirmed.
 
-So the registry is keyed by vhost:
+So the registry is keyed by (bus type, vhost):
 
 ```
 IStreamBusRegistry
-  GetOrCreateBus(vhost) -> StreamSystem        (cached, one per vhost)
-  PublishAsync(vhost, stream, message, ...)
-  ConsumeAsync(vhost, stream, ...)
+  GetOrCreateBus<TBus>(vhost) -> IStreamBus<TBus>   (wrapper cached per (TBus, vhost))
+  // one StreamSystem (locator + pools) cached per vhost and shared by all TBus bound to it
 ```
+
+`TBus` is a caller-supplied marker type (MassTransit multi-bus concept). The same
+marker type MUST NOT be registered twice; a duplicate `AddStreamBus<TBus>` fails at
+configuration time. `IStreamBus<TBus>` exposes `PublishAsync(stream, ...)` /
+`ConsumeAsync(stream, ...)`; the non-generic `IStreamBus` is `IStreamBus<DefaultBus>`
+for single-bus apps. Callers never see `StreamSystem`.
 
 A `StreamSystem` owns a locator connection plus pools of producer and consumer
 connections. Callers never see it.
@@ -93,7 +98,10 @@ The library must wrap it in a supervising loop:
 - retry forever, never surface a terminal connection error to the caller
 - exponential backoff with jitter, capped
 - distinguish `ProtocolException` / `SslException` / `AuthMechanismNotSupportedException`
-  (fatal, do not retry) from network errors (retry)
+  and authentication failures (any `AuthenticationFailure*`, including the
+  `guest`/loopback rejection in §1.1) as fatal (do not retry) from network
+  errors (retry). Credential validation (FR-8.9) runs before the loop so bad
+  credentials fail fast with an actionable message and never enter backoff.
 - expose state transitions so health checks and readiness probes work
 
 This is the single most important thing the client does not do for us.
@@ -110,8 +118,18 @@ enum ReadinessPolicy { FailFast, WaitUpTo(TimeSpan), WaitIndefinitely }
 WaitUntilReadyAsync(ReadinessPolicy) -> BusReadiness  // Ready | TimedOut | Fatal
 ```
 
-Publish and consume calls take a `ReadinessPolicy`. A health endpoint exposes current
-state per vhost.
+Publish and consume calls take a `ReadinessPolicy`. `PublishOptions.Timeout` is the
+publisher-confirm timeout only, not the readiness wait; `WaitUpTo(TimeSpan)` bounds
+only the readiness wait.
+
+Startup blocking is separate and user-configurable (MassTransit `HostOptions`-style).
+`StreamBusHostOptions { BlockStartupUntilReady = false (default), StartupTimeout }`
+is set per `AddStreamBus<TBus>`. When false (default), `IHostedService.StartAsync`
+returns without waiting; the supervising loop keeps retrying in the background and
+readiness stays visible via health. When true, startup waits until every registered
+bus reports `Ready`, bounded by `StartupTimeout`; on timeout `StartAsync` surfaces
+`TimedOut` (the background loop keeps retrying, it never gives up). A health
+endpoint exposes current state per (vhost, bus type).
 
 ## 4. Ordering and load balancing (verified)
 
@@ -195,12 +213,14 @@ in flight to us. A chunk holds many messages, so `InitialCredits = 1` still allo
 chunk of messages to be dispatched one at a time, and a stall on a hot key holds up the rest
 of that chunk, not just the rest of its own key.
 
-The same rule governs reconnect. The reliable consumer resolves a reconnect offset from its
+The same rule governs reconnect. The `Reliable` consumer resolves a reconnect offset from its
 own in-memory last-dispatched value, and it writes that value **after** the handler's
 exception has been caught and logged. Under `FailureMode.Strict` a handler still retrying
 has not stored its offset, so a reconnect in that window starts past the unprocessed
-message. The library therefore resolves the offset itself, from the broker, on every attach
-— see §12 and gate **G-5**.
+message. The built-in reconnect cannot be disabled, so the library does not use
+`Reliable*` for ordered paths at all: it uses `RawConsumer` / per-partition raw
+consumers plus its own supervision loop (same pattern as §3), resolving the offset
+itself from the broker on every attach — see §12 and gate **G-5**.
 
 ### 4.5 Partition count is fixed
 
@@ -230,12 +250,25 @@ RetryPolicy {
 }
 ```
 
-`FailureMode` resolves what happens when the retry budget is exhausted:
+`attempt` passed to `DelayCalculator` is the 1-based retry number (1 = delay before
+the first retry after the initial failure). `MaxAttempts` is total processing
+attempts including the initial one (1 = no retry, 3 = initial + 2 retries).
+When supplied, `DelayCalculator` overrides `BaseDelay`/`Multiplier`/`MaxDelay`/`Jitter`.
+"Deadline" in `SkipAfterDeadline` means exhaustion of `MaxAttempts` (count-based);
+there is no separate wall-clock deadline in v1.
 
-- `Strict` — keep retrying; the offset stays where it is so a crash redelivers.
-  The partition stalls behind the failing key. Preserves ordering.
-- `SkipAfterDeadline` — advance the offset, publish to the error stream. The key
-  falls behind and its ordering becomes best-effort from that point on.
+`FailureMode` resolves what happens when the retry budget is exhausted.
+It is also the error-management switch (user decision 8):
+
+- `Strict` (default) — keep retrying; the offset stays where it is so a crash redelivers.
+  The partition stalls behind the failing key. Preserves ordering. No error-stream
+  management: `ErrorStream` MUST NOT be configured with `Strict` (rejected at
+  configuration time). `MaxAttempts` MUST be null (unbounded) with `Strict`.
+- `SkipAfterDeadline` — bounded by `MaxAttempts` (required). On exhaustion, advance
+  the offset exactly once and publish to the error stream, then consider the message
+  completed. The key falls behind and its ordering becomes best-effort from that point on.
+  `ErrorStream` is REQUIRED with this mode. An optional `OnRetryExhausted` hook may
+  observe the handoff but cannot change the outcome (advance + error publish).
 
 Set per consumer. See §11.1. Under `Strict` the offset is not advanced until the
 handler succeeds, so a crash mid-retry redelivers. `StoreOffset` is called
@@ -249,7 +282,8 @@ See **FR-5.2**.
 The stored offset never exceeds the last successfully processed offset of that
 (reference, partition): **FR-2.7** (see §12). The client's `Reliable` consumer
 tracks its own last-dispatched offset in memory and advances it even when the handler
-throws, which is why the library does not delegate the resume decision to it (**G-5**).
+throws, which is why ordered paths do not use `Reliable*` at all and the library
+does not delegate the resume decision to it (**G-5**, see §12.4).
 
 The two modes differ only in the store point. Under `Strict` nothing is stored until the
 handler succeeds, so a crash mid-retry redelivers. Under `SkipAfterDeadline` the offset
@@ -258,15 +292,18 @@ advances exactly once, at the moment the message is handed to the error stream.
 
 ## 6. Error stream (dead letter destination)
 
-This is the dead letter destination. Streams have no DLX, so it is a real stream
-we publish to by hand. Per logical queue, or one shared with routing. Message
-carries in `ApplicationProperties`:
+This is the dead letter destination, used only with `FailureMode.SkipAfterDeadline`.
+With `FailureMode.Strict` there is no error-stream management at all (user decision:
+no skip, no DLQ). Streams have no DLX, so the error destination is a real stream
+we publish to by hand. Per logical queue, or one shared with routing. The error
+message preserves the original body and carries in `ApplicationProperties`:
 
 - original stream, partition, offset
 - exception type, message, stack
 - attempt count, timestamps
 - correlation / message id, original routing value
 
+Error-stream writes use library-owned stable producer names per error stream.
 Replay = read the error stream, republish to the source, with a publishing id derived
 from (partition, original offset) so replay is idempotent.
 
@@ -281,22 +318,29 @@ no bound on growth, and there is no other mechanism available.
 
 When a handler produces a result for another stream, use the **source offset as the
 publishing id of the result**. The broker stores message and publishing id atomically,
-so a crash cannot desync them. Requirements (**FR-6.1** through **FR-6.7**):
+so a crash cannot desync them. Handlers do not publish via `ConsumeContext`: the
+plain path just returns and the library stores the offset on success. The result path
+is a separate `PublishResultAsync(target, result, sourceOffset, ...)` API that enforces
+publishing-id = sourceOffset and stable producer-name selection. Requirements
+(**FR-6.1** through **FR-6.7**):
 
 - one write per processing step
 - publishing to the target stream is the only side effect
 - **only one instance publishes under a given producer name** (dedup does not support
-  concurrent publishing) - enforce with SAC on the source
-- stable producer name, unique per target stream, meaningful not a GUID
+  concurrent publishing) - enforce with SAC on the source. A super-stream source has
+  N concurrently-active partitions, so it needs N stable producer names (one per
+  source partition to target), not one shared name.
+- stable producer names, unique per (source partition, target stream), meaningful not a GUID
 - results published in order, none skipped: keep retrying, never time out silently
 - max 255 producer names per stream
 
 For a super stream target, query the last publishing id on **every** partition and
 resume from the maximum.
 
-Note the interaction with SAC: a SAC reference usually enables automatic offset
-tracking, which would override the derived offset. Turn automatic tracking off and
-compute the start offset from the last publishing id on promotion.
+Note the interaction with SAC: on the `Raw*` path there is no automatic offset
+tracking to turn off. The effectively-once source stores nothing (FR-10.14) and
+computes the start offset from the last publishing id on every attach (create,
+promote, reconnect).
 
 ## 8. Topology declaration
 
@@ -304,8 +348,13 @@ Publishing does **not** auto-create. Publishing to a missing stream fails with
 `StreamDoesNotExist` (response code `0x02`).
 
 `CreateStream` / `CreateSuperStream` are **not concurrency-safe**: 4 concurrent calls on
-the same name produce `PreconditionFailed`. The library must serialize declaration per
-stream name and cache results, or sporadic failures appear under load.
+the same name produce `PreconditionFailed` / `StreamAlreadyExists`. The library must
+(a) serialize declaration per stream name in-process and cache results, and
+(b) tolerate the cross-process race by catching the already-exists response: when the
+existing spec matches the requested spec, treat as success and cache; when specs
+conflict (e.g. different partition count, which is immutable per FR-3.3), throw
+`StreamConfigurationConflictException` naming expected vs actual. N instances starting
+at once and declaring the same spec all succeed; only genuine conflicts fail.
 
 Treat stream specs as startup configuration. `x-max-age` and
 `x-queue-leader-locator` are effectively fixed at declaration; prefer policies for
@@ -346,32 +395,39 @@ kept, so a low-traffic stream retains data well past `x-max-age`. Lower
 ## 9. Public API sketch
 
 ```csharp
-// bus per vhost
-IStreamBusRegistry.GetOrCreateBus(vhost) -> IStreamBus
-IStreamBus.WaitUntilReadyAsync(ReadinessPolicy) -> BusReadiness
+// bus per (type, vhost); TBus marker must be unique per registration
+IStreamBusRegistry.GetOrCreateBus<TBus>(vhost) -> IStreamBus<TBus>
+IStreamBus<TBus>.WaitUntilReadyAsync(ReadinessPolicy) -> BusReadiness
+// non-generic IStreamBus is IStreamBus<DefaultBus> for single-bus apps
 
 // publish
-IStreamBus.PublishAsync(stream, message, PublishOptions)
-PublishOptions { ReadinessPolicy, RoutingKey, DeduplicationName, Timeout }
+IStreamBus<TBus>.PublishAsync(stream, message, PublishOptions)
+PublishOptions { ReadinessPolicy, RoutingKey, DeduplicationName, Timeout /* confirm timeout only */ }
+
+// effectively-once result path (FR-6 only, separate from ConsumeContext)
+IStreamBus<TBus>.PublishResultAsync(targetStream, result, sourceOffset, producerName, ...)
+// enforces publishing-id = sourceOffset and stable producer-name selection
 
 // consume - delegate overload, the lower-level path
-IStreamBus.ConsumeAsync(stream, ConsumeOptions, handler)
+IStreamBus<TBus>.ConsumeAsync(stream, ConsumeOptions, handler)
 ConsumeOptions {
-    IsSuperStream, Reference,          // shared Reference = one SAC group
+    IsSuperStream, Reference = null,     // null = auto-derived (default); shared Reference = one SAC group
     SingleActiveConsumer = true,
     Ordering = Strict,                  // library owns offset-on-promotion
-    Offset = ConsumeOffset.ResumeOrFirst,   // FR-10, see §12
-    OffsetStore = OffsetStoreOptions,        // cadence; default = after every success
-    Retry = RetryPolicy,                // carries FailureMode, per consumer
-    ErrorStream = "<stream>.error",
+    Offset = ConsumeOffset.ResumeOrFirst,   // FR-10, see §12; AlwaysFirst/AlwaysNext are explicit escapes
+    OffsetStore = OffsetStoreOptions,        // { EveryMessages = 1 (default), MaxInterval = null }
+    Retry = RetryPolicy,                // carries FailureMode, per consumer; see §5 for attempt/MaxAttempts semantics
+    ErrorStream = null,                 // required iff FailureMode.SkipAfterDeadline, forbidden iff Strict
 }
 
 // offsets, for operators and migrations - never on the per-message path
-IStreamBus.GetConsumerOffsetAsync(reference, partition)          -> ulong?
-IStreamBus.SetConsumerOffsetAsync(reference, partition, offset)
+// partition is the 0-based partition index for super streams; 0 for plain streams
+IStreamBus<TBus>.GetConsumerOffsetAsync(reference, partition)          -> ulong?
+IStreamBus<TBus>.SetConsumerOffsetAsync(reference, partition, offset)
 
-// consume - typed, DI-resolved (FR-2.1)
-services.AddStreamBusConsumer<OrderCreated, OrderCreatedConsumer>();
+// consume - typed, DI-resolved MassTransit-style IConsumer<T> (FR-2.1)
+// stream binding is explicit at registration; no convention magic
+services.AddStreamBusConsumer<TBus, OrderCreated, OrderCreatedConsumer>(stream: "orders", configure: opts => { ... });
 
 public interface IConsumer<T> {
     Task Consume(ConsumeContext<T> context, CancellationToken ct);
@@ -381,20 +437,24 @@ ConsumeContext<T> {
     T Message, string RoutingValue, string Stream, int Partition, ulong Offset,
     ReadOnlyMemory<byte> Body, MessageMetadata Metadata, CancellationToken
 }
+// ConsumeContext has no publish method. Plain paths just return and the library stores
+// the offset. Only the FR-6 result path publishes, via PublishResultAsync.
 
 // topology
-IStreamTopology.EnsureStreamAsync(spec)   // serialized, cached, idempotent
+IStreamTopology.EnsureStreamAsync(spec)   // serialized in-process, cached, cross-process race tolerated, idempotent
 IStreamTopology.EnsureSuperStreamAsync(spec)
 ```
 
 The delegate overload stays supported and is not deprecated (**FR-2.2**). The
-typed `IConsumer<T>` is the preferred path, resolved from DI, with `T` mapped to a
-stream.
+typed `IConsumer<T>` is the preferred path, resolved from DI, with the stream bound
+explicitly at registration.
 
 Sagas and out-of-process consumers are explicitly out of v1 (requirements §0.2).
 
-Hosting: `services.AddStreamBus(config)` with `IHealthCheck` and
-`IHostedService` integration.
+Hosting: `services.AddStreamBus<TBus>(vhost, cfg => { BlockStartupUntilReady = false;
+StartupTimeout = ...; })` with `IHealthCheck` and `IHostedService` integration.
+Duplicate `AddStreamBus<SameTBus>` fails at configuration time. One `StreamSystem`
+per vhost is shared by all `TBus` bound to it.
 
 ## 10. Phases
 
@@ -408,8 +468,8 @@ Hosting: `services.AddStreamBus(config)` with `IHealthCheck` and
 | 6 | Retry + error stream + replay | FR-4, FR-5 | **G-1** |
 | 7 | Effectively-once read-process-write | FR-6 | **G-2**, G-3 |
 | 8 | Topology with serialized declaration | FR-7 | G-3 |
-| 9 | Hosting / DI / configuration, typed `IConsumer<T>` | FR-8.9, FR-2.1 | — |
-| 10 | Tests: unit plus integration against a real broker | all | G-1..G-4 |
+| 9 | Hosting / DI / configuration, typed `IConsumer<T>` | FR-8.9, FR-8.11, FR-2.1 | — |
+| 10 | Tests: unit plus integration against a real broker | all | G-1..G-5 |
 
 **No phase is complete until its gates pass.** Phase 6 in particular is blocked
 on G-1 (retry under load), which is not yet verified. Phase 7 is blocked on G-2
@@ -552,10 +612,12 @@ resume point, which is a loud operational signal rather than a silently duplicat
 
 The client's reliable reconnect resolves an offset from its in-memory last-dispatched
 value. Under `Strict` that value can be ahead of what was stored, so a reconnect during a
-retry window skips the unprocessed message. **G-5** exists because of this, and the
-consequence is that the wrapper owns the reconnect: it recreates the consumer with the
-offset resolved by §12.2 rather than letting the client resume on its own. This is the
-same supervision the entity-death case needs, so the two share one loop.
+retry window skips the unprocessed message. The built-in reconnect cannot be disabled,
+so ordered paths do not use `Reliable*` at all. **G-5** exists because of this, and the
+consequence is that the wrapper owns the reconnect: a supervision loop around
+`RawConsumer` recreates the consumer with the offset resolved by §12.2 on every
+attach (create, promote, reconnect) rather than letting the client resume on its own.
+This is the same supervision the entity-death case needs, so the two share one loop.
 
 ### 12.5 Traps
 
@@ -565,4 +627,4 @@ same supervision the entity-death case needs, so the two share one loop.
 | `ResumeOrNext` on a first run | Attaches at the tail and silently discards the backlog | FR-10.12 requires the warning; the branch taken is in the health surface |
 | A store during a leader outage | Silently dropped, no error anywhere | Monotonicity plus the attach-time re-read; the regression counter above |
 | An over-long reference | `PreconditionFailed` at subscribe, or a silently ignored store | FR-10.11, validated at configuration time |
-| Promotion listener throwing, or returning null | `OffsetTypeNext`: the partition's backlog is skipped | The listener must be O(1) and must not throw; covered by **G-1** |
+| Promotion listener throwing, or returning null | `OffsetTypeNext`: the partition's backlog is skipped | The listener must be O(1) and must not throw; covered by **G-5** (with G-4 for failover ordering) |
