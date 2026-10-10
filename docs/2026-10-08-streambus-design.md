@@ -3,7 +3,9 @@
 Date: 2026-10-08
 Status: Final for v1 scope. Nothing implemented yet.
 Supersedes the AMQP 0.9.1 design in `2026-10-03-rabbitmq-ordered-consumption-design-discussion.md`
-and the `StreamRelay` draft of this document.
+and the `StreamRelay` draft of this document. Those predecessors (including the
+`x-modulus-hash` topology referenced in §4.1) are historical context only and are not
+in this repo.
 
 Requirements live in `2026-10-08-streambus-requirements.md`. This document is the
 HOW; that one is the WHAT, and every requirement there has an ID referenced by
@@ -76,7 +78,8 @@ connections. Callers never see it.
 ### 2.2 Connection pooling defaults
 
 `ProducersPerConnection` and `ConsumersPerConnection` both default to **1**, i.e. one
-TCP connection per producer and per consumer. The client's own comment says higher
+TCP connection per producer and per consumer, via `StreamBusConnectionOptions`
+(overridable per `AddStreamBus<TBus>`). The client's own comment says higher
 values "is not the best for performance". Leave at 1 unless measured otherwise.
 
 ### 2.3 Leader/replica placement
@@ -203,7 +206,9 @@ STRICT ORDERING PER KEY: HOLDS
 
 **The library owns this logic.** It is the easiest way to silently break ordering and
 the documentation examples in the official repo show the `OffsetTypeFirst()` pattern.
-`InitialCredits = 1` was also used to keep dispatch serialized.
+Do not set `InitialCredits = 1` for ordering: ordering comes from sequential dispatch,
+not from credits (see correction below). Leave credits at the client default unless
+measured otherwise.
 
 Correction, from the client source: `InitialCredits` is prefetch measured in **chunks**,
 not messages, and it is not what serializes dispatch. `ProcessChunks` is a single task that
@@ -240,7 +245,9 @@ So message-level retry **cannot** be layered outside the handler. It must be
 implemented inside it.
 
 Retry that sleeps inside the handler blocks that consumer's dispatch loop, which is
-what preserves order for the partition, but also stalls it. Design:
+what preserves order for the partition, but also stalls it. Per the §4.4 correction,
+dispatch is chunk-sequential, so a hot-key stall holds up the rest of that chunk, not
+just the rest of its own key. Design:
 
 ```
 RetryPolicy {
@@ -413,11 +420,11 @@ IStreamBus<TBus>.ConsumeAsync(stream, ConsumeOptions, handler)
 ConsumeOptions {
     IsSuperStream, Reference = null,     // null = auto-derived (default); shared Reference = one SAC group
     SingleActiveConsumer = true,
-    Ordering = Strict,                  // library owns offset-on-promotion
+    Ordering = Strict,                  // dispatch ordering, distinct from Retry.FailureMode; library owns offset-on-promotion
     Offset = ConsumeOffset.ResumeOrFirst,   // FR-10, see §12; AlwaysFirst/AlwaysNext are explicit escapes
     OffsetStore = OffsetStoreOptions,        // { EveryMessages = 1 (default), MaxInterval = null }
     Retry = RetryPolicy,                // carries FailureMode, per consumer; see §5 for attempt/MaxAttempts semantics
-    ErrorStream = null,                 // required iff FailureMode.SkipAfterDeadline, forbidden iff Strict
+    ErrorStream = null,                 // ErrorStreamOptions { Stream, RoutingValue? }; required iff SkipAfterDeadline, forbidden iff Strict
 }
 
 // offsets, for operators and migrations - never on the per-message path
@@ -449,6 +456,16 @@ The delegate overload stays supported and is not deprecated (**FR-2.2**). The
 typed `IConsumer<T>` is the preferred path, resolved from DI, with the stream bound
 explicitly at registration.
 
+Serialization: the typed path uses a configured `IStreamSerializer` (default JSON via
+`System.Text.Json`); the message `Data` body deserializes to `T`, and a
+deserialization failure is handled as a handler failure under the consumer's
+`Retry`/`FailureMode` policy. The delegate overload receives raw bytes and never
+deserializes.
+
+Error destinations: per-stream error streams use `ErrorStreamOptions { Stream =
+"<stream>.error" }`; a shared error stream uses one `Stream` plus a routing value
+(defaulting to the source stream name) so both FR-5.4 shapes are expressible.
+
 Sagas and out-of-process consumers are explicitly out of v1 (requirements §0.2).
 
 Hosting: `services.AddStreamBus<TBus>(vhost, cfg => { BlockStartupUntilReady = false;
@@ -462,18 +479,19 @@ per vhost is shared by all `TBus` bound to it.
 |---|---|---|---|
 | 1 | Environment — done (section 1) | — | — |
 | 2 | Risk spike — largely done (sections 4, 8) | — | G-1, G-3, G-4 |
-| 3 | Bus core: supervising connect loop, readiness gate, health | FR-8, FR-9.2 | — |
+| 3 | Bus core: supervising connect loop, readiness gate, health | FR-8.1–FR-8.10, FR-9.2 | — |
 | 4 | Producer registry: N producers, confirms | FR-1 | — |
-| 5 | Consumer registry: N consumers, offset tracking, SAC, the promotion fix from 4.4 | FR-2, FR-10 | G-4, G-5 |
-| 6 | Retry + error stream + replay | FR-4, FR-5 | **G-1** |
-| 7 | Effectively-once read-process-write | FR-6 | **G-2**, G-3 |
+| 5 | Consumer registry: N consumers, offset tracking, SAC, ordering, per-partition metrics, the promotion fix from 4.4 | FR-2, FR-3, FR-10, FR-9.1 | G-4, G-5 |
+| 6 | Retry + error stream + replay + starvation visibility | FR-4, FR-5, FR-9.3 | **G-1** |
+| 7 | Effectively-once read-process-write | FR-6 | **G-2** |
 | 8 | Topology with serialized declaration | FR-7 | G-3 |
 | 9 | Hosting / DI / configuration, typed `IConsumer<T>` | FR-8.9, FR-8.11, FR-2.1 | — |
-| 10 | Tests: unit plus integration against a real broker | all | G-1..G-5 |
+| 10 | Tests: unit plus integration against a real broker (all FR-1–FR-10 plus NFR-1–NFR-7) | all | G-1..G-5 |
 
 **No phase is complete until its gates pass.** Phase 6 in particular is blocked
 on G-1 (retry under load), which is not yet verified. Phase 7 is blocked on G-2
-(effectively-once end to end, unverified) and G-3.
+(effectively-once end to end, unverified). NFR-1–NFR-7 are verified in Phase 10,
+not per phase.
 
 ## 11. Resolved questions
 
@@ -588,13 +606,17 @@ entirely and are the escapes for replay and tail-attach.
 ### 12.3 Write rule and monotonicity
 
 ```
-StoreOffset(reference, partition, candidate)
+StoreOffset(reference, partition, candidate)   // candidate is the exact context.Offset just processed, never +1
     if candidate <= localWater[reference, partition]:
         log warning(name this) + increment streambus_offset_store_rejected_total
         return                                                     // never sent
-    partitionConsumer.StoreOffset(candidate)                       // fire and forget
+    partitionConsumer.StoreOffset(candidate)                       // fire and forget, exact value
     localWater[reference, partition] = candidate
 ```
+
+`candidate` is always the exact offset carried by the delivered message context.
+`+1` never happens here; it happens only in §12.2 when resolving the resume point
+(`stored + 1`) for the next attach.
 
 The broker cannot be relied on to reject a lower value, so the rejection happens locally
 before the frame is written (**FR-2.7**). `localWater` survives demotion, so a zombie that
@@ -628,3 +650,19 @@ This is the same supervision the entity-death case needs, so the two share one l
 | A store during a leader outage | Silently dropped, no error anywhere | Monotonicity plus the attach-time re-read; the regression counter above |
 | An over-long reference | `PreconditionFailed` at subscribe, or a silently ignored store | FR-10.11, validated at configuration time |
 | Promotion listener throwing, or returning null | `OffsetTypeNext`: the partition's backlog is skipped | The listener must be O(1) and must not throw; covered by **G-5** (with G-4 for failover ordering) |
+
+## 13. Metrics catalog
+
+Single list; labels on every series include vhost, bus type, stream, partition, and
+reference where applicable. This is the surface behind FR-9.1–FR-9.3, FR-10.7, FR-10.12,
+and §12.3:
+
+| Metric | Meaning |
+|---|---|
+| `streambus_partition_lag` | Unprocessed messages per partition (hot-key signal) |
+| `streambus_partition_inflight` | Messages dispatched but not yet completed per partition |
+| `streambus_partition_retry_blocked` | 1 when a partition is stalled in retry, else 0 (with attempt/failure-mode labels) |
+| `streambus_offset_store_rejected_total` | Counter of locally rejected non-monotonic store candidates (§12.3, FR-2.7/FR-10.7) |
+| `streambus_offset_regressed_total` | Counter of attach-time read-backs where the broker holds less than `localWater` (§12.3) |
+| `streambus_offset_fallback_total` | Counter of no-stored-offset fallbacks, labelled by branch taken (`ResumeOrFirst`/`ResumeOrNext`/`ResumeOrFail`) and resolved offset (FR-10.12) |
+| `streambus_connection_state` | Current supervising-loop state per (vhost, bus type), mirrored in health (FR-9.2, FR-8.8) |

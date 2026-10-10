@@ -68,6 +68,7 @@ official client's namespace.
 | FR-2.5 | On becoming ACTIVE, and on every reconnect, a consumer resumes from the offset the broker has stored for its (reference, partition) — never from offset 0, and never from a local, in-memory, or last-dispatched value. The offset is resolved on every attach (create, promote, reconnect) and is never cached across one. Ordered paths use `RawConsumer` plus the library supervision loop, never `Reliable*` (whose built-in reconnect cannot be disabled) | Promotion scenario and reconnect scenario: total consumed == total published, no entity processed twice |
 | FR-2.6 | Strict per-key ordering holds across SAC promotion | Every entity's sequence arrives in order on the promoting instance |
 | FR-2.7 | An offset is stored only when it is greater than the highest value already stored for that (reference, partition). A candidate that is not greater is rejected locally — never sent — and reported. Only the ACTIVE consumer for a (reference, partition) stores an offset | A demoted or stale instance's store is rejected and counted in the metrics; a verification read shows the stored value never regresses |
+| FR-2.8 | The typed path deserializes the message body to `T` with a configured `IStreamSerializer` (default JSON via `System.Text.Json`); a deserialization failure is handled as a handler failure under the consumer's `Retry`/`FailureMode` policy | Default serializer round-trips `T`; poison-message behaviour follows the configured failure mode |
 
 ### FR-3 Ordering
 
@@ -95,9 +96,9 @@ official client's namespace.
 | ID | Requirement | Acceptance |
 |---|---|---|
 | FR-5.1 | A failed message (`SkipAfterDeadline` only) is published to an error stream preserving the original body and carrying original stream, partition, offset, exception type/message/stack, attempt count, timestamps, correlation/message id, and original routing value | All fields plus original body present on a captured error message |
-| FR-5.2 | The error stream MUST declare `x-max-age` retention. Retention is part of the design, not an option | Retention present in the declared spec |
+| FR-5.2 | The error stream MUST have effective `x-max-age` retention (queue argument or policy). Retention is part of the design, not an option | Effective retention present in the declared spec or applied policy |
 | FR-5.3 | Replay reads the error stream and republishes to the source, deriving the publishing id from `(partition, original offset)` | Replaying the same error message twice yields one stored message |
-| FR-5.4 | One shared error stream with routing and per-stream error streams are both supported | Both verified |
+| FR-5.4 | One shared error stream with routing and per-stream error streams are both supported, via `ErrorStreamOptions { Stream, RoutingValue? }` (shared form supplies a routing value defaulting to the source stream name) | Both verified |
 
 ### FR-6 Effectively-once read-process-write (design §7)
 
@@ -119,7 +120,7 @@ official client's namespace.
 | FR-7.1 | `EnsureStreamAsync` / `EnsureSuperStreamAsync` are idempotent and cached | Repeat calls are no-ops |
 | FR-7.2 | Concurrent declaration of the same stream name is serialized in-process and tolerated cross-process: a benign `StreamAlreadyExists` / `PreconditionFailed` race with a matching spec succeeds and caches; a genuine spec conflict throws `StreamConfigurationConflictException` naming expected vs actual | 4+ concurrent calls on one name (including simultaneous multi-instance startup with the same spec) all succeed |
 | FR-7.3 | `x-queue-leader-locator` defaults to `least-leaders` | Declared spec shows `least-leaders` |
-| FR-7.4 | Any production-tuned setting uses a policy, not a queue argument | Documented; policies preferred |
+| FR-7.4 | Production tuning after declaration uses a policy, not a queue argument. Declaration-time identity (partition count, `x-queue-leader-locator` default) stays in the spec | Effective tuning verified on the policy; spec holds only identity/defaults |
 | FR-7.5 | Stream specs are treated as startup configuration | Declaration happens at startup, not per publish |
 
 ### FR-8 Connection and readiness
@@ -135,14 +136,14 @@ official client's namespace.
 | FR-8.7 | `WaitUntilReadyAsync(policy)` returns `Ready`, `TimedOut`, or `Fatal` | All three outcomes reachable |
 | FR-8.8 | A health endpoint reports current state per (vhost, bus type) | Endpoint returns per-(vhost, bus type) state |
 | FR-8.9 | Credentials are validated at startup with an actionable message. The `guest`/loopback trap is detected explicitly | Using `guest` fails at startup with a message naming the cause, not later as a confusing producer error |
-| FR-8.10 | Pooling defaults are 1 producer and 1 consumer per connection | Defaults asserted |
+| FR-8.10 | Pooling defaults are 1 producer and 1 consumer per connection, overridable per bus via `StreamBusConnectionOptions` | Defaults asserted; override path exercised |
 | FR-8.11 | Startup blocking is user-configurable MassTransit `HostOptions`-style: `BlockStartupUntilReady = false` (default), `StartupTimeout`. When false, `StartAsync` returns without waiting while the supervising loop keeps retrying. When true, startup waits for every registered bus to report `Ready`, bounded by `StartupTimeout`; on timeout `StartAsync` surfaces `TimedOut` while the background loop keeps retrying | Default (non-blocking) and blocking-with-timeout behaviours both verified |
 
 ### FR-9 Observability
 
 | ID | Requirement | Acceptance |
 |---|---|---|
-| FR-9.1 | Per-partition metrics are exposed: lag, in-flight, retry-blocked | Metrics visible per partition |
+| FR-9.1 | Per-partition metrics are exposed: lag, in-flight, retry-blocked, per the §13 catalog (`streambus_partition_lag`, `streambus_partition_inflight`, `streambus_partition_retry_blocked`) plus offset counters (`streambus_offset_store_rejected_total`, `streambus_offset_regressed_total`, `streambus_offset_fallback_total`) | Metrics visible per partition; names match the catalog |
 | FR-9.2 | Connection state transitions are observable so readiness probes work | Transitions emitted and reflected in health |
 | FR-9.3 | Hot-key starvation is detectable from the metrics | A saturated key is visible as retry-blocked / elevated lag on one partition |
 
@@ -159,16 +160,16 @@ touch the mechanics.
 | FR-10.1 | A consumer's offset behaviour is one `ConsumeOffset` value: `ResumeOrFirst` (default), `ResumeOrNext`, `ResumeOrFail`, `AlwaysFirst`, `AlwaysNext`. Nothing else is needed to get the correct default | `ResumeOrFirst` yields broker-resume with no other configuration |
 | FR-10.2 | `ResumeOrFirst`, `ResumeOrNext` and `ResumeOrFail` all resolve the resume point from the broker-stored offset for the consumer's (reference, partition) | Broker value observed on create, on promote and on reconnect |
 | FR-10.3 | The three differ only in the no-stored-offset case: `First` replays from the head, `Next` attaches at the tail, `Fail` throws a configuration error naming the reference and the partition | All three branches exercised, including the fallback |
-| FR-10.4 | The broker read happens on consumer creation, on SAC promotion and on reconnect via the library supervision loop around `RawConsumer`. It is never cached across an attach, and never performed on the hot path | Reconnect during a `Strict` retry resumes from the stored offset, not from a last-dispatched value |
+| FR-10.4 | The broker read happens on consumer creation, on SAC promotion and on reconnect via the library supervision loop around `RawConsumer`. It is never cached across an attach, and never performed on the hot path (`localWater` is a write-guard only, never a resume source) | Reconnect during a `Strict` retry resumes from the stored offset, not from a last-dispatched value |
 | FR-10.5 | The resolved offset is `stored + 1`, or the no-stored-offset branch. The library never produces `OffsetTypeNext` implicitly; the only `Next` path is an explicit `AlwaysNext` | No code path returns `OffsetTypeNext` implicitly |
-| FR-10.6 | The stored offset never exceeds the last successfully processed offset of that (reference, partition) | A handler that throws does not advance the stored offset |
+| FR-10.6 | The stored offset is always the exact `context.Offset` just processed (never +1) and never exceeds the last successfully processed offset of that (reference, partition) | A handler that throws does not advance the stored offset |
 | FR-10.7 | Monotonicity: an offset is stored only when greater than the highest value already written for that (reference, partition), per FR-2.7 | A lower candidate is rejected locally, counted, and never sent to the broker |
 | FR-10.8 | Store cadence is configurable (`OffsetStoreOptions.EveryMessages`, `MaxInterval`) and defaults to storing after every successful message (`EveryMessages = 1`, `MaxInterval = null`). With `EveryMessages = N > 1` a crash redelivers up to N-1 messages; with `MaxInterval` set a timer stores the last-success offset (still monotonicity-checked, fire-and-forget) | Default and both options tested, including the redelivery window |
 | FR-10.9 | Stores go through the per-partition consumer obtained inside the message handler. `RawSuperStreamConsumer.StoreOffset` throws `NotImplementedException`, so the super-stream entity is never a store path. `ConsumeContext` has no publish method; plain paths just return and the library stores the offset, while only the FR-6 result path publishes via `PublishResultAsync` | No call to the super-stream store path exists |
 | FR-10.10 | `Reference` is optional and auto-derived by default. The derivation is deterministic from (bus marker type, consumer/message type, stream), stable across restarts, unique per consumer group — never a GUID/random, and never shared between two consumer types on one stream. A caller-supplied value MUST also be stable, unique per group, and is validated per FR-10.11 | Omitted reference derives to a stable unique value; two consumer types on one stream get distinct references; the value survives a restart |
 | FR-10.11 | `Reference` is validated against the broker's 255-byte limit at configuration time with an actionable message | An over-long reference fails in our configuration error, not as a broker `PreconditionFailed` |
 | FR-10.12 | Whenever the library falls back because the broker has no stored offset, it logs a warning naming the reference, the partition, the branch taken and the resolved offset, and publishes it to the metrics and health surface | The fallback is observable. It is never silent |
-| FR-10.13 | `GetConsumerOffsetAsync(reference, partition)` returns `ulong?` (null when nothing is stored) and `SetConsumerOffsetAsync(reference, partition, offset)` seeds it, where `partition` is the 0-based partition index for super streams (0 for plain streams). Neither is used internally on the per-message path; `AlwaysFirst`/`AlwaysNext` remain explicit operator escapes for replay/tail-attach | Escape hatches exist and are not on the hot path |
+| FR-10.13 | `GetConsumerOffsetAsync(reference, partition)` returns `ulong?` (exact stored value, null when nothing is stored) and `SetConsumerOffsetAsync(reference, partition, offset)` seeds the exact last-processed value (resume will be `offset + 1`), where `partition` is the 0-based partition index for super streams (0 for plain streams). `Set` overwrites `localWater` with audit log (it bypasses the FR-10.7 guard by design). Neither is used internally on the per-message path; `AlwaysFirst`/`AlwaysNext` remain explicit operator escapes for replay/tail-attach | Escape hatches exist and are not on the hot path |
 | FR-10.14 | A consumer used for effectively-once read-process-write stores no offset on its source: the publishing ID is the resume point (FR-6.1, FR-6.7) | No store is observed on the effectively-once source reference |
 
 ## 2. Non-functional requirements
