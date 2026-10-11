@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/StreamBus/StreamBus.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/StreamBus.IntegrationTests/StreamBus.IntegrationTests.csproj" />
+    <Project Path="tests/StreamBus.UnitTests/StreamBus.UnitTests.csproj" />
+  </Folder>
+</Solution>
