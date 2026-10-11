@@ -8,6 +8,7 @@ public interface IStreamBusRegistry
     IStreamBus<TBus> GetOrCreateBus<TBus>(string vhost);
     IEnumerable<(string Vhost, string BusType, BusConnectionState State)> DescribeStates();
     internal BusEntry GetOrCreateEntry(Type busType, string vhost);
+    internal StreamBusConnectionSupervisor SupervisorFor(string vhost);
 }
 
 internal sealed class BusEntry
@@ -42,13 +43,20 @@ public sealed class StreamBusRegistry : IStreamBusRegistry
     BusEntry IStreamBusRegistry.GetOrCreateEntry(Type busType, string vhost)
         => GetOrCreateCore(busType, vhost);
 
+    private readonly ConcurrentDictionary<string, StreamBusConnectionSupervisor> _supervisors = new();
+
+    StreamBusConnectionSupervisor IStreamBusRegistry.SupervisorFor(string vhost)
+        => SupervisorForCore(vhost);
+
+    internal StreamBusConnectionSupervisor SupervisorForCore(string vhost)
+        => _supervisors.GetOrAdd(vhost, _ => _createSupervisor(_resolveOptions(vhost)));
+
     internal BusEntry GetOrCreateCore(Type busType, string vhost)
     {
         var key = $"{busType.FullName}@{vhost}";
         return _entries.GetOrAdd(key, _ =>
         {
-            var options = _resolveOptions(vhost);
-            var supervisor = _createSupervisor(options);
+            var supervisor = SupervisorForCore(vhost);
             IStreamBus bus = busType == typeof(DefaultBus)
                 ? new StreamBus(vhost, supervisor)
                 : (IStreamBus)Activator.CreateInstance(typeof(StreamBus<>).MakeGenericType(busType), vhost, supervisor)!;

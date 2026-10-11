@@ -167,11 +167,14 @@ public sealed class StreamBusHostedService : IHostedService
     {
         var supervisors = new List<(string Vhost, TimeSpan? Timeout, StreamBusConnectionSupervisor Supervisor)>();
         foreach (var (busType, options) in _store.Registrations)
+            _registry.GetOrCreateEntry(busType, options.Vhost);
+        foreach (var vhost in _store.Registrations.Select(r => r.Options.Vhost).Distinct())
         {
-            var entry = _registry.GetOrCreateEntry(busType, options.Vhost);
-            await entry.Supervisor.StartAsync(ct).ConfigureAwait(false);
-            lock (_gate) _started.Add(entry.Supervisor);
-            supervisors.Add((options.Vhost, options.Hosting.StartupTimeout, entry.Supervisor));
+            var supervisor = _registry.SupervisorFor(vhost);
+            await supervisor.StartAsync(ct).ConfigureAwait(false);
+            lock (_gate) _started.Add(supervisor);
+            var timeout = _store.Registrations.First(r => r.Options.Vhost == vhost).Options.Hosting.StartupTimeout;
+            supervisors.Add((vhost, timeout, supervisor));
         }
         if (!_store.Registrations.Any(r => r.Options.Hosting.BlockStartupUntilReady)) return;
         var timeouts = _store.Registrations
@@ -180,8 +183,6 @@ public sealed class StreamBusHostedService : IHostedService
             .ToList();
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         if (timeouts.Count > 0) cts.CancelAfter(timeouts.Max());
-        // One supervisor per bus+vhost today; no physical per-vhost sharing.
-        // Sharing a single StreamSystem per vhost is an explicit Phase 4 follow-up.
         foreach (var (vhost, timeout, supervisor) in supervisors)
         {
             try
