@@ -44,6 +44,10 @@ public sealed class StreamBusRegistry : IStreamBusRegistry
         => GetOrCreateCore(busType, vhost);
 
     private readonly ConcurrentDictionary<string, StreamBusConnectionSupervisor> _supervisors = new();
+    private readonly ConcurrentDictionary<string, StreamProducerRegistry> _producers = new();
+
+    internal StreamProducerRegistry ProducersFor(string vhost)
+        => _producers.GetOrAdd(vhost, _ => new StreamProducerRegistry(SupervisorForCore(vhost), vhost));
 
     StreamBusConnectionSupervisor IStreamBusRegistry.SupervisorFor(string vhost)
         => SupervisorForCore(vhost);
@@ -58,8 +62,8 @@ public sealed class StreamBusRegistry : IStreamBusRegistry
         {
             var supervisor = SupervisorForCore(vhost);
             IStreamBus bus = busType == typeof(DefaultBus)
-                ? new StreamBus(vhost, supervisor)
-                : (IStreamBus)Activator.CreateInstance(typeof(StreamBus<>).MakeGenericType(busType), vhost, supervisor)!;
+                ? new StreamBus(vhost, supervisor, ProducersFor(vhost))
+                : (IStreamBus)Activator.CreateInstance(typeof(StreamBus<>).MakeGenericType(busType), vhost, supervisor, ProducersFor(vhost))!;
             return new BusEntry { Supervisor = supervisor, Bus = bus };
         });
     }
