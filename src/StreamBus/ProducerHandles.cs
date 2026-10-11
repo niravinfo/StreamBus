@@ -4,14 +4,6 @@ using RabbitMQ.Stream.Client;
 
 namespace StreamBus;
 
-// Minimal definition so Task 2 builds standalone. Task 3 creates PublishExceptions.cs
-// with this exact shape and must remove this declaration when doing so.
-public sealed class StreamBusPublishException : Exception
-{
-    public StreamBusPublishException(string message, Exception? inner = null)
-        : base(message, inner) { }
-}
-
 public interface IStreamProducerHandle : IAsyncDisposable
 {
     Task SendAsync(ReadOnlyMemory<byte> body, string? routingKey, CancellationToken ct);
