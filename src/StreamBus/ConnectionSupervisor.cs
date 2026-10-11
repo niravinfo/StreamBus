@@ -108,12 +108,7 @@ public sealed class StreamBusConnectionSupervisor : IAsyncDisposable
     }
 
     public TimeSpan ComputeDelay(int attempt)
-    {
-        var grown = TimeSpan.FromMilliseconds(_baseDelay.TotalMilliseconds * Math.Pow(2, Math.Min(attempt - 1, 8)));
-        if (grown > _maxDelay) grown = _maxDelay;
-        var jitter = TimeSpan.FromMilliseconds(Random.Shared.Next(0, (int)Math.Min(1000, grown.TotalMilliseconds / 2 + 1)));
-        return grown + jitter;
-    }
+        => StreamBusDelays.ExponentialCapped(attempt, _baseDelay, _maxDelay);
 
     private void SetState(BusConnectionState next)
     {
