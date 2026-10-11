@@ -7,21 +7,27 @@ namespace StreamBus;
 
 public sealed class StreamBusConfigStore
 {
-    private readonly Dictionary<string, StreamBusOptions> _byBusKey = new();
+    private readonly HashSet<Type> _busTypes = new();
     private readonly Dictionary<string, StreamBusOptions> _byVhost = new();
     private readonly List<(Type BusType, StreamBusOptions Options)> _registrations = new();
 
     public void Add(Type busType, StreamBusOptions options)
     {
-        var key = $"{busType.FullName}@{options.Vhost}";
-        if (_byBusKey.ContainsKey(key))
-            throw new StreamBusConfigurationException($"Duplicate StreamBus registration for {key}. The non-generic overload may be used at most once per service and each marker TBus at most once.");
-        _byBusKey[key] = options;
+        ArgumentNullException.ThrowIfNull(busType);
+        ArgumentNullException.ThrowIfNull(options);
+        if (!_busTypes.Add(busType))
+            throw new StreamBusConfigurationException($"Duplicate StreamBus registration for {busType.FullName}. The non-generic overload may be used at most once per service and each marker TBus at most once.");
         _byVhost.TryAdd(options.Vhost, options);
         _registrations.Add((busType, options));
     }
 
-    public StreamBusOptions ForVhost(string vhost) => _byVhost[vhost];
+    public StreamBusOptions ForVhost(string vhost)
+    {
+        if (_byVhost.TryGetValue(vhost, out var options))
+            return options;
+        throw new StreamBusConfigurationException($"No StreamBus registration for vhost '{vhost}'.");
+    }
+
     public IReadOnlyList<(Type BusType, StreamBusOptions Options)> Registrations => _registrations;
 }
 
@@ -30,20 +36,30 @@ public static class ServiceCollectionExtensions
     public static IServiceCollection AddStreamBus(this IServiceCollection services, string vhost, Action<StreamBusOptionsBuilder> configure)
     {
         ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(vhost);
+        ArgumentNullException.ThrowIfNull(configure);
         var builder = new StreamBusOptionsBuilder(vhost);
         configure(builder);
-        return AddCore(services, typeof(DefaultBus), builder.Build());
+        var options = builder.Build();
+        AddShared(services, typeof(DefaultBus), options);
+        services.TryAddSingleton<IStreamBus>(sp => sp.GetRequiredService<IStreamBusRegistry>().GetOrCreateBus(options.Vhost));
+        return services;
     }
 
     public static IServiceCollection AddStreamBus<TBus>(this IServiceCollection services, string vhost, Action<StreamBusOptionsBuilder> configure)
     {
         ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(vhost);
+        ArgumentNullException.ThrowIfNull(configure);
         var builder = new StreamBusOptionsBuilder(vhost);
         configure(builder);
-        return AddCore(services, typeof(TBus), builder.Build());
+        var options = builder.Build();
+        AddShared(services, typeof(TBus), options);
+        services.TryAddSingleton(typeof(IStreamBus<TBus>), sp => sp.GetRequiredService<IStreamBusRegistry>().GetOrCreateBus<TBus>(options.Vhost));
+        return services;
     }
 
-    private static IServiceCollection AddCore(IServiceCollection services, Type busType, StreamBusOptions options)
+    private static IServiceCollection AddShared(IServiceCollection services, Type busType, StreamBusOptions options)
     {
         var store = GetOrCreateStore(services);
         store.Add(busType, options);
@@ -52,24 +68,19 @@ public static class ServiceCollectionExtensions
             new StreamBusRegistry(
                 store.ForVhost,
                 opts => new StreamBusConnectionSupervisor(opts, sp.GetRequiredService<IStreamSystemConnector>())));
-        if (busType == typeof(DefaultBus))
-        {
-            services.TryAddSingleton<IStreamBus>(sp => sp.GetRequiredService<IStreamBusRegistry>().GetOrCreateBus(options.Vhost));
-        }
-        else
-        {
-            var serviceType = typeof(IStreamBus<>).MakeGenericType(busType);
-            services.TryAddSingleton(serviceType, sp =>
-            {
-                var registry = sp.GetRequiredService<IStreamBusRegistry>();
-                var method = typeof(IStreamBusRegistry).GetMethods()
-                    .Single(m => m.IsGenericMethodDefinition && m.Name == nameof(IStreamBusRegistry.GetOrCreateBus));
-                return method.MakeGenericMethod(busType).Invoke(registry, new object[] { options.Vhost })!;
-            });
-        }
         services.TryAddSingleton<IHostedService, StreamBusHostedService>();
-        services.TryAddSingleton<IHealthCheck, StreamBusHealthCheck>();
+        services.TryAddSingleton<StreamBusHealthCheck>();
+        services.TryAddSingleton<IHealthCheck>(sp => sp.GetRequiredService<StreamBusHealthCheck>());
+        if (!services.Any(d => d.ServiceType == typeof(HealthCheckRegistrationMarker)))
+        {
+            services.AddSingleton(new HealthCheckRegistrationMarker());
+            services.AddHealthChecks().AddCheck<StreamBusHealthCheck>("streambus");
+        }
         return services;
+    }
+
+    private sealed class HealthCheckRegistrationMarker
+    {
     }
 
     private static StreamBusConfigStore GetOrCreateStore(IServiceCollection services)
@@ -143,6 +154,8 @@ public sealed class StreamBusHostedService : IHostedService
 {
     private readonly StreamBusConfigStore _store;
     private readonly IStreamBusRegistry _registry;
+    private readonly List<StreamBusConnectionSupervisor> _started = new();
+    private readonly object _gate = new();
 
     public StreamBusHostedService(StreamBusConfigStore store, IStreamBusRegistry registry)
     {
@@ -152,13 +165,13 @@ public sealed class StreamBusHostedService : IHostedService
 
     public async Task StartAsync(CancellationToken ct)
     {
-        var concrete = (StreamBusRegistry)_registry;
-        var supervisors = new List<(string Vhost, StreamBusConnectionSupervisor Supervisor)>();
+        var supervisors = new List<(string Vhost, TimeSpan? Timeout, StreamBusConnectionSupervisor Supervisor)>();
         foreach (var (busType, options) in _store.Registrations)
         {
-            var entry = concrete.GetOrCreate(busType, options.Vhost);
+            var entry = _registry.GetOrCreateEntry(busType, options.Vhost);
             await entry.Supervisor.StartAsync(ct).ConfigureAwait(false);
-            supervisors.Add((options.Vhost, entry.Supervisor));
+            lock (_gate) _started.Add(entry.Supervisor);
+            supervisors.Add((options.Vhost, options.Hosting.StartupTimeout, entry.Supervisor));
         }
         if (!_store.Registrations.Any(r => r.Options.Hosting.BlockStartupUntilReady)) return;
         var timeouts = _store.Registrations
@@ -167,15 +180,35 @@ public sealed class StreamBusHostedService : IHostedService
             .ToList();
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         if (timeouts.Count > 0) cts.CancelAfter(timeouts.Max());
-        foreach (var (_, supervisor) in supervisors.DistinctBy(s => s.Supervisor))
+        // One supervisor per bus+vhost today; no physical per-vhost sharing.
+        // Sharing a single StreamSystem per vhost is an explicit Phase 4 follow-up.
+        foreach (var (vhost, timeout, supervisor) in supervisors)
         {
-            var readiness = await supervisor.WaitUntilReadyAsync(ReadinessPolicy.Indefinitely, cts.Token).ConfigureAwait(false);
-            if (readiness == BusReadiness.Fatal)
-                throw new StreamBusFatalException("A StreamBus connection reported Fatal during startup.");
+            try
+            {
+                var readiness = await supervisor.WaitUntilReadyAsync(ReadinessPolicy.Indefinitely, cts.Token).ConfigureAwait(false);
+                if (readiness == BusReadiness.Fatal)
+                    throw new StreamBusFatalException("A StreamBus connection reported Fatal during startup.");
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                var effective = timeout ?? (timeouts.Count > 0 ? timeouts.Max() : (TimeSpan?)null);
+                throw new StreamBusTimeoutException($"Timed out waiting for StreamBus vhost '{vhost}' to become ready within {effective}.");
+            }
         }
     }
 
-    public Task StopAsync(CancellationToken ct) => Task.CompletedTask;
+    public async Task StopAsync(CancellationToken ct)
+    {
+        List<StreamBusConnectionSupervisor> copy;
+        lock (_gate)
+        {
+            copy = new List<StreamBusConnectionSupervisor>(_started);
+            _started.Clear();
+        }
+        foreach (var supervisor in copy)
+            await supervisor.DisposeAsync().ConfigureAwait(false);
+    }
 }
 
 public sealed class StreamBusHealthCheck : IHealthCheck
@@ -189,6 +222,8 @@ public sealed class StreamBusHealthCheck : IHealthCheck
         var data = rows.ToDictionary(
             r => $"{r.Vhost}|{r.BusType}",
             r => (object)r.State.ToString());
+        if (rows.Count == 0)
+            return Task.FromResult(HealthCheckResult.Degraded("no buses registered.", data: data));
         var worst = rows.Any(r => r.State == BusConnectionState.Fatal) ? BusConnectionState.Fatal
             : rows.Any(r => r.State != BusConnectionState.Ready) ? BusConnectionState.TransientFailure
             : BusConnectionState.Ready;

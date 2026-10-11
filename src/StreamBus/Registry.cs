@@ -7,6 +7,7 @@ public interface IStreamBusRegistry
     IStreamBus GetOrCreateBus(string vhost);
     IStreamBus<TBus> GetOrCreateBus<TBus>(string vhost);
     IEnumerable<(string Vhost, string BusType, BusConnectionState State)> DescribeStates();
+    internal BusEntry GetOrCreateEntry(Type busType, string vhost);
 }
 
 internal sealed class BusEntry
@@ -30,15 +31,18 @@ public sealed class StreamBusRegistry : IStreamBusRegistry
     }
 
     public IStreamBus GetOrCreateBus(string vhost)
-        => (IStreamBus)GetOrCreate(typeof(DefaultBus), vhost).Bus;
+        => (IStreamBus)GetOrCreateCore(typeof(DefaultBus), vhost).Bus;
 
     public IStreamBus<TBus> GetOrCreateBus<TBus>(string vhost)
-        => (IStreamBus<TBus>)GetOrCreate(typeof(TBus), vhost).Bus;
+        => (IStreamBus<TBus>)GetOrCreateCore(typeof(TBus), vhost).Bus;
 
     public IEnumerable<(string Vhost, string BusType, BusConnectionState State)> DescribeStates()
         => _entries.Select(kv => ParseKey(kv.Key, kv.Value.Bus.State));
 
-    internal BusEntry GetOrCreate(Type busType, string vhost)
+    BusEntry IStreamBusRegistry.GetOrCreateEntry(Type busType, string vhost)
+        => GetOrCreateCore(busType, vhost);
+
+    internal BusEntry GetOrCreateCore(Type busType, string vhost)
     {
         var key = $"{busType.FullName}@{vhost}";
         return _entries.GetOrAdd(key, _ =>

@@ -10,32 +10,48 @@ public sealed class BusCoreIntegrationTests
     private static string Password() => Environment.GetEnvironmentVariable("STREAMBUS_PASSWORD") ?? "password";
 
     [Fact]
-    public async Task One_bus_serves_many_vhosts_and_reports_ready()
+    public async Task Single_vhost_bus_becomes_ready()
     {
         var services = new ServiceCollection();
+        services.AddLogging();
         services.AddStreamBus("/", o => o.Credentials(User(), Password()));
-        var sp = services.BuildServiceProvider();
+        await using var sp = services.BuildServiceProvider();
         var bus = sp.GetRequiredService<IStreamBus>();
         var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
         await hosted.StartAsync(CancellationToken.None);
-        var readiness = await bus.WaitUntilReadyAsync(ReadinessPolicy.UpTo(TimeSpan.FromSeconds(30)), TestContext.Current.CancellationToken);
-        Assert.Equal(BusReadiness.Ready, readiness);
+        try
+        {
+            var readiness = await bus.WaitUntilReadyAsync(ReadinessPolicy.UpTo(TimeSpan.FromSeconds(30)), TestContext.Current.CancellationToken);
+            Assert.Equal(BusReadiness.Ready, readiness);
+        }
+        finally
+        {
+            await hosted.StopAsync(CancellationToken.None);
+        }
     }
 
     [Fact]
     public async Task Health_reports_per_vhost_bus_type_state()
     {
         var services = new ServiceCollection();
+        services.AddLogging();
         services.AddStreamBus("/", o => o.Credentials(User(), Password()));
-        var sp = services.BuildServiceProvider();
+        await using var sp = services.BuildServiceProvider();
         var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
         await hosted.StartAsync(CancellationToken.None);
-        var bus = sp.GetRequiredService<IStreamBus>();
-        Assert.Equal(BusReadiness.Ready, await bus.WaitUntilReadyAsync(ReadinessPolicy.UpTo(TimeSpan.FromSeconds(30)), TestContext.Current.CancellationToken));
-        var check = sp.GetServices<IHealthCheck>().OfType<StreamBusHealthCheck>().Single();
-        var result = await check.CheckHealthAsync(new HealthCheckContext(), CancellationToken.None);
-        Assert.Equal(HealthStatus.Healthy, result.Status);
-        Assert.Contains(result.Data.Keys, k => k.StartsWith("/|"));
+        try
+        {
+            var bus = sp.GetRequiredService<IStreamBus>();
+            Assert.Equal(BusReadiness.Ready, await bus.WaitUntilReadyAsync(ReadinessPolicy.UpTo(TimeSpan.FromSeconds(30)), TestContext.Current.CancellationToken));
+            var check = sp.GetServices<IHealthCheck>().OfType<StreamBusHealthCheck>().Single();
+            var result = await check.CheckHealthAsync(new HealthCheckContext(), CancellationToken.None);
+            Assert.Equal(HealthStatus.Healthy, result.Status);
+            Assert.Contains(result.Data.Keys, k => k.StartsWith("/|"));
+        }
+        finally
+        {
+            await hosted.StopAsync(CancellationToken.None);
+        }
     }
 
     [Fact]
