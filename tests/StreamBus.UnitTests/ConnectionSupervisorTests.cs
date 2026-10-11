@@ -10,6 +10,18 @@ file sealed class StubHandle : IStreamSystemHandle
         => throw new NotImplementedException("ConnectionSupervisorTests never publishes.");
     public Task<IStreamProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
         => throw new NotImplementedException("ConnectionSupervisorTests never publishes.");
+    public Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken ct)
+        => throw new NotImplementedException("ConnectionSupervisorTests never queries offsets.");
+    public Task StoreSystemOffsetAsync(string reference, string stream, ulong offset, CancellationToken ct)
+        => throw new NotImplementedException("ConnectionSupervisorTests never queries offsets.");
+    public Task<ulong> GetEndOffsetAsync(string stream, CancellationToken ct)
+        => throw new NotImplementedException("ConnectionSupervisorTests never queries offsets.");
+    public Task<bool> StreamExistsAsync(string stream, CancellationToken ct)
+        => throw new NotImplementedException("ConnectionSupervisorTests never queries offsets.");
+    public Task<bool> SuperStreamExistsAsync(string superStream, CancellationToken ct)
+        => throw new NotImplementedException("ConnectionSupervisorTests never queries offsets.");
+    public Task<string[]> QueryPartitionAsync(string superStream, CancellationToken ct)
+        => throw new NotImplementedException("ConnectionSupervisorTests never queries offsets.");
 }
 
 file sealed class ScriptedConnector : IStreamSystemConnector

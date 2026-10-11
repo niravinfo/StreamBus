@@ -8,6 +8,12 @@ public interface IStreamSystemHandle : IAsyncDisposable
     bool IsClosed { get; }
     Task<IStreamProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct);
     Task<IStreamProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct);
+    Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken ct);
+    Task StoreSystemOffsetAsync(string reference, string stream, ulong offset, CancellationToken ct);
+    Task<ulong> GetEndOffsetAsync(string stream, CancellationToken ct);
+    Task<bool> StreamExistsAsync(string stream, CancellationToken ct);
+    Task<bool> SuperStreamExistsAsync(string superStream, CancellationToken ct);
+    Task<string[]> QueryPartitionAsync(string superStream, CancellationToken ct);
 }
 
 public interface IStreamSystemConnector
@@ -49,6 +55,45 @@ public sealed class StreamSystemHandle : IStreamSystemHandle
     }
 
     public ValueTask DisposeAsync() => _system.DisposeAsync();
+
+    public async Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        return await _system.TryQueryOffset(reference, stream).ConfigureAwait(false);
+    }
+
+    public async Task StoreSystemOffsetAsync(string reference, string stream, ulong offset, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        await _system.StoreOffset(reference, stream, offset).ConfigureAwait(false);
+    }
+
+    public async Task<ulong> GetEndOffsetAsync(string stream, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var stats = await _system.StreamStats(stream).ConfigureAwait(false);
+#pragma warning disable CS0618 // Task 1 probe pins the end offset to LastOffset(); CommittedChunkId() is a different semantic.
+        return stats.LastOffset();
+#pragma warning restore CS0618
+    }
+
+    public async Task<bool> StreamExistsAsync(string stream, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        return await _system.StreamExists(stream).ConfigureAwait(false);
+    }
+
+    public async Task<bool> SuperStreamExistsAsync(string superStream, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        return await _system.SuperStreamExists(superStream).ConfigureAwait(false);
+    }
+
+    public async Task<string[]> QueryPartitionAsync(string superStream, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        return await _system.QueryPartition(superStream).ConfigureAwait(false);
+    }
 }
 
 public sealed class StreamSystemConnector : IStreamSystemConnector
