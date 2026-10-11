@@ -28,7 +28,8 @@ internal sealed class StreamProducerRegistry
             throw new StreamBusFatalException($"StreamBus for vhost '{_vhost}' is in Fatal state; publish to '{stream}' refused.");
         if (readiness != BusReadiness.Ready)
             throw new StreamBusNotReadyException($"StreamBus for vhost '{_vhost}' is not ready ({readiness}); publish to '{stream}' refused.");
-        var handle = await GetOrCreateAsync(stream, options.IsSuperStream, ct).ConfigureAwait(false);
+        var (entry, handle) = await GetOrCreateAsync(stream, options.IsSuperStream, ct).ConfigureAwait(false);
+        var key = Key(stream, options.IsSuperStream);
         using var timeoutCts = new CancellationTokenSource(options.Timeout);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
         try
@@ -37,7 +38,7 @@ internal sealed class StreamProducerRegistry
         }
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !ct.IsCancellationRequested)
         {
-            Invalidate(stream, options.IsSuperStream);
+            await InvalidateAsync(key, entry, handle).ConfigureAwait(false);
             throw new StreamBusTimeoutException($"Publish to stream '{stream}' was not confirmed within {options.Timeout} (outcome unknown).");
         }
         catch (StreamBusPublishException)
@@ -50,30 +51,49 @@ internal sealed class StreamProducerRegistry
         }
         catch (Exception ex) when (!IsCallerCancel(ex, ct))
         {
-            Invalidate(stream, options.IsSuperStream);
+            await InvalidateAsync(key, entry, handle).ConfigureAwait(false);
             throw new StreamBusPublishTransientException($"Publish to stream '{stream}' failed transiently; the cached producer was discarded.", ex);
         }
     }
 
+    // A non-cancellation failure racing caller cancellation is wrapped as transient
+    // (indistinguishable coincidence case; accepted behavior).
     private static bool IsCallerCancel(Exception ex, CancellationToken ct)
         => ex is OperationCanceledException && ct.IsCancellationRequested;
 
     private static string Key(string stream, bool super) => super ? $"super:{stream}" : $"plain:{stream}";
 
-    private void Invalidate(string stream, bool super)
-        => _handles.TryRemove(Key(stream, super), out _);
-
-    private async Task<IStreamProducerHandle> GetOrCreateAsync(string stream, bool super, CancellationToken ct)
+    private async Task InvalidateAsync(string key, Task<IStreamProducerHandle> expected, IStreamProducerHandle handleToDispose)
     {
-        var key = Key(stream, super);
-        var task = _handles.GetOrAdd(key, _ => CreateAsync(stream, super, ct));
+        var removed = ((ICollection<KeyValuePair<string, Task<IStreamProducerHandle>>>)_handles)
+            .Remove(new KeyValuePair<string, Task<IStreamProducerHandle>>(key, expected));
+        if (!removed)
+            return;
         try
         {
-            return await task.ConfigureAwait(false);
+            await handleToDispose.DisposeAsync().ConfigureAwait(false);
         }
         catch
         {
-            ((ICollection<KeyValuePair<string, Task<IStreamProducerHandle>>>)_handles).Remove(new KeyValuePair<string, Task<IStreamProducerHandle>>(key, task));
+        }
+    }
+
+    private async Task<(Task<IStreamProducerHandle> Entry, IStreamProducerHandle Handle)> GetOrCreateAsync(string stream, bool super, CancellationToken ct)
+    {
+        var key = Key(stream, super);
+        // The factory must not capture the first caller's ct: a caller cancelling must not
+        // abort producer creation for concurrent or future waiters. Client creates are
+        // RpcTimeOut-bounded so nothing hangs; each waiter observes its own cancellation below.
+        var task = _handles.GetOrAdd(key, _ => CreateAsync(stream, super, CancellationToken.None));
+        try
+        {
+            var handle = await task.WaitAsync(ct).ConfigureAwait(false);
+            return (task, handle);
+        }
+        catch
+        {
+            if (task.IsFaulted || task.IsCanceled)
+                ((ICollection<KeyValuePair<string, Task<IStreamProducerHandle>>>)_handles).Remove(new KeyValuePair<string, Task<IStreamProducerHandle>>(key, task));
             throw;
         }
     }

@@ -66,6 +66,30 @@ public sealed class HostingTests
     };
 
     [Fact]
+    public void Same_vhost_different_password_throws_naming_vhost()
+    {
+        var services = new ServiceCollection();
+        services.AddStreamBus("/", o => o.Credentials("app", "secret"));
+        var ex = Assert.Throws<StreamBusConfigurationException>(() =>
+            services.AddStreamBus<OrdersBus>("/", o => o.Credentials("app", "other-secret")));
+        Assert.Contains("/", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Same_vhost_different_startup_timeout_only_is_allowed()
+    {
+        var services = new ServiceCollection();
+        services.AddStreamBus("/", o => o.Credentials("app", "secret"));
+        services.AddStreamBus<OrdersBus>("/", o =>
+        {
+            o.Credentials("app", "secret");
+            o.Hosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(5)));
+        });
+        var sp = services.BuildServiceProvider();
+        Assert.Equal("secret", sp.GetRequiredService<StreamBusConfigStore>().ForVhost("/").Password);
+    }
+
+    [Fact]
     public void Duplicate_default_registration_fails()
     {
         var services = new ServiceCollection();

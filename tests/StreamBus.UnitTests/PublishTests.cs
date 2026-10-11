@@ -128,6 +128,100 @@ public sealed class PublishTests
     }
 
     [Fact]
+    public async Task Timeout_then_republish_creates_new_producer()
+    {
+        var system = new StubSystemHandle();
+        system.OnCreatePlain = (_, _) => system.PlainCreations == 1
+            ? Task.FromResult<IStreamProducerHandle>(
+                new StubProducerHandle(async (_, _, ct) => { await Task.Delay(60_000, ct); }))
+            : Task.FromResult<IStreamProducerHandle>(new StubProducerHandle());
+        var options = new StreamBusOptions { Vhost = "/", UserName = "app", Password = "secret" };
+        var supervisor = new StreamBusConnectionSupervisor(options, new ReadyConnector(system));
+        await supervisor.StartAsync(CancellationToken.None);
+        var reg = new StreamProducerRegistry(supervisor, "/");
+        await Assert.ThrowsAsync<StreamBusTimeoutException>(() =>
+            reg.PublishAsync("orders", new byte[] { 1 }, new PublishOptions { Timeout = TimeSpan.FromMilliseconds(200) }, TestContext.Current.CancellationToken));
+        await reg.PublishAsync("orders", new byte[] { 2 }, new PublishOptions(), TestContext.Current.CancellationToken);
+        Assert.Equal(2, system.PlainCreations);
+    }
+
+    [Fact]
+    public async Task Failed_confirm_does_not_invalidate_producer()
+    {
+        var (registry, system) = CreateRegistry();
+        system.OnCreatePlain = (_, _) => Task.FromResult<IStreamProducerHandle>(
+            new StubProducerHandle((_, _, _) => throw new StreamBusPublishException("Publish to stream 'orders' was not confirmed (status InternalError).")));
+        await Assert.ThrowsAsync<StreamBusPublishException>(() =>
+            registry.PublishAsync("orders", new byte[] { 1 }, new PublishOptions(), TestContext.Current.CancellationToken));
+        await Assert.ThrowsAsync<StreamBusPublishException>(() =>
+            registry.PublishAsync("orders", new byte[] { 2 }, new PublishOptions(), TestContext.Current.CancellationToken));
+        Assert.Equal(1, system.PlainCreations);
+    }
+
+    [Fact]
+    public async Task Cancelled_waiter_does_not_evict_healthy_producer()
+    {
+        var system = new StubSystemHandle
+        {
+            OnCreatePlain = (_, _) => Task.FromResult<IStreamProducerHandle>(
+                new StubProducerHandle((_, _, ct) =>
+                {
+                    ct.ThrowIfCancellationRequested();
+                    return Task.CompletedTask;
+                })),
+        };
+        var options = new StreamBusOptions { Vhost = "/", UserName = "app", Password = "secret" };
+        var supervisor = new StreamBusConnectionSupervisor(options, new ReadyConnector(system));
+        await supervisor.StartAsync(CancellationToken.None);
+        var readiness = await supervisor.WaitUntilReadyAsync(ReadinessPolicy.Indefinitely, new CancellationTokenSource(TimeSpan.FromSeconds(5)).Token);
+        Assert.Equal(BusReadiness.Ready, readiness);
+        var registry = new StreamProducerRegistry(supervisor, "/");
+        await registry.PublishAsync("orders", new byte[] { 1 }, new PublishOptions(), TestContext.Current.CancellationToken);
+        Assert.Equal(1, system.PlainCreations);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            registry.PublishAsync("orders", new byte[] { 2 }, new PublishOptions(), new CancellationToken(true)));
+        await registry.PublishAsync("orders", new byte[] { 3 }, new PublishOptions(), TestContext.Current.CancellationToken);
+        Assert.Equal(1, system.PlainCreations);
+    }
+
+    private static StreamProducerRegistry CreateUnstartedRegistry()
+    {
+        var system = new StubSystemHandle();
+        var options = new StreamBusOptions { Vhost = "/", UserName = "app", Password = "secret" };
+        var supervisor = new StreamBusConnectionSupervisor(options, new ReadyConnector(system));
+        return new StreamProducerRegistry(supervisor, "/");
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public async Task Non_positive_timeout_throws_before_broker_contact(int milliseconds)
+    {
+        var registry = CreateUnstartedRegistry();
+        await Assert.ThrowsAsync<StreamBusConfigurationException>(() =>
+            registry.PublishAsync("orders", new byte[] { 1 }, new PublishOptions { Timeout = TimeSpan.FromMilliseconds(milliseconds) }, TestContext.Current.CancellationToken));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task Null_or_empty_stream_throws_before_broker_contact(string? stream)
+    {
+        var registry = CreateUnstartedRegistry();
+        await Assert.ThrowsAnyAsync<ArgumentException>(() =>
+            registry.PublishAsync(stream!, new byte[] { 1 }, new PublishOptions(), TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task Null_options_throws_before_broker_contact()
+    {
+        var registry = CreateUnstartedRegistry();
+        await Assert.ThrowsAsync<ArgumentNullException>(() =>
+            registry.PublishAsync("orders", new byte[] { 1 }, null!, TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
     public async Task Super_publish_requires_routing_key()
     {
         var (registry, _) = CreateRegistry();

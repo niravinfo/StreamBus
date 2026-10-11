@@ -17,9 +17,19 @@ public sealed class StreamBusConfigStore
         ArgumentNullException.ThrowIfNull(options);
         if (!_busTypes.Add(busType))
             throw new StreamBusConfigurationException($"Duplicate StreamBus registration for {busType.FullName}. The non-generic overload may be used at most once per service and each marker TBus at most once.");
+        if (_byVhost.TryGetValue(options.Vhost, out var existing) && !SameConnection(existing, options))
+            throw new StreamBusConfigurationException($"Conflicting StreamBus connection options for vhost '{options.Vhost}'. Registrations sharing a vhost must agree on connection identity (user, password, host, port, connection pool); first registration wins.");
         _byVhost.TryAdd(options.Vhost, options);
         _registrations.Add((busType, options));
     }
+
+    private static bool SameConnection(StreamBusOptions a, StreamBusOptions b)
+        => a.Vhost == b.Vhost
+            && a.UserName == b.UserName
+            && a.Password == b.Password
+            && a.Host == b.Host
+            && a.Port == b.Port
+            && a.Connection == b.Connection;
 
     public StreamBusOptions ForVhost(string vhost)
     {
