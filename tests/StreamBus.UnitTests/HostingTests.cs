@@ -15,6 +15,10 @@ public sealed class HostingTests
     {
         public bool IsClosed => false;
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        public Task<IStreamProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct)
+            => throw new NotImplementedException("HostingTests never publishes.");
+        public Task<IStreamProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
+            => throw new NotImplementedException("HostingTests never publishes.");
     }
 
     private sealed class CountingHandle : IStreamSystemHandle
@@ -26,6 +30,10 @@ public sealed class HostingTests
             Interlocked.Increment(ref DisposedCount);
             return ValueTask.CompletedTask;
         }
+        public Task<IStreamProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct)
+            => throw new NotImplementedException("HostingTests never publishes.");
+        public Task<IStreamProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
+            => throw new NotImplementedException("HostingTests never publishes.");
     }
 
     private sealed class SuccessConnector : IStreamSystemConnector
