@@ -14,6 +14,11 @@ public sealed class StreamBusConnectionSupervisor : IAsyncDisposable
     public BusConnectionState State { get; private set; } = BusConnectionState.Starting;
     public event Action<BusConnectionState>? StateChanged;
 
+    internal IStreamSystemHandle? CurrentHandle
+    {
+        get { lock (_gate) return State == BusConnectionState.Ready ? _handle : null; }
+    }
+
     public StreamBusConnectionSupervisor(StreamBusOptions options, IStreamSystemConnector connector)
     {
         _options = options;
