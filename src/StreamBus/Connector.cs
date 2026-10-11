@@ -26,6 +26,12 @@ public sealed class StreamSystemConnector : IStreamSystemConnector
     public async Task<IStreamSystemHandle> ConnectAsync(StreamBusOptions options, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(options);
+        if (options.Connection.ProducersPerConnection > byte.MaxValue)
+            throw new StreamBusConfigurationException(
+                $"ProducersPerConnection must be <= {byte.MaxValue} (client pool limit).");
+        if (options.Connection.ConsumersPerConnection > byte.MaxValue)
+            throw new StreamBusConfigurationException(
+                $"ConsumersPerConnection must be <= {byte.MaxValue} (client pool limit).");
         EndPoint endpoint = IPAddress.TryParse(options.Host, out var address)
             ? new IPEndPoint(address, options.Port)
             : new DnsEndPoint(options.Host, options.Port);

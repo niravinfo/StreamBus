@@ -102,3 +102,32 @@ public sealed class ConnectionSupervisorTests
             Assert.True(sup.ComputeDelay(attempt) <= TimeSpan.FromSeconds(31));
     }
 }
+
+public sealed class StreamSystemConnectorTests
+{
+    private static StreamBusOptions WithPool(int producers, int consumers) => new()
+    {
+        Vhost = "/",
+        UserName = "app",
+        Password = "secret",
+        Connection = new StreamBusConnectionOptions
+        {
+            ProducersPerConnection = producers,
+            ConsumersPerConnection = consumers,
+        },
+    };
+
+    [Theory]
+    [InlineData(256, 1)]
+    [InlineData(300, 1)]
+    [InlineData(1, 256)]
+    [InlineData(1, 1000)]
+    public async Task Out_of_range_pool_values_fail_fast_without_connecting(int producers, int consumers)
+    {
+        var connector = new StreamSystemConnector();
+        var ex = await Assert.ThrowsAsync<StreamBusConfigurationException>(() =>
+            connector.ConnectAsync(WithPool(producers, consumers), TestContext.Current.CancellationToken));
+        Assert.Contains("255", ex.Message, StringComparison.Ordinal);
+        Assert.Contains(producers > byte.MaxValue ? "ProducersPerConnection" : "ConsumersPerConnection", ex.Message, StringComparison.Ordinal);
+    }
+}
