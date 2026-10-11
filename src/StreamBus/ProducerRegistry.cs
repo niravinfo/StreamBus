@@ -15,7 +15,7 @@ internal sealed class StreamProducerRegistry
         _vhost = vhost;
     }
 
-    public async Task PublishAsync(string stream, ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct)
+    public async Task PublishAsync(string stream, ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(stream);
         ArgumentNullException.ThrowIfNull(options);
@@ -39,6 +39,10 @@ internal sealed class StreamProducerRegistry
         {
             Invalidate(stream, options.IsSuperStream);
             throw new StreamBusTimeoutException($"Publish to stream '{stream}' was not confirmed within {options.Timeout} (outcome unknown).");
+        }
+        catch (StreamBusPublishException)
+        {
+            throw;
         }
         catch (Exception ex) when (!IsCallerCancel(ex, ct) && StreamBusErrorClassification.IsFatal(ex))
         {
