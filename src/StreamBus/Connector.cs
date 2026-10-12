@@ -1,4 +1,5 @@
 using System.Net;
+using Microsoft.Extensions.Logging.Abstractions;
 using RabbitMQ.Stream.Client;
 
 namespace StreamBus;
@@ -8,6 +9,7 @@ public interface IStreamSystemHandle : IAsyncDisposable
     bool IsClosed { get; }
     Task<IStreamProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct);
     Task<IStreamProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct);
+    Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct);
     Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken ct);
     Task StoreSystemOffsetAsync(string reference, string stream, ulong offset, CancellationToken ct);
     Task<ulong> GetEndOffsetAsync(string stream, CancellationToken ct);
@@ -52,6 +54,18 @@ public sealed class StreamSystemHandle : IStreamSystemHandle
             ConfirmHandler = confirmation => confirmations.Complete(confirmation.Item2),
         }).ConfigureAwait(false);
         return new SuperStreamProducerHandle(producer, stream, confirmations);
+    }
+
+    public async Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+        ct.ThrowIfCancellationRequested();
+        // StreamSystem.CreateRawConsumer surfaces IConsumer; the client constructs a
+        // RawConsumer for plain-consumer configs, which the partition loop needs for
+        // StoreOffset/Close. The cast lives here (single place), not in the loop.
+        var consumer = await _system.CreateRawConsumer(config, NullLogger.Instance).ConfigureAwait(false);
+        ct.ThrowIfCancellationRequested();
+        return (RawConsumer)consumer;
     }
 
     public ValueTask DisposeAsync() => _system.DisposeAsync();

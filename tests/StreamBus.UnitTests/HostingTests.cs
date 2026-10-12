@@ -31,6 +31,8 @@ public sealed class HostingTests
             => throw new NotImplementedException("HostingTests never queries offsets.");
         public Task<string[]> QueryPartitionAsync(string superStream, CancellationToken ct)
             => throw new NotImplementedException("HostingTests never queries offsets.");
+        public Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct)
+            => throw new NotImplementedException("HostingTests never consumes.");
     }
 
     private sealed class CountingHandle : IStreamSystemHandle
@@ -58,6 +60,8 @@ public sealed class HostingTests
             => throw new NotImplementedException("HostingTests never queries offsets.");
         public Task<string[]> QueryPartitionAsync(string superStream, CancellationToken ct)
             => throw new NotImplementedException("HostingTests never queries offsets.");
+        public Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct)
+            => throw new NotImplementedException("HostingTests never consumes.");
     }
 
     private sealed class SuccessConnector : IStreamSystemConnector

@@ -22,6 +22,8 @@ file sealed class StubHandle : IStreamSystemHandle
         => throw new NotImplementedException("ConnectionSupervisorTests never queries offsets.");
     public Task<string[]> QueryPartitionAsync(string superStream, CancellationToken ct)
         => throw new NotImplementedException("ConnectionSupervisorTests never queries offsets.");
+    public Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct)
+        => throw new NotImplementedException("ConnectionSupervisorTests never consumes.");
 }
 
 file sealed class ScriptedConnector : IStreamSystemConnector

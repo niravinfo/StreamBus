@@ -45,6 +45,8 @@ sealed class StubSystemHandle : IStreamSystemHandle
         => throw new NotImplementedException("PublishTests never queries offsets.");
     public Task<string[]> QueryPartitionAsync(string superStream, CancellationToken ct)
         => throw new NotImplementedException("PublishTests never queries offsets.");
+    public Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct)
+        => throw new NotImplementedException("PublishTests never consumes.");
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }
 
