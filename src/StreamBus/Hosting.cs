@@ -74,7 +74,7 @@ public static class ServiceCollectionExtensions
     {
         var store = GetOrCreateStore(services);
         store.Add(busType, options);
-        services.TryAddSingleton<IStreamSystemConnector, StreamSystemConnector>();
+        services.TryAddSingleton<IStreamSystemConnector>(sp => new StreamSystemConnector(sp.GetService<ILoggerFactory>()));
         services.TryAddSingleton<IStreamBusRegistry>(sp =>
             new StreamBusRegistry(
                 store.ForVhost,

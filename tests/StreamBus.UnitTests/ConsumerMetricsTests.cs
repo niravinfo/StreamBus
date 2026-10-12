@@ -38,19 +38,14 @@ public sealed class ConsumerMetricsTests : IDisposable
     }
 
     [Fact]
-    public async Task Lag_poller_computes_end_minus_stored()
+    public void Lag_observes_delivered_minus_stored()
     {
-        var state = new PartitionState();
-        var poller = new PartitionLagPoller(state, () => Task.FromResult(10UL), () => 4UL, TimeSpan.FromMilliseconds(50));
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-        var run = poller.RunAsync(cts.Token);
-        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
-        while (state.Lag != 6 && DateTime.UtcNow < deadline)
-            await Task.Delay(20, TestContext.Current.CancellationToken);
-        await cts.CancelAsync();
-        try { await run; } catch (OperationCanceledException) { }
-        await poller.DisposeAsync();
-        Assert.Equal(6, state.Lag);
+        var state = new PartitionState { LastDelivered = 9, LastStored = 4 };
+        using (StreamBusMetrics.Shared.TrackPartition("vh", "b", "lag-s", 2, "r", state))
+        {
+            _listener.RecordObservableInstruments();
+            Assert.Contains(_measurements, m => m.Instrument == "streambus_partition_lag" && m.Value == 5);
+        }
     }
 
     [Fact]

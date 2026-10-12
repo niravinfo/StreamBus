@@ -192,7 +192,6 @@ public sealed class ConsumeValidationTests
         public Task<IStreamProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct) => throw new NotImplementedException();
         public Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken ct) => Task.FromResult<ulong?>(null);
         public Task StoreSystemOffsetAsync(string reference, string stream, ulong offset, CancellationToken ct) => Task.CompletedTask;
-        public Task<ulong> GetEndOffsetAsync(string stream, CancellationToken ct) => Task.FromResult(0UL);
         public Task<bool> StreamExistsAsync(string stream, CancellationToken ct) => Task.FromResult(Exists);
         public Task<bool> SuperStreamExistsAsync(string superStream, CancellationToken ct) => Task.FromResult(SuperExists);
         public Task<string[]> QueryPartitionAsync(string superStream, CancellationToken ct) => Task.FromResult(new[] { superStream + "-0" });

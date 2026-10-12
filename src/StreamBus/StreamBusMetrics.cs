@@ -7,10 +7,11 @@ namespace StreamBus;
 internal sealed class PartitionState
 {
     public long Inflight;
-    public long LastDelivered;
-    public long LastStored;
+    // -1 = nothing delivered/stored yet, so an untouched consumer observes lag 0
+    // (Max(0, -1 - -1)), offset 0 delivered observes 1, offset 0 stored observes 0.
+    public long LastDelivered = -1;
+    public long LastStored = -1;
     public long RetryBlocked;
-    public long Lag;
 }
 
 internal sealed class StreamBusMetrics
@@ -23,8 +24,10 @@ internal sealed class StreamBusMetrics
 
     private StreamBusMetrics()
     {
+        // Consumer-held unprocessed backlog (delivered but not yet stored), computed
+        // live — not the broker-total backlog (no usable end-offset source on this broker).
         _ = _meter.CreateObservableUpDownCounter("streambus_partition_lag",
-            () => ObservePartitions(s => s.Lag));
+            () => ObservePartitions(s => Math.Max(0, s.LastDelivered - s.LastStored)));
         _ = _meter.CreateObservableUpDownCounter("streambus_partition_inflight",
             () => ObservePartitions(s => s.Inflight));
         _ = _meter.CreateObservableUpDownCounter("streambus_partition_retry_blocked",

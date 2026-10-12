@@ -89,6 +89,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
     private readonly SemaphoreSlim _storeGate = new(1, 1);
     private readonly object _life = new();
     private readonly CancellationTokenSource _loopCts = new();
+    private readonly TaskCompletionSource _firstAttach = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private RawConsumer? _current;
     private PeriodicTimer? _timer;
     private Task? _inflight;
@@ -148,9 +149,15 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
             });
     }
 
-    // Task 4's lag poller input: the newest successfully handled offset (cadence may
-    // not have stored it yet; PartitionState.LastStored tracks the stored one).
+    // The newest successfully handled offset (cadence may not have stored it yet;
+    // PartitionState.LastStored tracks the stored one).
     internal ulong LastSuccess => _storer.LastSuccess;
+
+    // Completes when the broker confirms the first subscription. ConsumeAsync
+    // awaits this so the attach point is fixed before the call returns: publishes
+    // issued after ConsumeAsync returns are deterministically post-attach (an
+    // AlwaysNext tail can never miss them to a subscribe race).
+    internal Task FirstAttachAsync => _firstAttach.Task;
 
     public async Task RunAsync(CancellationToken ct)
     {
@@ -173,11 +180,22 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                     branch => _metrics.RecordFallback(_vhost, _bus, _stream, _partitionIndex, _reference, branch)).ConfigureAwait(false);
 
                 var attach = new AttachState { LoopToken = loopCt };
+                // SAC+Next subscriptions receive nothing on this broker (tail attach
+                // cannot join an SAC group), so Next-resolved consumers attach
+                // non-exclusively. Promotion-time Next on an SAC-created consumer
+                // remains a documented residual corner.
+                var singleActive = _options.SingleActiveConsumer && resolved is not OffsetTypeNext;
+                if (_options.SingleActiveConsumer && !singleActive)
+                {
+                    _logger.LogInformation(
+                        "SAC disabled for stream {Stream} partition {Partition}: Next-resolved consumers cannot join an SAC group (tail attach receives nothing under SAC on this broker).",
+                        _stream, _partitionIndex);
+                }
                 var config = new RawConsumerConfig(_partitionStream)
                 {
                     Reference = _reference,
                     OffsetSpec = resolved,
-                    IsSingleActiveConsumer = _options.SingleActiveConsumer,
+                    IsSingleActiveConsumer = singleActive,
                     ConsumerUpdateListener = OnPromotedAsync,
                     MessageHandler = (c, context, message) =>
                     {
@@ -191,6 +209,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                 };
 
                 consumer = await _system.CreateRawConsumerAsync(config, loopCt).ConfigureAwait(false);
+                _firstAttach.TrySetResult();
                 lock (_life)
                 {
                     _current = consumer;
@@ -264,6 +283,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
             catch (OperationCanceledException) when (loopCt.IsCancellationRequested)
             {
                 await CloseQuietlyAsync(consumer).ConfigureAwait(false);
+                _firstAttach.TrySetCanceled(loopCt);
                 return;
             }
             catch (Exception ex)
@@ -463,7 +483,13 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
             }
             try
             {
+                _logger.LogDebug(
+                    "Storing offset {Offset} for stream {Stream} partition {Partition} reference {Reference}.",
+                    offset, _stream, _partitionIndex, _reference);
                 await consumer.StoreOffset(offset).ConfigureAwait(false);
+                _logger.LogDebug(
+                    "Stored offset {Offset} for stream {Stream} partition {Partition} reference {Reference}.",
+                    offset, _stream, _partitionIndex, _reference);
             }
             catch (Exception ex)
             {

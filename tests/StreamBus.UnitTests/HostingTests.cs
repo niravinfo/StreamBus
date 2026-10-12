@@ -23,8 +23,6 @@ public sealed class HostingTests
             => throw new NotImplementedException("HostingTests never queries offsets.");
         public Task StoreSystemOffsetAsync(string reference, string stream, ulong offset, CancellationToken ct)
             => throw new NotImplementedException("HostingTests never queries offsets.");
-        public Task<ulong> GetEndOffsetAsync(string stream, CancellationToken ct)
-            => throw new NotImplementedException("HostingTests never queries offsets.");
         public Task<bool> StreamExistsAsync(string stream, CancellationToken ct)
             => throw new NotImplementedException("HostingTests never queries offsets.");
         public Task<bool> SuperStreamExistsAsync(string superStream, CancellationToken ct)
@@ -51,8 +49,6 @@ public sealed class HostingTests
         public Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken ct)
             => throw new NotImplementedException("HostingTests never queries offsets.");
         public Task StoreSystemOffsetAsync(string reference, string stream, ulong offset, CancellationToken ct)
-            => throw new NotImplementedException("HostingTests never queries offsets.");
-        public Task<ulong> GetEndOffsetAsync(string stream, CancellationToken ct)
             => throw new NotImplementedException("HostingTests never queries offsets.");
         public Task<bool> StreamExistsAsync(string stream, CancellationToken ct)
             => throw new NotImplementedException("HostingTests never queries offsets.");

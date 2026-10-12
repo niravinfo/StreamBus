@@ -12,7 +12,6 @@ public interface IStreamConsumer : IAsyncDisposable
 internal sealed class StreamConsumerRegistration : IStreamConsumer
 {
     private readonly List<(StreamPartitionConsumer Loop, Task RunTask)> _loops;
-    private readonly List<(PartitionLagPoller Poller, Task PollTask)> _pollers;
     private readonly List<IDisposable> _scopes;
     private readonly CancellationTokenSource _family;
     private readonly Action<StreamConsumerRegistration> _deregister;
@@ -22,7 +21,6 @@ internal sealed class StreamConsumerRegistration : IStreamConsumer
         string stream,
         string reference,
         List<(StreamPartitionConsumer Loop, Task RunTask)> loops,
-        List<(PartitionLagPoller Poller, Task PollTask)> pollers,
         List<IDisposable> scopes,
         CancellationTokenSource family,
         Action<StreamConsumerRegistration> deregister)
@@ -30,7 +28,6 @@ internal sealed class StreamConsumerRegistration : IStreamConsumer
         Stream = stream;
         Reference = reference;
         _loops = loops;
-        _pollers = pollers;
         _scopes = scopes;
         _family = family;
         _deregister = deregister;
@@ -48,18 +45,13 @@ internal sealed class StreamConsumerRegistration : IStreamConsumer
         _family.Cancel();
         try
         {
-            await Task.WhenAll(
-                _loops.Select(l => l.RunTask).Concat(_pollers.Select(p => p.PollTask))).ConfigureAwait(false);
+            await Task.WhenAll(_loops.Select(l => l.RunTask)).ConfigureAwait(false);
         }
         finally
         {
             foreach (var (loop, _) in _loops)
             {
                 await loop.DisposeAsync().ConfigureAwait(false);
-            }
-            foreach (var (poller, _) in _pollers)
-            {
-                await poller.DisposeAsync().ConfigureAwait(false);
             }
             foreach (var scope in _scopes)
             {
@@ -73,8 +65,6 @@ internal sealed class StreamConsumerRegistration : IStreamConsumer
 
 internal sealed class StreamConsumerRegistry
 {
-    private static readonly TimeSpan LagPollInterval = TimeSpan.FromSeconds(15);
-
     private readonly StreamBusConnectionSupervisor _supervisor;
     private readonly string _vhost;
     private readonly ILoggerFactory _loggerFactory;
@@ -174,7 +164,6 @@ internal sealed class StreamConsumerRegistry
         var busName = busType.FullName ?? busType.Name;
         var family = new CancellationTokenSource();
         var loops = new List<(StreamPartitionConsumer Loop, Task RunTask)>(partitionStreams.Length);
-        var pollers = new List<(PartitionLagPoller Poller, Task PollTask)>(partitionStreams.Length);
         var scopes = new List<IDisposable>(partitionStreams.Length);
         try
         {
@@ -188,22 +177,18 @@ internal sealed class StreamConsumerRegistry
                     _guard, state, StreamBusMetrics.Shared, _vhost, busName,
                     _loggerFactory.CreateLogger<StreamPartitionConsumer>());
                 loops.Add((loop, loop.RunAsync(family.Token)));
-                var endStream = partitionStream;
-                var poller = new PartitionLagPoller(
-                    state,
-                    () => handle.GetEndOffsetAsync(endStream, CancellationToken.None),
-                    () => loop.LastSuccess,
-                    LagPollInterval);
-                pollers.Add((poller, poller.RunAsync(family.Token)));
             }
+            // The attach point is fixed before ConsumeAsync returns: wait for every
+            // partition's first broker subscription (caller-cancellable; the shared
+            // teardown below runs on cancellation or failure).
+            await Task.WhenAll(loops.Select(l => l.Loop.FirstAttachAsync)).WaitAsync(ct).ConfigureAwait(false);
         }
         catch
         {
             family.Cancel();
             try
             {
-                await Task.WhenAll(
-                    loops.Select(l => l.RunTask).Concat(pollers.Select(p => p.PollTask))).ConfigureAwait(false);
+                await Task.WhenAll(loops.Select(l => l.RunTask)).ConfigureAwait(false);
             }
             catch (Exception)
             {
@@ -213,10 +198,6 @@ internal sealed class StreamConsumerRegistry
             {
                 await loop.DisposeAsync().ConfigureAwait(false);
             }
-            foreach (var (poller, _) in pollers)
-            {
-                await poller.DisposeAsync().ConfigureAwait(false);
-            }
             foreach (var scope in scopes)
             {
                 scope.Dispose();
@@ -225,7 +206,7 @@ internal sealed class StreamConsumerRegistry
             throw;
         }
 
-        var registration = new StreamConsumerRegistration(stream, reference, loops, pollers, scopes, family, Remove);
+        var registration = new StreamConsumerRegistration(stream, reference, loops, scopes, family, Remove);
         lock (_gate)
         {
             _live.Add(registration);
