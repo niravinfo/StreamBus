@@ -6,6 +6,9 @@ public interface IStreamBus
     BusConnectionState State { get; }
     Task<BusReadiness> WaitUntilReadyAsync(ReadinessPolicy policy, CancellationToken ct = default);
     Task PublishAsync(string stream, ReadOnlyMemory<byte> body, PublishOptions? options = null, CancellationToken ct = default);
+    Task<IStreamConsumer> ConsumeAsync(string stream, ConsumeOptions options, Func<ConsumeContext, Task> handler, CancellationToken ct = default);
+    Task<ulong?> GetConsumerOffsetAsync(string stream, string reference, int partition, CancellationToken ct = default);
+    Task SetConsumerOffsetAsync(string stream, string reference, int partition, ulong offset, CancellationToken ct = default);
 }
 
 public interface IStreamBus<TBus> : IStreamBus
@@ -18,11 +21,13 @@ internal sealed class StreamBus : IStreamBus
 {
     private readonly StreamBusConnectionSupervisor _supervisor;
     private readonly StreamProducerRegistry _producers;
-    public StreamBus(string vhost, StreamBusConnectionSupervisor supervisor, StreamProducerRegistry producers)
+    private readonly StreamConsumerRegistry _consumers;
+    public StreamBus(string vhost, StreamBusConnectionSupervisor supervisor, StreamProducerRegistry producers, StreamConsumerRegistry consumers)
     {
         Vhost = vhost;
         _supervisor = supervisor;
         _producers = producers;
+        _consumers = consumers;
     }
     public string Vhost { get; }
     public BusConnectionState State => _supervisor.State;
@@ -30,6 +35,12 @@ internal sealed class StreamBus : IStreamBus
         => _supervisor.WaitUntilReadyAsync(policy, ct);
     public Task PublishAsync(string stream, ReadOnlyMemory<byte> body, PublishOptions? options = null, CancellationToken ct = default)
         => _producers.PublishAsync(stream, body, options ?? new PublishOptions(), ct);
+    public Task<IStreamConsumer> ConsumeAsync(string stream, ConsumeOptions options, Func<ConsumeContext, Task> handler, CancellationToken ct = default)
+        => _consumers.ConsumeAsync(typeof(DefaultBus), stream, options, handler, ct);
+    public Task<ulong?> GetConsumerOffsetAsync(string stream, string reference, int partition, CancellationToken ct = default)
+        => _consumers.GetOffsetAsync(stream, reference, partition, ct);
+    public Task SetConsumerOffsetAsync(string stream, string reference, int partition, ulong offset, CancellationToken ct = default)
+        => _consumers.SetOffsetAsync(stream, reference, partition, offset, ct);
     internal Task StartAsync(CancellationToken ct) => _supervisor.StartAsync(ct);
 }
 
@@ -37,11 +48,13 @@ internal sealed class StreamBus<TBus> : IStreamBus<TBus>
 {
     private readonly StreamBusConnectionSupervisor _supervisor;
     private readonly StreamProducerRegistry _producers;
-    public StreamBus(string vhost, StreamBusConnectionSupervisor supervisor, StreamProducerRegistry producers)
+    private readonly StreamConsumerRegistry _consumers;
+    public StreamBus(string vhost, StreamBusConnectionSupervisor supervisor, StreamProducerRegistry producers, StreamConsumerRegistry consumers)
     {
         Vhost = vhost;
         _supervisor = supervisor;
         _producers = producers;
+        _consumers = consumers;
     }
     public string Vhost { get; }
     public BusConnectionState State => _supervisor.State;
@@ -49,5 +62,11 @@ internal sealed class StreamBus<TBus> : IStreamBus<TBus>
         => _supervisor.WaitUntilReadyAsync(policy, ct);
     public Task PublishAsync(string stream, ReadOnlyMemory<byte> body, PublishOptions? options = null, CancellationToken ct = default)
         => _producers.PublishAsync(stream, body, options ?? new PublishOptions(), ct);
+    public Task<IStreamConsumer> ConsumeAsync(string stream, ConsumeOptions options, Func<ConsumeContext, Task> handler, CancellationToken ct = default)
+        => _consumers.ConsumeAsync(typeof(TBus), stream, options, handler, ct);
+    public Task<ulong?> GetConsumerOffsetAsync(string stream, string reference, int partition, CancellationToken ct = default)
+        => _consumers.GetOffsetAsync(stream, reference, partition, ct);
+    public Task SetConsumerOffsetAsync(string stream, string reference, int partition, ulong offset, CancellationToken ct = default)
+        => _consumers.SetOffsetAsync(stream, reference, partition, offset, ct);
     internal Task StartAsync(CancellationToken ct) => _supervisor.StartAsync(ct);
 }

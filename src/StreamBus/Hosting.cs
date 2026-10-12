@@ -2,6 +2,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 
 namespace StreamBus;
 
@@ -77,7 +78,8 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<IStreamBusRegistry>(sp =>
             new StreamBusRegistry(
                 store.ForVhost,
-                opts => new StreamBusConnectionSupervisor(opts, sp.GetRequiredService<IStreamSystemConnector>())));
+                opts => new StreamBusConnectionSupervisor(opts, sp.GetRequiredService<IStreamSystemConnector>()),
+                sp.GetService<ILoggerFactory>()));
         services.TryAddSingleton<IHostedService, StreamBusHostedService>();
         services.TryAddSingleton<StreamBusHealthCheck>();
         services.TryAddSingleton<IHealthCheck>(sp => sp.GetRequiredService<StreamBusHealthCheck>());
@@ -211,6 +213,11 @@ public sealed class StreamBusHostedService : IHostedService
 
     public async Task StopAsync(CancellationToken ct)
     {
+        foreach (var consumer in _registry.ActiveConsumers)
+        {
+            try { await consumer.DisposeAsync().ConfigureAwait(false); }
+            catch (Exception) { /* shutdown best-effort; supervisor disposal below still runs */ }
+        }
         List<StreamBusConnectionSupervisor> copy;
         lock (_gate)
         {
