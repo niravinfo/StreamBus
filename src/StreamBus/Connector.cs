@@ -72,7 +72,7 @@ public sealed class StreamSystemHandle : IStreamSystemHandle
     {
         ct.ThrowIfCancellationRequested();
         var stats = await _system.StreamStats(stream).ConfigureAwait(false);
-#pragma warning disable CS0618 // Task 1 probe pins the end offset to LastOffset(); CommittedChunkId() is a different semantic.
+#pragma warning disable CS0618 // 1.12.1 marks LastOffset obsolete in favor of CommittedChunkId (different semantic); probe-pinned as the only end-offset source.
         return stats.LastOffset();
 #pragma warning restore CS0618
     }
