@@ -80,11 +80,16 @@ internal sealed class MonotonicOffsetGuard
         lock (_gate) return _water.TryGetValue(key, out var w) ? w : 0;
     }
 
-    public bool TryAdmit(string key, ulong candidate, ulong fallbackWater = 0)
+    public bool TryAdmit(string key, ulong candidate)
     {
         lock (_gate)
         {
-            var current = _water.TryGetValue(key, out var w) ? w : fallbackWater;
+            if (!_water.TryGetValue(key, out var current))
+            {
+                // First contact admits anything: offset 0 IS progress from nothing.
+                _water[key] = candidate;
+                return true;
+            }
             if (candidate <= current) return false;
             _water[key] = candidate;
             return true;
