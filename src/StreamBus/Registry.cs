@@ -79,9 +79,10 @@ public sealed class StreamBusRegistry : IStreamBusRegistry
             IStreamBus bus = busType == typeof(DefaultBus)
                 ? new StreamBus(vhost, supervisor, ProducersFor(vhost), ConsumersFor(vhost))
                 : (IStreamBus)Activator.CreateInstance(typeof(StreamBus<>).MakeGenericType(busType), vhost, supervisor, ProducersFor(vhost), ConsumersFor(vhost))!;
-            return new BusEntry { Supervisor = supervisor, Bus = bus };
+            var created = new BusEntry { Supervisor = supervisor, Bus = bus };
+            StreamBusMetrics.Shared.TrackConnection(vhost, busType.FullName ?? busType.Name, () => created.Supervisor.State);
+            return created;
         });
-        StreamBusMetrics.Shared.TrackConnection(vhost, busType.FullName ?? busType.Name, () => entry.Supervisor.State);
         return entry;
     }
 

@@ -48,14 +48,8 @@ internal sealed class StreamConsumerRegistration : IStreamConsumer
         _family.Cancel();
         try
         {
-            foreach (var (_, run) in _loops)
-            {
-                await run.ConfigureAwait(false);
-            }
-            foreach (var (_, poll) in _pollers)
-            {
-                await poll.ConfigureAwait(false);
-            }
+            await Task.WhenAll(
+                _loops.Select(l => l.RunTask).Concat(_pollers.Select(p => p.PollTask))).ConfigureAwait(false);
         }
         finally
         {
@@ -206,6 +200,15 @@ internal sealed class StreamConsumerRegistry
         catch
         {
             family.Cancel();
+            try
+            {
+                await Task.WhenAll(
+                    loops.Select(l => l.RunTask).Concat(pollers.Select(p => p.PollTask))).ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                // Teardown observes the already-started tasks; the original failure is rethrown below.
+            }
             foreach (var (loop, _) in loops)
             {
                 await loop.DisposeAsync().ConfigureAwait(false);
