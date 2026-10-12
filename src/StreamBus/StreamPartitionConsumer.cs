@@ -14,6 +14,8 @@ internal sealed class OffsetStorer
     private int _sinceLastStore;
     private ulong _lastSuccess;
     private bool _hasSuccess;
+    private ulong _lastStored;
+    private bool _hasStored;
 
     public OffsetStorer(int every, MonotonicOffsetGuard guard, string waterKey, Action<ulong> onRejected)
     {
@@ -34,11 +36,15 @@ internal sealed class OffsetStorer
         return _sinceLastStore >= _every;
     }
 
-    public void Stored(ulong offset, int keepRemainder)
+    public void Stored(ulong offset)
     {
-        _sinceLastStore = keepRemainder;
+        _sinceLastStore = 0;
         _lastSuccess = offset;
+        _lastStored = offset;
+        _hasStored = true;
     }
+
+    public bool IsStored(ulong offset) => _hasStored && _lastStored == offset;
 
     public bool TryAdmit(ulong candidate)
     {
@@ -148,10 +154,6 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                     _stream, _partitionIndex, rejected);
             });
     }
-
-    // The newest successfully handled offset (cadence may not have stored it yet;
-    // PartitionState.LastStored tracks the stored one).
-    internal ulong LastSuccess => _storer.LastSuccess;
 
     // Completes when the broker confirms the first subscription. ConsumeAsync
     // awaits this so the attach point is fixed before the call returns: publishes
@@ -501,7 +503,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                     _stream, _partitionIndex, offset);
                 return;
             }
-            _storer.Stored(offset, 0);
+            _storer.Stored(offset);
             Interlocked.Exchange(ref _state.LastStored, (long)offset);
             if (Interlocked.Exchange(ref attach.RegressionChecked, 1) == 0)
             {
@@ -553,8 +555,27 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                 {
                     continue;
                 }
-                // Guard-checked, fire-and-forget with catch-log inside StoreAndTrackAsync.
-                _ = StoreAndTrackAsync(consumer, _storer.LastSuccess, attach, tickCt);
+                var offset = _storer.LastSuccess;
+                if (_storer.IsStored(offset))
+                {
+                    continue;
+                }
+                // Guard-checked, fire-and-forget; the fault-logging continuation observes
+                // the child (logs, never rethrows) so no exception goes unobserved.
+                _ = StoreAndTrackAsync(consumer, offset, attach, tickCt).ContinueWith(
+                    t =>
+                    {
+                        if (t.Exception is { } ex)
+                        {
+                            _logger.LogWarning(
+                                ex,
+                                "Offset timer store faulted for stream {Stream} partition {Partition} reference {Reference}.",
+                                _stream, _partitionIndex, _reference);
+                        }
+                    },
+                    CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
             }
         }
         catch (OperationCanceledException)
@@ -595,6 +616,9 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
         }
         catch (Exception ex)
         {
+            // Deviation from creation-time fail-fast: promotion has no caller to throw
+            // to (this listener must never throw), so even ResumeOrFail degrades here
+            // to a replay from the first offset instead of failing.
             _logger.LogWarning(
                 ex,
                 "Offset re-resolution on promotion failed for reference {Reference} on {PartitionStream}; falling back to first offset.",

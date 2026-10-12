@@ -17,7 +17,7 @@ public sealed class OffsetCadenceTests
             {
                 Assert.True(storer.TryAdmit(o));
                 stored.Add(o);
-                storer.Stored(o, 0);
+                storer.Stored(o);
             }
         }
         Assert.Equal(new[] { 2UL }, stored);
@@ -42,7 +42,7 @@ public sealed class OffsetCadenceTests
             if (storer.HasSuccess && storer.TryAdmit(storer.LastSuccess))
             {
                 stored.Add(storer.LastSuccess);
-                storer.Stored(storer.LastSuccess, 0);
+                storer.Stored(storer.LastSuccess);
                 break;
             }
         }

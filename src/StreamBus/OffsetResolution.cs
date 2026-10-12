@@ -59,8 +59,14 @@ internal static class OffsetResolution
         {
             stored = await queryStored().ConfigureAwait(false);
         }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
+            // ResumeOrNext plus a transient query failure degrades to Next (skip),
+            // observable via this warning plus the fallback metric in ResolveOffset.
             logger.LogWarning(ex,
                 "Offset query failed for reference '{Reference}' on partition '{Partition}'; degrading to the no-stored-offset branch.",
                 reference, partitionStream);

@@ -62,7 +62,7 @@ Tests:
 
 Explicitly out of Phase 5 (deferred, not stubs): typed `IConsumer<T>` + `AddStreamBusConsumer` + serializer (Phase 9: FR-2.1/2.8); in-handler retry + `RetryPolicy`/`FailureMode`/`ErrorStream` (Phase 6: FR-4/FR-5, G-1, G-5b); topology `Ensure*` (Phase 8: FR-7, FR-3.3 enforcement); `PublishResultAsync` (Phase 7); hot-key auto-remedy (none exists — NFR-4, documented ceiling only).
 
-Recorded rulings (spec as authority; bind all tasks): delegate path only, handler shape `Func<ConsumeContext, Task>` with `ct` inside the context; `IStreamBus.ConsumeAsync`/`IStreamBus<TBus>.ConsumeAsync` return `Task<IStreamConsumer>` (`IStreamConsumer : IAsyncDisposable` with `Stream` + `Reference`); `ReadinessPolicy` lives inside `ConsumeOptions` (default fail-fast — additive extension of the sketch satisfying §3.1 text; resolves the flagged sketch/text inconsistency); `IsSuperStream` explicit per call (default false); delegate default `Reference` derives from (bus marker type, stream) — two delegate consumers on one stream share a group unless given distinct references (documented); `Get/SetConsumerOffsetAsync` take `(stream, reference, partition)` — a `stream`-less signature cannot address (reference, stream) offsets, so the sketch is extended with the leading `stream` parameter (documented deviation); operator calls use fail-fast readiness; handler failure in this phase means log + dispose + backoff + recreate from the stored offset (Phase 6 refines to in-handler retry); poison messages loop forever with backoff by design until Phase 6; promotion/create query failure degrades to the configured no-stored branch (First replays safely, Fail throws `StreamBusConfigurationException` naming reference+partition); fallback counter labels carry branch only (resolved offset goes to the log line — label cardinality safety); `retry_blocked` gauge ships with base labels + `failure_mode="strict"`, no attempt label (Phase 6 drives real values); lag polls every 15 s via `GetEndOffsetAsync`; `RoutingValue` is `string?` from the `streambus.routing-key` application property when present, else null; `MessageMetadata` maps client properties with `ApplicationProperties` defaulting to empty; handler `await`s everything inside the callback so dispatch stays strictly sequential per partition; store path awaits with catch-log-continue on the hot path and fire-and-forget on the timer; `localWater` key is `{reference}@{partitionStream}`, never cleared, `Set` overwrites with audit log; components take optional `ILogger<T>?` defaulting to `NullLogger`; G-4/G-5a run single-process multi-system (broker-arbitrated SAC, deterministic); coverage test uses 4 partitions × 3 instances (property-equivalent to the 6×4 example at lower flake cost); FR-3.3/3.4 need no code (nothing mutates partitions; ceiling already documented in requirements §4).
+Recorded rulings (spec as authority; bind all tasks): delegate path only, handler shape `Func<ConsumeContext, Task>` with `ct` inside the context; `IStreamBus.ConsumeAsync`/`IStreamBus<TBus>.ConsumeAsync` return `Task<IStreamConsumer>` (`IStreamConsumer : IAsyncDisposable` with `Stream` + `Reference`); `ReadinessPolicy` lives inside `ConsumeOptions` (default fail-fast — additive extension of the sketch satisfying §3.1 text; resolves the flagged sketch/text inconsistency); `IsSuperStream` explicit per call (default false); delegate default `Reference` derives from (bus marker type, stream) — two delegate consumers on one stream share a group unless given distinct references (documented); `Get/SetConsumerOffsetAsync` take `(stream, reference, partition)` — a `stream`-less signature cannot address (reference, stream) offsets, so the sketch is extended with the leading `stream` parameter (documented deviation); operator calls use fail-fast readiness; handler failure in this phase means log + dispose + backoff + recreate from the stored offset (Phase 6 refines to in-handler retry); poison messages loop forever with backoff by design until Phase 6; promotion/create query failure degrades to the configured no-stored branch (First replays safely, Fail throws `StreamBusConfigurationException` naming reference+partition); fallback counter labels carry branch only (resolved offset goes to the log line — label cardinality safety); `retry_blocked` gauge ships with base labels + `failure_mode="strict"`, no attempt label (Phase 6 drives real values); lag is consumer-held `max(0, delivered - stored)` computed live in the observable (ExpE proved `LastOffset()` unusable — see Round 2); `RoutingValue` is `string?` from the `streambus.routing-key` application property when present, else null; `MessageMetadata` maps client properties with `ApplicationProperties` defaulting to empty; handler `await`s everything inside the callback so dispatch stays strictly sequential per partition; store path awaits with catch-log-continue on the hot path and fire-and-forget on the timer; `localWater` key is `{reference}@{partitionStream}`, never cleared, `Set` overwrites with audit log; components take optional `ILogger<T>?` defaulting to `NullLogger`; G-4/G-5a run single-process multi-system (broker-arbitrated SAC, deterministic); coverage test uses 4 partitions × 3 instances (property-equivalent to the 6×4 example at lower flake cost); FR-3.3/3.4 need no code (nothing mutates partitions; ceiling already documented in requirements §4).
 
 ---
 
@@ -327,11 +327,19 @@ internal sealed class MonotonicOffsetGuard
         lock (_gate) return _water.TryGetValue(key, out var w) ? w : 0;
     }
 
-    public bool TryAdmit(string key, ulong candidate, ulong fallbackWater = 0)
+    public bool TryAdmit(string key, ulong candidate)
     {
         lock (_gate)
         {
-            var current = _water.TryGetValue(key, out var w) ? w : fallbackWater;
+            if (!_water.TryGetValue(key, out var current))
+            {
+                // First contact admits anything: offset 0 IS progress from nothing.
+                // (A plain `candidate <= water` check against the 0 default would reject
+                // offset 0 forever and miscount a rejection on every fresh group's first
+                // message.)
+                _water[key] = candidate;
+                return true;
+            }
             if (candidate <= current) return false;
             _water[key] = candidate;
             return true;
@@ -345,7 +353,7 @@ internal sealed class MonotonicOffsetGuard
 }
 ```
 
-Adaptations bound to the Task 1 probe (apply, report): the `OffsetTypeOffset(ulong)` constructor shape is confirmed — construct directly; if `IOffsetType` lives under a different namespace, qualify it. The `stored.Value + 1` overflow edge (`ulong.MaxValue`) is unreachable in practice (streams never reach 2^64 messages) — no guard. `fallbackWater` lets a fresh loop seed the guard from `localWater` semantics without a read path: callers pass the registry's water for the key (0 when unknown).
+Adaptations bound to the Task 1 probe (apply, report): the `OffsetTypeOffset(ulong)` constructor shape is confirmed — construct directly; if `IOffsetType` lives under a different namespace, qualify it. The `stored.Value + 1` overflow edge (`ulong.MaxValue`) is unreachable in practice (streams never reach 2^64 messages) — no guard.
 
 - [ ] **Step 2: Widen `IStreamSystemHandle` with offset/broker reads**
 
@@ -543,7 +551,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
 }
 ```
 
-Write it completely per these bindings: constructor takes `(IStreamSystemHandle system, string stream, string partitionStream, int partitionIndex, string reference, ConsumeOptions options, Func<ConsumeContext, Task> handler, MonotonicOffsetGuard guard, PartitionState state, StreamBusMetrics metrics, string vhost, string bus, ILogger<StreamPartitionConsumer>? logger = null)`; `RunAsync(CancellationToken)` loops until cancelled/disposed: resolve via `ResolveWithQueryAsync` (query = `system.TryQueryOffsetAsync(reference, partitionStream, ct)`, fallback callback = metrics `RecordFallback` with the five tags); build `RawConsumerConfig` with the probed members (`new RawConsumerConfig(partitionStream)` ctor, `Reference`, `OffsetSpec` = resolved, `IsSingleActiveConsumer` from options, `ConsumerUpdateListener` = promote→`ResolveWithQueryAsync` (the listener ignores its `(reference, stream, promotedAsActive)` arguments except for logging, queries the broker fresh on every promotion, and carries a catch-all returning `OffsetTypeFirst` + warning + fallback count on any failure: it never throws and never returns null, because the client's fallback on listener failure is `OffsetTypeNext`, which would skip the backlog) — leave `InitialCredits`, `ClientProvidedName`, handlers at client defaults); dispatch wrapper builds `ConsumeContext` (delivered offset from the probed `MessageContext.Offset`, Body copied once via `ToArray()`, RoutingValue from the `streambus.routing-key` application property as string else null, Metadata exactly as below, `ApplicationProperties` copied into a `Dictionary<string, object?>` defaulting to empty); `state.Inflight` inc/dec around the awaited handler; `state.LastDelivered` = context offset before invoking; on success `state.LastStored` advances only when a store is admitted; on handler exception: log error naming stream/partition/offset, decrement inflight, dispose the consumer via `await consumer.Close()`, `StreamBusDelays` backoff (attempt counter resets on each successful attach), continue the loop (redelivery from the stored offset); on `OperationCanceledException`: exit quietly; regression check: after the first admitted store of each attach, `TryQueryOffsetAsync` again and `RecordRegressed` + warning when the broker holds less than the guard water; `DisposeAsync` cancels the loop, closes the current consumer via `Close()` and disposes the MaxInterval timer; attempts use `Attempt` counting from 1 per consecutive failure streak. `DisposeAsync` awaits an in-flight handler to finish — a hung handler blocks disposal (same ceiling as hot keys; test (h)'s `finally { release.TrySetResult(); }` pattern exists for exactly this reason).
+Write it completely per these bindings: constructor takes `(IStreamSystemHandle system, string stream, string partitionStream, int partitionIndex, string reference, ConsumeOptions options, Func<ConsumeContext, Task> handler, MonotonicOffsetGuard guard, PartitionState state, StreamBusMetrics metrics, string vhost, string bus, ILogger<StreamPartitionConsumer>? logger = null)`; `RunAsync(CancellationToken)` loops until cancelled/disposed: resolve via `ResolveWithQueryAsync` (query = `system.TryQueryOffsetAsync(reference, partitionStream, ct)`, fallback callback = metrics `RecordFallback` with the five tags); build `RawConsumerConfig` with the probed members (`new RawConsumerConfig(partitionStream)` ctor, `Reference`, `OffsetSpec` = resolved, `IsSingleActiveConsumer` from options, `ConsumerUpdateListener` = promote→`ResolveWithQueryAsync` (the listener ignores its `(reference, stream, promotedAsActive)` arguments except for logging, queries the broker fresh on every promotion, and carries a catch-all returning `OffsetTypeFirst` + warning + fallback count on any failure: it never throws and never returns null, because the client's fallback on listener failure is `OffsetTypeNext`, which would skip the backlog; the catch-all reports under the fixed `PromotionFailed` branch, distinct from the mode branches — a failed promotion query must never throw for exactly that reason, INCLUDING under `ResumeOrFail` (creation-time Fail still throws fail-fast; promotion-time Fail degrades to replay, documented deviation)) — leave `InitialCredits`, `ClientProvidedName`, handlers at client defaults); dispatch wrapper builds `ConsumeContext` (delivered offset from the probed `MessageContext.Offset`, Body copied once via `ToArray()`, RoutingValue from the `streambus.routing-key` application property as string else null, Metadata exactly as below, `ApplicationProperties` copied into a `Dictionary<string, object?>` defaulting to empty); `state.Inflight` inc/dec around the awaited handler; `state.LastDelivered` = context offset before invoking; on success `state.LastStored` advances only when a store is admitted; on handler exception: log error naming stream/partition/offset, decrement inflight, dispose the consumer via `await consumer.Close()`, `StreamBusDelays` backoff (attempt counter resets on each successful attach), continue the loop (redelivery from the stored offset); on `OperationCanceledException`: exit quietly; regression check: after the first admitted store of each attach, `TryQueryOffsetAsync` again and `RecordRegressed` + warning when the broker holds less than the guard water; `DisposeAsync` cancels the loop, closes the current consumer via `Close()` and disposes the MaxInterval timer; attempts use `Attempt` counting from 1 per consecutive failure streak. `DisposeAsync` awaits an in-flight handler to finish — a hung handler blocks disposal (same ceiling as hot keys; test (h)'s `finally { release.TrySetResult(); }` pattern exists for exactly this reason).
 
 Metadata mapping (exact — Task 1 probe: `MessageId`/`CorrelationId` are `object`, no `Timestamp` member, closest is `CreationTime : DateTime` in UTC by AMQP definition):
 
@@ -695,11 +703,13 @@ internal sealed class StreamConsumerRegistry
     }
 
     public Task<ulong?> GetOffsetAsync(string stream, string reference, int partition, CancellationToken ct) { ... }
-    public Task SetOffsetAsync(string stream, string reference, int partition, ulong offset, ILogger auditLog, CancellationToken ct) { ... }
+    public Task SetOffsetAsync(string stream, string reference, int partition, ulong offset, CancellationToken ct) { ... }
 }
 ```
 
-Write both classes completely: registration holds `List<(StreamPartitionConsumer Loop, Task RunTask)>`, `List<(PartitionLagPoller Poller, Task PollTask)>`, `List<IDisposable> _scopes`, a `CancellationTokenSource` for the family, an idempotent `DisposeAsync` (cancel, await runs, dispose loops/pollers/scopes, deregister), `Stream`/`Reference` properties; `GetOffsetAsync` resolves the partition stream (plain: index must be 0 else `StreamBusConfigurationException`; super: `QueryPartitionAsync` index range-checked) then `handle.TryQueryOffsetAsync` (fail-fast readiness first); `SetOffsetAsync` resolves likewise, calls `handle.StoreSystemOffsetAsync`, overwrites the guard water for `{reference}@{partitionStream}` (bypass by design), and writes an audit `LogInformation` naming reference/partition/offset/caller. The guard instance is per-registry (shared across that registry's registrations — keyed water makes sharing safe). Metric tracking: `TrackPartition(vhost, busType.FullName, stream, index, reference, state)` per partition; connection tracking is NOT here (Task 4 wires it in `Registry.cs`, next step).
+Write both classes completely: registration holds `List<(StreamPartitionConsumer Loop, Task RunTask)>`, `List<(PartitionLagPoller Poller, Task PollTask)>`, `List<IDisposable> _scopes`, a `CancellationTokenSource` for the family, an idempotent `DisposeAsync` (cancel, await runs, dispose loops/pollers/scopes, deregister), `Stream`/`Reference` properties; `GetOffsetAsync` resolves the partition stream — `StreamExistsAsync` → plain path (index must be 0 else `StreamBusConfigurationException`); else `SuperStreamExistsAsync` → super path (`QueryPartitionAsync`, index range-checked, else `StreamBusConfigurationException`); else neither exists → `StreamBusStreamNotFoundException` naming the stream (fail fast on config error — never let the client's `QueryPartition` exception propagate unmapped, never conflate missing with nothing-stored) — then `handle.TryQueryOffsetAsync` (fail-fast readiness first); `SetOffsetAsync` resolves likewise, calls `handle.StoreSystemOffsetAsync`, overwrites the guard water for `{reference}@{partitionStream}` (bypass by design), and writes an audit `LogInformation` naming reference/stream/partition/offset on the registry's owned logger (see logger rule below). The guard instance is per-registry (shared across that registry's registrations — keyed water makes sharing safe). Metric tracking: `TrackPartition(vhost, busType.FullName, stream, index, reference, state)` per partition; connection tracking is NOT here (Task 4 wires it in `Registry.cs`, next step).
+
+Logger rule (FR-10.12/FR-10.13 observability — loggers must reach real providers, never die in `NullLogger` in production): `StreamBusRegistry` gains an optional third constructor parameter `ILoggerFactory? loggerFactory = null` (existing two-lambda constructions keep compiling); `Hosting.cs` `AddCore` passes `sp.GetService<ILoggerFactory>()` (nullable-tolerant — providers built without `AddLogging` yield null → `NullLoggerFactory.Instance`; add `using Microsoft.Extensions.Logging;` to `Hosting.cs`); `StreamConsumerRegistry` takes an optional `ILoggerFactory?` (stored; defaults to `NullLoggerFactory.Instance`), creates per-loop `ILogger<StreamPartitionConsumer>` from it, and owns the `ILogger<StreamConsumerRegistry>` used for the Set audit line. Test constructions pass nothing (NullLogger) or a capturing test factory.
 
 - [ ] **Step 3: Wire `Registry.cs`, `Bus.cs`, `Hosting.cs`**
 
@@ -1077,6 +1087,70 @@ public sealed class ConsumeValidationTests
         await Assert.ThrowsAsync<ArgumentNullException>(() =>
             registry.ConsumeAsync(typeof(DefaultBus), "s", new ConsumeOptions(), null!, TestContext.Current.CancellationToken));
     }
+
+    private sealed class ListLoggerFactory : ILoggerFactory
+    {
+        public readonly ListLogger Logger = new();
+        public void AddProvider(ILoggerProvider provider) { }
+        public ILogger CreateLogger(string categoryName) => Logger;
+        public void Dispose() { }
+    }
+
+    private static StreamConsumerRegistry RegistryWithLogging(ListLoggerFactory factory, IStreamSystemHandle handle)
+    {
+        var options = new StreamBusOptions { Vhost = "/", UserName = "app", Password = "secret" };
+        var supervisor = new StreamBusConnectionSupervisor(options, new ReadyConnector(handle));
+        supervisor.StartAsync(CancellationToken.None).GetAwaiter().GetResult();
+        return new StreamConsumerRegistry(supervisor, "/", factory);
+    }
+
+    private sealed class StubSystemHandle : IStreamSystemHandle
+    {
+        public bool Exists = true;
+        public bool SuperExists;
+        public bool IsClosed => false;
+        public Task<IStreamProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct) => throw new NotImplementedException();
+        public Task<IStreamProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct) => throw new NotImplementedException();
+        public Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken ct) => Task.FromResult<ulong?>(null);
+        public Task StoreSystemOffsetAsync(string reference, string stream, ulong offset, CancellationToken ct) => Task.CompletedTask;
+        public Task<ulong> GetEndOffsetAsync(string stream, CancellationToken ct) => Task.FromResult(0UL);
+        public Task<bool> StreamExistsAsync(string stream, CancellationToken ct) => Task.FromResult(Exists);
+        public Task<bool> SuperStreamExistsAsync(string superStream, CancellationToken ct) => Task.FromResult(SuperExists);
+        public Task<string[]> QueryPartitionAsync(string superStream, CancellationToken ct) => Task.FromResult(new[] { superStream + "-0" });
+        public Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct) => throw new NotImplementedException();
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    private sealed class ReadyConnector : IStreamSystemConnector
+    {
+        private readonly StubSystemHandle _handle;
+        public ReadyConnector(StubSystemHandle handle) => _handle = handle;
+        public Task<IStreamSystemHandle> ConnectAsync(StreamBusOptions options, CancellationToken ct)
+            => Task.FromResult<IStreamSystemHandle>(_handle);
+    }
+
+    [Fact]
+    public async Task Bus_level_set_audit_reaches_a_real_logger()
+    {
+        var factory = new ListLoggerFactory();
+        var registry = RegistryWithLogging(factory, new StubSystemHandle());
+        await registry.SetOffsetAsync("s", "grp", 0, 7, TestContext.Current.CancellationToken);
+        Assert.Contains(factory.Logger.Lines, l => l.Contains("grp") && l.Contains("7"));
+    }
+
+    [Fact]
+    public async Task Missing_stream_throws_not_found_on_all_entry_points()
+    {
+        var factory = new ListLoggerFactory();
+        var handle = new StubSystemHandle { Exists = false, SuperExists = false };
+        var registry = RegistryWithLogging(factory, handle);
+        await Assert.ThrowsAsync<StreamBusStreamNotFoundException>(() =>
+            registry.ConsumeAsync(typeof(DefaultBus), "missing", new ConsumeOptions(), _ => Task.CompletedTask, TestContext.Current.CancellationToken));
+        await Assert.ThrowsAsync<StreamBusStreamNotFoundException>(() =>
+            registry.GetOffsetAsync("missing", "grp", 0, TestContext.Current.CancellationToken));
+        await Assert.ThrowsAsync<StreamBusStreamNotFoundException>(() =>
+            registry.SetOffsetAsync("missing", "grp", 0, 7, TestContext.Current.CancellationToken));
+    }
 }
 ```
 
@@ -1107,6 +1181,15 @@ git commit -m "test: add consumer offset, cadence, and metrics unit tests"
 **Interfaces:**
 - Consumes: bus `ConsumeAsync`/`Get/SetConsumerOffsetAsync`, `ConsumeOptions`, real broker (app/password, unique streams, test-only admin `StreamSystem` + `PartitionsSuperStreamSpec` + `MessageHandler` + `Data.Contents` per Phase 4 as-built).
 - Produces: G-4 + G-5a gate evidence; the Phase 5 completion gate.
+
+- [ ] **Step 0: Client-logger plumbing + SAC-off-on-Next + store tracing (src fixes enabling this task)**
+
+Rationale: the client's internal shutdowns (e.g. `ProcessChunks` ending on credit errors) are currently invisible — every client creation passes no logger — and SAC+`Next` subscriptions demonstrably receive nothing on this broker (D2/D4 evidence), so tail-attach consumers must not join SAC groups.
+
+(a) `src/StreamBus/Connector.cs`: add `using Microsoft.Extensions.Logging;`. `StreamSystemConnector` gains `public StreamSystemConnector(ILoggerFactory? loggerFactory = null)` storing `(loggerFactory ?? NullLoggerFactory.Instance)` in a field, passed into `new StreamSystemHandle(system, factory)`. `StreamSystemHandle` gains the matching optional second ctor parameter (existing single-arg constructions keep compiling) and passes real loggers: `StreamSystem.Create(config, factory.CreateLogger<StreamSystem>())`, `CreateRawProducer(..., factory.CreateLogger<RawProducer>())` (same for the super-stream producer call), `CreateRawConsumer(config, factory.CreateLogger<RawConsumer>())`. When no factory is registered the behavior is byte-identical to today (NullLogger everywhere).
+(b) `src/StreamBus/Hosting.cs`: replace `services.TryAddSingleton<IStreamSystemConnector, StreamSystemConnector>();` with `services.TryAddSingleton<IStreamSystemConnector>(sp => new StreamSystemConnector(sp.GetService<ILoggerFactory>()));` (nullable-tolerant `GetService`, NOT required — an activator-resolved optional parameter would throw when no logging is registered). Add `using Microsoft.Extensions.Logging;` if missing.
+(c) `src/StreamBus/StreamPartitionConsumer.cs` attach path: after resolving, compute `var singleActive = _options.SingleActiveConsumer && resolved is not OffsetTypeNext;` — when the resolved spec is `Next` (AlwaysNext, or fresh ResumeOrNext), the consumer attaches non-exclusively and logs: `_logger.LogInformation("SAC disabled for stream {Stream} partition {Partition}: Next-resolved consumers cannot join an SAC group (tail attach receives nothing under SAC on this broker).", ...)`. Use `singleActive` for `IsSingleActiveConsumer`. (Promotion-time Next on an SAC-created consumer remains a documented residual corner.)
+(d) `src/StreamBus/StreamPartitionConsumer.cs` `StoreAndTrackAsync`: add `_logger.LogDebug("Storing offset {Offset} ...")` immediately before the `StoreOffset` call and `LogDebug("Stored offset ...")` after success (Debug level: zero cost when disabled, decisive when diagnosing stalls).
 
 - [ ] **Step 1: Implement `ConsumerIntegrationTests.cs`**
 
@@ -1252,16 +1335,11 @@ public async Task Super_stream_splits_across_instances_exactly_once_ordered()
     Assert.Equal(24, all.Select(x => (x.Key, x.Seq)).Distinct().Count()); // exactly once
     foreach (var key in keys)
         Assert.Equal(new[] { 1, 2, 3, 4 }, all.Where(x => x.Key == key).Select(x => x.Seq));
-    // LastOffset() proof (the lag poller's input): fresh partitions number from 0
-    // contiguously, so 24 messages over 4 partitions force the fullest to last offset >= 5.
+    // Partition enumeration sanity (the registry depends on stable QueryPartition
+    // order). No LastOffset() proof: ExpE proved it returns 0 with messages present,
+    // so it pins nothing.
     var partitions = await admin.QueryPartition(super);
     Assert.Equal(4, partitions.Length);
-#pragma warning disable CS0618 // Same reason as GetEndOffsetAsync: LastOffset is the only end-offset source in 1.12.1.
-    var ends = new List<ulong>();
-    foreach (var partition in partitions)
-        ends.Add((await admin.StreamStats(partition)).LastOffset());
-#pragma warning restore CS0618
-    Assert.True(ends.Max() >= 5);
 }
 ```
 
@@ -1288,7 +1366,7 @@ public async Task Failover_preserves_offsets_and_order()
                     new PublishOptions { IsSuperStream = true, RoutingKey = key }, TestContext.Current.CancellationToken);
     }
     finally { await pub.DisposeAsync(); }
-    var all = new List<(string Key, int Seq, string Instance, int Partition)>();
+    var all = new List<(string Key, int Seq, string Instance, int Partition, ulong Offset)>();
     var a = await BusInstance.StartAsync("fa");
     var b = await BusInstance.StartAsync("fb");
     var aDisposed = false;
@@ -1300,7 +1378,7 @@ public async Task Failover_preserves_offsets_and_order()
                 ctx =>
                 {
                     var (key, seq) = Parse(ctx.Body);
-                    lock (all) all.Add((key, seq, name, ctx.Partition));
+                    lock (all) all.Add((key, seq, name, ctx.Partition, ctx.Offset));
                     return Task.CompletedTask;
                 }, TestContext.Current.CancellationToken);
         await WaitForAsync(() => all.Any(x => x.Instance == "fa") && Count(all) >= 2, TimeSpan.FromSeconds(60), "A to own a partition");
@@ -1322,10 +1400,13 @@ public async Task Failover_preserves_offsets_and_order()
             Assert.Equal(Enumerable.Range(1, 12), all.Where(x => x.Key == key).Select(x => x.Seq));
         foreach (var p in new[] { 0, 1 })
         {
-            var n = all.Count(x => x.Partition == p);
+            var received = all.Where(x => x.Partition == p).ToList();
             var stored = await b.Bus.GetConsumerOffsetAsync(super, "grp-b", p, TestContext.Current.CancellationToken);
-            if (n == 0) Assert.Null(stored);
-            else Assert.Equal((ulong)(n - 1), stored);
+            if (received.Count == 0) Assert.Null(stored);
+            // Stored must equal the furthest processed offset: never beyond (safety),
+            // fully advanced (liveness). Count-based equality is wrong under non-contiguous
+            // broker offsets — max-delivered is the mechanism-agnostic pin.
+            else Assert.Equal(received.Max(x => x.Offset), stored);
         }
     }
     finally
@@ -1389,10 +1470,12 @@ public async Task Recreate_resumes_from_broker_stored_offset()
     await using var _ = admin;
     await admin.CreateStream(new StreamSpec(stream));
     _streams.Add(stream);
+    // Two backlog phases (deterministic: a plain-stream backlog drains in <200ms, so an
+    // intermediate Count==5 wait overshoots and flakes — never wait mid-drain).
     await using var pub = await BusInstance.StartAsync("pub");
     try
     {
-        foreach (var seq in Enumerable.Range(0, 10))
+        foreach (var seq in Enumerable.Range(0, 5))
             await pub.Bus.PublishAsync(stream, Body($"k:{seq}"), new PublishOptions(), TestContext.Current.CancellationToken);
     }
     finally { await pub.DisposeAsync(); }
@@ -1400,13 +1483,21 @@ public async Task Recreate_resumes_from_broker_stored_offset()
     await using (var inst = await BusInstance.StartAsync("i"))
     {
         var c1 = await inst.Bus.ConsumeAsync(stream, new ConsumeOptions { Reference = "grp-d" }, Rec(first), TestContext.Current.CancellationToken);
-        await WaitForAsync(() => Count(first) == 5, TimeSpan.FromSeconds(60), "first half");
+        await WaitForAsync(() => Count(first) == 5, TimeSpan.FromSeconds(60), "first drain");
         await c1.DisposeAsync();
     }
+    await using var pub2 = await BusInstance.StartAsync("pub2");
+    try
+    {
+        foreach (var seq in Enumerable.Range(5, 5))
+            await pub2.Bus.PublishAsync(stream, Body($"k:{seq}"), new PublishOptions(), TestContext.Current.CancellationToken);
+    }
+    finally { await pub2.DisposeAsync(); }
+    // Fresh instance => fresh guard water: only a broker resume passes this test.
     var second = new List<int>();
     await using var inst2 = await BusInstance.StartAsync("i2");
     var c2 = await inst2.Bus.ConsumeAsync(stream, new ConsumeOptions { Reference = "grp-d" }, Rec(second), TestContext.Current.CancellationToken);
-    await WaitForAsync(() => Count(second) == 5, TimeSpan.FromSeconds(60), "second half");
+    await WaitForAsync(() => Count(second) == 5, TimeSpan.FromSeconds(60), "second drain");
     await c2.DisposeAsync();
     Assert.Equal(new[] { 0, 1, 2, 3, 4 }, first);
     Assert.Equal(new[] { 5, 6, 7, 8, 9 }, second);
@@ -1531,7 +1622,10 @@ public async Task Handler_failure_redelivers_without_advancing()
     }, TestContext.Current.CancellationToken);
     await WaitForAsync(() => Count(got) == 5, TimeSpan.FromSeconds(90), "redelivery drain");
     await c.DisposeAsync();
-    Assert.Equal(new[] { 0, 1, 2, 2, 2, 3, 4 }, got);
+    // Failures throw before recording, so only successes land in `got`; the attempts map
+    // is what proves redelivery (offset 2 attempted 3 times: fail, fail, succeed).
+    Assert.Equal(new[] { 0, 1, 2, 3, 4 }, got);
+    Assert.Equal(3, attempts[2]);
     Assert.Equal(4UL, await inst.Bus.GetConsumerOffsetAsync(stream, "grp-g", 0, TestContext.Current.CancellationToken));
 }
 ```
@@ -1612,6 +1706,24 @@ Expected: full suite green (43 + new unit + 8 new integration); the `Select-Stri
 git add tests/StreamBus.IntegrationTests/ConsumerIntegrationTests.cs
 git commit -m "test: add consumer integration probes and G-4/G-5a gates"
 ```
+
+### Round 2 amendments (executed as part of Task 6's fix round — decides the open items above)
+
+R2-A. Lag redesign (ExpE probe, 2026-10-12: `LastOffset()` returns 0 with 10 messages present, immediately and after 3 s and after consume; empty streams throw `OffsetNotFoundException`): `LastOffset()` is unusable as an end offset on this broker, so the 15 s poller cannot work. Delete `src/StreamBus/PartitionLagPoller.cs` entirely; remove `GetEndOffsetAsync` from `IStreamSystemHandle` + `StreamSystemHandle` + all test stubs implementing it; remove poller creation/tasks/disposal from `StreamConsumerRegistration`; drop the `Lag` field from `PartitionState` and initialize `LastDelivered`/`LastStored` to `-1` (nothing delivered/stored yet — so an empty consumer reads lag 0, offset 0 delivered reads 1, offset 0 stored reads 0); the `streambus_partition_lag` observable computes `Math.Max(0, s.LastDelivered - s.LastStored)` live (consumer-held unprocessed backlog — documented as such, not broker-total). Rewrite Task 5's lag test as: tracked state `{ LastDelivered = 9, LastStored = 4 }` observes lag 5 via `MeterListener.RecordObservableInstruments()`.
+
+R2-B. (b)-tail rework (above): record broker `ctx.Offset` in tuples; assert stored == max-received per non-empty partition (null when empty).
+
+R2-C. Producer naming: the per-handle uniqueness counter MUST be process-wide `static` (sequential same-stream producers across systems must never collide); cap total name length at 255 UTF-8 bytes (hash-suffix fallback mirroring consumer references). Phase 7 will replace naming with stable per-(partition,target) names.
+
+---
+
+## Follow-ups for Phase 6 / Phase 7 (tracked, no code in this phase)
+
+- Promotion queries use `CancellationToken.None` with no timeout — add a timeout policy note when retry (Phase 6) lengthens promotion windows.
+- Poison messages loop forever with backoff by design — confirm log-volume acceptability when Phase 6's retry multiplies attempts.
+- Read-process-write (Phase 7) must not assume dense broker offsets: failover evidence shows stored 36–41 for 24 sends under churn — resume with max-delivered semantics, never count-based.
+- Broker-total backlog lag is unmeasurable here (`LastOffset` unusable, evidenced) — revisit only if the client/broker exposes a true end offset.
+- `retry_blocked` gauge is a static 0 with `failure_mode="strict"` until Phase 6 drives real values.
 
 ---
 

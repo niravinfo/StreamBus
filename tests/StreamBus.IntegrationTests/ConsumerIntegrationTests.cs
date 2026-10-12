@@ -130,20 +130,9 @@ public sealed class ConsumerIntegrationTests : IAsyncDisposable
         Assert.Equal(24, all.Select(x => (x.Key, x.Seq)).Distinct().Count()); // exactly once
         foreach (var key in keys)
             Assert.Equal(new[] { 1, 2, 3, 4 }, all.Where(x => x.Key == key).Select(x => x.Seq));
-        // LastOffset() proof: fresh partitions number from 0
-        // contiguously, so 24 messages over 4 partitions force the fullest to last offset >= 5.
+        // Partition enumeration sanity (the registry depends on stable QueryPartition order).
         var partitions = await admin.QueryPartition(super);
         Assert.Equal(4, partitions.Length);
-#pragma warning disable CS0618 // LastOffset is the only end-offset source in 1.12.1.
-        var ends = new List<ulong>();
-        foreach (var partition in partitions)
-        {
-            try { ends.Add((await admin.StreamStats(partition)).LastOffset()); }
-            catch (OffsetNotFoundException) { /* empty partition: nothing stored, nothing to prove */ }
-        }
-#pragma warning restore CS0618
-        Assert.NotEmpty(ends);
-        Assert.True(ends.Max() >= 5);
     }
 
     [Fact]

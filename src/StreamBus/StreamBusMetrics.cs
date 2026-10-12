@@ -19,15 +19,16 @@ internal sealed class StreamBusMetrics
     public static readonly StreamBusMetrics Shared = new();
 
     private readonly Meter _meter = new("StreamBus");
-    private readonly ConcurrentDictionary<string, PartitionState> _partitions = new();
-    private readonly ConcurrentDictionary<string, Func<BusConnectionState>> _connections = new();
+    private readonly ConcurrentDictionary<(string Vhost, string Bus, string Stream, int Partition, string Reference), PartitionState> _partitions = new();
+    private readonly ConcurrentDictionary<(string Vhost, string Bus), Func<BusConnectionState>> _connections = new();
 
     private StreamBusMetrics()
     {
         // Consumer-held unprocessed backlog (delivered but not yet stored), computed
         // live — not the broker-total backlog (no usable end-offset source on this broker).
         _ = _meter.CreateObservableUpDownCounter("streambus_partition_lag",
-            () => ObservePartitions(s => Math.Max(0, s.LastDelivered - s.LastStored)));
+            () => ObservePartitions(s => Math.Max(0, s.LastDelivered - s.LastStored)),
+            description: "Consumer-held unprocessed backlog max(0, delivered - stored), not broker-total backlog.");
         _ = _meter.CreateObservableUpDownCounter("streambus_partition_inflight",
             () => ObservePartitions(s => s.Inflight));
         _ = _meter.CreateObservableUpDownCounter("streambus_partition_retry_blocked",
@@ -35,7 +36,7 @@ internal sealed class StreamBusMetrics
             unit: null, description: null);
         _ = _meter.CreateObservableUpDownCounter<int>("streambus_connection_state",
             () => _connections.Select(kv => new Measurement<int>((int)kv.Value(),
-                new TagList { { "vhost", VhostOf(kv.Key) }, { "bus", BusOf(kv.Key) } })));
+                new TagList { { "vhost", kv.Key.Vhost }, { "bus", kv.Key.Bus } })));
         StoreRejected = _meter.CreateCounter<long>("streambus_offset_store_rejected_total");
         Regressed = _meter.CreateCounter<long>("streambus_offset_regressed_total");
         Fallback = _meter.CreateCounter<long>("streambus_offset_fallback_total");
@@ -47,14 +48,14 @@ internal sealed class StreamBusMetrics
 
     public IDisposable TrackPartition(string vhost, string bus, string stream, int partition, string reference, PartitionState state)
     {
-        var key = $"{vhost}|{bus}|{stream}|{partition}|{reference}";
+        var key = (vhost, bus, stream, partition, reference);
         _partitions[key] = state;
         return new Unregister(() => _partitions.TryRemove(key, out _));
     }
 
     public void TrackConnection(string vhost, string bus, Func<BusConnectionState> readState)
     {
-        _connections[$"{vhost}|{bus}"] = readState;
+        _connections[(vhost, bus)] = readState;
     }
 
     public void RecordStoreRejected(string vhost, string bus, string stream, int partition, string reference)
@@ -71,18 +72,13 @@ internal sealed class StreamBusMetrics
     {
         foreach (var kv in _partitions)
         {
-            var parts = kv.Key.Split('|');
-            if (parts.Length != 5 || !int.TryParse(parts[3], out var partition))
-            {
-                continue;
-            }
             var tags = new TagList
             {
-                { "vhost", parts[0] },
-                { "bus", parts[1] },
-                { "stream", parts[2] },
-                { "partition", partition },
-                { "reference", parts[4] },
+                { "vhost", kv.Key.Vhost },
+                { "bus", kv.Key.Bus },
+                { "stream", kv.Key.Stream },
+                { "partition", kv.Key.Partition },
+                { "reference", kv.Key.Reference },
             };
             if (includeFailureMode)
             {
@@ -90,18 +86,6 @@ internal sealed class StreamBusMetrics
             }
             yield return new Measurement<long>(select(kv.Value), tags);
         }
-    }
-
-    private static string VhostOf(string key)
-    {
-        var parts = key.Split('|');
-        return parts.Length > 0 ? parts[0] : string.Empty;
-    }
-
-    private static string BusOf(string key)
-    {
-        var parts = key.Split('|');
-        return parts.Length > 1 ? parts[1] : string.Empty;
     }
 
     private static TagList BuildTags(

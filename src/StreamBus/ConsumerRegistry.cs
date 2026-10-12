@@ -266,7 +266,37 @@ internal sealed class StreamConsumerRegistry
         }
         if (await handle.SuperStreamExistsAsync(stream, ct).ConfigureAwait(false))
         {
-            var partitions = await handle.QueryPartitionAsync(stream, ct).ConfigureAwait(false);
+            string[] partitions;
+            try
+            {
+                partitions = await handle.QueryPartitionAsync(stream, ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception)
+            {
+                // Check-then-act race: the super stream may have vanished between the
+                // existence probe above and the partition query. Re-probe existence:
+                // absent -> NotFound naming the stream, else rethrow the original.
+                var recheckOk = false;
+                var stillExists = true;
+                try
+                {
+                    stillExists = await handle.SuperStreamExistsAsync(stream, ct).ConfigureAwait(false);
+                    recheckOk = true;
+                }
+                catch (Exception)
+                {
+                    // Re-probe inconclusive: fall through and rethrow the original.
+                }
+                if (recheckOk && !stillExists)
+                {
+                    throw new StreamBusStreamNotFoundException(stream);
+                }
+                throw;
+            }
             if (partition < 0 || partition >= partitions.Length)
             {
                 throw new StreamBusConfigurationException(
