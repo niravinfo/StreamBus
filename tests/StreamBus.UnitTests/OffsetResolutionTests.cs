@@ -107,7 +107,7 @@ public sealed class ConsumeValidationTests
         var options = new StreamBusOptions { Vhost = "/", UserName = "app", Password = "secret" };
         var supervisor = new StreamBusConnectionSupervisor(options,
             new NeverReadyConnector());
-        return new StreamConsumerRegistry(supervisor, "/", new StreamProducerRegistry(supervisor, "/"));
+        return new StreamConsumerRegistry(supervisor, "/", new StreamProducerRegistry(supervisor, "/"), null, new ResultProducerRegistry(supervisor, "/"));
     }
 
     private sealed class NeverReadyConnector : IStreamSystemConnector
@@ -180,7 +180,7 @@ public sealed class ConsumeValidationTests
         var options = new StreamBusOptions { Vhost = "/", UserName = "app", Password = "secret" };
         var supervisor = new StreamBusConnectionSupervisor(options, new ReadyConnector(handle));
         supervisor.StartAsync(CancellationToken.None).GetAwaiter().GetResult();
-        return new StreamConsumerRegistry(supervisor, "/", new StreamProducerRegistry(supervisor, "/"), factory);
+        return new StreamConsumerRegistry(supervisor, "/", new StreamProducerRegistry(supervisor, "/"), factory, new ResultProducerRegistry(supervisor, "/"));
     }
 
     private sealed class StubSystemHandle : IStreamSystemHandle

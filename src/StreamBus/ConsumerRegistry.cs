@@ -70,15 +70,18 @@ internal sealed class StreamConsumerRegistry
     private readonly ILoggerFactory _loggerFactory;
     private readonly ILogger<StreamConsumerRegistry> _logger;
     private readonly StreamProducerRegistry _producers;
+    private readonly ResultProducerRegistry _results;
     private readonly MonotonicOffsetGuard _guard = new();
     private readonly HashSet<StreamConsumerRegistration> _live = new();
     private readonly object _gate = new();
 
-    public StreamConsumerRegistry(StreamBusConnectionSupervisor supervisor, string vhost, StreamProducerRegistry producers, ILoggerFactory? loggerFactory = null)
+    public StreamConsumerRegistry(StreamBusConnectionSupervisor supervisor, string vhost, StreamProducerRegistry producers, ILoggerFactory? loggerFactory, ResultProducerRegistry results)
     {
         _supervisor = supervisor;
         _vhost = vhost;
         _producers = producers;
+        ArgumentNullException.ThrowIfNull(results);
+        _results = results;
         _loggerFactory = loggerFactory ?? NullLoggerFactory.Instance;
         _logger = _loggerFactory.CreateLogger<StreamConsumerRegistry>();
     }
@@ -270,6 +273,133 @@ internal sealed class StreamConsumerRegistry
         return registration;
     }
 
+    public async Task<IStreamConsumer> ConsumeEffectivelyOnceAsync(
+        Type busType, string sourceStream, string targetStream, EffectivelyOnceOptions options,
+        Func<ConsumeContext, Task<ReadOnlyMemory<byte>>> handler, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(busType);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourceStream);
+        ArgumentException.ThrowIfNullOrWhiteSpace(targetStream);
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(handler);
+        ArgumentNullException.ThrowIfNull(options.Retry);
+        ArgumentNullException.ThrowIfNull(options.ReadinessPolicy);
+        EffectivelyOnceValidation.ValidateConsume(options.Retry);
+        var reference = options.Reference ?? ResultNaming.ConsumerReference(busType, sourceStream, targetStream);
+        ReferenceDerivation.Validate(reference);
+        if (options.Reference is not null) ReferenceDerivation.Validate(options.Reference);
+
+        var readiness = await _supervisor.WaitUntilReadyAsync(options.ReadinessPolicy, ct).ConfigureAwait(false);
+        if (readiness == BusReadiness.Fatal)
+        {
+            throw new StreamBusFatalException($"StreamBus for vhost '{_vhost}' is in Fatal state; effectively-once consume of '{sourceStream}' refused.");
+        }
+        if (readiness != BusReadiness.Ready)
+        {
+            throw new StreamBusNotReadyException($"StreamBus for vhost '{_vhost}' is not ready ({readiness}); effectively-once consume of '{sourceStream}' refused.");
+        }
+        var handle = _supervisor.CurrentHandle
+            ?? throw new StreamBusNotReadyException($"StreamBus for vhost '{_vhost}' is not ready; effectively-once consume of '{sourceStream}' refused.");
+
+        string[] sourcePartitions;
+        if (options.SourceIsSuperStream)
+        {
+            if (!await handle.SuperStreamExistsAsync(sourceStream, ct).ConfigureAwait(false))
+                throw new StreamBusStreamNotFoundException(sourceStream);
+            sourcePartitions = await handle.QueryPartitionAsync(sourceStream, ct).ConfigureAwait(false);
+        }
+        else
+        {
+            if (await handle.SuperStreamExistsAsync(sourceStream, ct).ConfigureAwait(false))
+                throw new StreamBusConfigurationException($"Effectively-once source '{sourceStream}' is a super stream but SourceIsSuperStream is false.");
+            if (!await handle.StreamExistsAsync(sourceStream, ct).ConfigureAwait(false))
+                throw new StreamBusStreamNotFoundException(sourceStream);
+            sourcePartitions = new[] { sourceStream };
+        }
+        if (options.TargetIsSuperStream)
+        {
+            if (!await handle.SuperStreamExistsAsync(targetStream, ct).ConfigureAwait(false))
+                throw new StreamBusStreamNotFoundException(targetStream);
+        }
+        else
+        {
+            if (await handle.SuperStreamExistsAsync(targetStream, ct).ConfigureAwait(false))
+                throw new StreamBusConfigurationException($"Effectively-once target '{targetStream}' is a super stream but TargetIsSuperStream is false.");
+            if (!await handle.StreamExistsAsync(targetStream, ct).ConfigureAwait(false))
+                throw new StreamBusStreamNotFoundException(targetStream);
+        }
+
+        var busName = busType.FullName ?? busType.Name;
+        var family = new CancellationTokenSource();
+        var errors = new ErrorPublisher(_producers, _loggerFactory.CreateLogger<ErrorPublisher>());
+        var targetRouting = options.TargetRouting ?? (static ctx => ctx.RoutingValue);
+        var loops = new List<(StreamPartitionConsumer Loop, Task RunTask)>(sourcePartitions.Length);
+        var scopes = new List<IDisposable>(sourcePartitions.Length);
+        try
+        {
+            for (var index = 0; index < sourcePartitions.Length; index++)
+            {
+                var partitionStream = sourcePartitions[index];
+                var state = new PartitionState();
+                scopes.Add(StreamBusMetrics.Shared.TrackPartition(_vhost, busName, sourceStream, index, reference, state));
+                var consumeOptions = new ConsumeOptions
+                {
+                    IsSuperStream = options.SourceIsSuperStream,
+                    Reference = reference,
+                    SingleActiveConsumer = true,
+                    Offset = ConsumeOffset.ResumeOrFirst,
+                    Retry = options.Retry,
+                    ReadinessPolicy = options.ReadinessPolicy,
+                    EffectivelyOnce = new EffectivelyOnceConfig
+                    {
+                        TargetStream = targetStream,
+                        TargetIsSuperStream = options.TargetIsSuperStream,
+                        TargetRouting = targetRouting,
+                        ResultHandler = handler,
+                        ResumeQuery = _results.GetResumeOffsetAsync,
+                    },
+                };
+                var loop = new StreamPartitionConsumer(
+                    handle, sourceStream, partitionStream, index, reference, consumeOptions,
+                    static _ => Task.CompletedTask, // unreached in EO mode (the branch above calls ResultHandler)
+                    _guard, state, StreamBusMetrics.Shared, _vhost, busName, errors,
+                    _loggerFactory.CreateLogger<StreamPartitionConsumer>(), consumeOptions.EffectivelyOnce, _results);
+                loops.Add((loop, loop.RunAsync(family.Token)));
+            }
+            // Same attach contract as ConsumeAsync: every partition's first broker
+            // subscription is confirmed before the call returns.
+            await Task.WhenAll(loops.Select(l => l.Loop.FirstAttachAsync)).WaitAsync(ct).ConfigureAwait(false);
+        }
+        catch
+        {
+            family.Cancel();
+            try
+            {
+                await Task.WhenAll(loops.Select(l => l.RunTask)).ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+            }
+            foreach (var (loop, _) in loops)
+            {
+                await loop.DisposeAsync().ConfigureAwait(false);
+            }
+            foreach (var scope in scopes)
+            {
+                scope.Dispose();
+            }
+            family.Dispose();
+            throw;
+        }
+
+        var registration = new StreamConsumerRegistration(sourceStream, reference, loops, scopes, family, Remove);
+        lock (_gate)
+        {
+            _live.Add(registration);
+        }
+        return registration;
+    }
+
     public async Task<ulong?> GetOffsetAsync(string stream, string reference, int partition, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(stream);
@@ -417,6 +547,41 @@ internal sealed class StreamConsumerRegistry
         {
             DisposeProducers();
         }
+    }
+
+    public async Task PublishResultAsync(string targetStream, ReadOnlyMemory<byte> result, ulong sourceOffset, PublishResultOptions? options, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(targetStream);
+        ArgumentNullException.ThrowIfNull(options);
+        EffectivelyOnceValidation.ValidatePublishResult(options);
+        await EnsureReadyAsync(targetStream, ct).ConfigureAwait(false);
+        var handle = _supervisor.CurrentHandle
+            ?? throw new StreamBusNotReadyException($"StreamBus for vhost '{_vhost}' is not ready; result publish to '{targetStream}' refused.");
+        if (options.IsSuperStream)
+        {
+            if (!await handle.SuperStreamExistsAsync(targetStream, ct).ConfigureAwait(false))
+                throw new StreamBusStreamNotFoundException(targetStream);
+        }
+        else
+        {
+            if (await handle.SuperStreamExistsAsync(targetStream, ct).ConfigureAwait(false))
+                throw new StreamBusConfigurationException($"Result target '{targetStream}' is a super stream but PublishResultOptions.IsSuperStream is false.");
+            if (!await handle.StreamExistsAsync(targetStream, ct).ConfigureAwait(false))
+                throw new StreamBusStreamNotFoundException(targetStream);
+        }
+        var publisher = new ResultPublisher(_results, _loggerFactory.CreateLogger<ResultPublisher>());
+        await publisher.PublishForeverAsync(
+            new ResultWork
+            {
+                TargetStream = targetStream,
+                TargetSuper = options.IsSuperStream,
+                Body = result,
+                SourceOffset = sourceOffset,
+                RoutingKey = options.RoutingKey,
+                ProducerName = options.ProducerName,
+            },
+            attempt => StreamBusDelays.ExponentialCapped(attempt, options.BaseDelay, options.MaxDelay, options.Multiplier, options.MaxJitter),
+            ct).ConfigureAwait(false);
     }
 
     private async Task EnsureReadyAsync(string stream, CancellationToken ct)

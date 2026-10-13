@@ -32,4 +32,5 @@ public sealed record ConsumeOptions
     public ErrorStreamOptions? ErrorStream { get; init; }
     public Func<ErrorHandoff, Task>? OnRetryExhausted { get; init; }
     public ReadinessPolicy ReadinessPolicy { get; init; } = ReadinessPolicy.FailFastPolicy;
+    internal EffectivelyOnceConfig? EffectivelyOnce { get; init; }
 }
