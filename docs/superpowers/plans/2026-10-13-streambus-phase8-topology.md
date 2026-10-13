@@ -946,22 +946,25 @@ public sealed class TopologyTests
     {
         // Args emission table (Task 1 probe values asserted here — update both if the client changes them):
         var spec = TopologyMapping.ToStreamSpec(new StreamDeclaration { Name = "s" });
-        Assert.DoesNotContain("x-max-age", spec.Args.Keys);
-        Assert.DoesNotContain("x-max-length-bytes", spec.Args.Keys);
+        Assert.DoesNotContain("max-age", spec.Args.Keys);
+        Assert.DoesNotContain("max-length-bytes", spec.Args.Keys);
+        Assert.DoesNotContain("stream-max-segment-size-bytes", spec.Args.Keys);
         var knobbed = TopologyMapping.ToStreamSpec(new StreamDeclaration { Name = "s", MaxAge = TimeSpan.FromDays(7) });
-        Assert.True(knobbed.Args.ContainsKey("x-max-age"));
+        Assert.True(knobbed.Args.ContainsKey("max-age"));
+        Assert.Equal("604800s", knobbed.Args["max-age"]);
     }
 
     [Fact]
     public void Knobs_pass_through_and_partitions_hold()
     {
+        // PartitionsSuperStreamSpec knob properties are set-only, so passthrough
+        // is observed through the emitted Args (same table as above).
         var spec = TopologyMapping.ToSuperStreamSpec(new SuperStreamDeclaration { Name = "ss", Partitions = 4, MaxAge = TimeSpan.FromHours(1), MaxLengthBytes = 1024, MaxSegmentSizeBytes = 4096, LeaderLocator = StreamLeaderLocator.Random });
         Assert.Equal("ss", spec.Name);
         Assert.Equal(4, spec.Partitions);
-        Assert.Equal(TimeSpan.FromHours(1), spec.MaxAge);
-        Assert.Equal(1024UL, spec.MaxLengthBytes);
-        Assert.Equal(4096, spec.MaxSegmentSizeBytes);
-        Assert.Equal(LeaderLocator.Random, spec.LeaderLocator);
+        Assert.Equal("3600s", spec.Args["max-age"]);
+        Assert.Equal("1024", spec.Args["max-length-bytes"]);
+        Assert.Equal("4096", spec.Args["stream-max-segment-size-bytes"]);
     }
 
     [Fact]
@@ -1093,8 +1096,12 @@ public sealed class TopologyTests
     {
         var (registry, system) = CreateRegistry();
         var ct = TestContext.Current.CancellationToken;
+        // The registry's pre-check only attempts the create while the super looks
+        // absent, so the first existence probe answers absent and later probes see
+        // the raced-into-existence super with matching partitions.
+        var superProbes = 0;
+        system.SuperExists = _ => Interlocked.Increment(ref superProbes) > 1;
         system.OnCreateSuper = (_, _) => throw new InvalidOperationException("broker: PreconditionFailed");
-        system.SuperExists = _ => true;
         system.Partitions = _ => new[] { "ss-0", "ss-1", "ss-2" };
         var ex = await Assert.ThrowsAsync<StreamConfigurationConflictException>(() =>
             registry.EnsureSuperStreamAsync(new SuperStreamDeclaration { Name = "ss", Partitions = 3, MaxAge = TimeSpan.FromDays(1) }, ct));
@@ -1106,8 +1113,12 @@ public sealed class TopologyTests
     {
         var (registry, system) = CreateRegistry();
         var ct = TestContext.Current.CancellationToken;
+        // Same absent-then-present sequencing as the super knob-conflict test: the
+        // pre-check attempts the create (which the broker rejects), and the
+        // re-probe then finds the plain stream, proving the specs differed.
+        var streamProbes = 0;
+        system.StreamExists = _ => Interlocked.Increment(ref streamProbes) > 1;
         system.OnCreateStream = (_, _) => throw new InvalidOperationException("broker: PreconditionFailed");
-        system.StreamExists = _ => true;
         var ex = await Assert.ThrowsAsync<StreamConfigurationConflictException>(() =>
             registry.EnsureStreamAsync(new StreamDeclaration { Name = "s", MaxAge = TimeSpan.FromDays(1) }, ct));
         Assert.Contains("differing arguments", ex.Actual);
@@ -1156,9 +1167,13 @@ public sealed class TopologyTests
         var ex = await Assert.ThrowsAsync<StreamConfigurationConflictException>(() =>
             registry.EnsureSuperStreamAsync(new SuperStreamDeclaration { Name = "s", Partitions = 2 }, ct));
         Assert.Contains("plain stream", ex.Actual);
+        // A plain Ensure over an occupying super must reach the compare path: the
+        // create attempt has to fail (a successful create is success, per the
+        // Task 1 PLAIN-ON-SUPER-NAME probe), so the rejection is scripted here.
         system.StreamExists = _ => false;
         system.SuperExists = _ => true;
         system.Partitions = _ => new[] { "s-0" };
+        system.OnCreateStream = (_, _) => throw new InvalidOperationException("broker: PreconditionFailed");
         var ex2 = await Assert.ThrowsAsync<StreamConfigurationConflictException>(() =>
             registry.EnsureStreamAsync(new StreamDeclaration { Name = "s" }, ct));
         Assert.Contains("1", ex2.Actual);
