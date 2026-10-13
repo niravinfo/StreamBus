@@ -9,6 +9,7 @@ public interface IStreamBus
     Task<IStreamConsumer> ConsumeAsync(string stream, ConsumeOptions options, Func<ConsumeContext, Task> handler, CancellationToken ct = default);
     Task<ulong?> GetConsumerOffsetAsync(string stream, string reference, int partition, CancellationToken ct = default);
     Task SetConsumerOffsetAsync(string stream, string reference, int partition, ulong offset, CancellationToken ct = default);
+    Task<int> ReplayErrorStreamAsync(string errorStream, string? targetStream = null, CancellationToken ct = default);
 }
 
 public interface IStreamBus<TBus> : IStreamBus
@@ -41,6 +42,8 @@ internal sealed class StreamBus : IStreamBus
         => _consumers.GetOffsetAsync(stream, reference, partition, ct);
     public Task SetConsumerOffsetAsync(string stream, string reference, int partition, ulong offset, CancellationToken ct = default)
         => _consumers.SetOffsetAsync(stream, reference, partition, offset, ct);
+    public Task<int> ReplayErrorStreamAsync(string errorStream, string? targetStream = null, CancellationToken ct = default)
+        => _consumers.ReplayAsync(errorStream, targetStream, ct);
     internal Task StartAsync(CancellationToken ct) => _supervisor.StartAsync(ct);
 }
 
@@ -68,5 +71,7 @@ internal sealed class StreamBus<TBus> : IStreamBus<TBus>
         => _consumers.GetOffsetAsync(stream, reference, partition, ct);
     public Task SetConsumerOffsetAsync(string stream, string reference, int partition, ulong offset, CancellationToken ct = default)
         => _consumers.SetOffsetAsync(stream, reference, partition, offset, ct);
+    public Task<int> ReplayErrorStreamAsync(string errorStream, string? targetStream = null, CancellationToken ct = default)
+        => _consumers.ReplayAsync(errorStream, targetStream, ct);
     internal Task StartAsync(CancellationToken ct) => _supervisor.StartAsync(ct);
 }

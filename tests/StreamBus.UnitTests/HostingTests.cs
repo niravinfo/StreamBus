@@ -17,6 +17,8 @@ public sealed class HostingTests
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
         public Task<IStreamProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct)
             => throw new NotImplementedException("HostingTests never publishes.");
+        public Task<IStreamProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
+            => throw new NotImplementedException("HostingTests never publishes.");
         public Task<IStreamProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
             => throw new NotImplementedException("HostingTests never publishes.");
         public Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken ct)
@@ -43,6 +45,8 @@ public sealed class HostingTests
             return ValueTask.CompletedTask;
         }
         public Task<IStreamProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct)
+            => throw new NotImplementedException("HostingTests never publishes.");
+        public Task<IStreamProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
             => throw new NotImplementedException("HostingTests never publishes.");
         public Task<IStreamProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
             => throw new NotImplementedException("HostingTests never publishes.");

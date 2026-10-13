@@ -28,5 +28,8 @@ public sealed record ConsumeOptions
     public ConsumeOrdering Ordering { get; init; } = ConsumeOrdering.Strict;
     public ConsumeOffset Offset { get; init; } = ConsumeOffset.ResumeOrFirst;
     public OffsetStoreOptions OffsetStore { get; init; } = new();
+    public RetryPolicy Retry { get; init; } = new();
+    public ErrorStreamOptions? ErrorStream { get; init; }
+    public Func<ErrorHandoff, Task>? OnRetryExhausted { get; init; }
     public ReadinessPolicy ReadinessPolicy { get; init; } = ReadinessPolicy.FailFastPolicy;
 }

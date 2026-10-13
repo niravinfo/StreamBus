@@ -87,6 +87,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
     private readonly StreamBusMetrics _metrics;
     private readonly string _vhost;
     private readonly string _bus;
+    private readonly ErrorPublisher _errors;
     private readonly ILogger<StreamPartitionConsumer> _logger;
     private readonly string _waterKey;
     private readonly OffsetStorer _storer;
@@ -114,6 +115,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
         StreamBusMetrics metrics,
         string vhost,
         string bus,
+        ErrorPublisher errorPublisher,
         ILogger<StreamPartitionConsumer>? logger = null)
     {
         ArgumentNullException.ThrowIfNull(system);
@@ -127,6 +129,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(metrics);
         ArgumentNullException.ThrowIfNull(vhost);
         ArgumentNullException.ThrowIfNull(bus);
+        ArgumentNullException.ThrowIfNull(errorPublisher);
         _system = system;
         _stream = stream;
         _partitionStream = partitionStream;
@@ -139,6 +142,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
         _metrics = metrics;
         _vhost = vhost;
         _bus = bus;
+        _errors = errorPublisher;
         _logger = logger ?? NullLogger<StreamPartitionConsumer>.Instance;
         // Same key format Task 4's SetOffsetAsync overwrites on the shared guard.
         _waterKey = $"{reference}@{partitionStream}";
@@ -217,6 +221,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                     _current = consumer;
                 }
                 failures = 0; // A successful attach resets the backoff streak.
+                Interlocked.Exchange(ref _state.RetryBlocked, 0); // A recreated attach never inherits a stuck 1 from a failed attach that died mid-retry.
                 _logger.LogInformation(
                     "Consume attach ready for stream {Stream} partition {Partition} reference {Reference}.",
                     _stream, _partitionIndex, _reference);
@@ -394,20 +399,66 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
             Interlocked.Increment(ref _state.Inflight);
             try
             {
-                await _handler(consumeContext).ConfigureAwait(false);
+                // In-handler retry (FR-4.1): the attempt loop runs under the already-held
+                // dispatch gate, so a retry sleep stalls exactly this partition and order
+                // is preserved by construction. `attempts` counts completed handler
+                // attempts (initial = 1), matching MaxAttempts semantics.
+                var attempts = 0;
+                while (true)
+                {
+                    attempts++;
+                    try
+                    {
+                        await _handler(consumeContext).ConfigureAwait(false);
+                        break;
+                    }
+                    catch (OperationCanceledException) when (attach.LoopToken.IsCancellationRequested)
+                    {
+                        Interlocked.Decrement(ref _state.Inflight);
+                        Interlocked.Exchange(ref _state.RetryBlocked, 0);
+                        return;
+                    }
+                    catch (Exception ex)
+                    {
+                        var strict = _options.Retry.FailureMode == FailureMode.Strict;
+                        var exhausted = !strict && attempts >= (_options.Retry.MaxAttempts ?? int.MaxValue);
+                        if (RetryDelays.ShouldLogRetryWarning(attempts))
+                            _logger.LogWarning(ex,
+                                "Consume handler failed for stream {Stream} partition {Partition} offset {Offset} (attempt {Attempt}, mode {Mode}); retrying in-handler.",
+                                _stream, _partitionIndex, offset, attempts, _options.Retry.FailureMode);
+                        else
+                            _logger.LogDebug(ex,
+                                "Consume handler failed for stream {Stream} partition {Partition} offset {Offset} (attempt {Attempt}, mode {Mode}); retrying in-handler.",
+                                _stream, _partitionIndex, offset, attempts, _options.Retry.FailureMode);
+                        if (exhausted)
+                        {
+                            Interlocked.Decrement(ref _state.Inflight);
+                            Interlocked.Exchange(ref _state.RetryBlocked, 0);
+                            await ExhaustAsync(consumer, offset, consumeContext, attempts, ex, attach).ConfigureAwait(false);
+                            return;
+                        }
+                        Interlocked.Exchange(ref _state.RetryBlocked, 1);
+                        var delay = RetryDelays.ResolveDelay(_options.Retry, attempts, ex, _logger);
+                        try
+                        {
+                            await Task.Delay(delay, attach.LoopToken).ConfigureAwait(false);
+                        }
+                        catch (OperationCanceledException) when (attach.LoopToken.IsCancellationRequested)
+                        {
+                            Interlocked.Decrement(ref _state.Inflight);
+                            Interlocked.Exchange(ref _state.RetryBlocked, 0);
+                            return;
+                        }
+                    }
+                }
             }
             catch (OperationCanceledException) when (attach.LoopToken.IsCancellationRequested)
             {
-                Interlocked.Decrement(ref _state.Inflight);
-                return;
-            }
-            catch (Exception ex)
-            {
-                Interlocked.Decrement(ref _state.Inflight);
-                FailAttach(attach, offset, ex, "Consume handler failed");
+                // Shutdown raced dispatch; exit quietly without signalling failure.
                 return;
             }
             Interlocked.Decrement(ref _state.Inflight);
+            Interlocked.Exchange(ref _state.RetryBlocked, 0);
 
             if (_storer.ShouldStoreOnSuccess(offset))
             {
@@ -427,6 +478,87 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
         finally
         {
             _dispatchGate.Release();
+        }
+    }
+
+    // SkipAfterDeadline exhaustion: confirmed error-stream handoff first, single
+    // advance-store second, observe-only hook third. Never throws into dispatch:
+    // HandOffAsync's commit failure propagates to the dispatch safety net (attach
+    // recycle + redeliver), never to a silent skip.
+    private async Task ExhaustAsync(RawConsumer consumer, ulong offset, ConsumeContext consumeContext, int attempts, Exception lastError, AttachState attach)
+    {
+        var errorStream = _options.ErrorStream!.Stream;
+        var failedAt = DateTimeOffset.UtcNow;
+        var envelope = new ErrorEnvelope
+        {
+            ErrorStream = errorStream,
+            SourceStream = _stream,
+            SourcePartition = _partitionIndex,
+            SourcePartitionStream = _partitionStream,
+            SourceOffset = offset,
+            Body = consumeContext.Body.ToArray(),
+            ExceptionType = lastError.GetType().FullName ?? lastError.GetType().Name,
+            ExceptionMessage = lastError.Message,
+            ExceptionStack = lastError.ToString(),
+            Attempts = attempts,
+            FailedAt = failedAt,
+            MessageId = consumeContext.Metadata.MessageId,
+            CorrelationId = consumeContext.Metadata.CorrelationId,
+            RoutingValue = consumeContext.RoutingValue,
+            ErrorRoutingValue = _options.ErrorStream.RoutingValue ?? _stream,
+        };
+        _logger.LogWarning(lastError,
+            "Retry budget exhausted for stream {Stream} partition {Partition} offset {Offset} after {Attempts} attempts; handing off to error stream {ErrorStream}.",
+            _stream, _partitionIndex, offset, attempts, errorStream);
+        // The handoff commit resets the cadence counter via Stored(): the handoff
+        // offset is always stored exactly once regardless of EveryMessages, and the
+        // MaxInterval timer then skips it via IsStored.
+        await _errors.HandOffAsync(
+            envelope,
+            (env, ct) => _errors.PublishHandoffAsync(errorStream, env, ct),
+            () => AdmitAndCommitStoreAsync(consumer, offset, attach, attach.LoopToken),
+            (n, ex) => RetryDelays.ResolveDelay(_options.Retry, n, ex, _logger),
+            attach.LoopToken).ConfigureAwait(false);
+        if (_options.OnRetryExhausted is { } hook)
+        {
+            var handoff = new ErrorHandoff
+            {
+                ErrorStream = errorStream,
+                SourceStream = _stream,
+                SourcePartition = _partitionIndex,
+                SourceOffset = offset,
+                Attempts = attempts,
+                FailedAt = failedAt,
+                Exception = lastError,
+            };
+            var hookTask = hook(handoff);
+            try
+            {
+                await hookTask.WaitAsync(attach.LoopToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (attach.LoopToken.IsCancellationRequested)
+            {
+                _ = hookTask.ContinueWith(
+                    t =>
+                    {
+                        if (t.Exception is { } hex)
+                            _logger.LogWarning(hex,
+                                "OnRetryExhausted hook faulted after abandon for stream {Stream} partition {Partition} reference {Reference}.",
+                                _stream, _partitionIndex, _reference);
+                    },
+                    CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
+                _logger.LogDebug(
+                    "OnRetryExhausted hook abandoned on shutdown for stream {Stream} partition {Partition}.",
+                    _stream, _partitionIndex);
+            }
+            catch (Exception hex)
+            {
+                _logger.LogWarning(hex,
+                    "OnRetryExhausted hook failed for stream {Stream} partition {Partition}; handoff outcome unchanged.",
+                    _stream, _partitionIndex);
+            }
         }
     }
 
@@ -467,6 +599,39 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
 
     private async Task StoreAndTrackAsync(RawConsumer consumer, ulong offset, AttachState attach, CancellationToken ct)
     {
+        // Admission precedes the gated commit: a rejected (non-forward) candidate only
+        // counts the metric and never reaches the wire. A rejection racing a newer
+        // admission is still correct — the guard is the single ordering authority.
+        // (The handoff path admits inside its own gated commit instead, so teardown
+        // can never strand an admitted-but-unstored offset.)
+        if (!_storer.TryAdmit(offset))
+        {
+            return;
+        }
+        try
+        {
+            await CommitStoreAsync(consumer, offset, attach, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            // Catch-log-continue: the cadence counter is deliberately not reset so
+            // the next success retries the store.
+            _logger.LogWarning(
+                ex,
+                "Offset store failed for stream {Stream} partition {Partition} offset {Offset}; continuing without advancing.",
+                _stream, _partitionIndex, offset);
+        }
+    }
+
+    // Gated wire store + bookkeeping shared by the cadence path and the handoff
+    // commit. A store failure propagates (the cadence caller catches; the handoff
+    // caller lets it recycle the attach so the confirmed handoff is never silently
+    // unadvanced). Gate-wait cancellation returns quietly, and a store is never
+    // issued on a cancelled attach at all: teardown is in progress and the next
+    // attach redelivers, so storing would risk advancing past unprocessed messages
+    // (the G-5b teardown window). The next attach redelivers instead.
+    private async Task CommitStoreAsync(RawConsumer consumer, ulong offset, AttachState attach, CancellationToken ct)
+    {
         try
         {
             await _storeGate.WaitAsync(ct).ConfigureAwait(false);
@@ -477,42 +642,69 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
         }
         try
         {
-            // Admission happens under the store gate so wire order matches admission
-            // order; a rejected (non-forward) candidate only counts the metric.
-            if (!_storer.TryAdmit(offset))
+            if (ct.IsCancellationRequested)
             {
                 return;
             }
-            try
-            {
-                _logger.LogDebug(
-                    "Storing offset {Offset} for stream {Stream} partition {Partition} reference {Reference}.",
-                    offset, _stream, _partitionIndex, _reference);
-                await consumer.StoreOffset(offset).ConfigureAwait(false);
-                _logger.LogDebug(
-                    "Stored offset {Offset} for stream {Stream} partition {Partition} reference {Reference}.",
-                    offset, _stream, _partitionIndex, _reference);
-            }
-            catch (Exception ex)
-            {
-                // Catch-log-continue: the cadence counter is deliberately not reset so
-                // the next success retries the store.
-                _logger.LogWarning(
-                    ex,
-                    "Offset store failed for stream {Stream} partition {Partition} offset {Offset}; continuing without advancing.",
-                    _stream, _partitionIndex, offset);
-                return;
-            }
-            _storer.Stored(offset);
-            Interlocked.Exchange(ref _state.LastStored, (long)offset);
-            if (Interlocked.Exchange(ref attach.RegressionChecked, 1) == 0)
-            {
-                await CheckRegressionAsync(ct).ConfigureAwait(false);
-            }
+            await SendAndBookkeepAsync(consumer, offset, attach, ct).ConfigureAwait(false);
         }
         finally
         {
             _storeGate.Release();
+        }
+    }
+
+    // Handoff commit: admission and the wire store happen in one gated step so a
+    // teardown between them cannot poison the guard water (admitted but unstored
+    // would make the redelivery reject its own handoff and skip without handing
+    // off). A rejected candidate only counts the metric: another instance already
+    // owns this offset's handoff. A duplicate error envelope from a stale instance
+    // is benign (replay dedups on stable name + id). Residual micro-race (cancel
+    // landing between the check and the send, or a local send throw after admission)
+    // is accepted: the broker store path has no acknowledgement, so no local
+    // arrangement can be fully atomic; at-least-once is preserved regardless.
+    private async Task AdmitAndCommitStoreAsync(RawConsumer consumer, ulong offset, AttachState attach, CancellationToken ct)
+    {
+        try
+        {
+            await _storeGate.WaitAsync(ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+        try
+        {
+            if (ct.IsCancellationRequested)
+            {
+                return;
+            }
+            if (!_storer.TryAdmit(offset))
+            {
+                return;
+            }
+            await SendAndBookkeepAsync(consumer, offset, attach, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            _storeGate.Release();
+        }
+    }
+
+    private async Task SendAndBookkeepAsync(RawConsumer consumer, ulong offset, AttachState attach, CancellationToken ct)
+    {
+        _logger.LogDebug(
+            "Storing offset {Offset} for stream {Stream} partition {Partition} reference {Reference}.",
+            offset, _stream, _partitionIndex, _reference);
+        await consumer.StoreOffset(offset).ConfigureAwait(false);
+        _logger.LogDebug(
+            "Stored offset {Offset} for stream {Stream} partition {Partition} reference {Reference}.",
+            offset, _stream, _partitionIndex, _reference);
+        _storer.Stored(offset);
+        Interlocked.Exchange(ref _state.LastStored, (long)offset);
+        if (Interlocked.Exchange(ref attach.RegressionChecked, 1) == 0)
+        {
+            await CheckRegressionAsync(ct).ConfigureAwait(false);
         }
     }
 

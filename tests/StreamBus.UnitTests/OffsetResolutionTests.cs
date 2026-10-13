@@ -107,7 +107,7 @@ public sealed class ConsumeValidationTests
         var options = new StreamBusOptions { Vhost = "/", UserName = "app", Password = "secret" };
         var supervisor = new StreamBusConnectionSupervisor(options,
             new NeverReadyConnector());
-        return new StreamConsumerRegistry(supervisor, "/");
+        return new StreamConsumerRegistry(supervisor, "/", new StreamProducerRegistry(supervisor, "/"));
     }
 
     private sealed class NeverReadyConnector : IStreamSystemConnector
@@ -180,7 +180,7 @@ public sealed class ConsumeValidationTests
         var options = new StreamBusOptions { Vhost = "/", UserName = "app", Password = "secret" };
         var supervisor = new StreamBusConnectionSupervisor(options, new ReadyConnector(handle));
         supervisor.StartAsync(CancellationToken.None).GetAwaiter().GetResult();
-        return new StreamConsumerRegistry(supervisor, "/", factory);
+        return new StreamConsumerRegistry(supervisor, "/", new StreamProducerRegistry(supervisor, "/"), factory);
     }
 
     private sealed class StubSystemHandle : IStreamSystemHandle
@@ -189,6 +189,7 @@ public sealed class ConsumeValidationTests
         public bool SuperExists;
         public bool IsClosed => false;
         public Task<IStreamProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct) => throw new NotImplementedException();
+        public Task<IStreamProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct) => throw new NotImplementedException();
         public Task<IStreamProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct) => throw new NotImplementedException();
         public Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken ct) => Task.FromResult<ulong?>(null);
         public Task StoreSystemOffsetAsync(string reference, string stream, ulong offset, CancellationToken ct) => Task.CompletedTask;

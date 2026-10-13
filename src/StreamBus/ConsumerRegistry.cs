@@ -69,14 +69,16 @@ internal sealed class StreamConsumerRegistry
     private readonly string _vhost;
     private readonly ILoggerFactory _loggerFactory;
     private readonly ILogger<StreamConsumerRegistry> _logger;
+    private readonly StreamProducerRegistry _producers;
     private readonly MonotonicOffsetGuard _guard = new();
     private readonly HashSet<StreamConsumerRegistration> _live = new();
     private readonly object _gate = new();
 
-    public StreamConsumerRegistry(StreamBusConnectionSupervisor supervisor, string vhost, ILoggerFactory? loggerFactory = null)
+    public StreamConsumerRegistry(StreamBusConnectionSupervisor supervisor, string vhost, StreamProducerRegistry producers, ILoggerFactory? loggerFactory = null)
     {
         _supervisor = supervisor;
         _vhost = vhost;
+        _producers = producers;
         _loggerFactory = loggerFactory ?? NullLoggerFactory.Instance;
         _logger = _loggerFactory.CreateLogger<StreamConsumerRegistry>();
     }
@@ -102,6 +104,7 @@ internal sealed class StreamConsumerRegistry
         ArgumentNullException.ThrowIfNull(handler);
         ArgumentNullException.ThrowIfNull(options.OffsetStore);
         ArgumentNullException.ThrowIfNull(options.ReadinessPolicy);
+        ArgumentNullException.ThrowIfNull(options.Retry);
         if (options.OffsetStore.EveryMessages < 1)
         {
             throw new StreamBusConfigurationException("ConsumeOptions.OffsetStore.EveryMessages must be >= 1.");
@@ -109,6 +112,47 @@ internal sealed class StreamConsumerRegistry
         if (options.OffsetStore.MaxInterval is { } maxInterval && maxInterval <= TimeSpan.Zero)
         {
             throw new StreamBusConfigurationException("ConsumeOptions.OffsetStore.MaxInterval must be positive when set.");
+        }
+        var retry = options.Retry;
+        if (retry.MaxAttempts is { } maxAttempts && maxAttempts < 1)
+        {
+            throw new StreamBusConfigurationException("ConsumeOptions.Retry.MaxAttempts must be >= 1 when set.");
+        }
+        if (retry.FailureMode == FailureMode.Strict && retry.MaxAttempts is not null)
+        {
+            throw new StreamBusConfigurationException("ConsumeOptions.Retry.MaxAttempts must be null with FailureMode.Strict (unbounded retry).");
+        }
+        if (retry.FailureMode == FailureMode.SkipAfterDeadline && retry.MaxAttempts is null)
+        {
+            throw new StreamBusConfigurationException("ConsumeOptions.Retry.MaxAttempts is required with FailureMode.SkipAfterDeadline.");
+        }
+        if (retry.BaseDelay <= TimeSpan.Zero)
+        {
+            throw new StreamBusConfigurationException("ConsumeOptions.Retry.BaseDelay must be positive.");
+        }
+        if (retry.MaxDelay <= TimeSpan.Zero)
+        {
+            throw new StreamBusConfigurationException("ConsumeOptions.Retry.MaxDelay must be positive.");
+        }
+        if (retry.Multiplier < 1.0 || !double.IsFinite(retry.Multiplier))
+        {
+            throw new StreamBusConfigurationException("ConsumeOptions.Retry.Multiplier must be a finite number >= 1.");
+        }
+        if (retry.MaxJitter < TimeSpan.Zero)
+        {
+            throw new StreamBusConfigurationException("ConsumeOptions.Retry.MaxJitter must be non-negative.");
+        }
+        if (retry.FailureMode == FailureMode.Strict && options.ErrorStream is not null)
+        {
+            throw new StreamBusConfigurationException("ConsumeOptions.ErrorStream must not be configured with FailureMode.Strict.");
+        }
+        if (retry.FailureMode == FailureMode.SkipAfterDeadline && options.ErrorStream is null)
+        {
+            throw new StreamBusConfigurationException("ConsumeOptions.ErrorStream is required with FailureMode.SkipAfterDeadline.");
+        }
+        if (options.ErrorStream is { } errorOptions)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(errorOptions.Stream);
         }
         var reference = options.Reference ?? ReferenceDerivation.Derive(busType, stream);
         ReferenceDerivation.Validate(reference);
@@ -131,6 +175,17 @@ internal sealed class StreamConsumerRegistry
         if (!exists)
         {
             throw new StreamBusStreamNotFoundException(stream);
+        }
+        if (options.ErrorStream is { } error)
+        {
+            if (await handle.SuperStreamExistsAsync(error.Stream, ct).ConfigureAwait(false))
+            {
+                throw new StreamBusConfigurationException($"Error stream '{error.Stream}' must be a plain stream in v1 (super-stream error destinations are not supported).");
+            }
+            if (!await handle.StreamExistsAsync(error.Stream, ct).ConfigureAwait(false))
+            {
+                throw new StreamBusStreamNotFoundException(error.Stream);
+            }
         }
         var partitionStreams = options.IsSuperStream
             ? await handle.QueryPartitionAsync(stream, ct).ConfigureAwait(false)
@@ -163,6 +218,7 @@ internal sealed class StreamConsumerRegistry
 
         var busName = busType.FullName ?? busType.Name;
         var family = new CancellationTokenSource();
+        var errors = new ErrorPublisher(_producers, _loggerFactory.CreateLogger<ErrorPublisher>());
         var loops = new List<(StreamPartitionConsumer Loop, Task RunTask)>(partitionStreams.Length);
         var scopes = new List<IDisposable>(partitionStreams.Length);
         try
@@ -174,7 +230,7 @@ internal sealed class StreamConsumerRegistry
                 scopes.Add(StreamBusMetrics.Shared.TrackPartition(_vhost, busName, stream, index, reference, state));
                 var loop = new StreamPartitionConsumer(
                     handle, stream, partitionStream, index, reference, options, handler,
-                    _guard, state, StreamBusMetrics.Shared, _vhost, busName,
+                    _guard, state, StreamBusMetrics.Shared, _vhost, busName, errors,
                     _loggerFactory.CreateLogger<StreamPartitionConsumer>());
                 loops.Add((loop, loop.RunAsync(family.Token)));
             }
@@ -238,6 +294,129 @@ internal sealed class StreamConsumerRegistry
         _logger.LogInformation(
             "Consumer offset for reference '{Reference}' on stream '{Stream}' partition {Partition} set to offset {Offset}.",
             reference, stream, partition, offset);
+    }
+
+    public async Task<int> ReplayAsync(string errorStream, string? targetStream, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(errorStream);
+        if (targetStream is not null) ArgumentException.ThrowIfNullOrWhiteSpace(targetStream);
+        await EnsureReadyAsync(errorStream, ct).ConfigureAwait(false);
+        var handle = _supervisor.CurrentHandle
+            ?? throw new StreamBusNotReadyException($"StreamBus for vhost '{_vhost}' is not ready; replay of '{errorStream}' refused.");
+        if (await handle.SuperStreamExistsAsync(errorStream, ct).ConfigureAwait(false))
+        {
+            throw new StreamBusConfigurationException($"Error stream '{errorStream}' must be a plain stream in v1.");
+        }
+        if (!await handle.StreamExistsAsync(errorStream, ct).ConfigureAwait(false))
+        {
+            throw new StreamBusStreamNotFoundException(errorStream);
+        }
+        if (targetStream is not null)
+        {
+            if (await handle.SuperStreamExistsAsync(targetStream, ct).ConfigureAwait(false))
+            {
+                throw new StreamBusConfigurationException($"Replay target '{targetStream}' must be a plain stream in v1.");
+            }
+            if (!await handle.StreamExistsAsync(targetStream, ct).ConfigureAwait(false))
+            {
+                throw new StreamBusStreamNotFoundException(targetStream);
+            }
+        }
+
+        var reference = ReplayNaming.Reference(errorStream);
+        var replayOptions = new ConsumeOptions { Offset = ConsumeOffset.AlwaysFirst };
+        var guard = new MonotonicOffsetGuard(); // replay-scoped: never touches consumer watermarks.
+        var state = new PartitionState(); // untracked: replay progress surfaces via the return count + logs, not the meter.
+        var errors = new ErrorPublisher(_producers, _loggerFactory.CreateLogger<ErrorPublisher>());
+        var replayed = 0;
+        var skipped = 0;
+        long lastTicks = DateTimeOffset.UtcNow.UtcTicks; // cross-thread via Interlocked below.
+        var producers = new Dictionary<string, IStreamProducerHandle>();
+        void DisposeProducers()
+        {
+            foreach (var (_, producer) in producers)
+            {
+                try
+                {
+                    producer.DisposeAsync().GetAwaiter().GetResult();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Error disposing replay producer for error stream '{Error}'.", errorStream);
+                }
+            }
+            producers.Clear();
+        }
+        using var family = new CancellationTokenSource();
+        try
+        {
+            var loop = new StreamPartitionConsumer(
+                handle, errorStream, errorStream, 0, reference, replayOptions,
+                async ctx =>
+                {
+                    if (!ErrorEnvelope.TryParse(errorStream, ctx.Body.ToArray(), ctx.Metadata.ApplicationProperties, out var envelope) || envelope is null)
+                    {
+                        Interlocked.Increment(ref skipped);
+                        _logger.LogWarning("Replay skipping malformed message on error stream '{Error}' at offset {Offset}.",
+                            errorStream, ctx.Offset);
+                        return;
+                    }
+                    var partitionStream = targetStream ?? envelope.SourcePartitionStream;
+                    if (targetStream is null
+                        && !await handle.StreamExistsAsync(partitionStream, ct).ConfigureAwait(false))
+                    {
+                        Interlocked.Increment(ref skipped);
+                        _logger.LogWarning("Replay skipping message for vanished partition stream '{Partition}' (error offset {Offset}).",
+                            partitionStream, ctx.Offset);
+                        return;
+                    }
+                    if (!producers.TryGetValue(partitionStream, out var producer))
+                    {
+                        producer = await handle.CreatePlainProducerWithReferenceAsync(
+                            partitionStream, ReplayNaming.ProducerName(partitionStream), ct).ConfigureAwait(false);
+                        producers[partitionStream] = producer;
+                    }
+                    await producer.PublishReplayAsync(envelope.Body, ReplayNaming.PublishingId(envelope.SourceOffset), ct).ConfigureAwait(false);
+                    Interlocked.Increment(ref replayed);
+                    Interlocked.Exchange(ref lastTicks, DateTimeOffset.UtcNow.UtcTicks);
+                },
+                guard, state, StreamBusMetrics.Shared, _vhost, "replay", errors,
+                _loggerFactory.CreateLogger<StreamPartitionConsumer>());
+            var run = loop.RunAsync(family.Token);
+            try
+            {
+                await loop.FirstAttachAsync.WaitAsync(ct).ConfigureAwait(false);
+                // No usable broker end offset exists (Phase 5 Round 2), so replay
+                // terminates on idle: 5 s with no delivery and nothing in flight.
+                var idle = TimeSpan.FromSeconds(5);
+                while (true)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    var since = DateTimeOffset.UtcNow - new DateTimeOffset(Interlocked.Read(ref lastTicks), TimeSpan.Zero);
+                    if (since >= idle && Volatile.Read(ref state.Inflight) == 0) break;
+                    await Task.Delay(TimeSpan.FromMilliseconds(200), ct).ConfigureAwait(false);
+                }
+            }
+            finally
+            {
+                family.Cancel();
+                try
+                {
+                    await run.ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                }
+                await loop.DisposeAsync().ConfigureAwait(false);
+            }
+            _logger.LogInformation("Replayed {Replayed} messages from error stream '{Error}' ({Skipped} skipped).",
+                replayed, errorStream, skipped);
+            return replayed;
+        }
+        finally
+        {
+            DisposeProducers();
+        }
     }
 
     private async Task EnsureReadyAsync(string stream, CancellationToken ct)
