@@ -4,14 +4,14 @@ Date: 2026-10-13. Broker: localhost:5552 (single node; version unconfirmed this
 session — management API reachable but 401 with default credentials, and
 `rabbitmqctl` is not on PATH; design §1 records 4.2.6 single node
 `rabbit@local`, not re-verified here — do not treat as confirmed).
-Branch: feature/phase10-acceptance. Base: 781a996
-(`test: add v1 acceptance gap probes`) + uncommitted Task 3 changes (this doc +
-one unit mirror test in `tests/StreamBus.UnitTests/AcceptanceTests.cs`).
+Branch: feature/phase10-acceptance. Head: 02e8532 (doc content as of d3106bd).
 
 Matrix discipline (binding): a row is ✅ ONLY if a test asserts the
 acceptance criterion. An incidentally-exercised path with no assertion is not
 a pin. Final green this session (Release): unit 179/179 passed, 0 skipped;
-integration 54 passed, 2 skipped (the 2 known env-skips), 0 failed — see the
+integration 54 passed, 2 skipped
+(`TopologyIntegrationTests.Policy_applied_tuning_is_effective`,
+`TopologyIntegrationTests.Leader_placement_gate_G3`), 0 failed — see the
 v1 verdict for the exact lines.
 
 ## Functional matrix
@@ -24,7 +24,7 @@ v1 verdict for the exact lines.
 | FR-1.4 | Failed confirms raise to the caller | `Failed_confirm_raises_with_stream_and_status` (unit) | ✅ |
 | FR-1.5 | One producer instance serves N publishes to a stream | `N_publishes_reuse_one_producer` (unit: 5 publishes, 1 `PlainCreations`) | ✅ |
 | FR-2.1 | Typed `IConsumer<T>` via DI with explicit stream binding (single + multi-bus) | `Typed_round_trip_plain` + `Binding_is_explicit` (unbound stream gets nothing) + `Multi_bus_isolation` (BusA/BusB markers, per-stream delivery) + unit `Store_rejects_duplicates_but_allows_variants`, `Explicit_service_lifetime_wins` | ✅ |
-| FR-2.2 | Delegate `ConsumeAsync` overload works, not deprecated | All 8 `ConsumerIntegrationTests` use the delegate handler (split, failover, broadcast, resume, branches, set/get, redelivery, inflight) | ✅ |
+| FR-2.2 | Delegate `ConsumeAsync` overload works, not deprecated | `Handler_failure_redelivers_without_advancing` (delegate handler with throwing-handler asserts: attempts[2]==3, stored==4 — fails if the delegate path breaks) | ✅ |
 | FR-2.3 | Shared `Reference` = one SAC group splitting partitions, exactly once | `Super_stream_splits_across_instances_exactly_once_ordered` (24/24 distinct, per-key ordered; actual scale 4 partitions × 3 instances, not the 6×4 in the criterion text — property fully pinned, scale differs) | ✅ |
 | FR-2.4 | Distinct references = broadcast, every message to each | `Distinct_references_each_receive_everything` + `Two_consumer_types_each_receive_everything` | ✅ |
 | FR-2.5 | Resume from broker-stored offset on attach (create/promote/reconnect); never 0, never local | `Recreate_resumes_from_broker_stored_offset` (fresh-guard recreate: [0..4] then [5..9], no overlap) + `Failover_preserves_offsets_and_order` (promotion: 24/24, no dupes) + `Strict_retry_window_survives_kill_without_skip` (kill mid-retry → second drain [1..4]) | ✅ |
@@ -64,13 +64,13 @@ v1 verdict for the exact lines.
 | FR-8.3 | Supervised initial connect retries forever (capped backoff+jitter) | `Transient_failures_retry_then_ready` (unit) + `WaitUpTo_times_out_but_loop_keeps_retrying` (loop survives timeout → later Ready) + `Unreachable_broker_never_surfaces_terminal_error_and_recovers` (integration: no terminal error) + `Backoff_is_capped` | ✅ |
 | FR-8.4 | Protocol/SSL/auth-mechanism/auth failures are fatal, never retried | `Fatal_error_becomes_fatal_without_retry` + `Protocol_ssl_and_auth_mechanism_errors_are_fatal` + `Every_authentication_failure_type_in_the_client_is_fatal` (reflection over every `AuthenticationFailure*` client type) | ✅ |
 | FR-8.5 | Network errors retried indefinitely | `Transient_failures_retry_then_ready` + `Network_errors_are_not_fatal` + `Unreachable_broker_…` (state stays Starting/TransientFailure; host process alive) | ✅ |
-| FR-8.6 | Per-call-site `ReadinessPolicy` (all three); wait bounded independently of confirm timeout | FailFast-at-publish pinned (`Not_ready_failfast_throws_not_ready`); wait-vs-confirm independence pinned both ways (`Confirm_timeout_throws_and_bus_stays_ready`, `Not_ready_…`). Call-site wait policies pinned (Task 2 + Task 3, unit, no broker): publish `WaitUpTo_times_out_at_publish_then_Indefinitely_waits` (WaitUpTo bounded-throw + Indefinitely success leg) + consume mirror `WaitUpTo_times_out_at_consume_call_site` (same `WaitUntilReadyAsync` machinery at the consume call site) | ✅ |
+| FR-8.6 | Per-call-site `ReadinessPolicy` (all three); wait bounded independently of confirm timeout | FailFast-at-publish pinned (`Not_ready_failfast_throws_not_ready`); wait-vs-confirm independence pinned both ways (`Confirm_timeout_throws_and_bus_stays_ready`, `Not_ready_failfast_throws_not_ready`). Call-site wait policies pinned (Task 2 + Task 3, unit, no broker): publish `WaitUpTo_times_out_at_publish_then_Indefinitely_waits` (WaitUpTo bounded-throw + Indefinitely success leg) + consume mirror `WaitUpTo_times_out_at_consume_call_site` (same `WaitUntilReadyAsync` machinery at the consume call site) | ✅ |
 | FR-8.7 | `WaitUntilReadyAsync` reaches Ready/TimedOut/Fatal | `Transient_failures_retry_then_ready` (Ready) + `WaitUpTo_times_out_but_loop_keeps_retrying` (TimedOut) + `Fatal_error_becomes_fatal_without_retry` (Fatal) | ✅ |
 | FR-8.8 | Health reports per-(vhost, bus type) state | `Healthcheck_pipeline_reports_per_vhost_bus_type_data` (unit: `/\|` + `orders-vh\|` keys with bus-type names) + `Health_reports_per_vhost_bus_type_state` (integration: Healthy + `/\|` key) | ✅ |
 | FR-8.9 | Guest credentials fail at startup with actionable message | `Guest_credentials_fail_fast_with_actionable_message` (unit: names guest+loopback) + `Guest_at_startup_fails_with_actionable_message` (hosted startup) | ✅ |
 | FR-8.10 | Pooling defaults 1/1, overridable per bus | `Pooling_defaults_are_one_and_overridable` + `Pool_upper_bound_rejected_with_named_limit` + `Out_of_range_pool_values_fail_fast_without_connecting` | ✅ |
 | FR-8.11 | Non-blocking default vs blocking-with-timeout startup | `Non_blocking_startup_returns_without_waiting` + `Blocking_startup_succeeds_when_connector_answers` + `Blocking_startup_timeout_surfaces_timed_out` (+ `Caller_cancellation_propagates_as_canceled_not_timeout`) | ✅ |
-| FR-9.1 | Per-partition metrics per §13 catalog | Pinned 7/7 (Task 2 closes the last two with `MeterListener` unit tests in the `ConsumerMetricsTests` style): lag (`Lag_observes_delivered_minus_stored` + `Retry_blocked_and_lag_…`), inflight (tracking-scope unit + `Inflight_gauge_tracks_dispatched_uncompleted`), retry_blocked (`Retry_blocked_and_lag_…`), `store_rejected_total` + `fallback_total` (`Fallback_and_rejected_counters_emit_with_tags`), `streambus_offset_regressed_total` (`Regressed_counter_emits_with_catalog_name`), `streambus_connection_state` (`Connection_state_observes_current_state`, observes Ready vs TransientFailure) | ✅ |
+| FR-9.1 | Per-partition metrics per §13 catalog | Pinned 7/7 (Task 2 closes the last two with `MeterListener` unit tests in the `ConsumerMetricsTests` style): lag (`Lag_observes_delivered_minus_stored` + `Retry_blocked_and_lag_expose_a_stalled_partition`), inflight (`Partition_tracking_scope_registers_and_unregisters` + `Inflight_gauge_tracks_dispatched_uncompleted`), retry_blocked (`Retry_blocked_and_lag_expose_a_stalled_partition`), `store_rejected_total` + `fallback_total` (`Fallback_and_rejected_counters_emit_with_tags`), `streambus_offset_regressed_total` (`Regressed_counter_emits_with_catalog_name`), `streambus_connection_state` (`Connection_state_observes_current_state`, observes Ready vs TransientFailure) | ✅ |
 | FR-9.2 | Connection transitions observable for probes | `Transient_failures_retry_then_ready` (`TransientFailure` in `StateChanged` + `Ready`) + health tests (FR-8.8) | ✅ |
 | FR-9.3 | Hot-key starvation detectable from metrics | `Retry_blocked_and_lag_expose_a_stalled_partition` (retry_blocked==1 + lag>0 on partition 0, both back to 0 after release) | ✅ |
 | FR-10.1 | Single `ConsumeOffset`; `ResumeOrFirst` default resumes with no extra config | `Offset_branches_behave` e1 (default options resume: second drain exactly [3,4,5], no replay) | ✅ |

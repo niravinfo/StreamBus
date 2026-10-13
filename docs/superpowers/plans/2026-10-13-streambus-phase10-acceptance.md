@@ -484,11 +484,7 @@ public sealed class AcceptanceTests : IDisposable
     }
 ```
 
-Hmm — `SubEntryMessage`/`CompressionType` type names: `RabbitMQ.Stream.Client.SubEntryMessage`? From the Phase 7 probe the Send overloads were `Send(UInt64, List<...> subEntryMessages, CompressionType)` — exact CLR type names unverified (`SubEntryMessage`? `SubEntry`?). The probe-first instruction covers it, but my WRITTEN code guesses names that might not compile. Fix: don't guess — write the class with ONLY the known `Send(ulong, Message)` + a comment that remaining members come from the probe FIRST... but then the file doesn't compile until probed — that's the instructed order (probe, then write). The plan step should say: run probe, then write the class. Restructure: make the probe its own sub-step before the class. But I already present the class... Simplest honest shape: keep the class as written BUT flag the three guessed member lines with "confirm against probe output; adjust type names" — NO, that's placeholder-adjacent.
-
-Better: I know the client source knowledge: `SubEntryMessage` hmm. Actually from RabbitMQ.Stream.Client public API (memory): `public ValueTask Send(ulong publishingId, List<SubEntryMessage> messages, CompressionType compressionType)` — I'm fairly confident `SubEntryMessage` and `CompressionType` are the real names (they appear in the Phase 7 probe output I saw: "Send UInt64 publishingId, List`1 subEntryMessages, CompressionType compressionType"). List`1 element type name wasn't shown. Risk remains on `SubEntryMessage`.
-
-Decision: keep the code + probe instruction (as written), since the probe step precedes compilation and corrects names. The instruction is explicit and ordered. Accept.
+Decision (resolved during authoring): probe the `ISuperStreamProducer` surface first, then implement every member — only the blocking `Send(ulong, Message)` does work, everything else throws. Recorded outcome: `RecordingSuperProducer` in `tests/StreamBus.UnitTests/AcceptanceTests.cs:136-154`.
 
 ```csharp
     [Fact]
