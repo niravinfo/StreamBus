@@ -1,0 +1,40 @@
+# StreamBus — llms.txt (AI entry point)
+
+> Preferred reading order for AI assistants implementing StreamBus. Library:
+> .NET 10, `src/StreamBus`, RabbitMQ Streams (`RabbitMQ.Stream.Client 1.12.1`).
+
+- Start: `docs/guide/README.md` (map + conventions + 10-line shape)
+- Worker quickstart: `docs/guide/getting-started-worker.md`
+- ALL settings/defaults/validation + appsettings.json bridge: `docs/guide/configuration-reference.md`
+- Publish: `docs/guide/publishing.md`
+- Consume (typed + raw + ConsumeOptions): `docs/guide/consuming.md`
+- Multi-bus (markers, IStreamBus<T>, resolve): `docs/guide/multiple-buses.md`
+- Offsets ×5, retry Strict/SkipAfterDeadline, error stream + replay: `docs/guide/offsets-retry-errors.md`
+- Effectively-once + topology declare: `docs/guide/effectively-once-topology.md`
+- Health/readiness/metrics/logging/troubleshooting: `docs/guide/operations.md`
+
+## Ground truths (do not guess otherwise)
+
+- Code-first config. NO IConfiguration overload. `AddStreamBus(vhost, o => ...)` /
+  `AddStreamBus<TBus>(vhost, o => ...)` + `AddStreamBusConsumer<TMsg,TCons>(stream, o => ...)` /
+  `AddStreamBusConsumer<TBus,TMsg,TCons>(stream, o => ...)`. App binds appsettings.json itself.
+- Defaults: Host 127.0.0.1, Port 5552, pools 1/1, non-blocking startup,
+  STJ serializer, SAC true, Strict ordering, ResumeOrFirst, store every message,
+  Strict unbounded retry, FailFast readiness, publish confirm timeout 10s.
+- `guest` user forbidden. Publishing never auto-creates streams.
+- Publish = raw bytes (caller serializes). Typed consume deserializes with bus serializer.
+- Same Reference = competing group; different Reference = broadcast. SAC default true.
+- Strict retry = unbounded stall; SkipAfterDeadline = bounded + plain error stream + replay.
+- Effectively-once: publishing-id = source offset, stable producer names, no source offsets stored.
+- Health check name "streambus": Healthy iff all buses Ready; Fatal => Unhealthy else Degraded.
+
+## Pin behavior to source (read before claiming)
+
+- `src/StreamBus/Hosting.cs` (DI, builders, hosted service), `Options.cs` (records/defaults),
+  `Bus.cs` (IBus surface), `Registry.cs` (multi-bus sharing),
+  `Consumer.cs` + `ConsumeContext.cs` + `ConsumeOptions.cs` (consume API),
+  `PublishOptions.cs` + `ProducerRegistry.cs` + `ProducerHandles.cs` + `PublishExceptions.cs` (publish),
+  `RetryPolicy.cs` + `OffsetResolution.cs` + `ReferenceDerivation.cs` (offsets/retry),
+  `ErrorEnvelope.cs` + `ErrorPublisher.cs` (errors), `EffectivelyOnce.cs` (EO),
+  `Topology.cs` + `TopologyRegistry.cs` (declare), `ConnectionSupervisor.cs` +
+  `Readiness.cs` + `StreamBusMetrics.cs` (operations).
