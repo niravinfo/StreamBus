@@ -1,4 +1,8 @@
 using System.Net;
+using System.Security.Cryptography;
+using System.Text;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using RabbitMQ.Stream.Client;
 
 namespace StreamBus;
@@ -8,6 +12,12 @@ public interface IStreamSystemHandle : IAsyncDisposable
     bool IsClosed { get; }
     Task<IStreamProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct);
     Task<IStreamProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct);
+    Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct);
+    Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken ct);
+    Task StoreSystemOffsetAsync(string reference, string stream, ulong offset, CancellationToken ct);
+    Task<bool> StreamExistsAsync(string stream, CancellationToken ct);
+    Task<bool> SuperStreamExistsAsync(string superStream, CancellationToken ct);
+    Task<string[]> QueryPartitionAsync(string superStream, CancellationToken ct);
 }
 
 public interface IStreamSystemConnector
@@ -18,19 +28,43 @@ public interface IStreamSystemConnector
 public sealed class StreamSystemHandle : IStreamSystemHandle
 {
     private readonly StreamSystem _system;
-    public StreamSystemHandle(StreamSystem system) => _system = system;
+    private readonly ILoggerFactory _factory;
+    // Process-wide: sequential same-stream producers across systems must never
+    // collide (the broker deduplicates by producer name + publishing id).
+    private static long _producerSeq;
+
+    private static string ProducerReference(string stream)
+    {
+        var full = $"streambus-pub-{stream}-{Interlocked.Increment(ref _producerSeq)}";
+        if (Encoding.UTF8.GetByteCount(full) <= ReferenceDerivation.MaxReferenceBytes)
+            return full;
+        // Mirror the consumer-reference fallback: hash-suffix stays under the cap.
+        // (Phase 7 replaces naming with stable per-(partition,target) names.)
+        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(full)))[..32];
+        return $"streambus-pub-{hash}";
+    }
+    public StreamSystemHandle(StreamSystem system, ILoggerFactory? loggerFactory = null)
+    {
+        _system = system;
+        _factory = loggerFactory ?? NullLoggerFactory.Instance;
+    }
     public bool IsClosed => _system.IsClosed;
 
     public async Task<IStreamProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         var confirmations = new ConfirmationTracker();
+        // Unique producer name per handle: the broker deduplicates publishes by
+        // (producer name, publishing id) and ids restart at 1 per handle, so a
+        // reused name would silently drop a later handle's first messages as
+        // duplicates (confirmed-Ok but never appended). Distinct names keep
+        // every handle's id sequence collision-free, including after recreates.
         var producer = await _system.CreateRawProducer(new RawProducerConfig(stream)
         {
             MessagesBufferSize = 100,
-            Reference = $"streambus-pub-{stream}",
+            Reference = ProducerReference(stream),
             ConfirmHandler = confirmations.Complete,
-        }).ConfigureAwait(false);
+        }, _factory.CreateLogger<RawProducer>()).ConfigureAwait(false);
         return new StreamProducerHandle(producer, stream, confirmations);
     }
 
@@ -38,21 +72,68 @@ public sealed class StreamSystemHandle : IStreamSystemHandle
     {
         ct.ThrowIfCancellationRequested();
         var confirmations = new ConfirmationTracker();
+        // Same dedup rationale as the plain-producer call above.
         var producer = await _system.CreateRawSuperStreamProducer(new RawSuperStreamProducerConfig(stream)
         {
             MessagesBufferSize = 100,
-            Reference = $"streambus-pub-{stream}",
+            Reference = ProducerReference(stream),
             Routing = SuperStreamProducerHandle.RoutingFor,
             ConfirmHandler = confirmation => confirmations.Complete(confirmation.Item2),
-        }).ConfigureAwait(false);
+        }, _factory.CreateLogger<RawProducer>()).ConfigureAwait(false);
         return new SuperStreamProducerHandle(producer, stream, confirmations);
     }
 
+    public async Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+        ct.ThrowIfCancellationRequested();
+        // StreamSystem.CreateRawConsumer surfaces IConsumer; the client constructs a
+        // RawConsumer for plain-consumer configs, which the partition loop needs for
+        // StoreOffset/Close. The cast lives here (single place), not in the loop.
+        var consumer = await _system.CreateRawConsumer(config, _factory.CreateLogger<RawConsumer>()).ConfigureAwait(false);
+        ct.ThrowIfCancellationRequested();
+        return (RawConsumer)consumer;
+    }
+
     public ValueTask DisposeAsync() => _system.DisposeAsync();
+
+    public async Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        return await _system.TryQueryOffset(reference, stream).ConfigureAwait(false);
+    }
+
+    public async Task StoreSystemOffsetAsync(string reference, string stream, ulong offset, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        await _system.StoreOffset(reference, stream, offset).ConfigureAwait(false);
+    }
+
+    public async Task<bool> StreamExistsAsync(string stream, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        return await _system.StreamExists(stream).ConfigureAwait(false);
+    }
+
+    public async Task<bool> SuperStreamExistsAsync(string superStream, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        return await _system.SuperStreamExists(superStream).ConfigureAwait(false);
+    }
+
+    public async Task<string[]> QueryPartitionAsync(string superStream, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        return await _system.QueryPartition(superStream).ConfigureAwait(false);
+    }
 }
 
 public sealed class StreamSystemConnector : IStreamSystemConnector
 {
+    private readonly ILoggerFactory _factory;
+    public StreamSystemConnector(ILoggerFactory? loggerFactory = null) =>
+        _factory = loggerFactory ?? NullLoggerFactory.Instance;
+
     public async Task<IStreamSystemHandle> ConnectAsync(StreamBusOptions options, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(options);
@@ -78,8 +159,8 @@ public sealed class StreamSystemConnector : IStreamSystemConnector
                 ConsumersPerConnection = (byte)options.Connection.ConsumersPerConnection,
             },
         };
-        var system = await StreamSystem.Create(config).ConfigureAwait(false);
+        var system = await StreamSystem.Create(config, _factory.CreateLogger<StreamSystem>()).ConfigureAwait(false);
         ct.ThrowIfCancellationRequested();
-        return new StreamSystemHandle(system);
+        return new StreamSystemHandle(system, _factory);
     }
 }

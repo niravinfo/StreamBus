@@ -19,6 +19,18 @@ public sealed class HostingTests
             => throw new NotImplementedException("HostingTests never publishes.");
         public Task<IStreamProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
             => throw new NotImplementedException("HostingTests never publishes.");
+        public Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken ct)
+            => throw new NotImplementedException("HostingTests never queries offsets.");
+        public Task StoreSystemOffsetAsync(string reference, string stream, ulong offset, CancellationToken ct)
+            => throw new NotImplementedException("HostingTests never queries offsets.");
+        public Task<bool> StreamExistsAsync(string stream, CancellationToken ct)
+            => throw new NotImplementedException("HostingTests never queries offsets.");
+        public Task<bool> SuperStreamExistsAsync(string superStream, CancellationToken ct)
+            => throw new NotImplementedException("HostingTests never queries offsets.");
+        public Task<string[]> QueryPartitionAsync(string superStream, CancellationToken ct)
+            => throw new NotImplementedException("HostingTests never queries offsets.");
+        public Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct)
+            => throw new NotImplementedException("HostingTests never consumes.");
     }
 
     private sealed class CountingHandle : IStreamSystemHandle
@@ -34,6 +46,18 @@ public sealed class HostingTests
             => throw new NotImplementedException("HostingTests never publishes.");
         public Task<IStreamProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
             => throw new NotImplementedException("HostingTests never publishes.");
+        public Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken ct)
+            => throw new NotImplementedException("HostingTests never queries offsets.");
+        public Task StoreSystemOffsetAsync(string reference, string stream, ulong offset, CancellationToken ct)
+            => throw new NotImplementedException("HostingTests never queries offsets.");
+        public Task<bool> StreamExistsAsync(string stream, CancellationToken ct)
+            => throw new NotImplementedException("HostingTests never queries offsets.");
+        public Task<bool> SuperStreamExistsAsync(string superStream, CancellationToken ct)
+            => throw new NotImplementedException("HostingTests never queries offsets.");
+        public Task<string[]> QueryPartitionAsync(string superStream, CancellationToken ct)
+            => throw new NotImplementedException("HostingTests never queries offsets.");
+        public Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct)
+            => throw new NotImplementedException("HostingTests never consumes.");
     }
 
     private sealed class SuccessConnector : IStreamSystemConnector
