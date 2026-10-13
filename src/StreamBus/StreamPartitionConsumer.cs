@@ -488,10 +488,6 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
     private async Task ExhaustAsync(RawConsumer consumer, ulong offset, ConsumeContext consumeContext, int attempts, Exception lastError, AttachState attach)
     {
         var errorStream = _options.ErrorStream!.Stream;
-        if (!_storer.TryAdmit(offset))
-        {
-            return; // stale view: the active instance owns this offset's handoff.
-        }
         var failedAt = DateTimeOffset.UtcNow;
         var envelope = new ErrorEnvelope
         {
@@ -520,7 +516,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
         await _errors.HandOffAsync(
             envelope,
             (env, ct) => _errors.PublishHandoffAsync(errorStream, env, ct),
-            () => CommitStoreAsync(consumer, offset, attach, attach.LoopToken),
+            () => AdmitAndCommitStoreAsync(consumer, offset, attach, attach.LoopToken),
             (n, ex) => RetryDelays.ResolveDelay(_options.Retry, n, ex, _logger),
             attach.LoopToken).ConfigureAwait(false);
         if (_options.OnRetryExhausted is { } hook)
@@ -603,11 +599,11 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
 
     private async Task StoreAndTrackAsync(RawConsumer consumer, ulong offset, AttachState attach, CancellationToken ct)
     {
-        // Admission precedes the gate: a rejected (non-forward) candidate only counts
-        // the metric and never reaches the wire. (Previously admitted under the gate;
-        // moved out so the handoff commit below can share the gated store without
-        // re-acquiring the non-reentrant gate. A rejection racing a newer admission
-        // is still correct — the guard is the single ordering authority.)
+        // Admission precedes the gated commit: a rejected (non-forward) candidate only
+        // counts the metric and never reaches the wire. A rejection racing a newer
+        // admission is still correct — the guard is the single ordering authority.
+        // (The handoff path admits inside its own gated commit instead, so teardown
+        // can never strand an admitted-but-unstored offset.)
         if (!_storer.TryAdmit(offset))
         {
             return;
@@ -630,8 +626,10 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
     // Gated wire store + bookkeeping shared by the cadence path and the handoff
     // commit. A store failure propagates (the cadence caller catches; the handoff
     // caller lets it recycle the attach so the confirmed handoff is never silently
-    // unadvanced). Gate-wait cancellation returns quietly: teardown is in progress
-    // and the next attach redelivers.
+    // unadvanced). Gate-wait cancellation returns quietly, and a store is never
+    // issued on a cancelled attach at all: teardown is in progress and the next
+    // attach redelivers, so storing would risk advancing past unprocessed messages
+    // (the G-5b teardown window). The next attach redelivers instead.
     private async Task CommitStoreAsync(RawConsumer consumer, ulong offset, AttachState attach, CancellationToken ct)
     {
         try
@@ -644,23 +642,69 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
         }
         try
         {
-            _logger.LogDebug(
-                "Storing offset {Offset} for stream {Stream} partition {Partition} reference {Reference}.",
-                offset, _stream, _partitionIndex, _reference);
-            await consumer.StoreOffset(offset).ConfigureAwait(false);
-            _logger.LogDebug(
-                "Stored offset {Offset} for stream {Stream} partition {Partition} reference {Reference}.",
-                offset, _stream, _partitionIndex, _reference);
-            _storer.Stored(offset);
-            Interlocked.Exchange(ref _state.LastStored, (long)offset);
-            if (Interlocked.Exchange(ref attach.RegressionChecked, 1) == 0)
+            if (ct.IsCancellationRequested)
             {
-                await CheckRegressionAsync(ct).ConfigureAwait(false);
+                return;
             }
+            await SendAndBookkeepAsync(consumer, offset, attach, ct).ConfigureAwait(false);
         }
         finally
         {
             _storeGate.Release();
+        }
+    }
+
+    // Handoff commit: admission and the wire store happen in one gated step so a
+    // teardown between them cannot poison the guard water (admitted but unstored
+    // would make the redelivery reject its own handoff and skip without handing
+    // off). A rejected candidate only counts the metric: another instance already
+    // owns this offset's handoff. A duplicate error envelope from a stale instance
+    // is benign (replay dedups on stable name + id). Residual micro-race (cancel
+    // landing between the check and the send, or a local send throw after admission)
+    // is accepted: the broker store path has no acknowledgement, so no local
+    // arrangement can be fully atomic; at-least-once is preserved regardless.
+    private async Task AdmitAndCommitStoreAsync(RawConsumer consumer, ulong offset, AttachState attach, CancellationToken ct)
+    {
+        try
+        {
+            await _storeGate.WaitAsync(ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+        try
+        {
+            if (ct.IsCancellationRequested)
+            {
+                return;
+            }
+            if (!_storer.TryAdmit(offset))
+            {
+                return;
+            }
+            await SendAndBookkeepAsync(consumer, offset, attach, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            _storeGate.Release();
+        }
+    }
+
+    private async Task SendAndBookkeepAsync(RawConsumer consumer, ulong offset, AttachState attach, CancellationToken ct)
+    {
+        _logger.LogDebug(
+            "Storing offset {Offset} for stream {Stream} partition {Partition} reference {Reference}.",
+            offset, _stream, _partitionIndex, _reference);
+        await consumer.StoreOffset(offset).ConfigureAwait(false);
+        _logger.LogDebug(
+            "Stored offset {Offset} for stream {Stream} partition {Partition} reference {Reference}.",
+            offset, _stream, _partitionIndex, _reference);
+        _storer.Stored(offset);
+        Interlocked.Exchange(ref _state.LastStored, (long)offset);
+        if (Interlocked.Exchange(ref attach.RegressionChecked, 1) == 0)
+        {
+            await CheckRegressionAsync(ct).ConfigureAwait(false);
         }
     }
 
