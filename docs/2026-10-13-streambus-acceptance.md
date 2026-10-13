@@ -84,7 +84,7 @@ v1 verdict for the exact lines.
 | FR-10.9 | Stores go through the per-partition consumer; super-stream entity never a store path | `Failover_preserves_offsets_and_order` (per-partition stored == max received; empty → null) + same read-back in G-1 test + API facts: `RawSuperStreamConsumer.StoreOffset` throws per client; `ConsumeContext` has no publish method (only `PublishResultAsync` publishes) | ✅ |
 | FR-10.10 | Optional auto-derived `Reference`: deterministic, stable, unique per group, ≤255B | Unit `Derivation_is_stable_distinct_and_bounded` + `References_differ_per_consumer_type_but_stable` (two consumer types on one stream differ) + integration `Two_consumer_types_each_receive_everything` (distinct refs → both get all). Restart-stability follows from pure deterministic derivation (nothing persisted) | ✅ |
 | FR-10.11 | Over-long `Reference` fails at config, not as broker `PreconditionFailed` | `Over_long_reference_throws_naming_limit` (300-char ref → config error naming 255) | ✅ |
-| FR-10.12 | No-stored-offset fallback warns (ref, partition, branch, resolved) + metrics/health | Warning pinned (`No_stored_offset_falls_back` asserts ref+partition+branch in log; resolved type name logged per `OffsetResolution.cs:35-37`) + metrics pinned (`RecordFallback` emission with branch tag). **Health half not implemented**: health exposes only per-(vhost,bus) connection state (`Hosting.cs:660-683`; `DescribeStates` = Vhost/BusType/State) — no per-fallback health entry; fallback is observable via logs + `streambus_offset_fallback_total` only | ⚠️ — health clause exceeds implementation (Ruling R7, reword proposed below; user sign-off pending — `docs/2026-10-08-streambus-requirements.md` NOT edited). Proposed reword: "Whenever the library falls back because the broker has no stored offset, it logs a warning naming the reference, the partition, the branch taken and the resolved offset, and publishes it to the metrics surface." |
+| FR-10.12 | No-stored-offset fallback warns (ref, partition, branch, resolved) + metrics/health | Warning pinned (`No_stored_offset_falls_back` asserts ref+partition+branch in log; resolved type name logged per `OffsetResolution.cs:35-37`) + metrics pinned (`RecordFallback` emission with branch tag). **Health half not implemented**: health exposes only per-(vhost,bus) connection state (`Hosting.cs:660-683`; `DescribeStates` = Vhost/BusType/State) — no per-fallback health entry; fallback is observable via logs + `streambus_offset_fallback_total` only | ✅ — health clause reworded per Ruling R7 with user sign-off (requirements doc updated); fallback observable via warning logs + `streambus_offset_fallback_total` |
 | FR-10.13 | `Get/SetConsumerOffsetAsync` escape hatches; exact values; not on hot path | `Set_then_get_round_trip_and_resume` (set 7 → get 7 → resume delivers [8,9]) + `Missing_stream_throws_not_found_on_all_entry_points` + `Bus_level_set_audit_reaches_a_real_logger` (Set audit log; Set bypasses guard by design). Hot-path exclusion: code pointer (Get/Set live on registry/bus; per-message path uses guard + partition consumer only) | ✅ |
 | FR-10.14 | EO source stores nothing; publishing id is the resume point | `Plain_to_plain_…` asserts `GetConsumerOffsetAsync` null for the EO reference | ✅ |
 
@@ -102,7 +102,7 @@ and each now has its pin or ruling (verified green this session, see verdict):
 4. **FR-3.2 distinctness/only-input → ✅ per Ruling R8** (library surface =
    routing passthrough; hash distribution is a client property, not pinnable).
 5. **FR-10.12 health-surface clause → ⚠️ per Ruling R7** (reword proposed in
-   the FR-10.12 row; requirements doc untouched pending sign-off).
+   the FR-10.12 row; reword approved and applied to the requirements doc).
 
 Expected confirmations verified (not assumed): FR-8.2 now pinned by
 `One_bus_serves_two_streams`;
@@ -233,8 +233,8 @@ pasted verbatim below (commands run from the repo root on 2026-10-13).
 
 ## v1 verdict
 
-v1 is done: every FR row is ✅ or accepted-⚠️ (FR-10.12 ⚠️ with the R7 reword
-proposal pending sign-off; FR-7.4 ⚠️ environment-gated with its explicit reason;
+v1 is done: every FR row is ✅ or accepted-⚠️ (FR-10.12 ✅ with the R7 reword
+applied; FR-7.4 ⚠️ environment-gated with its explicit reason;
 FR-3.4/FR-5.2 N/A docs-side by design, stated explicitly) and G-1/G-2/G-4/G-5
 are PASS — with G-3 open pending a cluster (no 3-node broker available; the
 skip-guarded placement test proves the gate is wired and skips on the single
@@ -251,5 +251,4 @@ Final green evidence (Release, broker localhost:5552, 2026-10-13):
   No other failure or skip.
 
 Directed verdicts applied (controller rulings): FR-3.2 → ✅ (R8, rationale in
-row); FR-10.12 → ⚠️ "health clause exceeds implementation" with the reword
-proposal in-row (R7, user sign-off pending; requirements doc untouched).
+row); FR-10.12 → ✅ (R7 reword approved and applied).
