@@ -1,0 +1,129 @@
+using System.Security.Cryptography;
+using System.Text;
+
+namespace StreamBus;
+
+public sealed record EffectivelyOnceOptions
+{
+    public bool SourceIsSuperStream { get; init; } = false;
+    public bool TargetIsSuperStream { get; init; } = false;
+    public string? Reference { get; init; }
+    public Func<ConsumeContext, string?>? TargetRouting { get; init; }
+    public RetryPolicy Retry { get; init; } = new();
+    public ReadinessPolicy ReadinessPolicy { get; init; } = ReadinessPolicy.FailFastPolicy;
+}
+
+public sealed record PublishResultOptions
+{
+    public required string ProducerName { get; init; }
+    public bool IsSuperStream { get; init; } = false;
+    public string? RoutingKey { get; init; }
+    public TimeSpan BaseDelay { get; init; } = TimeSpan.FromMilliseconds(200);
+    public double Multiplier { get; init; } = 2.0;
+    public TimeSpan MaxDelay { get; init; } = TimeSpan.FromSeconds(30);
+    public TimeSpan MaxJitter { get; init; } = TimeSpan.FromSeconds(1);
+}
+
+internal sealed record ResultWork
+{
+    public required string TargetStream { get; init; }
+    public required bool TargetSuper { get; init; }
+    public required ReadOnlyMemory<byte> Body { get; init; }
+    public required ulong SourceOffset { get; init; }
+    public required string? RoutingKey { get; init; }
+    public required string ProducerName { get; init; }
+}
+
+internal sealed record EffectivelyOnceConfig
+{
+    public required string TargetStream { get; init; }
+    public required bool TargetIsSuperStream { get; init; }
+    public required Func<ConsumeContext, string?> TargetRouting { get; init; }
+    public required Func<ConsumeContext, Task<ReadOnlyMemory<byte>>> ResultHandler { get; init; }
+    // Resume source of truth, injected by the registry (a func, not the Task-2
+    // registry type, so this file compiles standalone in Task 1).
+    // Args: (targetStream, targetSuper, producerName, ct) -> last publishing id, or null.
+    public required Func<string, bool, string, CancellationToken, Task<ulong?>> ResumeQuery { get; init; }
+}
+
+internal static class ResultNaming
+{
+    public static string ProducerName(string sourcePartitionStream, string targetStream)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourcePartitionStream);
+        ArgumentException.ThrowIfNullOrWhiteSpace(targetStream);
+        var full = $"streambus-eo-{sourcePartitionStream}-to-{targetStream}";
+        if (Encoding.UTF8.GetByteCount(full) <= ReferenceDerivation.MaxReferenceBytes)
+            return full;
+        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(full)))[..32];
+        return $"streambus-eo-{hash}";
+    }
+
+    public static string ConsumerReference(Type busType, string sourceStream, string targetStream)
+    {
+        ArgumentNullException.ThrowIfNull(busType);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourceStream);
+        ArgumentException.ThrowIfNullOrWhiteSpace(targetStream);
+        var full = $"streambus-eo:{busType.FullName}:{sourceStream}->{targetStream}";
+        if (Encoding.UTF8.GetByteCount(full) <= ReferenceDerivation.MaxReferenceBytes)
+            return full;
+        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(full)))[..32];
+        return $"streambus-eo-{hash}";
+    }
+
+    public static ulong PublishingId(ulong sourceOffset) => sourceOffset;
+}
+
+internal static class ResultResume
+{
+    public static ulong? ResumeOffset(IEnumerable<ulong?> lastIds)
+    {
+        ArgumentNullException.ThrowIfNull(lastIds);
+        ulong? max = null;
+        foreach (var id in lastIds)
+        {
+            if (id is null) continue;
+            max = max is null ? id.Value : Math.Max(max.Value, id.Value);
+        }
+        if (max is null) return null;
+        if (max.Value == ulong.MaxValue)
+            throw new StreamBusPublishException("Effectively-once publishing id space exhausted (internal error).");
+        return max.Value + 1;
+    }
+}
+
+internal static class EffectivelyOnceValidation
+{
+    public static void ValidateConsume(RetryPolicy retry, string prefix = "EffectivelyOnceOptions.Retry")
+    {
+        ArgumentNullException.ThrowIfNull(retry);
+        if (retry.FailureMode != FailureMode.Strict)
+            throw new StreamBusConfigurationException($"{prefix}.FailureMode must be Strict for effectively-once (SkipAfterDeadline has no offset to advance; the source stores nothing).");
+        if (retry.MaxAttempts is not null)
+            throw new StreamBusConfigurationException($"{prefix}.MaxAttempts must be null for effectively-once (unbounded retry; the publish is retried until confirmed).");
+        ValidateKnobs(retry.BaseDelay, retry.MaxDelay, retry.Multiplier, retry.MaxJitter, prefix);
+    }
+
+    public static void ValidatePublishResult(PublishResultOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentException.ThrowIfNullOrWhiteSpace(options.ProducerName);
+        if (Encoding.UTF8.GetByteCount(options.ProducerName) > ReferenceDerivation.MaxReferenceBytes)
+            throw new StreamBusConfigurationException("PublishResultOptions.ProducerName exceeds the broker's 255-byte limit.");
+        if (options.IsSuperStream && string.IsNullOrWhiteSpace(options.RoutingKey))
+            throw new StreamBusConfigurationException("PublishResultOptions.RoutingKey is required for a super-stream result target.");
+        ValidateKnobs(options.BaseDelay, options.MaxDelay, options.Multiplier, options.MaxJitter, "PublishResultOptions");
+    }
+
+    public static void ValidateKnobs(TimeSpan baseDelay, TimeSpan maxDelay, double multiplier, TimeSpan maxJitter, string prefix)
+    {
+        if (baseDelay <= TimeSpan.Zero)
+            throw new StreamBusConfigurationException($"{prefix}.BaseDelay must be positive.");
+        if (maxDelay <= TimeSpan.Zero)
+            throw new StreamBusConfigurationException($"{prefix}.MaxDelay must be positive.");
+        if (multiplier < 1.0 || !double.IsFinite(multiplier))
+            throw new StreamBusConfigurationException($"{prefix}.Multiplier must be a finite number >= 1.");
+        if (maxJitter < TimeSpan.Zero)
+            throw new StreamBusConfigurationException($"{prefix}.MaxJitter must be non-negative.");
+    }
+}
