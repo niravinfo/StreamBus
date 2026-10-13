@@ -1376,7 +1376,7 @@ git commit -m "test: add typed startup and hosting integration probes"
 
 ## Follow-ups for Phase 10+ (tracked, no code in this phase)
 
-- Scope-per-attempt means a poison message under `Strict` holds one DI scope open indefinitely while retrying — by design (bounded resource: one scope per stalled partition), visible via `retry_blocked`.
+- Deserialization runs before scope creation, so a poison message under `Strict` retries without holding any DI scope; only a successfully-deserialized message that then throws holds one scope per stalled partition (bounded: one scope per retrying partition), visible via `retry_blocked`.
 - `ConsumeContext<T>.Message` for `T` with parameterized constructors deserializes per `System.Text.Json` rules (case-sensitive, no polymorphism by default) — migration to shared options is a deployment concern, documented in the mismatch test.
 - Same (marker, message, consumer, stream) registered twice is rejected; every other combination is independent — including the same consumer class on two streams (two subscriptions).
 - G-3 stays open (Phase 8); NFR-1–NFR-7 verify in Phase 10, not here.
