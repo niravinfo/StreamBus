@@ -689,7 +689,7 @@ public sealed class TypedConsumerTests
         Assert.Equal("orders", poison.Stream);
         Assert.Equal(typeof(OrderEvent), poison.MessageType);
         var nil = await Assert.ThrowsAsync<StreamBusDeserializationException>(() => handler(RawOf("null")));
-        Assert.Contains("null", nil.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("null", nil.InnerException?.Message ?? nil.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

@@ -464,6 +464,29 @@ public sealed class HostingTests
     }
 
     [Fact]
+    public async Task Guest_at_startup_fails_with_actionable_message()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddStreamBus("/", o => o.Credentials("guest", "guest"));
+        await using var sp = services.BuildServiceProvider();
+        var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
+        var ex = await Assert.ThrowsAsync<StreamBusConfigurationException>(() => hosted.StartAsync(TestContext.Current.CancellationToken));
+        Assert.Contains("guest", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Same_vhost_union_declarations_allowed()
+    {
+        var store = new StreamBusConfigStore();
+        var a = new StreamBusOptions { Vhost = "/", UserName = "u", Password = "p", Topology = new StreamTopologyDeclarations { Streams = new[] { new StreamDeclaration { Name = "a" } } } };
+        var b = new StreamBusOptions { Vhost = "/", UserName = "u", Password = "p", Topology = new StreamTopologyDeclarations { SuperStreams = new[] { new SuperStreamDeclaration { Name = "b", Partitions = 2 } } } };
+        store.Add(typeof(DefaultBus), a);
+        store.Add(typeof(OrdersBus), b);
+        Assert.Equal(2, store.Registrations.Count);
+    }
+
+    [Fact]
     public async Task Blocking_startup_timeout_names_topology()
     {
         var ct = TestContext.Current.CancellationToken;
