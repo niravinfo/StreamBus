@@ -296,6 +296,129 @@ internal sealed class StreamConsumerRegistry
             reference, stream, partition, offset);
     }
 
+    public async Task<int> ReplayAsync(string errorStream, string? targetStream, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(errorStream);
+        if (targetStream is not null) ArgumentException.ThrowIfNullOrWhiteSpace(targetStream);
+        await EnsureReadyAsync(errorStream, ct).ConfigureAwait(false);
+        var handle = _supervisor.CurrentHandle
+            ?? throw new StreamBusNotReadyException($"StreamBus for vhost '{_vhost}' is not ready; replay of '{errorStream}' refused.");
+        if (await handle.SuperStreamExistsAsync(errorStream, ct).ConfigureAwait(false))
+        {
+            throw new StreamBusConfigurationException($"Error stream '{errorStream}' must be a plain stream in v1.");
+        }
+        if (!await handle.StreamExistsAsync(errorStream, ct).ConfigureAwait(false))
+        {
+            throw new StreamBusStreamNotFoundException(errorStream);
+        }
+        if (targetStream is not null)
+        {
+            if (await handle.SuperStreamExistsAsync(targetStream, ct).ConfigureAwait(false))
+            {
+                throw new StreamBusConfigurationException($"Replay target '{targetStream}' must be a plain stream in v1.");
+            }
+            if (!await handle.StreamExistsAsync(targetStream, ct).ConfigureAwait(false))
+            {
+                throw new StreamBusStreamNotFoundException(targetStream);
+            }
+        }
+
+        var reference = ReplayNaming.Reference(errorStream);
+        var replayOptions = new ConsumeOptions { Offset = ConsumeOffset.AlwaysFirst };
+        var guard = new MonotonicOffsetGuard(); // replay-scoped: never touches consumer watermarks.
+        var state = new PartitionState(); // untracked: replay progress surfaces via the return count + logs, not the meter.
+        var errors = new ErrorPublisher(_producers, _loggerFactory.CreateLogger<ErrorPublisher>());
+        var replayed = 0;
+        var skipped = 0;
+        long lastTicks = DateTimeOffset.UtcNow.UtcTicks; // cross-thread via Interlocked below.
+        var producers = new Dictionary<string, IStreamProducerHandle>();
+        void DisposeProducers()
+        {
+            foreach (var (_, producer) in producers)
+            {
+                try
+                {
+                    producer.DisposeAsync().GetAwaiter().GetResult();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Error disposing replay producer for error stream '{Error}'.", errorStream);
+                }
+            }
+            producers.Clear();
+        }
+        using var family = new CancellationTokenSource();
+        try
+        {
+            var loop = new StreamPartitionConsumer(
+                handle, errorStream, errorStream, 0, reference, replayOptions,
+                async ctx =>
+                {
+                    if (!ErrorEnvelope.TryParse(errorStream, ctx.Body.ToArray(), ctx.Metadata.ApplicationProperties, out var envelope) || envelope is null)
+                    {
+                        Interlocked.Increment(ref skipped);
+                        _logger.LogWarning("Replay skipping malformed message on error stream '{Error}' at offset {Offset}.",
+                            errorStream, ctx.Offset);
+                        return;
+                    }
+                    var partitionStream = targetStream ?? envelope.SourcePartitionStream;
+                    if (targetStream is null
+                        && !await handle.StreamExistsAsync(partitionStream, ct).ConfigureAwait(false))
+                    {
+                        Interlocked.Increment(ref skipped);
+                        _logger.LogWarning("Replay skipping message for vanished partition stream '{Partition}' (error offset {Offset}).",
+                            partitionStream, ctx.Offset);
+                        return;
+                    }
+                    if (!producers.TryGetValue(partitionStream, out var producer))
+                    {
+                        producer = await handle.CreatePlainProducerWithReferenceAsync(
+                            partitionStream, ReplayNaming.ProducerName(partitionStream), ct).ConfigureAwait(false);
+                        producers[partitionStream] = producer;
+                    }
+                    await producer.PublishReplayAsync(envelope.Body, ReplayNaming.PublishingId(envelope.SourceOffset), ct).ConfigureAwait(false);
+                    Interlocked.Increment(ref replayed);
+                    Interlocked.Exchange(ref lastTicks, DateTimeOffset.UtcNow.UtcTicks);
+                },
+                guard, state, StreamBusMetrics.Shared, _vhost, "replay", errors,
+                _loggerFactory.CreateLogger<StreamPartitionConsumer>());
+            var run = loop.RunAsync(family.Token);
+            try
+            {
+                await loop.FirstAttachAsync.WaitAsync(ct).ConfigureAwait(false);
+                // No usable broker end offset exists (Phase 5 Round 2), so replay
+                // terminates on idle: 5 s with no delivery and nothing in flight.
+                var idle = TimeSpan.FromSeconds(5);
+                while (true)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    var since = DateTimeOffset.UtcNow - new DateTimeOffset(Interlocked.Read(ref lastTicks), TimeSpan.Zero);
+                    if (since >= idle && Volatile.Read(ref state.Inflight) == 0) break;
+                    await Task.Delay(TimeSpan.FromMilliseconds(200), ct).ConfigureAwait(false);
+                }
+            }
+            finally
+            {
+                family.Cancel();
+                try
+                {
+                    await run.ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                }
+                await loop.DisposeAsync().ConfigureAwait(false);
+            }
+            _logger.LogInformation("Replayed {Replayed} messages from error stream '{Error}' ({Skipped} skipped).",
+                replayed, errorStream, skipped);
+            return replayed;
+        }
+        finally
+        {
+            DisposeProducers();
+        }
+    }
+
     private async Task EnsureReadyAsync(string stream, CancellationToken ct)
     {
         var readiness = await _supervisor.WaitUntilReadyAsync(ReadinessPolicy.FailFastPolicy, ct).ConfigureAwait(false);
