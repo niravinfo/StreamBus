@@ -1306,6 +1306,9 @@ git commit -m "test: add typed consumer integration probes"
         {
             var bus = sp.GetRequiredService<IStreamBus>();
             Assert.Equal(BusReadiness.Ready, await bus.WaitUntilReadyAsync(ReadinessPolicy.UpTo(TimeSpan.FromSeconds(30)), ct));
+            var admin = await ConnectAdminAsync();
+            await using var _ = admin;
+            await WaitForAsync(() => admin.StreamExists(stream).GetAwaiter().GetResult(), TimeSpan.FromSeconds(30), "startup declaration");
             await bus.PublishAsync(stream, Body(new OrderEvent("o", 0)), new PublishOptions(), ct);
             await WaitForAsync(() => { lock (got) return got.Count >= 1; }, TimeSpan.FromSeconds(30), "typed receipt after startup");
             lock (got) Assert.Single(got);
