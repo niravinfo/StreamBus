@@ -334,7 +334,7 @@ internal static class TopologyValidation
     {
         ArgumentNullException.ThrowIfNull(declaration);
         ArgumentException.ThrowIfNullOrWhiteSpace(declaration.Name);
-        ValidateKnobs(declaration.MaxAge, declaration.MaxLengthBytes, declaration.MaxSegmentSizeBytes, $"StreamDeclaration '{declaration.Name}'");
+        ValidateKnobs(declaration.MaxAge, declaration.MaxLengthBytes, declaration.MaxSegmentSizeBytes, declaration.LeaderLocator, $"StreamDeclaration '{declaration.Name}'");
     }
 
     public static void ValidateSuper(SuperStreamDeclaration declaration)
@@ -343,11 +343,13 @@ internal static class TopologyValidation
         ArgumentException.ThrowIfNullOrWhiteSpace(declaration.Name);
         if (declaration.Partitions < 1)
             throw new StreamBusConfigurationException($"SuperStreamDeclaration '{declaration.Name}' Partitions must be >= 1.");
-        ValidateKnobs(declaration.MaxAge, declaration.MaxLengthBytes, declaration.MaxSegmentSizeBytes, $"SuperStreamDeclaration '{declaration.Name}'");
+        ValidateKnobs(declaration.MaxAge, declaration.MaxLengthBytes, declaration.MaxSegmentSizeBytes, declaration.LeaderLocator, $"SuperStreamDeclaration '{declaration.Name}'");
     }
 
-    private static void ValidateKnobs(TimeSpan? maxAge, ulong? maxLengthBytes, int? maxSegmentSizeBytes, string what)
+    private static void ValidateKnobs(TimeSpan? maxAge, ulong? maxLengthBytes, int? maxSegmentSizeBytes, StreamLeaderLocator locator, string what)
     {
+        if (!Enum.IsDefined(locator))
+            throw new StreamBusConfigurationException($"{what} LeaderLocator has an undefined value.");
         if (maxAge is { } age && age <= TimeSpan.Zero)
             throw new StreamBusConfigurationException($"{what} MaxAge must be positive when set.");
         if (maxLengthBytes is { } length && length < 1)
@@ -795,12 +797,40 @@ After the existing readiness gate (before `StartAsync` returns), when blocking:
 ```csharp
 if (declareTasks.Count > 0)
 {
+    // Fail fast on conflict: a faulted declaration carrying a conflict cancels
+    // its siblings so the blocking wait surfaces the conflict instead of idling
+    // behind another vhost's transient retries until the timeout.
+    foreach (var task in declareTasks)
+    {
+        _ = task.ContinueWith(
+            t =>
+            {
+                if (t.Exception?.InnerExceptions.Any(e => e is StreamConfigurationConflictException) == true)
+                {
+                    try { declareCts.Cancel(); }
+                    catch (ObjectDisposedException) { }
+                }
+            },
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+    }
     try
     {
         await Task.WhenAll(declareTasks).WaitAsync(cts.Token).ConfigureAwait(false);
     }
     catch (OperationCanceledException) when (!ct.IsCancellationRequested)
     {
+        // Startup already failed: abandon declaration retries (else they run away
+        // and a late conflict fault goes unobserved), then report the conflict
+        // when one faulted, or the timeout otherwise.
+        try { declareCts.Cancel(); }
+        catch (ObjectDisposedException) { }
+        var conflict = declareTasks
+            .SelectMany(t => t.Exception?.InnerExceptions.AsEnumerable() ?? Enumerable.Empty<Exception>())
+            .OfType<StreamConfigurationConflictException>()
+            .FirstOrDefault();
+        if (conflict is not null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(conflict).Throw();
         throw new StreamBusTimeoutException($"Timed out declaring topology within the startup timeout.");
     }
 }
@@ -974,7 +1004,7 @@ public sealed class TopologyTests
     [Fact]
     public void Validation_rejects_bad_specs()
     {
-        Assert.ThrowsAny<Exception>(() => TopologyValidation.ValidateStream(new StreamDeclaration { Name = "  " }));
+        Assert.Throws<ArgumentException>(() => TopologyValidation.ValidateStream(new StreamDeclaration { Name = "  " }));
         Assert.Throws<StreamBusConfigurationException>(() => TopologyValidation.ValidateSuper(new SuperStreamDeclaration { Name = "s", Partitions = 0 }));
         Assert.Throws<StreamBusConfigurationException>(() => TopologyValidation.ValidateStream(new StreamDeclaration { Name = "s", MaxAge = TimeSpan.Zero }));
         Assert.Throws<StreamBusConfigurationException>(() => TopologyValidation.ValidateStream(new StreamDeclaration { Name = "s", MaxLengthBytes = 0 }));
@@ -1141,11 +1171,6 @@ public sealed class TopologyTests
         Assert.Contains("coexisting", ex.Actual);
     }
 
-    // FALLBACK branch (Task 2 Step 0: concurrent identical creates throw): the two
-    // knob-conflict tests above assert success instead — same scripted setup, plain
-    // `await ...` with no throw, plus Assert.True on the stream existing. All other
-    // tests in this file are identical under both branches.
-
     [Fact]
     public async Task Partition_mismatch_throws_with_expected_and_actual()
     {
@@ -1206,7 +1231,82 @@ public sealed class TopologyTests
 }
 ```
 
-(`Assert.Single(system.CreatedSupers)` on a `List<string>` uses the collection overload ✓. The `Default_spec_emits_no_retention_args` key names (`x-max-age`, `x-max-length-bytes`) follow the Task 1 Args table — the executor reconciles exact key strings against the recorded table before running. `Interlocked` needs no using (`System.Threading` is implicit). `Array.Empty<string>()` needs `System` (implicit ✓).)
+Two more tests live in `tests/StreamBus.UnitTests/HostingTests.cs` (reusing that file's existing `StubHandle`/`SuccessConnector`/marker patterns — adapt member names to what that file defines):
+
+```csharp
+    [Fact]
+    public async Task Startup_declares_union_of_registrations()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var handle = new StubHandle();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddStreamBus("/", o =>
+        {
+            o.Credentials("app", "secret");
+            o.Topology(t => t.DeclareStream("stream-a"));
+        });
+        services.AddStreamBus<OrdersBus>("/", o =>
+        {
+            o.Credentials("app", "secret");
+            o.Topology(t => t.DeclareStream("stream-b"));
+        });
+        services.AddSingleton<IStreamSystemConnector>(new SuccessConnector(handle));
+        await using var sp = services.BuildServiceProvider();
+        var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
+        await hosted.StartAsync(ct);
+        try
+        {
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+            while (true)
+            {
+                List<string> snapshot;
+                lock (handle.CreatedStreams) snapshot = handle.CreatedStreams.ToList();
+                if (snapshot.Contains("stream-a") && snapshot.Contains("stream-b")) break;
+                if (DateTime.UtcNow >= deadline) break;
+                await Task.Delay(TimeSpan.FromMilliseconds(50), ct);
+            }
+            List<string> created;
+            lock (handle.CreatedStreams) created = handle.CreatedStreams.ToList();
+            Assert.Contains("stream-a", created);
+            Assert.Contains("stream-b", created);
+        }
+        finally
+        {
+            await hosted.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task Blocking_startup_timeout_names_topology()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var handle = new StubHandle();
+        handle.StreamExistsFunc = async (_, ct2) => { await Task.Delay(Timeout.Infinite, ct2); return false; };
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddStreamBus("/", o =>
+        {
+            o.Credentials("app", "secret");
+            o.Topology(t => t.DeclareStream("hung-stream"));
+            o.Hosting(h => h.BlockStartupUntilReady(TimeSpan.FromMilliseconds(200)));
+        });
+        services.AddSingleton<IStreamSystemConnector>(new SuccessConnector(handle));
+        await using var sp = services.BuildServiceProvider();
+        var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
+        try
+        {
+            var ex = await Assert.ThrowsAsync<StreamBusTimeoutException>(() => hosted.StartAsync(ct));
+            Assert.Contains("topology", ex.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            await hosted.StopAsync(CancellationToken.None);
+        }
+    }
+```
+
+(`Assert.Single(system.CreatedSupers)` on a `List<string>` uses the collection overload ✓. Arg key names follow the recorded Task 1 table (`max-age`, `max-length-bytes`, `stream-max-segment-size-bytes` — no `x-` prefix). `Interlocked` needs no using (`System.Threading` is implicit). `Array.Empty<string>()` needs `System` (implicit ✓).)
 
 - [ ] **Step 2: Verify**
 
