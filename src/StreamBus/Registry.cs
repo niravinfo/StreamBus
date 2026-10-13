@@ -57,7 +57,7 @@ public sealed class StreamBusRegistry : IStreamBusRegistry
         => _producers.GetOrAdd(vhost, _ => new StreamProducerRegistry(SupervisorForCore(vhost), vhost));
 
     internal StreamConsumerRegistry ConsumersFor(string vhost)
-        => _consumers.GetOrAdd(vhost, _ => new StreamConsumerRegistry(SupervisorForCore(vhost), vhost, _loggerFactory));
+        => _consumers.GetOrAdd(vhost, _ => new StreamConsumerRegistry(SupervisorForCore(vhost), vhost, ProducersFor(vhost), _loggerFactory));
 
     internal IReadOnlyCollection<IStreamConsumer> ActiveConsumers
         => _consumers.Values.SelectMany(r => r.ActiveConsumers).ToList();

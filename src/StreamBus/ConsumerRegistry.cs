@@ -69,14 +69,16 @@ internal sealed class StreamConsumerRegistry
     private readonly string _vhost;
     private readonly ILoggerFactory _loggerFactory;
     private readonly ILogger<StreamConsumerRegistry> _logger;
+    private readonly StreamProducerRegistry _producers;
     private readonly MonotonicOffsetGuard _guard = new();
     private readonly HashSet<StreamConsumerRegistration> _live = new();
     private readonly object _gate = new();
 
-    public StreamConsumerRegistry(StreamBusConnectionSupervisor supervisor, string vhost, ILoggerFactory? loggerFactory = null)
+    public StreamConsumerRegistry(StreamBusConnectionSupervisor supervisor, string vhost, StreamProducerRegistry producers, ILoggerFactory? loggerFactory = null)
     {
         _supervisor = supervisor;
         _vhost = vhost;
+        _producers = producers;
         _loggerFactory = loggerFactory ?? NullLoggerFactory.Instance;
         _logger = _loggerFactory.CreateLogger<StreamConsumerRegistry>();
     }
@@ -102,6 +104,7 @@ internal sealed class StreamConsumerRegistry
         ArgumentNullException.ThrowIfNull(handler);
         ArgumentNullException.ThrowIfNull(options.OffsetStore);
         ArgumentNullException.ThrowIfNull(options.ReadinessPolicy);
+        ArgumentNullException.ThrowIfNull(options.Retry);
         if (options.OffsetStore.EveryMessages < 1)
         {
             throw new StreamBusConfigurationException("ConsumeOptions.OffsetStore.EveryMessages must be >= 1.");
@@ -109,6 +112,47 @@ internal sealed class StreamConsumerRegistry
         if (options.OffsetStore.MaxInterval is { } maxInterval && maxInterval <= TimeSpan.Zero)
         {
             throw new StreamBusConfigurationException("ConsumeOptions.OffsetStore.MaxInterval must be positive when set.");
+        }
+        var retry = options.Retry;
+        if (retry.MaxAttempts is { } maxAttempts && maxAttempts < 1)
+        {
+            throw new StreamBusConfigurationException("ConsumeOptions.Retry.MaxAttempts must be >= 1 when set.");
+        }
+        if (retry.FailureMode == FailureMode.Strict && retry.MaxAttempts is not null)
+        {
+            throw new StreamBusConfigurationException("ConsumeOptions.Retry.MaxAttempts must be null with FailureMode.Strict (unbounded retry).");
+        }
+        if (retry.FailureMode == FailureMode.SkipAfterDeadline && retry.MaxAttempts is null)
+        {
+            throw new StreamBusConfigurationException("ConsumeOptions.Retry.MaxAttempts is required with FailureMode.SkipAfterDeadline.");
+        }
+        if (retry.BaseDelay <= TimeSpan.Zero)
+        {
+            throw new StreamBusConfigurationException("ConsumeOptions.Retry.BaseDelay must be positive.");
+        }
+        if (retry.MaxDelay <= TimeSpan.Zero)
+        {
+            throw new StreamBusConfigurationException("ConsumeOptions.Retry.MaxDelay must be positive.");
+        }
+        if (retry.Multiplier < 1.0)
+        {
+            throw new StreamBusConfigurationException("ConsumeOptions.Retry.Multiplier must be >= 1.");
+        }
+        if (retry.MaxJitter < TimeSpan.Zero)
+        {
+            throw new StreamBusConfigurationException("ConsumeOptions.Retry.MaxJitter must be non-negative.");
+        }
+        if (retry.FailureMode == FailureMode.Strict && options.ErrorStream is not null)
+        {
+            throw new StreamBusConfigurationException("ConsumeOptions.ErrorStream must not be configured with FailureMode.Strict.");
+        }
+        if (retry.FailureMode == FailureMode.SkipAfterDeadline && options.ErrorStream is null)
+        {
+            throw new StreamBusConfigurationException("ConsumeOptions.ErrorStream is required with FailureMode.SkipAfterDeadline.");
+        }
+        if (options.ErrorStream is { } errorOptions)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(errorOptions.Stream);
         }
         var reference = options.Reference ?? ReferenceDerivation.Derive(busType, stream);
         ReferenceDerivation.Validate(reference);
@@ -131,6 +175,17 @@ internal sealed class StreamConsumerRegistry
         if (!exists)
         {
             throw new StreamBusStreamNotFoundException(stream);
+        }
+        if (options.ErrorStream is { } error)
+        {
+            if (await handle.SuperStreamExistsAsync(error.Stream, ct).ConfigureAwait(false))
+            {
+                throw new StreamBusConfigurationException($"Error stream '{error.Stream}' must be a plain stream in v1 (super-stream error destinations are not supported).");
+            }
+            if (!await handle.StreamExistsAsync(error.Stream, ct).ConfigureAwait(false))
+            {
+                throw new StreamBusStreamNotFoundException(error.Stream);
+            }
         }
         var partitionStreams = options.IsSuperStream
             ? await handle.QueryPartitionAsync(stream, ct).ConfigureAwait(false)
@@ -163,6 +218,7 @@ internal sealed class StreamConsumerRegistry
 
         var busName = busType.FullName ?? busType.Name;
         var family = new CancellationTokenSource();
+        var errors = new ErrorPublisher(_producers, _loggerFactory.CreateLogger<ErrorPublisher>());
         var loops = new List<(StreamPartitionConsumer Loop, Task RunTask)>(partitionStreams.Length);
         var scopes = new List<IDisposable>(partitionStreams.Length);
         try
@@ -174,7 +230,7 @@ internal sealed class StreamConsumerRegistry
                 scopes.Add(StreamBusMetrics.Shared.TrackPartition(_vhost, busName, stream, index, reference, state));
                 var loop = new StreamPartitionConsumer(
                     handle, stream, partitionStream, index, reference, options, handler,
-                    _guard, state, StreamBusMetrics.Shared, _vhost, busName,
+                    _guard, state, StreamBusMetrics.Shared, _vhost, busName, errors,
                     _loggerFactory.CreateLogger<StreamPartitionConsumer>());
                 loops.Add((loop, loop.RunAsync(family.Token)));
             }
