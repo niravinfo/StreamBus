@@ -13,6 +13,9 @@ public sealed class HostingTests
 
     private sealed class StubHandle : IStreamSystemHandle
     {
+        public readonly List<string> CreatedStreams = new();
+        public Func<string, CancellationToken, Task<bool>> StreamExistsFunc = (_, _) => Task.FromResult(false);
+        public Func<string, CancellationToken, Task<bool>> SuperExistsFunc = (_, _) => Task.FromResult(false);
         public bool IsClosed => false;
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
         public Task<IStreamProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct)
@@ -30,17 +33,20 @@ public sealed class HostingTests
         public Task StoreSystemOffsetAsync(string reference, string stream, ulong offset, CancellationToken ct)
             => throw new NotImplementedException("HostingTests never queries offsets.");
         public Task<bool> StreamExistsAsync(string stream, CancellationToken ct)
-            => throw new NotImplementedException("HostingTests never queries offsets.");
+            => StreamExistsFunc(stream, ct);
         public Task<bool> SuperStreamExistsAsync(string superStream, CancellationToken ct)
-            => throw new NotImplementedException("HostingTests never queries offsets.");
+            => SuperExistsFunc(superStream, ct);
         public Task<string[]> QueryPartitionAsync(string superStream, CancellationToken ct)
-            => throw new NotImplementedException("HostingTests never queries offsets.");
+            => Task.FromResult(Array.Empty<string>());
         public Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct)
             => throw new NotImplementedException("HostingTests never consumes.");
         public Task CreateStreamAsync(StreamSpec spec, CancellationToken ct)
-            => throw new NotImplementedException("HostingTests never declares topology.");
+        {
+            lock (CreatedStreams) CreatedStreams.Add(spec.Name);
+            return Task.CompletedTask;
+        }
         public Task CreateSuperStreamAsync(PartitionsSuperStreamSpec spec, CancellationToken ct)
-            => throw new NotImplementedException("HostingTests never declares topology.");
+            => Task.CompletedTask;
     }
 
     private sealed class CountingHandle : IStreamSystemHandle
@@ -412,5 +418,76 @@ public sealed class HostingTests
         Assert.Equal(0, handle.DisposedCount);
         await hosted.StopAsync(CancellationToken.None);
         Assert.Equal(1, handle.DisposedCount);
+    }
+
+    [Fact]
+    public async Task Startup_declares_union_of_registrations()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var handle = new StubHandle();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddStreamBus("/", o =>
+        {
+            o.Credentials("app", "secret");
+            o.Topology(t => t.DeclareStream("stream-a"));
+        });
+        services.AddStreamBus<OrdersBus>("/", o =>
+        {
+            o.Credentials("app", "secret");
+            o.Topology(t => t.DeclareStream("stream-b"));
+        });
+        services.AddSingleton<IStreamSystemConnector>(new SuccessConnector(handle));
+        await using var sp = services.BuildServiceProvider();
+        var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
+        await hosted.StartAsync(ct);
+        try
+        {
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+            while (true)
+            {
+                List<string> snapshot;
+                lock (handle.CreatedStreams) snapshot = handle.CreatedStreams.ToList();
+                if (snapshot.Contains("stream-a") && snapshot.Contains("stream-b")) break;
+                if (DateTime.UtcNow >= deadline) break;
+                await Task.Delay(TimeSpan.FromMilliseconds(50), ct);
+            }
+            List<string> created;
+            lock (handle.CreatedStreams) created = handle.CreatedStreams.ToList();
+            Assert.Contains("stream-a", created);
+            Assert.Contains("stream-b", created);
+        }
+        finally
+        {
+            await hosted.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task Blocking_startup_timeout_names_topology()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var handle = new StubHandle();
+        handle.StreamExistsFunc = async (_, ct2) => { await Task.Delay(Timeout.Infinite, ct2); return false; };
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddStreamBus("/", o =>
+        {
+            o.Credentials("app", "secret");
+            o.Topology(t => t.DeclareStream("hung-stream"));
+            o.Hosting(h => h.BlockStartupUntilReady(TimeSpan.FromMilliseconds(200)));
+        });
+        services.AddSingleton<IStreamSystemConnector>(new SuccessConnector(handle));
+        await using var sp = services.BuildServiceProvider();
+        var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
+        try
+        {
+            var ex = await Assert.ThrowsAsync<StreamBusTimeoutException>(() => hosted.StartAsync(ct));
+            Assert.Contains("topology", ex.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            await hosted.StopAsync(CancellationToken.None);
+        }
     }
 }

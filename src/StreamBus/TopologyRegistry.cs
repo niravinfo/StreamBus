@@ -37,8 +37,6 @@ internal sealed class StreamTopologyRegistry : IStreamTopology
             if (_declared.TryGetValue(declaration.Name, out var known) && known == fingerprint)
                 return;
             // Kind occupancy is decided in ComparePlainAsync (single compare path covers
-            // pre-existing and raced occupancy identically).
-            // Kind occupancy is decided in ComparePlainAsync (single compare path covers
             // pre-existing and raced occupancy identically). The create gate checks
             // BOTH kinds: the broker allows plain-over-super coexistence (Ruling R6),
             // so attempting the create on a super-occupied name would silently enter

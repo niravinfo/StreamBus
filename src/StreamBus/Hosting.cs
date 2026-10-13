@@ -1,3 +1,4 @@
+using System.Runtime.ExceptionServices;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
@@ -314,12 +315,34 @@ public sealed class StreamBusHostedService : IHostedService
         }
         if (declareTasks.Count > 0)
         {
+            foreach (var task in declareTasks)
+            {
+                _ = task.ContinueWith(
+                    t =>
+                    {
+                        if (t.Exception?.InnerExceptions.Any(e => e is StreamConfigurationConflictException) == true)
+                        {
+                            try { declareCts.Cancel(); }
+                            catch (ObjectDisposedException) { }
+                        }
+                    },
+                    CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
+            }
             try
             {
                 await Task.WhenAll(declareTasks).WaitAsync(cts.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested)
             {
+                try { declareCts.Cancel(); }
+                catch (ObjectDisposedException) { }
+                var conflict = declareTasks
+                    .SelectMany(t => t.Exception?.InnerExceptions.AsEnumerable() ?? Enumerable.Empty<Exception>())
+                    .OfType<StreamConfigurationConflictException>()
+                    .FirstOrDefault();
+                if (conflict is not null) ExceptionDispatchInfo.Capture(conflict).Throw();
                 throw new StreamBusTimeoutException($"Timed out declaring topology within the startup timeout.");
             }
         }

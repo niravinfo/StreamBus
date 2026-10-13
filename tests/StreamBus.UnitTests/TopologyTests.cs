@@ -48,7 +48,7 @@ public sealed class TopologyTests
     [Fact]
     public void Validation_rejects_bad_specs()
     {
-        Assert.ThrowsAny<Exception>(() => TopologyValidation.ValidateStream(new StreamDeclaration { Name = "  " }));
+        Assert.Throws<ArgumentException>(() => TopologyValidation.ValidateStream(new StreamDeclaration { Name = "  " }));
         Assert.Throws<StreamBusConfigurationException>(() => TopologyValidation.ValidateSuper(new SuperStreamDeclaration { Name = "s", Partitions = 0 }));
         Assert.Throws<StreamBusConfigurationException>(() => TopologyValidation.ValidateStream(new StreamDeclaration { Name = "s", MaxAge = TimeSpan.Zero }));
         Assert.Throws<StreamBusConfigurationException>(() => TopologyValidation.ValidateStream(new StreamDeclaration { Name = "s", MaxLengthBytes = 0 }));
@@ -214,11 +214,6 @@ public sealed class TopologyTests
             registry.EnsureSuperStreamAsync(new SuperStreamDeclaration { Name = "ss", Partitions = 3 }, ct));
         Assert.Contains("coexisting", ex.Actual);
     }
-
-    // FALLBACK branch (Task 2 Step 0: concurrent identical creates throw): the two
-    // knob-conflict tests above assert success instead — same scripted setup, plain
-    // `await ...` with no throw, plus Assert.True on the stream existing. All other
-    // tests in this file are identical under both branches.
 
     [Fact]
     public async Task Partition_mismatch_throws_with_expected_and_actual()
