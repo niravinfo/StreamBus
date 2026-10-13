@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace StreamBus;
 
@@ -114,6 +115,7 @@ public sealed class StreamBusOptionsBuilder
     private int _port = 5552;
     private StreamBusConnectionOptions _connection = new();
     private StreamBusHostOptions _hosting = new();
+    private StreamTopologyDeclarations _topology = new();
     private readonly string _vhost;
 
     public StreamBusOptionsBuilder(string vhost) => _vhost = vhost;
@@ -133,6 +135,14 @@ public sealed class StreamBusOptionsBuilder
         _hosting = b.Build();
         return this;
     }
+    public StreamBusOptionsBuilder Topology(Action<StreamTopologyDeclarationsBuilder> configure)
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+        var b = new StreamTopologyDeclarationsBuilder();
+        configure(b);
+        _topology = b.Build();
+        return this;
+    }
     public StreamBusOptions Build() => new()
     {
         Vhost = _vhost,
@@ -142,6 +152,7 @@ public sealed class StreamBusOptionsBuilder
         Port = _port,
         Connection = _connection,
         Hosting = _hosting,
+        Topology = _topology,
     };
 }
 
@@ -162,17 +173,77 @@ public sealed class StreamBusHostOptionsBuilder
     public StreamBusHostOptions Build() => new() { BlockStartupUntilReady = _block, StartupTimeout = _timeout };
 }
 
+public sealed class StreamTopologyDeclarationsBuilder
+{
+    private readonly List<StreamDeclaration> _streams = new();
+    private readonly List<SuperStreamDeclaration> _supers = new();
+
+    public StreamTopologyDeclarationsBuilder DeclareStream(string name, Action<StreamDeclarationKnobsBuilder>? configure = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        var knobs = new StreamDeclarationKnobsBuilder();
+        configure?.Invoke(knobs);
+        _streams.Add(knobs.BuildStream(name));
+        return this;
+    }
+
+    public StreamTopologyDeclarationsBuilder DeclareSuperStream(string name, int partitions, Action<StreamDeclarationKnobsBuilder>? configure = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        var knobs = new StreamDeclarationKnobsBuilder();
+        configure?.Invoke(knobs);
+        _supers.Add(knobs.BuildSuper(name, partitions));
+        return this;
+    }
+
+    public StreamTopologyDeclarations Build()
+    {
+        var built = new StreamTopologyDeclarations { Streams = _streams.ToList(), SuperStreams = _supers.ToList() };
+        foreach (var s in built.Streams) TopologyValidation.ValidateStream(s);
+        foreach (var s in built.SuperStreams) TopologyValidation.ValidateSuper(s);
+        return built;
+    }
+}
+
+public sealed class StreamDeclarationKnobsBuilder
+{
+    private TimeSpan? _maxAge;
+    private ulong? _maxLengthBytes;
+    private int? _maxSegmentSizeBytes;
+    private StreamLeaderLocator _locator = StreamLeaderLocator.LeastLeaders;
+
+    public StreamDeclarationKnobsBuilder MaxAge(TimeSpan maxAge) { _maxAge = maxAge; return this; }
+    public StreamDeclarationKnobsBuilder MaxLengthBytes(ulong maxLengthBytes) { _maxLengthBytes = maxLengthBytes; return this; }
+    public StreamDeclarationKnobsBuilder MaxSegmentSizeBytes(int maxSegmentSizeBytes) { _maxSegmentSizeBytes = maxSegmentSizeBytes; return this; }
+    public StreamDeclarationKnobsBuilder LeaderLocator(StreamLeaderLocator locator) { _locator = locator; return this; }
+
+    internal StreamDeclaration BuildStream(string name) => new()
+    {
+        Name = name, MaxAge = _maxAge, MaxLengthBytes = _maxLengthBytes,
+        MaxSegmentSizeBytes = _maxSegmentSizeBytes, LeaderLocator = _locator,
+    };
+
+    internal SuperStreamDeclaration BuildSuper(string name, int partitions) => new()
+    {
+        Name = name, Partitions = partitions, MaxAge = _maxAge, MaxLengthBytes = _maxLengthBytes,
+        MaxSegmentSizeBytes = _maxSegmentSizeBytes, LeaderLocator = _locator,
+    };
+}
+
 public sealed class StreamBusHostedService : IHostedService
 {
     private readonly StreamBusConfigStore _store;
     private readonly IStreamBusRegistry _registry;
     private readonly List<StreamBusConnectionSupervisor> _started = new();
     private readonly object _gate = new();
+    private readonly ILogger<StreamBusHostedService> _logger;
+    private CancellationTokenSource? _declareCts;
 
-    public StreamBusHostedService(StreamBusConfigStore store, IStreamBusRegistry registry)
+    public StreamBusHostedService(StreamBusConfigStore store, IStreamBusRegistry registry, ILogger<StreamBusHostedService>? logger = null)
     {
         _store = store;
         _registry = registry;
+        _logger = logger ?? NullLogger<StreamBusHostedService>.Instance;
     }
 
     public async Task StartAsync(CancellationToken ct)
@@ -187,6 +258,38 @@ public sealed class StreamBusHostedService : IHostedService
             lock (_gate) _started.Add(supervisor);
             var timeout = _store.Registrations.First(r => r.Options.Vhost == vhost).Options.Hosting.StartupTimeout;
             supervisors.Add((vhost, timeout, supervisor));
+        }
+        CancellationTokenSource declareCts;
+        lock (_gate)
+        {
+            _declareCts?.Dispose();
+            _declareCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            declareCts = _declareCts;
+        }
+        var blocking = _store.Registrations.Any(r => r.Options.Hosting.BlockStartupUntilReady);
+        var declareTasks = new List<Task>();
+        foreach (var vhost in _store.Registrations.Select(r => r.Options.Vhost).Distinct())
+        {
+            var streams = _store.Registrations.Where(r => r.Options.Vhost == vhost).SelectMany(r => r.Options.Topology.Streams).ToList();
+            var supers = _store.Registrations.Where(r => r.Options.Vhost == vhost).SelectMany(r => r.Options.Topology.SuperStreams).ToList();
+            if (streams.Count == 0 && supers.Count == 0) continue;
+            var task = DeclareUntilReadyAsync(vhost, streams, supers, declareCts.Token);
+            if (!blocking)
+            {
+                _ = task.ContinueWith(
+                    t =>
+                    {
+                        if (t.Exception is { } ex)
+                            _logger.LogCritical(ex, "Topology declaration for vhost '{Vhost}' failed permanently; streams were NOT declared.", vhost);
+                    },
+                    CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
+            }
+            else
+            {
+                declareTasks.Add(task);
+            }
         }
         if (!_store.Registrations.Any(r => r.Options.Hosting.BlockStartupUntilReady)) return;
         var timeouts = _store.Registrations
@@ -209,6 +312,53 @@ public sealed class StreamBusHostedService : IHostedService
                 throw new StreamBusTimeoutException($"Timed out waiting for StreamBus vhost '{vhost}' to become ready within {effective}.");
             }
         }
+        if (declareTasks.Count > 0)
+        {
+            try
+            {
+                await Task.WhenAll(declareTasks).WaitAsync(cts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                throw new StreamBusTimeoutException($"Timed out declaring topology within the startup timeout.");
+            }
+        }
+    }
+
+    private async Task DeclareUntilReadyAsync(string vhost, List<StreamDeclaration> streams, List<SuperStreamDeclaration> supers, CancellationToken ct)
+    {
+        var topology = _registry.TopologyFor(vhost);
+        var attempt = 0;
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                foreach (var s in streams)
+                    await topology.EnsureStreamAsync(s, ct).ConfigureAwait(false);
+                foreach (var s in supers)
+                    await topology.EnsureSuperStreamAsync(s, ct).ConfigureAwait(false);
+                return;
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (StreamConfigurationConflictException)
+            {
+                throw;
+            }
+            catch (StreamBusFatalException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                attempt++;
+                _logger.LogWarning(ex, "Topology declaration for vhost '{Vhost}' failed (attempt {Attempt}); retrying.", vhost, attempt);
+                await Task.Delay(StreamBusDelays.ExponentialCapped(attempt, TimeSpan.FromMilliseconds(200), TimeSpan.FromSeconds(30), 2.0, TimeSpan.FromSeconds(1)), ct).ConfigureAwait(false);
+            }
+        }
     }
 
     public async Task StopAsync(CancellationToken ct)
@@ -217,6 +367,17 @@ public sealed class StreamBusHostedService : IHostedService
         {
             try { await consumer.DisposeAsync().ConfigureAwait(false); }
             catch (Exception) { /* shutdown best-effort; supervisor disposal below still runs */ }
+        }
+        CancellationTokenSource? declareCts;
+        lock (_gate)
+        {
+            declareCts = _declareCts;
+            _declareCts = null;
+        }
+        if (declareCts is not null)
+        {
+            try { declareCts.Cancel(); }
+            finally { declareCts.Dispose(); }
         }
         List<StreamBusConnectionSupervisor> copy;
         lock (_gate)
