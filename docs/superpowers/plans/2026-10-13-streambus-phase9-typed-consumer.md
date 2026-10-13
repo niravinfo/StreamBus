@@ -1061,6 +1061,31 @@ Wait — `OrderConsumer` needs the `got` list injected: `services.AddSingleton(g
 - [ ] **Step 2: Poison paths + retry order + mismatch loudness**
 
 ```csharp
+    private sealed class FlakyTypedConsumer : IConsumer<OrderEvent>
+    {
+        private readonly Dictionary<int, int> _attempts;
+        private readonly List<(ConsumeContext<OrderEvent> Ctx, byte[] Raw)> _got;
+        public FlakyTypedConsumer(
+            Dictionary<int, int> attempts,
+            List<(ConsumeContext<OrderEvent>, byte[])> got)
+        {
+            _attempts = attempts;
+            _got = got;
+        }
+        public Task Consume(ConsumeContext<OrderEvent> context, CancellationToken ct)
+        {
+            int attempt;
+            lock (_attempts)
+            {
+                attempt = _attempts.TryGetValue(context.Message.Seq, out var n) ? n + 1 : 1;
+                _attempts[context.Message.Seq] = attempt;
+            }
+            if (context.Message.Seq == 2 && attempt < 3) throw new InvalidOperationException("flaky 2");
+            lock (_got) _got.Add((context, context.Body.ToArray()));
+            return Task.CompletedTask;
+        }
+    }
+
     [Fact]
     public async Task Poison_skip_goes_to_error_stream()
     {
@@ -1073,9 +1098,6 @@ Wait — `OrderConsumer` needs the `got` list injected: `services.AddSingleton(g
         await using var _ = admin;
         await admin.CreateStream(new StreamSpec(stream));
         await admin.CreateStream(new StreamSpec(error) { MaxAge = TimeSpan.FromDays(7) });
-```
-
-```csharp
         var got = new List<(ConsumeContext<OrderEvent> Ctx, byte[] Raw)>();
         await using var inst = await BusInstance.StartAsync(s =>
         {
@@ -1090,54 +1112,115 @@ Wait — `OrderConsumer` needs the `got` list injected: `services.AddSingleton(g
         await pub.DisposeAsync();
         await WaitForAsync(() => { lock (got) return got.Count >= 1; }, TimeSpan.FromSeconds(30), "post-poison good message");
         Assert.Equal("ok", got[0].Ctx.Message.OrderId);
-        using var reader = await inst.Bus.ConsumeAsync(error,
-            new ConsumeOptions { Offset = ConsumeOffset.AlwaysFirst, Reference = Unique("read") },
-            ctx => { lock (got) got.Add((null!, ctx.Body.ToArray())); return Task.CompletedTask; }, ct);
-```
-
-
-```csharp
         var errors = new List<byte[]>();
-        using var reader = await inst.Bus.ConsumeAsync(error,
+        await using var reader = await inst.Bus.ConsumeAsync(error,
             new ConsumeOptions { Offset = ConsumeOffset.AlwaysFirst, Reference = Unique("read") },
             ctx => { lock (errors) errors.Add(ctx.Body.ToArray()); return Task.CompletedTask; }, ct);
         await WaitForAsync(() => { lock (errors) return errors.Count >= 1; }, TimeSpan.FromSeconds(30), "error handoff");
         Assert.Equal("{bad json", Encoding.UTF8.GetString(errors[0]));
     }
-```
 
-(Reader reference `Unique("read")` per read ✓. RetryPolicy/MaxJitter props per Phase 6 records ✓ (`BaseDelay`, `MaxJitter`, `MaxAttempts`, `FailureMode`).)
-
-```csharp
     [Fact]
     public async Task Poison_strict_never_skips()
     {
-        ...Strict default consumer; publish good(0), poison, good(1)...
-        WaitFor first good; settle 5s; assert second good ABSENT (count stays 1) — bounded negative proving stall-not-skip.
+        var ct = TestContext.Current.CancellationToken;
+        var stream = Unique("typed-strict");
+        _streams.Add(stream);
+        var admin = await ConnectAdminAsync();
+        await using var _ = admin;
+        await admin.CreateStream(new StreamSpec(stream));
+        var got = new List<(ConsumeContext<OrderEvent> Ctx, byte[] Raw)>();
+        await using var inst = await BusInstance.StartAsync(s =>
+        {
+            s.AddSingleton(got);
+            s.AddStreamBusConsumer<OrderEvent, OrderConsumer>(stream);
+        });
+        await using var pub = await BusInstance.StartAsync();
+        await pub.Bus.PublishAsync(stream, Body(new OrderEvent("good", 0)), new PublishOptions(), ct);
+        await pub.Bus.PublishAsync(stream, Encoding.UTF8.GetBytes("{bad json"), new PublishOptions(), ct);
+        await pub.Bus.PublishAsync(stream, Body(new OrderEvent("good", 1)), new PublishOptions(), ct);
+        await pub.DisposeAsync();
+        await WaitForAsync(() => { lock (got) return got.Count >= 1; }, TimeSpan.FromSeconds(30), "first good message");
+        await Task.Delay(TimeSpan.FromSeconds(5), ct);
+        lock (got)
+        {
+            var only = Assert.Single(got);
+            Assert.Equal(0, only.Ctx.Message.Seq);
+        }
     }
 
     [Fact]
     public async Task Retry_preserves_order_typed()
     {
-        // DI-backed flaky consumer (attempts dict as singleton, like Task 3).
+        var ct = TestContext.Current.CancellationToken;
+        var stream = Unique("typed-retry");
+        _streams.Add(stream);
+        var admin = await ConnectAdminAsync();
+        await using var _ = admin;
+        await admin.CreateStream(new StreamSpec(stream));
+        var got = new List<(ConsumeContext<OrderEvent> Ctx, byte[] Raw)>();
         var attempts = new Dictionary<int, int>();
-        consumer class FlakyTypedConsumer(IConsumer<OrderEvent>) with dict ctor + throw-twice-on-seq-2 (define in file);
-        services: AddSingleton(attempts) + AddStreamBusConsumer<OrderEvent, FlakyTypedConsumer>(stream, o => o.Retry(new RetryPolicy { BaseDelay = TimeSpan.FromMilliseconds(10), MaxJitter = TimeSpan.Zero }));
-        publish 0..4; WaitFor 5 collected; assert ordered seqs + attempts[2] == 3.
+        await using var inst = await BusInstance.StartAsync(s =>
+        {
+            s.AddSingleton(got);
+            s.AddSingleton(attempts);
+            s.AddStreamBusConsumer<OrderEvent, FlakyTypedConsumer>(stream,
+                o => o.Retry(new RetryPolicy { BaseDelay = TimeSpan.FromMilliseconds(10), MaxJitter = TimeSpan.Zero }));
+        });
+        await using var pub = await BusInstance.StartAsync();
+        for (var seq = 0; seq < 5; seq++)
+            await pub.Bus.PublishAsync(stream, Body(new OrderEvent("o", seq)), new PublishOptions(), ct);
+        await pub.DisposeAsync();
+        await WaitForAsync(() => { lock (got) return got.Count >= 5; }, TimeSpan.FromSeconds(60), "retry drain");
+        await Task.Delay(500, ct);
+        lock (got)
+        {
+            Assert.Equal(5, got.Count);
+            Assert.Equal(new[] { 0, 1, 2, 3, 4 }, got.Select(x => x.Ctx.Message.Seq).ToList());
+        }
+        lock (attempts)
+        {
+            Assert.Equal(3, attempts[2]);
+        }
     }
-```
 
-Collection for flaky: separate collecting consumer? Flaky CONSUMES (doesn't collect)... need results: make FlakyTypedConsumer ALSO record successes into a shared got list (second singleton). Two singletons (attempts dict + got list), consumer takes both. ✓ specify.
-
-```csharp
     [Fact]
     public async Task Type_mismatch_is_loud()
     {
         // Same options both sides is a deployment obligation; a wire-type
         // mismatch must land in the error stream, never misread silently.
-        ...Skip/MaxAttempts=1? MaxAttempts=1 means exactly one handler call then exhaustion (Phase 6 semantics ✓) + ErrorStream...
-        publish raw {"OrderId":123,"Seq":1} (number for string → JsonException);
-        assert error stream gets the exact bytes; assert typed consumer never received it (got stays empty — settle 2s).
+        var ct = TestContext.Current.CancellationToken;
+        var stream = Unique("typed-mismatch");
+        var error = Unique("typed-mismatch.error");
+        _streams.Add(stream);
+        _streams.Add(error);
+        var admin = await ConnectAdminAsync();
+        await using var _ = admin;
+        await admin.CreateStream(new StreamSpec(stream));
+        await admin.CreateStream(new StreamSpec(error) { MaxAge = TimeSpan.FromDays(7) });
+        var got = new List<(ConsumeContext<OrderEvent> Ctx, byte[] Raw)>();
+        await using var inst = await BusInstance.StartAsync(s =>
+        {
+            s.AddSingleton(got);
+            s.AddStreamBusConsumer<OrderEvent, OrderConsumer>(stream, o => o
+                .Retry(new RetryPolicy { FailureMode = FailureMode.SkipAfterDeadline, MaxAttempts = 1, BaseDelay = TimeSpan.FromMilliseconds(10), MaxJitter = TimeSpan.Zero })
+                .ErrorStream(new ErrorStreamOptions { Stream = error }));
+        });
+        await using var pub = await BusInstance.StartAsync();
+        var mismatched = Encoding.UTF8.GetBytes("{\"OrderId\":123,\"Seq\":1}");
+        await pub.Bus.PublishAsync(stream, mismatched, new PublishOptions(), ct);
+        await pub.DisposeAsync();
+        var errors = new List<byte[]>();
+        await using var reader = await inst.Bus.ConsumeAsync(error,
+            new ConsumeOptions { Offset = ConsumeOffset.AlwaysFirst, Reference = Unique("read") },
+            ctx => { lock (errors) errors.Add(ctx.Body.ToArray()); return Task.CompletedTask; }, ct);
+        await WaitForAsync(() => { lock (errors) return errors.Count >= 1; }, TimeSpan.FromSeconds(30), "mismatch handoff");
+        Assert.Equal(mismatched, errors[0]);
+        await Task.Delay(TimeSpan.FromSeconds(2), ct);
+        lock (got)
+        {
+            Assert.Empty(got);
+        }
     }
 ```
 
