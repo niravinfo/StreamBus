@@ -10,4 +10,16 @@ internal static class StreamBusDelays
         var jitter = TimeSpan.FromMilliseconds(Random.Shared.Next(0, (int)Math.Min(jitterCapMs, grown.TotalMilliseconds / 2 + 1)));
         return grown + jitter;
     }
+
+    public static TimeSpan ExponentialCapped(int attempt, TimeSpan baseDelay, TimeSpan maxDelay, double multiplier, TimeSpan maxJitter)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(attempt, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(multiplier, 1.0 - double.Epsilon); // multiplier < 1 rejected; == 1 allowed (constant delay)
+        var grown = TimeSpan.FromMilliseconds(baseDelay.TotalMilliseconds * Math.Pow(multiplier, Math.Min(attempt - 1, 16)));
+        if (grown > maxDelay) grown = maxDelay;
+        if (grown < TimeSpan.Zero) grown = TimeSpan.Zero;
+        var cap = TimeSpan.FromMilliseconds(Math.Min(maxJitter.TotalMilliseconds, grown.TotalMilliseconds / 2));
+        var jitter = cap <= TimeSpan.Zero ? TimeSpan.Zero : TimeSpan.FromMilliseconds(Random.Shared.NextDouble() * cap.TotalMilliseconds);
+        return grown + jitter;
+    }
 }
