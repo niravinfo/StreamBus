@@ -11,6 +11,7 @@ public interface IStreamSystemHandle : IAsyncDisposable
 {
     bool IsClosed { get; }
     Task<IStreamProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct);
+    Task<IStreamProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct);
     Task<IStreamProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct);
     Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct);
     Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken ct);
@@ -51,18 +52,31 @@ public sealed class StreamSystemHandle : IStreamSystemHandle
     public bool IsClosed => _system.IsClosed;
 
     public async Task<IStreamProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct)
+        => await CreatePlainProducerCoreAsync(stream, ProducerReference(stream), ct).ConfigureAwait(false);
+
+    public async Task<IStreamProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(reference);
+        if (Encoding.UTF8.GetByteCount(reference) > ReferenceDerivation.MaxReferenceBytes)
+            throw new StreamBusConfigurationException($"Producer reference exceeds the broker's 255-byte limit.");
+        return await CreatePlainProducerCoreAsync(stream, reference, ct).ConfigureAwait(false);
+    }
+
+    private async Task<IStreamProducerHandle> CreatePlainProducerCoreAsync(string stream, string reference, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         var confirmations = new ConfirmationTracker();
-        // Unique producer name per handle: the broker deduplicates publishes by
-        // (producer name, publishing id) and ids restart at 1 per handle, so a
-        // reused name would silently drop a later handle's first messages as
-        // duplicates (confirmed-Ok but never appended). Distinct names keep
-        // every handle's id sequence collision-free, including after recreates.
+        // Unique producer name per handle on the ProducerReference path: the broker
+        // deduplicates publishes by (producer name, publishing id) and ids restart
+        // at 1 per handle, so a reused name would silently drop a later handle's
+        // first messages as duplicates (confirmed-Ok but never appended). Distinct
+        // names keep every handle's id sequence collision-free, including after
+        // recreates. (Explicit references are replay-scoped stable names — Phase 7
+        // owns stable FR-6 naming; replay idempotency relies on this determinism.)
         var producer = await _system.CreateRawProducer(new RawProducerConfig(stream)
         {
             MessagesBufferSize = 100,
-            Reference = ProducerReference(stream),
+            Reference = reference,
             ConfirmHandler = confirmations.Complete,
         }, _factory.CreateLogger<RawProducer>()).ConfigureAwait(false);
         return new StreamProducerHandle(producer, stream, confirmations);

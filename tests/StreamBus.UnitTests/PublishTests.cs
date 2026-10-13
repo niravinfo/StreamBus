@@ -13,6 +13,10 @@ sealed class StubProducerHandle : IStreamProducerHandle
         SendCount++;
         return _send(body, routingKey, ct);
     }
+    public Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, string? routingKey, IReadOnlyDictionary<string, object?> applicationProperties, string? messageId, string? correlationId, CancellationToken ct)
+        => throw new NotImplementedException("PublishTests never sends envelopes.");
+    public Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, CancellationToken ct)
+        => throw new NotImplementedException("PublishTests never replays.");
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }
 
@@ -28,6 +32,8 @@ sealed class StubSystemHandle : IStreamSystemHandle
         PlainCreations++;
         return OnCreatePlain is not null ? OnCreatePlain(stream, ct) : Task.FromResult<IStreamProducerHandle>(new StubProducerHandle());
     }
+    public Task<IStreamProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
+        => throw new NotImplementedException("PublishTests never replays.");
     public Task<IStreamProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
     {
         SuperCreations++;

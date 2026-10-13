@@ -56,6 +56,36 @@ internal sealed class StreamProducerRegistry
         }
     }
 
+    public async Task PublishEnvelopeAsync(string stream, ReadOnlyMemory<byte> body, string? routingKey, IReadOnlyDictionary<string, object?> applicationProperties, string? messageId, string? correlationId, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(stream);
+        ArgumentNullException.ThrowIfNull(applicationProperties);
+        var readiness = await _supervisor.WaitUntilReadyAsync(ReadinessPolicy.FailFastPolicy, ct).ConfigureAwait(false);
+        if (readiness == BusReadiness.Fatal)
+            throw new StreamBusFatalException($"StreamBus for vhost '{_vhost}' is in Fatal state; publish to '{stream}' refused.");
+        if (readiness != BusReadiness.Ready)
+            throw new StreamBusNotReadyException($"StreamBus for vhost '{_vhost}' is not ready ({readiness}); publish to '{stream}' refused.");
+        var (entry, handle) = await GetOrCreateAsync(stream, super: false, ct).ConfigureAwait(false);
+        var key = Key(stream, super: false);
+        try
+        {
+            await handle.SendEnvelopeAsync(body, routingKey, applicationProperties, messageId, correlationId, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (StreamBusPublishException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (!IsCallerCancel(ex, ct))
+        {
+            await InvalidateAsync(key, entry, handle).ConfigureAwait(false);
+            throw new StreamBusPublishTransientException($"Publish to stream '{stream}' failed transiently; the cached producer was discarded.", ex);
+        }
+    }
+
     // A non-cancellation failure racing caller cancellation is wrapped as transient
     // (indistinguishable coincidence case; accepted behavior).
     private static bool IsCallerCancel(Exception ex, CancellationToken ct)

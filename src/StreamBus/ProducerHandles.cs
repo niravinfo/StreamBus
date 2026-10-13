@@ -7,6 +7,8 @@ namespace StreamBus;
 public interface IStreamProducerHandle : IAsyncDisposable
 {
     Task SendAsync(ReadOnlyMemory<byte> body, string? routingKey, CancellationToken ct);
+    Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, string? routingKey, IReadOnlyDictionary<string, object?> applicationProperties, string? messageId, string? correlationId, CancellationToken ct);
+    Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, CancellationToken ct);
 }
 
 // Bridges the client's callback-based confirms (RawProducerConfig.ConfirmHandler)
@@ -67,6 +69,38 @@ internal sealed class ConfirmationTracker
                 tcs.TrySetCanceled();
         }
     }
+
+    public async Task PublishWithIdAsync(IProducer producer, string stream, ulong publishingId, Message message, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var confirmation = new TaskCompletionSource<ResponseCode>(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!_pending.TryAdd(publishingId, confirmation))
+            throw new StreamBusPublishException($"Replay publishing id {publishingId} is already in flight for stream '{stream}' (internal error).");
+        try
+        {
+            await producer.Send(publishingId, message).ConfigureAwait(false);
+        }
+        catch
+        {
+            _pending.TryRemove(publishingId, out _);
+            throw;
+        }
+        using (ct.Register(static state => ((TaskCompletionSource<ResponseCode>)state!).TrySetCanceled(), confirmation))
+        {
+            ResponseCode code;
+            try
+            {
+                code = await confirmation.Task.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                _pending.TryRemove(publishingId, out _);
+                throw;
+            }
+            if (code != ResponseCode.Ok)
+                throw new StreamBusPublishException($"Publish to stream '{stream}' was not confirmed (status {code}).");
+        }
+    }
 }
 
 internal sealed class StreamProducerHandle : IStreamProducerHandle
@@ -89,6 +123,30 @@ internal sealed class StreamProducerHandle : IStreamProducerHandle
     {
         ct.ThrowIfCancellationRequested();
         await _confirmations.PublishAsync(_producer, _stream, new Message(body.ToArray()), ct).ConfigureAwait(false);
+    }
+
+    public async Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, string? routingKey, IReadOnlyDictionary<string, object?> applicationProperties, string? messageId, string? correlationId, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        ArgumentNullException.ThrowIfNull(applicationProperties);
+        var message = new Message(body.ToArray());
+        if (messageId is not null || correlationId is not null)
+        {
+            message.Properties = new RabbitMQ.Stream.Client.AMQP.Properties { MessageId = messageId, CorrelationId = correlationId };
+        }
+        var app = new RabbitMQ.Stream.Client.AMQP.ApplicationProperties();
+        foreach (var kv in applicationProperties)
+        {
+            app[kv.Key] = kv.Value;
+        }
+        message.ApplicationProperties = app;
+        await _confirmations.PublishAsync(_producer, _stream, message, ct).ConfigureAwait(false);
+    }
+
+    public async Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        await _confirmations.PublishWithIdAsync(_producer, _stream, publishingId, new Message(body.ToArray()), ct).ConfigureAwait(false);
     }
 
     public ValueTask DisposeAsync()
@@ -135,6 +193,12 @@ internal sealed class SuperStreamProducerHandle : IStreamProducerHandle
             RoutingTable.Remove(message);
         }
     }
+
+    public Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, string? routingKey, IReadOnlyDictionary<string, object?> applicationProperties, string? messageId, string? correlationId, CancellationToken ct)
+        => throw new StreamBusConfigurationException("Error streams and replay targets are plain streams; this path is not supported.");
+
+    public Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, CancellationToken ct)
+        => throw new StreamBusConfigurationException("Error streams and replay targets are plain streams; this path is not supported.");
 
     public ValueTask DisposeAsync()
     {
