@@ -343,9 +343,9 @@ internal static class TypedConsumerHandler
         {
             closed = open.MakeGenericMethod(messageType, consumerType);
         }
-        catch (ArgumentException ex)
+        catch (ArgumentException)
         {
-            throw new StreamBusConfigurationException($"Consumer {consumerType.FullName} cannot consume {messageType.FullName} (must implement IConsumer<{messageType.Name}>).", ex);
+            throw new StreamBusConfigurationException($"Consumer {consumerType.FullName} cannot consume {messageType.FullName} (must implement IConsumer<{messageType.Name}>).");
         }
         return (Func<ConsumeContext, Task>)closed.Invoke(null, new object[] { scopes, serializer })!;
     }

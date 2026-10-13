@@ -1,4 +1,6 @@
+using System.Reflection;
 using System.Runtime.ExceptionServices;
+using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
@@ -106,6 +108,36 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<StreamBusConfigStore>(created);
         return created;
     }
+
+    public static IServiceCollection AddStreamBusConsumer<TMessage, TConsumer>(this IServiceCollection services, string stream, Action<ConsumeOptionsBuilder>? configure = null)
+        where TConsumer : class, IConsumer<TMessage>
+        => AddStreamBusConsumerCore<TMessage, TConsumer>(services, typeof(DefaultBus), stream, configure);
+
+    public static IServiceCollection AddStreamBusConsumer<TBus, TMessage, TConsumer>(this IServiceCollection services, string stream, Action<ConsumeOptionsBuilder>? configure = null)
+        where TConsumer : class, IConsumer<TMessage>
+        => AddStreamBusConsumerCore<TMessage, TConsumer>(services, typeof(TBus), stream, configure);
+
+    private static IServiceCollection AddStreamBusConsumerCore<TMessage, TConsumer>(IServiceCollection services, Type busMarker, string stream, Action<ConsumeOptionsBuilder>? configure)
+        where TConsumer : class, IConsumer<TMessage>
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentException.ThrowIfNullOrWhiteSpace(stream);
+        services.TryAddTransient<TConsumer>();
+        var builder = new ConsumeOptionsBuilder();
+        configure?.Invoke(builder);
+        GetOrCreateConsumerStore(services).Add(busMarker, typeof(TMessage), typeof(TConsumer), stream, builder.Build());
+        return services;
+    }
+
+    private static StreamBusConsumerStore GetOrCreateConsumerStore(IServiceCollection services)
+    {
+        var existing = services.FirstOrDefault(d =>
+            d.ServiceType == typeof(StreamBusConsumerStore) && d.ImplementationInstance is StreamBusConsumerStore);
+        if (existing?.ImplementationInstance is StreamBusConsumerStore store) return store;
+        var created = new StreamBusConsumerStore();
+        services.AddSingleton<StreamBusConsumerStore>(created);
+        return created;
+    }
 }
 
 public sealed class StreamBusOptionsBuilder
@@ -117,6 +149,7 @@ public sealed class StreamBusOptionsBuilder
     private StreamBusConnectionOptions _connection = new();
     private StreamBusHostOptions _hosting = new();
     private StreamTopologyDeclarations _topology = new();
+    private IStreamSerializer _serializer = SystemTextJsonStreamSerializer.Default;
     private readonly string _vhost;
 
     public StreamBusOptionsBuilder(string vhost) => _vhost = vhost;
@@ -144,6 +177,15 @@ public sealed class StreamBusOptionsBuilder
         _topology = b.Build();
         return this;
     }
+    public StreamBusOptionsBuilder Serializer(IStreamSerializer serializer) { _serializer = serializer ?? throw new ArgumentNullException(nameof(serializer)); return this; }
+    public StreamBusOptionsBuilder Serializer(Action<JsonSerializerOptions> configure)
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+        var options = new JsonSerializerOptions();
+        configure(options);
+        _serializer = new SystemTextJsonStreamSerializer(options);
+        return this;
+    }
     public StreamBusOptions Build() => new()
     {
         Vhost = _vhost,
@@ -154,6 +196,7 @@ public sealed class StreamBusOptionsBuilder
         Connection = _connection,
         Hosting = _hosting,
         Topology = _topology,
+        Serializer = _serializer,
     };
 }
 
@@ -170,7 +213,12 @@ public sealed class StreamBusHostOptionsBuilder
 {
     private bool _block;
     private TimeSpan? _timeout;
-    public StreamBusHostOptionsBuilder BlockStartupUntilReady(TimeSpan? timeout = null) { _block = true; _timeout = timeout; return this; }
+    public StreamBusHostOptionsBuilder BlockStartupUntilReady(TimeSpan? timeout = null)
+    {
+        if (timeout is { } t && t <= TimeSpan.Zero)
+            throw new StreamBusConfigurationException("StartupTimeout must be positive when set.");
+        _block = true; _timeout = timeout; return this;
+    }
     public StreamBusHostOptions Build() => new() { BlockStartupUntilReady = _block, StartupTimeout = _timeout };
 }
 
@@ -231,6 +279,126 @@ public sealed class StreamDeclarationKnobsBuilder
     };
 }
 
+public sealed class ConsumeOptionsBuilder
+{
+    private bool _super;
+    private string? _reference;
+    private bool _sac = true;
+    private ConsumeOrdering _ordering = ConsumeOrdering.Strict;
+    private ConsumeOffset _offset = ConsumeOffset.ResumeOrFirst;
+    private OffsetStoreOptions _store = new();
+    private RetryPolicy _retry = new();
+    private ErrorStreamOptions? _error;
+    private Func<ErrorHandoff, Task>? _hook;
+    private ReadinessPolicy _readiness = ReadinessPolicy.FailFastPolicy;
+
+    public ConsumeOptionsBuilder SuperStream(bool enabled = true) { _super = enabled; return this; }
+    public ConsumeOptionsBuilder Reference(string? reference) { _reference = reference; return this; }
+    public ConsumeOptionsBuilder SingleActiveConsumer(bool enabled = true) { _sac = enabled; return this; }
+    public ConsumeOptionsBuilder Ordering(ConsumeOrdering ordering) { _ordering = ordering; return this; }
+    public ConsumeOptionsBuilder Offset(ConsumeOffset offset) { _offset = offset; return this; }
+    public ConsumeOptionsBuilder OffsetStore(OffsetStoreOptions options) { _store = options ?? throw new ArgumentNullException(nameof(options)); return this; }
+    public ConsumeOptionsBuilder Retry(RetryPolicy policy) { _retry = policy ?? throw new ArgumentNullException(nameof(policy)); return this; }
+    public ConsumeOptionsBuilder ErrorStream(ErrorStreamOptions? options) { _error = options; return this; }
+    public ConsumeOptionsBuilder OnRetryExhausted(Func<ErrorHandoff, Task>? hook) { _hook = hook; return this; }
+    public ConsumeOptionsBuilder Readiness(ReadinessPolicy policy) { _readiness = policy ?? throw new ArgumentNullException(nameof(policy)); return this; }
+
+    public ConsumeOptions Build() => new()
+    {
+        IsSuperStream = _super,
+        Reference = _reference,
+        SingleActiveConsumer = _sac,
+        Ordering = _ordering,
+        Offset = _offset,
+        OffsetStore = _store,
+        Retry = _retry,
+        ErrorStream = _error,
+        OnRetryExhausted = _hook,
+        ReadinessPolicy = _readiness,
+    };
+}
+
+public sealed record TypedConsumerRegistration
+{
+    public required Type BusMarker { get; init; }
+    public required Type MessageType { get; init; }
+    public required Type ConsumerType { get; init; }
+    public required string Stream { get; init; }
+    public required ConsumeOptions Options { get; init; }
+}
+
+public sealed class StreamBusConsumerStore
+{
+    private readonly List<TypedConsumerRegistration> _registrations = new();
+
+    public void Add(Type busMarker, Type messageType, Type consumerType, string stream, ConsumeOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(busMarker);
+        ArgumentNullException.ThrowIfNull(messageType);
+        ArgumentNullException.ThrowIfNull(consumerType);
+        ArgumentException.ThrowIfNullOrWhiteSpace(stream);
+        ArgumentNullException.ThrowIfNull(options);
+        if (_registrations.Any(r => r.BusMarker == busMarker && r.MessageType == messageType && r.ConsumerType == consumerType && r.Stream == stream))
+            throw new StreamBusConfigurationException($"Duplicate typed consumer registration for {consumerType.FullName} on stream '{stream}' (marker {busMarker.FullName}).");
+        _registrations.Add(new TypedConsumerRegistration { BusMarker = busMarker, MessageType = messageType, ConsumerType = consumerType, Stream = stream, Options = options });
+    }
+
+    public IReadOnlyList<TypedConsumerRegistration> Registrations => _registrations;
+}
+
+internal static class TypedConsumerHandler
+{
+    public static Func<ConsumeContext, Task> Create(Type messageType, Type consumerType, IServiceScopeFactory scopes, IStreamSerializer serializer)
+    {
+        ArgumentNullException.ThrowIfNull(messageType);
+        ArgumentNullException.ThrowIfNull(consumerType);
+        ArgumentNullException.ThrowIfNull(scopes);
+        ArgumentNullException.ThrowIfNull(serializer);
+        var open = typeof(TypedConsumerHandler).GetMethod(nameof(CreateTyped), BindingFlags.NonPublic | BindingFlags.Static)
+            ?? throw new StreamBusConfigurationException("Typed consumer invoker is missing (internal error).");
+        MethodInfo closed;
+        try
+        {
+            closed = open.MakeGenericMethod(messageType, consumerType);
+        }
+        catch (ArgumentException)
+        {
+            throw new StreamBusConfigurationException($"Consumer {consumerType.FullName} cannot consume {messageType.FullName} (must implement IConsumer<{messageType.Name}>).");
+        }
+        return (Func<ConsumeContext, Task>)closed.Invoke(null, new object[] { scopes, serializer })!;
+    }
+
+    private static Func<ConsumeContext, Task> CreateTyped<T, TConsumer>(IServiceScopeFactory scopes, IStreamSerializer serializer)
+        where TConsumer : class, IConsumer<T>
+        => async raw =>
+        {
+            T message;
+            try
+            {
+                message = serializer.Deserialize<T>(raw.Body);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                throw new StreamBusDeserializationException(raw.Stream, raw.Partition, raw.Offset, typeof(T), ex);
+            }
+            if (ReferenceEquals(message, null))
+                throw new StreamBusDeserializationException(raw.Stream, raw.Partition, raw.Offset, typeof(T), null);
+            using var scope = scopes.CreateScope();
+            var consumer = scope.ServiceProvider.GetRequiredService<TConsumer>();
+            await consumer.Consume(new ConsumeContext<T>
+            {
+                Message = message,
+                Stream = raw.Stream,
+                Partition = raw.Partition,
+                Offset = raw.Offset,
+                RoutingValue = raw.RoutingValue,
+                Body = raw.Body,
+                Metadata = raw.Metadata,
+                CancellationToken = raw.CancellationToken,
+            }, raw.CancellationToken).ConfigureAwait(false);
+        };
+}
+
 public sealed class StreamBusHostedService : IHostedService
 {
     private readonly StreamBusConfigStore _store;
@@ -238,17 +406,34 @@ public sealed class StreamBusHostedService : IHostedService
     private readonly List<StreamBusConnectionSupervisor> _started = new();
     private readonly object _gate = new();
     private readonly ILogger<StreamBusHostedService> _logger;
-    private CancellationTokenSource? _declareCts;
+    private readonly IServiceScopeFactory? _scopes;
+    private readonly StreamBusConsumerStore? _consumers;
+    private CancellationTokenSource? _startupCts;
 
-    public StreamBusHostedService(StreamBusConfigStore store, IStreamBusRegistry registry, ILogger<StreamBusHostedService>? logger = null)
+    public StreamBusHostedService(StreamBusConfigStore store, IStreamBusRegistry registry, ILogger<StreamBusHostedService>? logger = null, IServiceScopeFactory? scopeFactory = null, StreamBusConsumerStore? consumerStore = null)
     {
         _store = store;
         _registry = registry;
         _logger = logger ?? NullLogger<StreamBusHostedService>.Instance;
+        _scopes = scopeFactory;
+        _consumers = consumerStore;
     }
 
     public async Task StartAsync(CancellationToken ct)
     {
+        var starters = new List<(TypedConsumerRegistration Reg, string Vhost, IStreamSerializer Serializer)>();
+        if (_consumers is not null)
+        {
+            if (_scopes is null && _consumers.Registrations.Count > 0)
+                throw new StreamBusConfigurationException("Typed consumers are registered but no IServiceScopeFactory is available (internal error).");
+            foreach (var reg in _consumers.Registrations)
+            {
+                var match = _store.Registrations.FirstOrDefault(r => r.BusType == reg.BusMarker);
+                if (match.BusType is null)
+                    throw new StreamBusConfigurationException($"Typed consumer {reg.ConsumerType.FullName} on stream '{reg.Stream}' references marker {reg.BusMarker.FullName} with no AddStreamBus registration. Register the bus (Add-call order does not matter).");
+                starters.Add((reg, match.Options.Vhost, match.Options.Serializer ?? SystemTextJsonStreamSerializer.Default));
+            }
+        }
         var supervisors = new List<(string Vhost, TimeSpan? Timeout, StreamBusConnectionSupervisor Supervisor)>();
         foreach (var (busType, options) in _store.Registrations)
             _registry.GetOrCreateEntry(busType, options.Vhost);
@@ -260,12 +445,12 @@ public sealed class StreamBusHostedService : IHostedService
             var timeout = _store.Registrations.First(r => r.Options.Vhost == vhost).Options.Hosting.StartupTimeout;
             supervisors.Add((vhost, timeout, supervisor));
         }
-        CancellationTokenSource declareCts;
+        CancellationTokenSource startupCts;
         lock (_gate)
         {
-            _declareCts?.Dispose();
-            _declareCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            declareCts = _declareCts;
+            _startupCts?.Dispose();
+            _startupCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            startupCts = _startupCts;
         }
         var blocking = _store.Registrations.Any(r => r.Options.Hosting.BlockStartupUntilReady);
         var declareTasks = new List<Task>();
@@ -274,7 +459,7 @@ public sealed class StreamBusHostedService : IHostedService
             var streams = _store.Registrations.Where(r => r.Options.Vhost == vhost).SelectMany(r => r.Options.Topology.Streams).ToList();
             var supers = _store.Registrations.Where(r => r.Options.Vhost == vhost).SelectMany(r => r.Options.Topology.SuperStreams).ToList();
             if (streams.Count == 0 && supers.Count == 0) continue;
-            var task = DeclareUntilReadyAsync(vhost, streams, supers, declareCts.Token);
+            var task = DeclareUntilReadyAsync(vhost, streams, supers, startupCts.Token);
             if (!blocking)
             {
                 _ = task.ContinueWith(
@@ -290,6 +475,27 @@ public sealed class StreamBusHostedService : IHostedService
             else
             {
                 declareTasks.Add(task);
+            }
+        }
+        var consumerTasks = new List<Task>();
+        foreach (var (reg, vhost, serializer) in starters)
+        {
+            var task = StartConsumerUntilReadyAsync(reg, vhost, serializer, startupCts.Token);
+            if (!blocking)
+            {
+                _ = task.ContinueWith(
+                    t =>
+                    {
+                        if (t.Exception is { } ex)
+                            _logger.LogCritical(ex, "Typed consumer {Consumer} on stream '{Stream}' failed permanently; it is NOT consuming.", reg.ConsumerType.FullName, reg.Stream);
+                    },
+                    CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
+            }
+            else
+            {
+                consumerTasks.Add(task);
             }
         }
         if (!_store.Registrations.Any(r => r.Options.Hosting.BlockStartupUntilReady)) return;
@@ -313,7 +519,8 @@ public sealed class StreamBusHostedService : IHostedService
                 throw new StreamBusTimeoutException($"Timed out waiting for StreamBus vhost '{vhost}' to become ready within {effective}.");
             }
         }
-        if (declareTasks.Count > 0)
+        var startupTasks = declareTasks.Concat(consumerTasks).ToList();
+        if (startupTasks.Count > 0)
         {
             foreach (var task in declareTasks)
             {
@@ -322,7 +529,7 @@ public sealed class StreamBusHostedService : IHostedService
                     {
                         if (t.Exception?.InnerExceptions.Any(e => e is StreamConfigurationConflictException) == true)
                         {
-                            try { declareCts.Cancel(); }
+                            try { startupCts.Cancel(); }
                             catch (ObjectDisposedException) { }
                         }
                     },
@@ -332,18 +539,23 @@ public sealed class StreamBusHostedService : IHostedService
             }
             try
             {
-                await Task.WhenAll(declareTasks).WaitAsync(cts.Token).ConfigureAwait(false);
+                await Task.WhenAll(startupTasks).WaitAsync(cts.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested)
             {
-                try { declareCts.Cancel(); }
+                try { startupCts.Cancel(); }
                 catch (ObjectDisposedException) { }
-                var conflict = declareTasks
+                var conflict = startupTasks
                     .SelectMany(t => t.Exception?.InnerExceptions.AsEnumerable() ?? Enumerable.Empty<Exception>())
                     .OfType<StreamConfigurationConflictException>()
                     .FirstOrDefault();
                 if (conflict is not null) ExceptionDispatchInfo.Capture(conflict).Throw();
-                throw new StreamBusTimeoutException($"Timed out declaring topology within the startup timeout.");
+                var config = startupTasks
+                    .SelectMany(t => t.Exception?.InnerExceptions.AsEnumerable() ?? Enumerable.Empty<Exception>())
+                    .OfType<StreamBusConfigurationException>()
+                    .FirstOrDefault();
+                if (config is not null) ExceptionDispatchInfo.Capture(config).Throw();
+                throw new StreamBusTimeoutException($"Timed out declaring topology and starting typed consumers within the startup timeout.");
             }
         }
     }
@@ -384,6 +596,38 @@ public sealed class StreamBusHostedService : IHostedService
         }
     }
 
+    internal static bool IsStartupTransient(Exception ex)
+        => ex is StreamBusNotReadyException or StreamBusStreamNotFoundException;
+
+    private async Task StartConsumerUntilReadyAsync(TypedConsumerRegistration reg, string vhost, IStreamSerializer serializer, CancellationToken ct)
+    {
+        var entry = _registry.GetOrCreateEntry(reg.BusMarker, vhost);
+        var reference = reg.Options.Reference ?? ReferenceDerivation.Derive(reg.BusMarker, reg.ConsumerType, reg.Stream);
+        ReferenceDerivation.Validate(reference);
+        var options = reg.Options with { Reference = reference };
+        var handler = TypedConsumerHandler.Create(reg.MessageType, reg.ConsumerType, _scopes!, serializer);
+        var attempt = 0;
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                await entry.Bus.ConsumeAsync(reg.Stream, options, handler, ct).ConfigureAwait(false);
+                return;
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex) when (IsStartupTransient(ex))
+            {
+                attempt++;
+                _logger.LogWarning(ex, "Typed consumer {Consumer} on stream '{Stream}' not started (attempt {Attempt}); retrying.", reg.ConsumerType.FullName, reg.Stream, attempt);
+                await Task.Delay(StreamBusDelays.ExponentialCapped(attempt, TimeSpan.FromMilliseconds(200), TimeSpan.FromSeconds(30), 2.0, TimeSpan.FromSeconds(1)), ct).ConfigureAwait(false);
+            }
+        }
+    }
+
     public async Task StopAsync(CancellationToken ct)
     {
         foreach (var consumer in _registry.ActiveConsumers)
@@ -391,16 +635,16 @@ public sealed class StreamBusHostedService : IHostedService
             try { await consumer.DisposeAsync().ConfigureAwait(false); }
             catch (Exception) { /* shutdown best-effort; supervisor disposal below still runs */ }
         }
-        CancellationTokenSource? declareCts;
+        CancellationTokenSource? startupCts;
         lock (_gate)
         {
-            declareCts = _declareCts;
-            _declareCts = null;
+            startupCts = _startupCts;
+            _startupCts = null;
         }
-        if (declareCts is not null)
+        if (startupCts is not null)
         {
-            try { declareCts.Cancel(); }
-            finally { declareCts.Dispose(); }
+            try { startupCts.Cancel(); }
+            finally { startupCts.Dispose(); }
         }
         List<StreamBusConnectionSupervisor> copy;
         lock (_gate)
