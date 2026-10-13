@@ -15,8 +15,15 @@ internal static class StreamBusDelays
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(attempt, 1);
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(multiplier, 1.0 - double.Epsilon); // multiplier < 1 rejected; == 1 allowed (constant delay)
-        var grown = TimeSpan.FromMilliseconds(baseDelay.TotalMilliseconds * Math.Pow(multiplier, Math.Min(attempt - 1, 16)));
-        if (grown > maxDelay) grown = maxDelay;
+        // Overflow-proof: astronomical knobs (or a hostile direct call) clamp to maxDelay
+        // instead of throwing out of the dispatch loop. Registry validation rejects
+        // non-finite multipliers; this guards the computation itself.
+        var raw = baseDelay.TotalMilliseconds * Math.Pow(multiplier, Math.Min(attempt - 1, 16));
+        var grown = double.IsNaN(raw) || raw <= 0
+            ? TimeSpan.Zero
+            : raw >= maxDelay.TotalMilliseconds
+                ? maxDelay
+                : TimeSpan.FromMilliseconds(raw);
         if (grown < TimeSpan.Zero) grown = TimeSpan.Zero;
         var cap = TimeSpan.FromMilliseconds(Math.Min(maxJitter.TotalMilliseconds, grown.TotalMilliseconds / 2));
         var jitter = cap <= TimeSpan.Zero ? TimeSpan.Zero : TimeSpan.FromMilliseconds(Random.Shared.NextDouble() * cap.TotalMilliseconds);

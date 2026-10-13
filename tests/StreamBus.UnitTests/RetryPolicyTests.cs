@@ -97,6 +97,25 @@ public sealed class RetryPolicyTests
             Consume(new ConsumeOptions { Retry = new RetryPolicy { Multiplier = 0.5 } }));
     }
 
+    [Theory]
+    [InlineData(double.NaN)]
+    [InlineData(double.PositiveInfinity)]
+    [InlineData(double.NegativeInfinity)]
+    public async Task Non_finite_multiplier_throws(double multiplier)
+    {
+        var ex = await Assert.ThrowsAsync<StreamBusConfigurationException>(() =>
+            Consume(new ConsumeOptions { Retry = new RetryPolicy { Multiplier = multiplier } }));
+        Assert.Contains("finite", ex.Message);
+    }
+
+    [Fact]
+    public void Astronomical_base_delay_clamps_to_max_without_throwing()
+    {
+        var log = new ListLogger();
+        var policy = new RetryPolicy { BaseDelay = TimeSpan.MaxValue, Multiplier = 2.0, MaxDelay = TimeSpan.FromSeconds(30), MaxJitter = TimeSpan.Zero };
+        Assert.Equal(TimeSpan.FromSeconds(30), RetryDelays.ResolveDelay(policy, 100, new InvalidOperationException(), log));
+    }
+
     [Fact]
     public void Attempt_1_resolves_to_base_delay_without_jitter()
     {

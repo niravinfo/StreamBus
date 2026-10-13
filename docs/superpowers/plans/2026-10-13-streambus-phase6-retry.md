@@ -181,8 +181,13 @@ public static TimeSpan ExponentialCapped(int attempt, TimeSpan baseDelay, TimeSp
 {
     ArgumentOutOfRangeException.ThrowIfLessThan(attempt, 1);
     ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(multiplier, 1.0 - double.Epsilon); // multiplier < 1 rejected; == 1 allowed (constant delay)
-    var grown = TimeSpan.FromMilliseconds(baseDelay.TotalMilliseconds * Math.Pow(multiplier, Math.Min(attempt - 1, 16)));
-    if (grown > maxDelay) grown = maxDelay;
+    // Overflow-proof: astronomical knobs clamp to maxDelay instead of throwing out of dispatch.
+    var raw = baseDelay.TotalMilliseconds * Math.Pow(multiplier, Math.Min(attempt - 1, 16));
+    var grown = double.IsNaN(raw) || raw <= 0
+        ? TimeSpan.Zero
+        : raw >= maxDelay.TotalMilliseconds
+            ? maxDelay
+            : TimeSpan.FromMilliseconds(raw);
     if (grown < TimeSpan.Zero) grown = TimeSpan.Zero;
     var cap = TimeSpan.FromMilliseconds(Math.Min(maxJitter.TotalMilliseconds, grown.TotalMilliseconds / 2));
     var jitter = cap <= TimeSpan.Zero ? TimeSpan.Zero : TimeSpan.FromMilliseconds(Random.Shared.NextDouble() * cap.TotalMilliseconds);
@@ -190,7 +195,7 @@ public static TimeSpan ExponentialCapped(int attempt, TimeSpan baseDelay, TimeSp
 }
 ```
 
-Multiplier guard semantics: `< 1` throws (`ThrowIfLessThanOrEqual(multiplier, 1.0 - epsilon)` rejects anything meaningfully below 1 while allowing exactly 1.0). `Math.Min(attempt - 1, 16)` caps the exponent (16 doublings ≈ 65k× — overflow-safe for sane knobs; the `maxDelay` cap binds it anyway).
+Multiplier guard semantics: `< 1` or non-finite throws (`ThrowIfLessThanOrEqual(multiplier, 1.0 - epsilon)` rejects anything meaningfully below 1 while allowing exactly 1.0; the registry validation additionally rejects NaN/Infinity with a "finite number" message). `Math.Min(attempt - 1, 16)` caps the exponent (16 doublings ≈ 65k×); the computation additionally clamps NaN/negative/overflowing intermediates to Zero/maxDelay instead of throwing, so astronomical knobs degrade to capped delays rather than faulting dispatch (final-review fix, pinned by unit tests below).
 
 - [ ] **Step 4: Verify**
 
@@ -772,8 +777,8 @@ if (retry.BaseDelay <= TimeSpan.Zero)
     throw new StreamBusConfigurationException("ConsumeOptions.Retry.BaseDelay must be positive.");
 if (retry.MaxDelay <= TimeSpan.Zero)
     throw new StreamBusConfigurationException("ConsumeOptions.Retry.MaxDelay must be positive.");
-if (retry.Multiplier < 1.0)
-    throw new StreamBusConfigurationException("ConsumeOptions.Retry.Multiplier must be >= 1.");
+if (retry.Multiplier < 1.0 || !double.IsFinite(retry.Multiplier))
+    throw new StreamBusConfigurationException("ConsumeOptions.Retry.Multiplier must be a finite number >= 1.");
 if (retry.MaxJitter < TimeSpan.Zero)
     throw new StreamBusConfigurationException("ConsumeOptions.Retry.MaxJitter must be non-negative.");
 if (retry.FailureMode == FailureMode.Strict && options.ErrorStream is not null)
@@ -1072,6 +1077,25 @@ public sealed class RetryPolicyTests
     {
         await Assert.ThrowsAsync<StreamBusConfigurationException>(() =>
             Consume(new ConsumeOptions { Retry = new RetryPolicy { Multiplier = 0.5 } }));
+    }
+
+    [Theory]
+    [InlineData(double.NaN)]
+    [InlineData(double.PositiveInfinity)]
+    [InlineData(double.NegativeInfinity)]
+    public async Task Non_finite_multiplier_throws(double multiplier)
+    {
+        var ex = await Assert.ThrowsAsync<StreamBusConfigurationException>(() =>
+            Consume(new ConsumeOptions { Retry = new RetryPolicy { Multiplier = multiplier } }));
+        Assert.Contains("finite", ex.Message);
+    }
+
+    [Fact]
+    public void Astronomical_base_delay_clamps_to_max_without_throwing()
+    {
+        var log = new ListLogger();
+        var policy = new RetryPolicy { BaseDelay = TimeSpan.MaxValue, Multiplier = 2.0, MaxDelay = TimeSpan.FromSeconds(30), MaxJitter = TimeSpan.Zero };
+        Assert.Equal(TimeSpan.FromSeconds(30), RetryDelays.ResolveDelay(policy, 100, new InvalidOperationException(), log));
     }
 
     [Fact]
