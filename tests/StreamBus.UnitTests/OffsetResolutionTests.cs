@@ -199,6 +199,8 @@ public sealed class ConsumeValidationTests
         public Task<bool> SuperStreamExistsAsync(string superStream, CancellationToken ct) => Task.FromResult(SuperExists);
         public Task<string[]> QueryPartitionAsync(string superStream, CancellationToken ct) => Task.FromResult(new[] { superStream + "-0" });
         public Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct) => throw new NotImplementedException();
+        public Task CreateStreamAsync(StreamSpec spec, CancellationToken ct) => throw new NotImplementedException("OffsetResolutionTests never declares topology.");
+        public Task CreateSuperStreamAsync(PartitionsSuperStreamSpec spec, CancellationToken ct) => throw new NotImplementedException("OffsetResolutionTests never declares topology.");
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 

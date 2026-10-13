@@ -39,6 +39,8 @@ public sealed class ResultPublisherTests
         public Task<string[]> QueryPartitionAsync(string superStream, CancellationToken ct) => Task.FromResult(new[] { superStream });
         public Task<ulong> QuerySequenceAsync(string reference, string stream, CancellationToken ct) => Task.FromResult(0UL);
         public Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct) => throw new NotImplementedException();
+        public Task CreateStreamAsync(StreamSpec spec, CancellationToken ct) => throw new NotImplementedException("ResultPublisherTests never declares topology.");
+        public Task CreateSuperStreamAsync(PartitionsSuperStreamSpec spec, CancellationToken ct) => throw new NotImplementedException("ResultPublisherTests never declares topology.");
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 

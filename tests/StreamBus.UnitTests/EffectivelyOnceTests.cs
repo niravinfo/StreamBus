@@ -155,6 +155,8 @@ public sealed class EffectivelyOnceTests
                 ? Task.FromResult(v)
                 : Task.FromException<ulong>(new InvalidOperationException($"no sequence for {reference}@{stream}"));
         public Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct) => throw new NotImplementedException("EO unit tests never attach.");
+        public Task CreateStreamAsync(StreamSpec spec, CancellationToken ct) => throw new NotImplementedException("EffectivelyOnceTests never declares topology.");
+        public Task CreateSuperStreamAsync(PartitionsSuperStreamSpec spec, CancellationToken ct) => throw new NotImplementedException("EffectivelyOnceTests never declares topology.");
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 

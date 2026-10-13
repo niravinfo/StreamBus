@@ -26,6 +26,10 @@ file sealed class StubHandle : IStreamSystemHandle
         => throw new NotImplementedException("ConnectionSupervisorTests never queries offsets.");
     public Task<string[]> QueryPartitionAsync(string superStream, CancellationToken ct)
         => throw new NotImplementedException("ConnectionSupervisorTests never queries offsets.");
+    public Task CreateStreamAsync(StreamSpec spec, CancellationToken ct)
+        => throw new NotImplementedException("ConnectionSupervisorTests never declares topology.");
+    public Task CreateSuperStreamAsync(PartitionsSuperStreamSpec spec, CancellationToken ct)
+        => throw new NotImplementedException("ConnectionSupervisorTests never declares topology.");
     public Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct)
         => throw new NotImplementedException("ConnectionSupervisorTests never consumes.");
 }

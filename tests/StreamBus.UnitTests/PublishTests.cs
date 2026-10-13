@@ -57,6 +57,10 @@ sealed class StubSystemHandle : IStreamSystemHandle
         => throw new NotImplementedException("PublishTests never queries offsets.");
     public Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct)
         => throw new NotImplementedException("PublishTests never consumes.");
+    public Task CreateStreamAsync(StreamSpec spec, CancellationToken ct)
+        => throw new NotImplementedException("PublishTests never declares topology.");
+    public Task CreateSuperStreamAsync(PartitionsSuperStreamSpec spec, CancellationToken ct)
+        => throw new NotImplementedException("PublishTests never declares topology.");
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }
 

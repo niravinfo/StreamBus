@@ -21,6 +21,8 @@ public interface IStreamSystemHandle : IAsyncDisposable
     Task<bool> StreamExistsAsync(string stream, CancellationToken ct);
     Task<bool> SuperStreamExistsAsync(string superStream, CancellationToken ct);
     Task<string[]> QueryPartitionAsync(string superStream, CancellationToken ct);
+    Task CreateStreamAsync(RabbitMQ.Stream.Client.StreamSpec spec, CancellationToken ct);
+    Task CreateSuperStreamAsync(RabbitMQ.Stream.Client.PartitionsSuperStreamSpec spec, CancellationToken ct);
 }
 
 public interface IStreamSystemConnector
@@ -117,6 +119,20 @@ public sealed class StreamSystemHandle : IStreamSystemHandle
             ConfirmHandler = confirmation => confirmations.Complete(confirmation.Item2),
         }, _factory.CreateLogger<RawProducer>()).ConfigureAwait(false);
         return new SuperStreamProducerHandle(producer, stream, confirmations);
+    }
+
+    public async Task CreateStreamAsync(RabbitMQ.Stream.Client.StreamSpec spec, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(spec);
+        ct.ThrowIfCancellationRequested();
+        await _system.CreateStream(spec).ConfigureAwait(false);
+    }
+
+    public async Task CreateSuperStreamAsync(RabbitMQ.Stream.Client.PartitionsSuperStreamSpec spec, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(spec);
+        ct.ThrowIfCancellationRequested();
+        await _system.CreateSuperStream(spec).ConfigureAwait(false);
     }
 
     public async Task<ulong> QuerySequenceAsync(string reference, string stream, CancellationToken ct)
