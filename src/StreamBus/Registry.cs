@@ -11,6 +11,7 @@ public interface IStreamBusRegistry
     IEnumerable<(string Vhost, string BusType, BusConnectionState State)> DescribeStates();
     internal BusEntry GetOrCreateEntry(Type busType, string vhost);
     internal StreamBusConnectionSupervisor SupervisorFor(string vhost);
+    internal StreamTopologyRegistry TopologyFor(string vhost);
     internal IReadOnlyCollection<IStreamConsumer> ActiveConsumers { get; }
 }
 
@@ -52,6 +53,7 @@ public sealed class StreamBusRegistry : IStreamBusRegistry
     private readonly ConcurrentDictionary<string, StreamBusConnectionSupervisor> _supervisors = new();
     private readonly ConcurrentDictionary<string, StreamProducerRegistry> _producers = new();
     private readonly ConcurrentDictionary<string, StreamConsumerRegistry> _consumers = new();
+    private readonly ConcurrentDictionary<string, StreamTopologyRegistry> _topologies = new();
 
     internal StreamProducerRegistry ProducersFor(string vhost)
         => _producers.GetOrAdd(vhost, _ => new StreamProducerRegistry(SupervisorForCore(vhost), vhost));
@@ -72,6 +74,11 @@ public sealed class StreamBusRegistry : IStreamBusRegistry
     StreamBusConnectionSupervisor IStreamBusRegistry.SupervisorFor(string vhost)
         => SupervisorForCore(vhost);
 
+    internal StreamTopologyRegistry TopologyFor(string vhost)
+        => _topologies.GetOrAdd(vhost, _ => new StreamTopologyRegistry(SupervisorForCore(vhost), vhost, _loggerFactory.CreateLogger<StreamTopologyRegistry>()));
+
+    StreamTopologyRegistry IStreamBusRegistry.TopologyFor(string vhost) => TopologyFor(vhost);
+
     internal StreamBusConnectionSupervisor SupervisorForCore(string vhost)
         => _supervisors.GetOrAdd(vhost, _ => _createSupervisor(_resolveOptions(vhost)));
 
@@ -82,8 +89,8 @@ public sealed class StreamBusRegistry : IStreamBusRegistry
         {
             var supervisor = SupervisorForCore(vhost);
             IStreamBus bus = busType == typeof(DefaultBus)
-                ? new StreamBus(vhost, supervisor, ProducersFor(vhost), ConsumersFor(vhost))
-                : (IStreamBus)Activator.CreateInstance(typeof(StreamBus<>).MakeGenericType(busType), vhost, supervisor, ProducersFor(vhost), ConsumersFor(vhost))!;
+                ? new StreamBus(vhost, supervisor, ProducersFor(vhost), ConsumersFor(vhost), TopologyFor(vhost))
+                : (IStreamBus)Activator.CreateInstance(typeof(StreamBus<>).MakeGenericType(busType), vhost, supervisor, ProducersFor(vhost), ConsumersFor(vhost), TopologyFor(vhost))!;
             var created = new BusEntry { Supervisor = supervisor, Bus = bus };
             StreamBusMetrics.Shared.TrackConnection(vhost, busType.FullName ?? busType.Name, () => created.Supervisor.State);
             return created;

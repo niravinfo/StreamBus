@@ -33,4 +33,6 @@ public sealed record StreamBusOptions
     public int Port { get; init; } = 5552;
     public StreamBusConnectionOptions Connection { get; init; } = new();
     public StreamBusHostOptions Hosting { get; init; } = new();
+    public StreamTopologyDeclarations Topology { get; init; } = new();
+    public IStreamSerializer Serializer { get; init; } = SystemTextJsonStreamSerializer.Default;
 }

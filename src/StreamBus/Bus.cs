@@ -34,6 +34,12 @@ public interface IStreamBus
     /// single-active-consumer groups.
     /// </summary>
     Task<IStreamConsumer> ConsumeEffectivelyOnceAsync(string sourceStream, string targetStream, EffectivelyOnceOptions options, Func<ConsumeContext, Task<ReadOnlyMemory<byte>>> handler, CancellationToken ct = default);
+    /// <summary>
+    /// Declares streams and super streams idempotently (FR-7). Startup
+    /// declarations configured via <c>Topology(...)</c> are declared automatically;
+    /// these methods cover explicit/operator-driven declaration anytime.
+    /// </summary>
+    IStreamTopology Topology { get; }
 }
 
 public interface IStreamBus<TBus> : IStreamBus
@@ -47,14 +53,17 @@ internal sealed class StreamBus : IStreamBus
     private readonly StreamBusConnectionSupervisor _supervisor;
     private readonly StreamProducerRegistry _producers;
     private readonly StreamConsumerRegistry _consumers;
-    public StreamBus(string vhost, StreamBusConnectionSupervisor supervisor, StreamProducerRegistry producers, StreamConsumerRegistry consumers)
+    private readonly IStreamTopology _topology;
+    public StreamBus(string vhost, StreamBusConnectionSupervisor supervisor, StreamProducerRegistry producers, StreamConsumerRegistry consumers, IStreamTopology topology)
     {
         Vhost = vhost;
         _supervisor = supervisor;
         _producers = producers;
         _consumers = consumers;
+        _topology = topology;
     }
     public string Vhost { get; }
+    public IStreamTopology Topology => _topology;
     public BusConnectionState State => _supervisor.State;
     public Task<BusReadiness> WaitUntilReadyAsync(ReadinessPolicy policy, CancellationToken ct = default)
         => _supervisor.WaitUntilReadyAsync(policy, ct);
@@ -80,14 +89,17 @@ internal sealed class StreamBus<TBus> : IStreamBus<TBus>
     private readonly StreamBusConnectionSupervisor _supervisor;
     private readonly StreamProducerRegistry _producers;
     private readonly StreamConsumerRegistry _consumers;
-    public StreamBus(string vhost, StreamBusConnectionSupervisor supervisor, StreamProducerRegistry producers, StreamConsumerRegistry consumers)
+    private readonly IStreamTopology _topology;
+    public StreamBus(string vhost, StreamBusConnectionSupervisor supervisor, StreamProducerRegistry producers, StreamConsumerRegistry consumers, IStreamTopology topology)
     {
         Vhost = vhost;
         _supervisor = supervisor;
         _producers = producers;
         _consumers = consumers;
+        _topology = topology;
     }
     public string Vhost { get; }
+    public IStreamTopology Topology => _topology;
     public BusConnectionState State => _supervisor.State;
     public Task<BusReadiness> WaitUntilReadyAsync(ReadinessPolicy policy, CancellationToken ct = default)
         => _supervisor.WaitUntilReadyAsync(policy, ct);
