@@ -203,4 +203,23 @@ public sealed class AcceptanceTests : IDisposable
         tracker.Complete(new Confirmation { PublishingId = id, Code = ResponseCode.Ok });
         await send;
     }
+
+    [Fact]
+    public async Task WaitUpTo_times_out_at_consume_call_site()
+    {
+        // FR-8.6 consume half: ConsumeOptions.ReadinessPolicy reaches the same
+        // WaitUntilReadyAsync machinery (the publish test pins the success leg,
+        // so only the bounded-throw leg is needed here).
+        var handle = new CountingHandle();
+        var system = new ScriptSystemHandle(handle);
+        var options = new StreamBusOptions { Vhost = "/", UserName = "app", Password = "secret" };
+        await using var supervisor = new StreamBusConnectionSupervisor(options, new DelayedConnector(system, TimeSpan.FromMilliseconds(500)));
+        await supervisor.StartAsync(TestContext.Current.CancellationToken);
+        var consumers = new StreamConsumerRegistry(supervisor, "/", new StreamProducerRegistry(supervisor, "/"), null, new ResultProducerRegistry(supervisor, "/"));
+        var ct = TestContext.Current.CancellationToken;
+        await Assert.ThrowsAsync<StreamBusNotReadyException>(() =>
+            consumers.ConsumeAsync(typeof(DefaultBus), "s",
+                new ConsumeOptions { Reference = "acc-r", ReadinessPolicy = ReadinessPolicy.UpTo(TimeSpan.FromMilliseconds(100)) },
+                _ => Task.CompletedTask, ct));
+    }
 }
