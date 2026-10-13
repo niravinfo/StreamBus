@@ -10,10 +10,14 @@ public sealed class StreamBusConnectionSupervisor : IAsyncDisposable
     private IStreamSystemHandle? _handle;
     private Task? _loop;
     private CancellationTokenSource? _cts;
-    private Exception? _fatal;
 
     public BusConnectionState State { get; private set; } = BusConnectionState.Starting;
     public event Action<BusConnectionState>? StateChanged;
+
+    internal IStreamSystemHandle? CurrentHandle
+    {
+        get { lock (_gate) return State == BusConnectionState.Ready ? _handle : null; }
+    }
 
     public StreamBusConnectionSupervisor(StreamBusOptions options, IStreamSystemConnector connector)
     {
@@ -41,7 +45,12 @@ public sealed class StreamBusConnectionSupervisor : IAsyncDisposable
         if (State == BusConnectionState.Fatal) return BusReadiness.Fatal;
         return policy switch
         {
-            ReadinessPolicy.FailFast => State == BusConnectionState.Ready ? BusReadiness.Ready : BusReadiness.TimedOut,
+            ReadinessPolicy.FailFast => State switch
+            {
+                BusConnectionState.Ready => BusReadiness.Ready,
+                BusConnectionState.Fatal => BusReadiness.Fatal,
+                _ => BusReadiness.TimedOut,
+            },
             ReadinessPolicy.WaitIndefinitely => await WaitForStateAsync(null, ct).ConfigureAwait(false),
             ReadinessPolicy.WaitUpTo w => await WaitForStateAsync(w.Timeout, ct).ConfigureAwait(false),
             _ => throw new StreamBusConfigurationException($"Unknown readiness policy {policy.GetType().Name}."),
@@ -62,6 +71,7 @@ public sealed class StreamBusConnectionSupervisor : IAsyncDisposable
             if (State == BusConnectionState.Ready) return BusReadiness.Ready;
             if (State == BusConnectionState.Fatal) return BusReadiness.Fatal;
             if (timeout is null) return await tcs.Task.WaitAsync(ct).ConfigureAwait(false);
+            if (timeout.Value <= TimeSpan.Zero) return BusReadiness.TimedOut;
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             cts.CancelAfter(timeout.Value);
             try { return await tcs.Task.WaitAsync(cts.Token).ConfigureAwait(false); }
@@ -85,7 +95,6 @@ public sealed class StreamBusConnectionSupervisor : IAsyncDisposable
             catch (OperationCanceledException) { return; }
             catch (Exception ex) when (StreamBusErrorClassification.IsFatal(ex))
             {
-                _fatal = ex;
                 SetState(BusConnectionState.Fatal);
                 return;
             }

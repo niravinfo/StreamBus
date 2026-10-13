@@ -52,4 +52,30 @@ public sealed class RegistryTests
         Assert.Contains(states, s => s.Vhost == "/" && s.BusType.Contains(nameof(DefaultBus)));
         Assert.Contains(states, s => s.Vhost == "orders-vh" && s.BusType.Contains(nameof(OrdersBus)));
     }
+
+    [Fact]
+    public async Task Buses_on_one_vhost_share_one_supervisor()
+    {
+        var registry = Create(out _);
+        var a = registry.GetOrCreateBus("/");
+        var b = registry.GetOrCreateBus<OrdersBus>("/");
+        Assert.NotSame(a, (IStreamBus)b);
+        var busRegistry = (IStreamBusRegistry)registry;
+        var entryA = busRegistry.GetOrCreateEntry(typeof(DefaultBus), "/");
+        var entryB = busRegistry.GetOrCreateEntry(typeof(OrdersBus), "/");
+        Assert.Same(entryA.Supervisor, entryB.Supervisor);
+        await Task.CompletedTask;
+    }
+
+    [Fact]
+    public void Different_vhosts_get_different_supervisors()
+    {
+        var registry = Create(out _);
+        registry.GetOrCreateBus("/");
+        registry.GetOrCreateBus("other-vh");
+        var busRegistry = (IStreamBusRegistry)registry;
+        var s1 = busRegistry.SupervisorFor("/");
+        var s2 = busRegistry.SupervisorFor("other-vh");
+        Assert.NotSame(s1, s2);
+    }
 }

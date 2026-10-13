@@ -6,6 +6,10 @@ file sealed class StubHandle : IStreamSystemHandle
 {
     public bool IsClosed => false;
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    public Task<IStreamProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct)
+        => throw new NotImplementedException("ConnectionSupervisorTests never publishes.");
+    public Task<IStreamProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
+        => throw new NotImplementedException("ConnectionSupervisorTests never publishes.");
 }
 
 file sealed class ScriptedConnector : IStreamSystemConnector

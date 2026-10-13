@@ -6,6 +6,8 @@ namespace StreamBus;
 public interface IStreamSystemHandle : IAsyncDisposable
 {
     bool IsClosed { get; }
+    Task<IStreamProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct);
+    Task<IStreamProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct);
 }
 
 public interface IStreamSystemConnector
@@ -18,6 +20,34 @@ public sealed class StreamSystemHandle : IStreamSystemHandle
     private readonly StreamSystem _system;
     public StreamSystemHandle(StreamSystem system) => _system = system;
     public bool IsClosed => _system.IsClosed;
+
+    public async Task<IStreamProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var confirmations = new ConfirmationTracker();
+        var producer = await _system.CreateRawProducer(new RawProducerConfig(stream)
+        {
+            MessagesBufferSize = 100,
+            Reference = $"streambus-pub-{stream}",
+            ConfirmHandler = confirmations.Complete,
+        }).ConfigureAwait(false);
+        return new StreamProducerHandle(producer, stream, confirmations);
+    }
+
+    public async Task<IStreamProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var confirmations = new ConfirmationTracker();
+        var producer = await _system.CreateRawSuperStreamProducer(new RawSuperStreamProducerConfig(stream)
+        {
+            MessagesBufferSize = 100,
+            Reference = $"streambus-pub-{stream}",
+            Routing = SuperStreamProducerHandle.RoutingFor,
+            ConfirmHandler = confirmation => confirmations.Complete(confirmation.Item2),
+        }).ConfigureAwait(false);
+        return new SuperStreamProducerHandle(producer, stream, confirmations);
+    }
+
     public ValueTask DisposeAsync() => _system.DisposeAsync();
 }
 

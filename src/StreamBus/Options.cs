@@ -9,8 +9,12 @@ public sealed record StreamBusConnectionOptions
     {
         if (ProducersPerConnection < 1)
             yield return "ProducersPerConnection must be >= 1.";
+        if (ProducersPerConnection > byte.MaxValue)
+            yield return $"ProducersPerConnection must be <= {byte.MaxValue} (client pool limit).";
         if (ConsumersPerConnection < 1)
             yield return "ConsumersPerConnection must be >= 1.";
+        if (ConsumersPerConnection > byte.MaxValue)
+            yield return $"ConsumersPerConnection must be <= {byte.MaxValue} (client pool limit).";
     }
 }
 

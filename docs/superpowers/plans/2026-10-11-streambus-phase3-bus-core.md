@@ -88,6 +88,10 @@ Recorded spec notes (non-blocking for Phase 3, owned by Phase 5 plan): design §
     <ImplicitUsings>enable</ImplicitUsings>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <LangVersion>latest</LangVersion>
+    <!-- xunit.v3 4.x sets IsTestingPlatformApplication transitively via xunit.v3.mtp-v2, whose MSBuild
+         targets hard-error the VSTest target on .NET 10 SDK. False restores classic `dotnet test`
+         (verified by isolated probe); inert for non-test projects. -->
+    <IsTestingPlatformApplication>false</IsTestingPlatformApplication>
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
     <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
   </PropertyGroup>
@@ -129,7 +133,27 @@ Recorded spec notes (non-blocking for Phase 3, owned by Phase 5 plan): design §
 </Project>
 ```
 
-The `StreamBus.csproj` above intentionally has no `Version` attributes (CPM supplies them). Test projects reference `xunit.v3`, `xunit.runner.visualstudio`, and `Microsoft.NET.Test.Sdk` with no versions (CPM supplies them).
+The `StreamBus.csproj` above intentionally has no `Version` attributes (CPM supplies them). Each test project uses this exact csproj (root namespace adjusted per project); the template's explicit `<TargetFramework>net8.0</TargetFramework>`, `<OutputType>Exe</OutputType>`, `<TestingPlatformDotnetTestSupport>`, and `xunit.v3.mtp-v2` lines are removed so `Directory.Build.props` (`net10.0`) governs and the classic VSTest runner applies:
+
+```xml
+<!-- tests/StreamBus.UnitTests/StreamBus.UnitTests.csproj (IntegrationTests identical except RootNamespace) -->
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>StreamBus.UnitTests</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="xunit.v3" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <Using Include="Xunit" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\StreamBus\StreamBus.csproj" />
+  </ItemGroup>
+</Project>
+```
+
+Delete the template strays: `src/StreamBus/Class1.cs`, both `UnitTest1.cs` files, both `xunit.runner.json` files, and the template-created MTP `global.json` at repo root.
 
 - [ ] **Step 2: Scaffold via CLI (run in order)**
 
@@ -342,7 +366,9 @@ public sealed class ErrorClassificationTests
     [Fact]
     public void Protocol_ssl_and_auth_mechanism_errors_are_fatal()
     {
-        Assert.True(StreamBusErrorClassification.IsFatal(new ProtocolException("p")));
+        // ProtocolException has a protected ctor in 1.12.1; GenericProtocolException is the client's own
+        // public construction (ClientExceptions.MaybeThrowException fallback) and IS a ProtocolException.
+        Assert.True(StreamBusErrorClassification.IsFatal(new GenericProtocolException(ResponseCode.InternalError, "p")));
         Assert.True(StreamBusErrorClassification.IsFatal(new SslException("s")));
         Assert.True(StreamBusErrorClassification.IsFatal(new AuthMechanismNotSupportedException("a")));
     }
