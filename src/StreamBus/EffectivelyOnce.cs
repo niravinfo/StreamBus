@@ -76,6 +76,11 @@ internal static class ResultNaming
 
 internal static class ResultResume
 {
+    // Returns the greatest known last publishing id — the resume BASE, not the
+    // resume point (Ruling R4): the shared stored+1 rule in OffsetResolution
+    // derives lastId+1 exactly once. Both GetResumeOffsetAsync branches return
+    // this base, so a super-target resume can never double-advance past an
+    // unprocessed source offset (FR-6.5). Null when nothing is known.
     public static ulong? ResumeOffset(IEnumerable<ulong?> lastIds)
     {
         ArgumentNullException.ThrowIfNull(lastIds);
@@ -85,10 +90,7 @@ internal static class ResultResume
             if (id is null) continue;
             max = max is null ? id.Value : Math.Max(max.Value, id.Value);
         }
-        if (max is null) return null;
-        if (max.Value == ulong.MaxValue)
-            throw new StreamBusPublishException("Effectively-once publishing id space exhausted (internal error).");
-        return max.Value + 1;
+        return max;
     }
 }
 
