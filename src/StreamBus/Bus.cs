@@ -19,13 +19,19 @@ public interface IStreamBus
     /// callers must do the same. A manual publish combined with a storing consumer
     /// is at-least-once; effectively-once holds for the managed cycle only.
     /// </summary>
-    Task PublishResultAsync(string targetStream, ReadOnlyMemory<byte> result, ulong sourceOffset, PublishResultOptions? options = null, CancellationToken ct = default);
+    Task PublishResultAsync(string targetStream, ReadOnlyMemory<byte> result, ulong sourceOffset, PublishResultOptions options, CancellationToken ct = default);
     /// <summary>
     /// Consumes <paramref name="sourceStream"/> without storing source offsets
     /// (FR-10.14) and publishes each handler result to <paramref name="targetStream"/>
     /// with publishing-id = source offset. The resume point is recomputed from the
     /// target's last publishing id on every attach; operator <c>SetConsumerOffset</c>
-    /// calls on this reference do not affect the resume.
+    /// calls on this reference do not affect the resume. The per-partition lag
+    /// gauge is not meaningful on effectively-once references: the source never
+    /// stores offsets (FR-10.14), so there is no stored offset to compare against.
+    /// Run at most one effectively-once pipeline per (source, target) pair:
+    /// producer names are scoped per source-partition/target, so two pipelines
+    /// sharing a pair would publish under identical names from different
+    /// single-active-consumer groups.
     /// </summary>
     Task<IStreamConsumer> ConsumeEffectivelyOnceAsync(string sourceStream, string targetStream, EffectivelyOnceOptions options, Func<ConsumeContext, Task<ReadOnlyMemory<byte>>> handler, CancellationToken ct = default);
 }
@@ -62,7 +68,7 @@ internal sealed class StreamBus : IStreamBus
         => _consumers.SetOffsetAsync(stream, reference, partition, offset, ct);
     public Task<int> ReplayErrorStreamAsync(string errorStream, string? targetStream = null, CancellationToken ct = default)
         => _consumers.ReplayAsync(errorStream, targetStream, ct);
-    public Task PublishResultAsync(string targetStream, ReadOnlyMemory<byte> result, ulong sourceOffset, PublishResultOptions? options = null, CancellationToken ct = default)
+    public Task PublishResultAsync(string targetStream, ReadOnlyMemory<byte> result, ulong sourceOffset, PublishResultOptions options, CancellationToken ct = default)
         => _consumers.PublishResultAsync(targetStream, result, sourceOffset, options, ct);
     public Task<IStreamConsumer> ConsumeEffectivelyOnceAsync(string sourceStream, string targetStream, EffectivelyOnceOptions options, Func<ConsumeContext, Task<ReadOnlyMemory<byte>>> handler, CancellationToken ct = default)
         => _consumers.ConsumeEffectivelyOnceAsync(typeof(DefaultBus), sourceStream, targetStream, options, handler, ct);
@@ -95,7 +101,7 @@ internal sealed class StreamBus<TBus> : IStreamBus<TBus>
         => _consumers.SetOffsetAsync(stream, reference, partition, offset, ct);
     public Task<int> ReplayErrorStreamAsync(string errorStream, string? targetStream = null, CancellationToken ct = default)
         => _consumers.ReplayAsync(errorStream, targetStream, ct);
-    public Task PublishResultAsync(string targetStream, ReadOnlyMemory<byte> result, ulong sourceOffset, PublishResultOptions? options = null, CancellationToken ct = default)
+    public Task PublishResultAsync(string targetStream, ReadOnlyMemory<byte> result, ulong sourceOffset, PublishResultOptions options, CancellationToken ct = default)
         => _consumers.PublishResultAsync(targetStream, result, sourceOffset, options, ct);
     public Task<IStreamConsumer> ConsumeEffectivelyOnceAsync(string sourceStream, string targetStream, EffectivelyOnceOptions options, Func<ConsumeContext, Task<ReadOnlyMemory<byte>>> handler, CancellationToken ct = default)
         => _consumers.ConsumeEffectivelyOnceAsync(typeof(TBus), sourceStream, targetStream, options, handler, ct);

@@ -153,6 +153,7 @@ internal sealed class StreamProducerHandle : IStreamProducerHandle
     public async Task PublishResultAsync(ReadOnlyMemory<byte> body, ulong publishingId, string? routingKey, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
+        // Plain targets have no routing; a super source feeding a plain target drops its routing value here.
         await _confirmations.PublishWithIdAsync(_producer, _stream, publishingId, new Message(body.ToArray()), ct).ConfigureAwait(false);
     }
 
