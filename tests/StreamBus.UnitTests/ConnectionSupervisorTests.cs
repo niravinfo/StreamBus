@@ -12,6 +12,10 @@ file sealed class StubHandle : IStreamSystemHandle
         => throw new NotImplementedException("ConnectionSupervisorTests never publishes.");
     public Task<IStreamProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
         => throw new NotImplementedException("ConnectionSupervisorTests never publishes.");
+    public Task<IStreamProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
+        => throw new NotImplementedException("StubHandle never creates stable super producers.");
+    public Task<ulong> QuerySequenceAsync(string reference, string stream, CancellationToken ct)
+        => throw new NotImplementedException("StubHandle never queries publishing sequences.");
     public Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken ct)
         => throw new NotImplementedException("ConnectionSupervisorTests never queries offsets.");
     public Task StoreSystemOffsetAsync(string reference, string stream, ulong offset, CancellationToken ct)

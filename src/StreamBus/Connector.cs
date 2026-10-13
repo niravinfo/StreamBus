@@ -13,6 +13,8 @@ public interface IStreamSystemHandle : IAsyncDisposable
     Task<IStreamProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct);
     Task<IStreamProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct);
     Task<IStreamProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct);
+    Task<IStreamProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct);
+    Task<ulong> QuerySequenceAsync(string reference, string stream, CancellationToken ct);
     Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct);
     Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken ct);
     Task StoreSystemOffsetAsync(string reference, string stream, ulong offset, CancellationToken ct);
@@ -95,6 +97,34 @@ public sealed class StreamSystemHandle : IStreamSystemHandle
             ConfirmHandler = confirmation => confirmations.Complete(confirmation.Item2),
         }, _factory.CreateLogger<RawProducer>()).ConfigureAwait(false);
         return new SuperStreamProducerHandle(producer, stream, confirmations);
+    }
+
+    public async Task<IStreamProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(reference);
+        if (Encoding.UTF8.GetByteCount(reference) > ReferenceDerivation.MaxReferenceBytes)
+            throw new StreamBusConfigurationException($"Producer reference exceeds the broker's 255-byte limit.");
+        ct.ThrowIfCancellationRequested();
+        var confirmations = new ConfirmationTracker();
+        // Stable name (not the unique-name path): recreating under the same name is
+        // safe — dedup is broker-side per (name, id) and the fresh tracker holds no
+        // stale in-flight ids. The same routing table as the unique-name path applies.
+        var producer = await _system.CreateRawSuperStreamProducer(new RawSuperStreamProducerConfig(stream)
+        {
+            MessagesBufferSize = 100,
+            Reference = reference,
+            Routing = SuperStreamProducerHandle.RoutingFor,
+            ConfirmHandler = confirmation => confirmations.Complete(confirmation.Item2),
+        }, _factory.CreateLogger<RawProducer>()).ConfigureAwait(false);
+        return new SuperStreamProducerHandle(producer, stream, confirmations);
+    }
+
+    public async Task<ulong> QuerySequenceAsync(string reference, string stream, CancellationToken ct)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(reference);
+        ArgumentException.ThrowIfNullOrWhiteSpace(stream);
+        ct.ThrowIfCancellationRequested();
+        return await _system.QuerySequence(reference, stream).ConfigureAwait(false);
     }
 
     public async Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct)
