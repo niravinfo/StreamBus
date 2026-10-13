@@ -27,7 +27,7 @@
 - Four concurrent same-spec declares (the simultaneous multi-instance startup case) must issue exactly one broker create and all succeed. Pinned by Task 4 single-create unit test + Task 5 all-succeed test.
 - A restart declaring the identical spec must succeed without throwing, under either broker already-exists behavior. Pinned by Task 5 restart test (+ Task 4 repeat single-create test).
 - Blocking startup whose declarations conflict with pre-existing streams must fail `StartAsync` loudly with the conflict — never hang, never silently continue undeclared. Pinned by Task 5 startup-conflict test.
-- A plain-stream re-declare differing only in knobs (e.g. `MaxAge`) is undetectable via the stream protocol and must succeed with a warning, never spuriously throw on restart; declarations must be kept in sync across processes (documented residual). Pinned by Task 5 knob test + the warning log.
+- A knob-only difference observed pre-existing succeeds with a warning, while the same difference surfacing as a broker create-rejection throws a conflict (identical re-declares always succeed per probes, so a rejection means specs differed); order-dependence is inherent to protocol-unreadable knobs — keep declarations in sync across processes. Pinned by Task 5 knob test + Task 4 knob-conflict tests (fallback branch: both succeed+warn — see Task 2 Step 0).
 
 ---
 
@@ -195,6 +195,42 @@ Expected: only the pre-existing untracked plan doc. This task produces evidence 
 **Interfaces:**
 - Consumes: `IStreamSystemHandle.StreamExistsAsync`/`SuperStreamExistsAsync`/`QueryPartitionAsync`, `StreamBusConnectionSupervisor` readiness, `ReferenceDerivation`-style byte cap (names: broker limit applies — validate non-empty; over-long names fail at the broker with a catchable create error → rethrow path, documented), `StreamBusDelays` (not needed here — no retry in Ensure; the startup loop in Task 3 owns retry).
 - Produces: `IStreamTopology`, `StreamTopologyRegistry` (incl. `GetOrCreate` semantics for Task 3 wiring), declaration records + mapping + validation + describe for Tasks 3–6.
+
+- [ ] **Step 0: Concurrent-identical-create probe (decides the knob-conflict branch)**
+
+The Task 1 probe covered sequential re-declares. This step covers the true race (in-process concurrency is serialized by our gate, so only cross-process concurrency can hit it). Throwaway app, same `$probe` pattern as Task 1 (ImplicitUsings on, explicit Dispose — no sends here, only declares):
+
+```csharp
+// (same connection boilerplate as Task 1: user/pass, uid, system)
+var cplain = $"probe-topo-race-plain-{uid}";
+var csuper = $"probe-topo-race-super-{uid}";
+try
+{
+    var plains = Enumerable.Range(0, 4).Select(async i =>
+    {
+        try { await system.CreateStream(new StreamSpec(cplain)); return $"PLAIN-{i}: success"; }
+        catch (Exception ex) { return $"PLAIN-{i}-THROWS: " + ex.GetType().Name + " | " + ex.Message.Split('\n')[0]; }
+    }).ToList();
+    var supers = Enumerable.Range(0, 4).Select(async i =>
+    {
+        try { await system.CreateSuperStream(new PartitionsSuperStreamSpec(csuper, 2)); return $"SUPER-{i}: success"; }
+        catch (Exception ex) { return $"SUPER-{i}-THROWS: " + ex.GetType().Name + " | " + ex.Message.Split('\n')[0]; }
+    }).ToList();
+    foreach (var line in await Task.WhenAll(plains)) Console.WriteLine(line);
+    foreach (var line in await Task.WhenAll(supers)) Console.WriteLine(line);
+}
+finally
+{
+    try { await system.DeleteStream(cplain); } catch { }
+    try { await system.DeleteSuperStream(csuper); } catch { }
+    foreach (var p in new[] { 0, 1 }) { try { await system.DeleteStream($"{cplain}-{p}"); } catch { } }
+}
+```
+
+Record all 8 lines verbatim in the task report, then take exactly one branch (record which):
+
+- PRIMARY (expected: all 8 succeed — identical never throws even concurrently): implement Steps 1–7 as written. A create-throw meeting a readable match is a knob conflict (Task 4 knob tests assert throws).
+- FALLBACK (any identical create throws already-exists-ish): drop the createError→conflict sub-branches in both Compares below (a readable match with a create error becomes success-with-warning, same as pre-existing); keep partition-mismatch, kind-mismatch/coexistence, and absent-rethrow branches unchanged. Task 4's two knob-conflict tests then assert success instead of throws (same scripted setup, plain `await ...` with no throw, plus `Assert.True` on the stream existing); everything else in Task 4 is identical under both branches.
 
 - [ ] **Step 1: Add the conflict exception to `Exceptions.cs`**
 
@@ -404,13 +440,8 @@ internal sealed class StreamTopologyRegistry : IStreamTopology
             var fingerprint = Fingerprint.Plain(declaration);
             if (_declared.TryGetValue(declaration.Name, out var known) && known == fingerprint)
                 return;
-            if (await handle.SuperStreamExistsAsync(declaration.Name, ct).ConfigureAwait(false))
-            {
-                var partitions = await handle.QueryPartitionAsync(declaration.Name, ct).ConfigureAwait(false);
-                throw new StreamConfigurationConflictException(declaration.Name,
-                    TopologyDescribe.Expected(declaration),
-                    $"super stream with {partitions.Length} partitions");
-            }
+            // Kind occupancy is decided in ComparePlainAsync (single compare path covers
+            // pre-existing and raced occupancy identically).
             Exception? createError = null;
             if (!await handle.StreamExistsAsync(declaration.Name, ct).ConfigureAwait(false))
             {
@@ -459,7 +490,7 @@ internal sealed class StreamTopologyRegistry : IStreamTopology
             {
                 try
                 {
-                    await handle.CreateSuperStreamAsync(TopologyMapping.ToSuperSpec(declaration), ct).ConfigureAwait(false);
+                    await handle.CreateSuperStreamAsync(TopologyMapping.ToSuperStreamSpec(declaration), ct).ConfigureAwait(false);
                     _declared[declaration.Name] = fingerprint;
                     return;
                 }
@@ -485,10 +516,11 @@ internal sealed class StreamTopologyRegistry : IStreamTopology
     }
 
     // Re-probe + compare. Plain-stream argument compatibility is NOT readable via
-    // the stream protocol, so an existing plain stream is success (with a warning
-    // naming the residual); only a super-stream occupant is a provable conflict.
-    // Transient probe failures propagate (the startup loop retries; direct
-    // callers see them) — only the create-then-vanish case consumes createError.
+    // the stream protocol, so the broker's create outcome is the only knob signal:
+    // an identical re-declare always succeeds (Tasks 1–2 probes), hence a create
+    // failure meeting an existing plain stream means the specs differed. A
+    // pre-existing plain stream with no create attempt is success-with-warning
+    // (order-dependent residual — keep declarations in sync across processes).
     private async Task<Exception?> ComparePlainAsync(IStreamSystemHandle handle, StreamDeclaration declaration, Exception? createError, CancellationToken ct)
     {
         if (await handle.SuperStreamExistsAsync(declaration.Name, ct).ConfigureAwait(false))
@@ -500,6 +532,10 @@ internal sealed class StreamTopologyRegistry : IStreamTopology
         }
         if (await handle.StreamExistsAsync(declaration.Name, ct).ConfigureAwait(false))
         {
+            if (createError is not null)
+                return new StreamConfigurationConflictException(declaration.Name,
+                    TopologyDescribe.Expected(declaration),
+                    "plain stream with differing arguments (argument detail is not readable via the stream protocol)");
             _logger.LogWarning("Stream '{Stream}' already exists; argument-level compatibility is not readable via the stream protocol — treating as success. Keep declarations in sync across processes.", declaration.Name);
             return null;
         }
@@ -516,6 +552,14 @@ internal sealed class StreamTopologyRegistry : IStreamTopology
                 return new StreamConfigurationConflictException(declaration.Name,
                     TopologyDescribe.Expected(declaration),
                     $"super stream with {partitions.Length} partitions");
+            if (await handle.StreamExistsAsync(declaration.Name, ct).ConfigureAwait(false))
+                return new StreamConfigurationConflictException(declaration.Name,
+                    TopologyDescribe.Expected(declaration),
+                    $"super stream with {partitions.Length} partitions coexisting with a plain stream of the same name");
+            if (createError is not null)
+                return new StreamConfigurationConflictException(declaration.Name,
+                    TopologyDescribe.Expected(declaration),
+                    $"super stream with {partitions.Length} partitions and differing arguments (argument detail is not readable via the stream protocol)");
             return null;
         }
         if (await handle.StreamExistsAsync(declaration.Name, ct).ConfigureAwait(false))
@@ -1024,16 +1068,68 @@ public sealed class TopologyTests
     }
 
     [Fact]
-    public async Task Create_race_with_identical_spec_succeeds()
+    public async Task Preexisting_identical_spec_needs_no_create()
     {
         var (registry, system) = CreateRegistry();
         var ct = TestContext.Current.CancellationToken;
-        system.OnCreateSuper = (_, _) => throw new InvalidOperationException("broker: StreamAlreadyExists");
         system.SuperExists = _ => true;
         system.Partitions = _ => new[] { "ss-0", "ss-1", "ss-2" };
         await registry.EnsureSuperStreamAsync(new SuperStreamDeclaration { Name = "ss", Partitions = 3 }, ct);
+        Assert.Empty(system.CreatedSupers);
+    }
+
+    [Fact]
+    public async Task Raced_identical_create_succeeds()
+    {
+        var (registry, system) = CreateRegistry();
+        var ct = TestContext.Current.CancellationToken;
+        // Pre-checks see absent; the broker accepts the identical create (Tasks 1–2 probes).
+        await registry.EnsureSuperStreamAsync(new SuperStreamDeclaration { Name = "ss", Partitions = 3 }, ct);
         Assert.Single(system.CreatedSupers);
     }
+
+    [Fact]
+    public async Task Create_rejection_with_matching_partitions_is_knob_conflict()
+    {
+        var (registry, system) = CreateRegistry();
+        var ct = TestContext.Current.CancellationToken;
+        system.OnCreateSuper = (_, _) => throw new InvalidOperationException("broker: PreconditionFailed");
+        system.SuperExists = _ => true;
+        system.Partitions = _ => new[] { "ss-0", "ss-1", "ss-2" };
+        var ex = await Assert.ThrowsAsync<StreamConfigurationConflictException>(() =>
+            registry.EnsureSuperStreamAsync(new SuperStreamDeclaration { Name = "ss", Partitions = 3, MaxAge = TimeSpan.FromDays(1) }, ct));
+        Assert.Contains("differing arguments", ex.Actual);
+    }
+
+    [Fact]
+    public async Task Create_rejection_with_existing_plain_is_conflict()
+    {
+        var (registry, system) = CreateRegistry();
+        var ct = TestContext.Current.CancellationToken;
+        system.OnCreateStream = (_, _) => throw new InvalidOperationException("broker: PreconditionFailed");
+        system.StreamExists = _ => true;
+        var ex = await Assert.ThrowsAsync<StreamConfigurationConflictException>(() =>
+            registry.EnsureStreamAsync(new StreamDeclaration { Name = "s", MaxAge = TimeSpan.FromDays(1) }, ct));
+        Assert.Contains("differing arguments", ex.Actual);
+    }
+
+    [Fact]
+    public async Task Coexisting_plain_and_super_conflicts()
+    {
+        var (registry, system) = CreateRegistry();
+        var ct = TestContext.Current.CancellationToken;
+        system.SuperExists = _ => true;
+        system.StreamExists = _ => true;
+        system.Partitions = _ => new[] { "ss-0", "ss-1", "ss-2" };
+        var ex = await Assert.ThrowsAsync<StreamConfigurationConflictException>(() =>
+            registry.EnsureSuperStreamAsync(new SuperStreamDeclaration { Name = "ss", Partitions = 3 }, ct));
+        Assert.Contains("coexisting", ex.Actual);
+    }
+
+    // FALLBACK branch (Task 2 Step 0: concurrent identical creates throw): the two
+    // knob-conflict tests above assert success instead — same scripted setup, plain
+    // `await ...` with no throw, plus Assert.True on the stream existing. All other
+    // tests in this file are identical under both branches.
 
     [Fact]
     public async Task Partition_mismatch_throws_with_expected_and_actual()
@@ -1421,7 +1517,7 @@ public sealed class TopologyIntegrationTests : IAsyncDisposable
     {
         // FR-7.4 operator path: production tuning belongs in policies, not queue
         // arguments. Runs only where the management plugin is reachable.
-        if (!await ManagementReachableAsync()) Assert.Skip("management plugin unreachable; FR-7.4 operator path not exercised here.");
+        if (!await ManagementReachableAsync()) Assert.Skip("management API not usable with stream credentials (unreachable or unauthorized); FR-7.4 operator path not exercised here.");
         var ct = TestContext.Current.CancellationToken;
         var stream = Unique("topo-pol");
         _streams.Add(stream);
@@ -1463,7 +1559,9 @@ public sealed class TopologyIntegrationTests : IAsyncDisposable
         var admin = await ConnectAdminAsync();
         await using var _ = admin;
         var info = await admin.StreamInfo(super);
-        if (info.Replicas.Count == 0) Assert.Skip("single-node broker; G-3 requires a 3-node cluster.");
+        // Single-node brokers report replicas=1 here (Task 1 probe) — placement is
+        // only observable with real replicas, so gate on > 1, not > 0.
+        if (info.Replicas.Count <= 1) Assert.Skip("fewer than 2 replicas; G-3 requires a 3-node cluster.");
         Assert.NotNull(info.Leader);
     }
 ```
@@ -1508,6 +1606,6 @@ git commit -m "test: add topology convergence, conflict, and gate integration pr
 ## Self-Review
 
 - Spec coverage: FR-7.1 (Tasks 2 cache+fingerprint + 4 repeat test + 5 repeat/concurrent tests), FR-7.2 (Tasks 2 race-tolerant create + compare + conflict type, 4 race/conflict/kind tests, 5 conflict/kind/restart tests, 3 union-startup), FR-7.3 (Tasks 2 default+mapping, 4 locator tests, 5 declare-success, 5 G-3 skip-guarded), FR-7.4 (Tasks 2 retention knobs + no policy API, 4 Args-emission test, 5 policy-conditional + docs), FR-7.5 (Tasks 3 startup both modes + union, 5 startup tests), FR-3.3 immutability (Tasks 2 partition compare + 4/5 conflict tests), G-3 (Task 5 conditional test; gate open — stated in header, follow-ups, and test skip reason).
-- Placeholder scan: no TBD/TODO; every code step ships complete source; probe-dependent outcomes are recorded, not branched (Task 2 needs no branching — uniform compare); no "similar to Task N" (patterns are copied verbatim where reused: readiness gate, fault continuation, harness); the two `Assert.Skip` sites carry the exact early-return fallback.
+- Placeholder scan: no TBD/TODO; every code step ships complete source; Task 2 Step 0 branches on the concurrent-identical outcome with both branches fully specified (primary refined rule, fallback match-tolerated); all other probe outcomes need no branching (uniform compare); no "similar to Task N" (patterns are copied verbatim where reused: readiness gate, fault continuation, harness); the two `Assert.Skip` sites carry the exact early-return fallback.
 - Type consistency: `EnsureStreamAsync(StreamDeclaration, ct)` / `EnsureSuperStreamAsync(SuperStreamDeclaration, ct)` (Tasks 2/3/5/6 match); `CreateStreamAsync(StreamSpec, ct)` / `CreateSuperStreamAsync(PartitionsSuperStreamSpec, ct)` handle methods (Tasks 2/4 match); `TopologyFor(vhost)` (Tasks 3/5 match); `bus.Topology` (Tasks 3/5/6 match); `DeclareStream(name, knobs?)` / `DeclareSuperStream(name, partitions, knobs?)` builder (Tasks 3/4/6 match); `StreamConfigurationConflictException(stream, expected, actual)` + `Stream`/`Expected`/`Actual` (Tasks 2/4/6 match); `Fingerprint` internal to Task 2 only.
 - Review Focus: each line pinned (6c, 5-single-create + 6b, 6e, startup-conflict test, 6 knob test + warning).

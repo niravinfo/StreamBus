@@ -37,6 +37,10 @@ public sealed class HostingTests
             => throw new NotImplementedException("HostingTests never queries offsets.");
         public Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct)
             => throw new NotImplementedException("HostingTests never consumes.");
+        public Task CreateStreamAsync(StreamSpec spec, CancellationToken ct)
+            => throw new NotImplementedException("HostingTests never declares topology.");
+        public Task CreateSuperStreamAsync(PartitionsSuperStreamSpec spec, CancellationToken ct)
+            => throw new NotImplementedException("HostingTests never declares topology.");
     }
 
     private sealed class CountingHandle : IStreamSystemHandle
@@ -70,6 +74,10 @@ public sealed class HostingTests
             => throw new NotImplementedException("HostingTests never queries offsets.");
         public Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct)
             => throw new NotImplementedException("HostingTests never consumes.");
+        public Task CreateStreamAsync(StreamSpec spec, CancellationToken ct)
+            => throw new NotImplementedException("HostingTests never declares topology.");
+        public Task CreateSuperStreamAsync(PartitionsSuperStreamSpec spec, CancellationToken ct)
+            => throw new NotImplementedException("HostingTests never declares topology.");
     }
 
     private sealed class SuccessConnector : IStreamSystemConnector
