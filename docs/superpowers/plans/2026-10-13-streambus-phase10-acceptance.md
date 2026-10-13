@@ -598,11 +598,38 @@ Expected shapes (record actuals either way; any surprise is a finding, not a fai
   Any site outside these four shapes is a finding — report it, do not rationalize it.
 - `streambus_*`: every name must appear in the design §13 catalog (`partition_lag`, `partition_inflight`, `partition_retry_blocked`, `offset_store_rejected_total`, `offset_regressed_total`, `offset_fallback_total`, `connection_state`) — record the match table (FR-9.1 support).
 
-- [ ] **Step 2: Finalize the verdict + gate table**
+- [ ] **Step 2: Consume-site mirror test (reviewer Important from Task 2 review)**
 
-Set every matrix row from Task 1 + Task 2 evidence (no row may stay ❌; ⚠️ rows keep their explicit reason). Fill the NFR sections with the Step 1 outputs. Set the gate table (G-1/G-2/G-4/G-5 PASS with test names; G-3 OPEN). Write the v1 verdict: v1 is done iff every FR row is ✅/accepted-⚠️ and G-1/G-2/G-4/G-5 are PASS — with G-3 open pending a cluster, stated verbatim.
+Append to `tests/StreamBus.UnitTests/AcceptanceTests.cs` (no broker; same fakes as the publish test):
 
-- [ ] **Step 3: Full green run (the v1 evidence)**
+```csharp
+    [Fact]
+    public async Task WaitUpTo_times_out_at_consume_call_site()
+    {
+        // FR-8.6 consume half: ConsumeOptions.ReadinessPolicy reaches the same
+        // WaitUntilReadyAsync machinery (the publish test pins the success leg,
+        // so only the bounded-throw leg is needed here).
+        var handle = new CountingHandle();
+        var system = new ScriptSystemHandle(handle);
+        var options = new StreamBusOptions { Vhost = "/", UserName = "app", Password = "secret" };
+        await using var supervisor = new StreamBusConnectionSupervisor(options, new DelayedConnector(system, TimeSpan.FromMilliseconds(500)));
+        await supervisor.StartAsync(TestContext.Current.CancellationToken);
+        var consumers = new StreamConsumerRegistry(supervisor, "/", new StreamProducerRegistry(supervisor, "/"), null, new ResultProducerRegistry(supervisor, "/"));
+        var ct = TestContext.Current.CancellationToken;
+        await Assert.ThrowsAsync<StreamBusNotReadyException>(() =>
+            consumers.ConsumeAsync(typeof(DefaultBus), "s",
+                new ConsumeOptions { Reference = "acc-r", ReadinessPolicy = ReadinessPolicy.UpTo(TimeSpan.FromMilliseconds(100)) },
+                _ => Task.CompletedTask, ct));
+    }
+```
+
+- [ ] **Step 3: Finalize the verdict + gate table**
+
+Set every matrix row from Task 1 + Task 2 evidence (no row may stay ❌; ⚠️ rows keep their explicit reason). Fill the NFR sections with the Step 1 outputs. Set the gate table (G-1/G-2/G-4/G-5 PASS with test names; G-3 OPEN). Write the v1 verdict: v1 is done iff every FR row is ✅/accepted-⚠️ and G-1/G-2/G-4/G-5 are PASS — with G-3 open pending a cluster, stated verbatim. Two directed verdicts (controller rulings, apply exactly):
+- FR-3.2 → ✅ with this rationale (Ruling R8): the library's FR-3.2 surface is the routing passthrough (pinned: unit per-send equality + integration same-key stability); partition selection itself lives in the client and is not pinnable deterministically — hash distribution is a client property, not a library behavior.
+- FR-10.12 → ⚠️ with reason "health clause exceeds implementation" and this proposed reword (Ruling R7, user sign-off pending — NEVER edit `docs/2026-10-08-streambus-requirements.md` itself; the acceptance doc records the proposal): "Whenever the library falls back because the broker has no stored offset, it logs a warning naming the reference, the partition, the branch taken and the resolved offset, and publishes it to the metrics surface." Implementation surfaces fallback via warning logs + `streambus_offset_fallback_total` (metric pinned); health carries per-(vhost, bus) connection state only.
+
+- [ ] **Step 4: Full green run (the v1 evidence)**
 
 ```powershell
 dotnet test tests/StreamBus.UnitTests/StreamBus.UnitTests.csproj -c Release --nologo -v q
@@ -611,10 +638,10 @@ dotnet test tests/StreamBus.IntegrationTests/StreamBus.IntegrationTests.csproj -
 
 Expected: unit all-pass; integration all-pass + the 2 known env-skips (policy-401, G-3 single-node). Record the exact counts in the verdict section. Any other failure or skip is a finding — stop and report, do not explain it away.
 
-- [ ] **Step 4: Commit (with human approval)**
+- [ ] **Step 5: Commit (with human approval)**
 
 ```powershell
-git add docs/2026-10-13-streambus-acceptance.md tests/StreamBus.IntegrationTests/AcceptanceIntegrationTests.cs
+git add docs/2026-10-13-streambus-acceptance.md tests/StreamBus.IntegrationTests/AcceptanceIntegrationTests.cs tests/StreamBus.UnitTests/AcceptanceTests.cs
 git commit -m "docs: finalize v1 acceptance with NFR evidence and gate roll-up"
 ```
 
