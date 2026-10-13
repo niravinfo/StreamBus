@@ -191,6 +191,8 @@ public sealed class ConsumeValidationTests
         public Task<IStreamProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct) => throw new NotImplementedException();
         public Task<IStreamProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct) => throw new NotImplementedException();
         public Task<IStreamProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct) => throw new NotImplementedException();
+        public Task<IStreamProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct) => throw new NotImplementedException("StubSystemHandle never creates stable super producers.");
+        public Task<ulong> QuerySequenceAsync(string reference, string stream, CancellationToken ct) => throw new NotImplementedException("StubSystemHandle never queries publishing sequences.");
         public Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken ct) => Task.FromResult<ulong?>(null);
         public Task StoreSystemOffsetAsync(string reference, string stream, ulong offset, CancellationToken ct) => Task.CompletedTask;
         public Task<bool> StreamExistsAsync(string stream, CancellationToken ct) => Task.FromResult(Exists);

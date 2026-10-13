@@ -9,6 +9,7 @@ public interface IStreamProducerHandle : IAsyncDisposable
     Task SendAsync(ReadOnlyMemory<byte> body, string? routingKey, CancellationToken ct);
     Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, string? routingKey, IReadOnlyDictionary<string, object?> applicationProperties, string? messageId, string? correlationId, CancellationToken ct);
     Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, CancellationToken ct);
+    Task PublishResultAsync(ReadOnlyMemory<byte> body, ulong publishingId, string? routingKey, CancellationToken ct);
 }
 
 // Bridges the client's callback-based confirms (RawProducerConfig.ConfirmHandler)
@@ -149,6 +150,12 @@ internal sealed class StreamProducerHandle : IStreamProducerHandle
         await _confirmations.PublishWithIdAsync(_producer, _stream, publishingId, new Message(body.ToArray()), ct).ConfigureAwait(false);
     }
 
+    public async Task PublishResultAsync(ReadOnlyMemory<byte> body, ulong publishingId, string? routingKey, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        await _confirmations.PublishWithIdAsync(_producer, _stream, publishingId, new Message(body.ToArray()), ct).ConfigureAwait(false);
+    }
+
     public ValueTask DisposeAsync()
     {
         _confirmations.CancelAll();
@@ -199,6 +206,23 @@ internal sealed class SuperStreamProducerHandle : IStreamProducerHandle
 
     public Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, CancellationToken ct)
         => throw new StreamBusConfigurationException("Error streams and replay targets are plain streams; this path is not supported.");
+
+    public async Task PublishResultAsync(ReadOnlyMemory<byte> body, ulong publishingId, string? routingKey, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (string.IsNullOrWhiteSpace(routingKey))
+            throw new StreamBusConfigurationException($"Result publish to super stream '{_stream}' requires a routing key (internal error).");
+        var message = new Message(body.ToArray());
+        RoutingTable.Add(message, routingKey);
+        try
+        {
+            await _confirmations.PublishWithIdAsync(_producer, _stream, publishingId, message, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            RoutingTable.Remove(message);
+        }
+    }
 
     public ValueTask DisposeAsync()
     {
