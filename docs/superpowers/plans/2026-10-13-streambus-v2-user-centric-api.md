@@ -105,9 +105,7 @@ What the user gets: no manual serialization, no per-call stream names, streams d
 ```csharp
 services.AddStreamBus((context, cfg) =>
 {
-    cfg.Host("rabbitmq.internal", "/", h => h
-        .Username("app")
-        .Password("s3cret"));
+    cfg.Host("rabbitmq.internal", "/", h => h.Credentials("app", "s3cret"));
 
     cfg.Serializer(json => json.PropertyNamingPolicy = JsonNamingPolicy.CamelCase);
     cfg.DeclareStream("audit", k => k.MaxAge(TimeSpan.FromDays(30)));
@@ -122,14 +120,14 @@ services.AddStreamBus((context, cfg) =>
 ```csharp
 services.AddStreamBus<OrdersBus>((context, cfg) =>
 {
-    cfg.Host("localhost", "/orders", h => h.Username("app").Password("s3cret"));
+    cfg.Host("localhost", "/orders", h => h.Credentials("app", "s3cret"));
     cfg.Publish<OrderEvent>("orders");
     cfg.ReceiveEndpoint("orders", e => e.Consumer<OrderConsumer>("order-processors"));
 });
 
 services.AddStreamBus<BillingBus>((context, cfg) =>
 {
-    cfg.Host("localhost", "/billing", h => h.Username("app").Password("s3cret"));
+    cfg.Host("localhost", "/billing", h => h.Credentials("app", "s3cret"));
     cfg.ReceiveEndpoint("invoices", e => e.Consumer<InvoiceConsumer>("billing-projector"));
 });
 
@@ -147,7 +145,7 @@ public sealed class CheckoutWorker(IStreamBus<OrdersBus> orders, IStreamBus<Bill
 ```csharp
 services.AddStreamBus((context, cfg) =>
 {
-    cfg.Host("localhost", "/", h => h.Username("app").Password("s3cret"));
+    cfg.Host("localhost", "/", h => h.Credentials("app", "s3cret"));
     cfg.Publish<OrderEvent>("orders-super", p => p.RouteBy(e => e.OrderId)); // REQUIRED: broker hashes it
     cfg.ReceiveEndpoint("orders-super", e =>
     {
@@ -159,14 +157,14 @@ services.AddStreamBus((context, cfg) =>
 await bus.PublishAsync(new OrderEvent("o-1", 1), ct); // partitioned by OrderId
 ```
 
-The consumer never routes — it reads all partitions. Producer picks the key, endpoint declares the partitions.
+The consumer never routes — it reads all partitions. Producer picks the key, endpoint declares the partitions. The publish call takes no super/plain flag: the bus resolves super-ness from the declaration set at startup and fails fast (Task 6 table) if the key is missing or misplaced.
 
 ## A.5 Retry: global default, per-endpoint override, per-stream error queues
 
 ```csharp
 services.AddStreamBus((context, cfg) =>
 {
-    cfg.Host("localhost", "/", h => h.Username("app").Password("s3cret"));
+    cfg.Host("localhost", "/", h => h.Credentials("app", "s3cret"));
 
     // Global: every endpoint inherits this schedule unless overridden.
     cfg.UseMessageRetry(r => r.Intervals(
@@ -252,7 +250,7 @@ No API change; only the bus it runs on is now unambiguous by construction.
 
 **Interfaces:**
 - Consumes: `StreamBusConfigStore` (unchanged duplicate/conflict rules), `IStreamSerializer`.
-- Produces: `services.AddStreamBus(Action<IStreamRegistrationContext, IStreamBusConfigurator> configure)`, `services.AddStreamBus<TBus>(...)`, `services.AddStreamBus(IConfigurationSection section, Action<IStreamRegistrationContext, IStreamBusConfigurator>? configure = null)` (+ marker overload; full binding lands in Task 8, this task only reserves the shape and binds `Vhost`). `IStreamBusConfigurator.Host(string host, string vhost, Action<IHostConfigurator> configure)`, `.Serializer(...)` (both overloads, as today), `.DeclareStream(name, knobs?)`, `.DeclareSuperStream(name, partitions, knobs?)`. `IHostConfigurator.Username(string)`, `.Password(string)`, `.StreamPort(int = 5552)`, `.AmqpPort(int = 5672)`, `.ProducersPerConnection(int = 1)`, `.ConsumersPerConnection(int = 1)`. `IStreamRegistrationContext.Services` (`IServiceCollection`; provider-phase callbacks documented as future). `Publish`/`ReceiveEndpoint`/`UseMessageRetry` members are added by Tasks 2–4 on the same implementation class (partial or internal setters — Task 1 leaves `NotSupported`-free stubs throwing `StreamBusConfigurationException("not yet implemented")`? No placeholders allowed: instead Task 1 ships Host/declare/serializer only, and Tasks 2–4 extend the interface + implementation).
+- Produces: `services.AddStreamBus(Action<IStreamRegistrationContext, IStreamBusConfigurator> configure)`, `services.AddStreamBus<TBus>(...)`, `services.AddStreamBus(IConfigurationSection section, Action<IStreamRegistrationContext, IStreamBusConfigurator>? configure = null)` (+ marker overload; full binding lands in Task 8, this task only reserves the shape and binds `Vhost`). `IStreamBusConfigurator.Host(string host, string vhost, Action<IHostConfigurator> configure)`, `.Serializer(...)` (both overloads, as today), `.DeclareStream(name, knobs?)`, `.DeclareSuperStream(name, partitions, knobs?)`. `IHostConfigurator.Credentials(string user, string password)`, `.StreamPort(int = 5552)`, `.AmqpPort(int = 5672)`, `.ProducersPerConnection(int = 1)`, `.ConsumersPerConnection(int = 1)`. `IStreamRegistrationContext.Services` (`IServiceCollection`; provider-phase callbacks documented as future). `Publish`/`ReceiveEndpoint`/`UseMessageRetry` members are added by Tasks 2–4 on the same implementation class (partial or internal setters — Task 1 leaves `NotSupported`-free stubs throwing `StreamBusConfigurationException("not yet implemented")`? No placeholders allowed: instead Task 1 ships Host/declare/serializer only, and Tasks 2–4 extend the interface + implementation).
 
 - [ ] **Step 1: Implement.** New `Configuration` folder; interfaces plus internal `StreamBusConfigurator : IStreamBusConfigurator` accumulating `StreamBusOptions` (extended with ports) + explicit declarations. `Host(...)` required exactly once per bus (second call throws `StreamBusConfigurationException`); missing `Host` at `Build()` throws naming the bus. Credentials validated as today (`guest` forbidden). `AddStreamBus` builds options, calls existing `AddShared` path, registers `IStreamBus`/`IStreamBus<TBus>` as today. Delete `StreamBusOptionsBuilder` and old overloads; fix all in-repo callers in this task.
 - [ ] **Step 2: Verify.** `ConfiguratorTests`: missing `Host` throws; duplicate `Host` throws; `guest` rejected; defaults (`127.0.0.1`? No — host has no default now; `Host()` is required. Ports/pools keep defaults 5552/5672/1/1); marker + default coexist. Run `dotnet test tests/StreamBus.UnitTests --filter Configurator`. Full `dotnet build StreamBus.slnx` green.
@@ -266,7 +264,7 @@ git commit -m "Add MassTransit-style configurator shell with Host setup"
 ### Task 2: Typed publish (`cfg.Publish`, route table, `PublishAsync<T>`)
 
 **Files:**
-- Modify: `src/StreamBus/Configuration/StreamBusConfigurator.cs` (add `Publish<T>` + `PublishRegistrationBuilder<T>` with `SuperStream()` + `RouteBy`)
+- Modify: `src/StreamBus/Configuration/StreamBusConfigurator.cs` (add `Publish<T>` + `PublishRegistrationBuilder<T>` with `RouteBy` only — no super flag; super-ness resolves from declarations in Task 6)
 - Create: `src/StreamBus/PublishRouting.cs` (`PublishRegistration` record, `StreamBusPublishStore`, `StreamPublishRouter`)
 - Modify: `src/StreamBus/Bus.cs` (add `PublishAsync<T>(T, ...)` + `PublishAsync<T>(string, T, ...)`; rename raw to `PublishRawAsync`)
 - Modify: `src/StreamBus/Registry.cs` (pass serializer + router into bus constructors)
@@ -276,8 +274,8 @@ git commit -m "Add MassTransit-style configurator shell with Host setup"
 - Consumes: `IStreamSerializer`, existing `StreamProducerRegistry` raw path, Task 1 configurator.
 - Produces: `IStreamBusConfigurator.Publish<TMessage>(string stream, Action<PublishRegistrationBuilder<TMessage>>? configure = null)`, `IStreamBus.PublishAsync<T>(T message, PublishOptions? options = null, CancellationToken ct = default)`, `IStreamBus.PublishAsync<T>(string stream, T message, PublishOptions? options = null, CancellationToken ct = default)`, `IStreamBus.PublishRawAsync(string stream, ReadOnlyMemory<byte> body, PublishOptions? options = null, CancellationToken ct = default)`. Router `Resolve(busMarker, messageType)` throws on unknown type or multi-stream ambiguity.
 
-- [ ] **Step 1: Implement.** `PublishRegistration{MessageType, Stream, IsSuperStream, RoutingKey Func<object,string?>?}`; builder validates super-without-`RouteBy` at `Build` (config error). Store mirrors `StreamBusConsumerStore` duplicate guard (same type+stream). Bus generic overloads: resolve route → serialize with bus serializer → super requires routing key resolved (missing/empty → `StreamBusConfigurationException`) → `PublishOptions with { IsSuperStream, RoutingKey }` → producer path. Constructor injection of serializer + router via `Registry.cs` creation sites.
-- [ ] **Step 2: Verify.** `PublishRoutingTests`: resolve ok; unknown type message names the missing registration; two streams one type → ambiguity error listing both; super without `RouteBy` throws at registration; routing function maps correctly; explicit-stream overload bypasses the table. Update in-repo raw-publish callers to `PublishRawAsync`. Run `dotnet test tests/StreamBus.UnitTests --filter PublishRouting`; `dotnet build StreamBus.slnx`.
+- [ ] **Step 1: Implement.** `PublishRegistration{MessageType, Stream, IsSuperStream, RoutingKey Func<object,string?>?}`; builder records `RouteBy` only and never asks for a super flag — `IsSuperStream` stays false until Task 6 resolves it from the declaration set and enforces the routing table (super + missing key and plain + stray key both fail at startup). Store mirrors `StreamBusConsumerStore` duplicate guard (same type+stream). Bus generic overloads: resolve route → serialize with bus serializer → if the Task 6 resolution marked the registration super, require a routing key (missing/empty → `StreamBusConfigurationException`) → `PublishOptions with { IsSuperStream, RoutingKey }` → producer path. Constructor injection of serializer + router via `Registry.cs` creation sites.
+- [ ] **Step 2: Verify.** `PublishRoutingTests`: resolve ok; unknown type message names the missing registration; two streams one type → ambiguity error listing both; super-ness enforcement lives in Task 6 (not here); routing function maps correctly; explicit-stream overload bypasses the table. Update in-repo raw-publish callers to `PublishRawAsync`. Run `dotnet test tests/StreamBus.UnitTests --filter PublishRouting`; `dotnet build StreamBus.slnx`.
 - [ ] **Step 3: Commit (with human approval)**
 
 ```bash
@@ -355,10 +353,10 @@ git commit -m "Move exhausted-message handling to classic error queues"
 
 **Interfaces:**
 - Consumes: endpoint descriptors (stream, super flag + partitions, knobs), publish registrations, explicit declarations, error-queue descriptors (queues declared via Task 5 transport, not here).
-- Produces: startup behavior — declare-set = explicit declarations + consumer streams (plain auto-declared; super auto-declared with endpoint partitions) + publish streams (super publish without a matching endpoint still needs partitions: require explicit `DeclareSuperStream` in that case — config error naming the stream if missing) + error queues via AMQP declare. Explicit declarations win over derived (derived entry skipped when explicit covers the name); derived super/plain mismatch against explicit → `StreamConfigurationConflictException` naming both sources. Raw-only streams (no registration) keep today's behavior: no declare attempt, attach retries until the stream exists.
+- Produces: startup behavior — declare-set = explicit declarations + consumer streams (plain auto-declared; super auto-declared with endpoint partitions) + publish streams (super publish without a matching endpoint still needs partitions: require explicit `DeclareSuperStream` in that case — config error naming the stream if missing) + error queues via AMQP declare. At startup, resolve each publish registration against the declaration set and enforce: super + `RouteBy` → hashed publish; super + missing `RouteBy` → config error naming type + stream; plain + stray `RouteBy` → config error; super publish with no declaration anywhere → config error naming the stream (partitions unknown). Explicit declarations win over derived (derived entry skipped when explicit covers the name); derived super/plain mismatch against explicit → `StreamConfigurationConflictException` naming both sources. Raw-only streams (no registration) keep today's behavior: no declare attempt, attach retries until the stream exists.
 
 - [ ] **Step 1: Implement.** Build the declare-set per bus in `StartAsync` before consumer attach, reusing the infinite-retry declare pipeline. Super-publish-without-partitions rule as above.
-- [ ] **Step 2: Verify.** Unit: declare-set contents (consumer+publish+explicit union), explicit-wins skip, conflict error names sources, super-publish-without-partitions throws naming the stream. Integration: drop explicit `DeclareStream("orders")` from one typed test, still green via derivation. Run unit suite + that test.
+- [ ] **Step 2: Verify.** Unit: declare-set contents (consumer+publish+explicit union), explicit-wins skip, conflict error names sources, super-publish-without-partitions throws naming the stream, and each row of the routing-enforcement table (super±key, plain+stray key). Integration: drop explicit `DeclareStream("orders")` from one typed test, still green via derivation. Run unit suite + that test.
 - [ ] **Step 3: Commit (with human approval)**
 
 ```bash
@@ -445,4 +443,4 @@ git commit -m "Bring test suite and acceptance matrix onto the v2 API"
 1. **Spec coverage:** A.1→Tasks 1+3+7+8; A.2→Task 1; A.3→Task 1 (markers); A.4→Tasks 2+3+6 (`RouteBy`, partitions on endpoint); A.5→Task 4 (table rows each tested); A.6→Task 5 (queue publish + requeue); A.7→Task 2 (overloads); A.8→no change. Gaps: direct error-queue consumers (`ReceiveEndpoint` on a queue) intentionally deferred — error queues are worked via requeue in v2, noted here so the omission is explicit.
 2. **Placeholder scan:** every step names exact files, signatures, commands, expected outcomes; no TBD/TODO/similar-to.
 3. **Type consistency:** `PublishRegistration{MessageType,Stream,IsSuperStream,RoutingKey}` (Task 2) feeds Tasks 2+6; endpoint descriptor fields (Task 3) feed Tasks 4+5+6; `ErrorQueueType{Classic,Quorum}` + `SetErrorQueue(name?, type?)` (Task 4) feed Task 5; `RequeueErrorsAsync` (Task 5) replaces `ReplayErrorStreamAsync` everywhere including Task 9's grep check.
-4. **Review Focus:** five lines each pinned to an owning task's verification (ambiguity test T2, RouteBy-at-registration T2, undeclared-override StreamNotFound T2, cross-service reference test T3, queue-headers + requeue at-least-once T5).
+4. **Review Focus:** five lines each pinned to an owning task's verification (ambiguity test T2, startup routing-enforcement tests T6, undeclared-override StreamNotFound T2, cross-service reference test T3, queue-headers + requeue at-least-once T5).
