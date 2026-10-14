@@ -187,7 +187,7 @@ services.AddStreamBus((context, cfg) =>
     cfg.ReceiveEndpoint("orders", e =>
     {
         e.Consumer<OrderConsumer>("order-processors");
-        e.DeadLetterTo("orders-errors", DeadLetterType.ClassicQueue); // library owns AMQP
+        // no exhaustion config: derived classic queue "orders-errors" (durable, headers included).
     });
 
     cfg.ReceiveEndpoint("audit", e =>
@@ -210,7 +210,7 @@ services.AddStreamBus((context, cfg) =>
     cfg.ReceiveEndpoint("metrics", e =>
     {
         e.Consumer<MetricsConsumer>("metrics-tail");
-        e.UseMessageRetry(r => r.None());                    // CONFIG ERROR: nowhere to hand off
+        e.UseMessageRetry(r => r.None());                    // immediate handoff to derived "metrics-errors" on first failure
     });
 });
 ```
@@ -219,20 +219,19 @@ Derivation rules (locked, tested in Task 4):
 
 | Retry | Exhaustion | Effective mode |
 |---|---|---|
-| bounded schedule | `DeadLetterTo` (no callback) | `SkipAfterDeadline`: hand off to the declared destination, then advance |
+| bounded schedule | explicit `DeadLetterTo` (no callback) | `SkipAfterDeadline`: hand off to the declared destination, then advance |
 | bounded schedule | `OnExhausted` (callback wins; declared destination shadowed + startup warning) | callback owns the outcome; return advances, throw recycles |
-| bounded schedule | neither | `Strict`: schedule runs, then repeat last delay forever (stall, order preserved) |
+| bounded schedule | neither | `SkipAfterDeadline` to the derived default: classic queue `{stream}_error` (durable, full headers) |
 | unbounded (default / `UseRetry` with `MaxAttempts == null`) | neither | `Strict`: today's default, retry forever |
-| unbounded | either set | config error at startup (handoff needs a bound) |
-| `None()` | either set | immediate handoff / callback on first failure |
-| `None()` | neither | config error at startup (failure would have nowhere to go) |
+| unbounded | destination or callback set | config error at startup (handoff needs a bound) |
+| `None()` | explicit/callback/nothing | immediate handoff / callback on first failure (derived default when nothing) |
 
-`DeadLetterType`: `Stream` (v1 envelope + advance-once + `ReplayErrorStreamAsync`, no AMQP touched), `ClassicQueue`, `QuorumQueue` (durable, persistent, confirmed; requeue via `RequeueErrorsAsync`). Name and type are both required — no destination is ever guessed.
+`DeadLetterType`: `Stream` (v1 envelope + advance-once + `ReplayErrorStreamAsync`, no AMQP touched), `ClassicQueue`, `QuorumQueue` (durable, persistent, confirmed, full `streambus.error.*` headers + ids; requeue via `RequeueErrorsAsync`). Explicit `DeadLetterTo` requires name and type; when nothing is configured the derived `{stream}_error` classic default applies — documented convention, identical for every endpoint.
 
 ## A.6 Failure handling (declared destination or owning callback)
 
 - **Stream destination:** today's `ErrorEnvelope` published to the error stream, source offset advanced exactly once, `ReplayErrorStreamAsync` replays it back. Streams must exist (declare with retention); the must-exist/must-be-plain validation is unchanged.
-- **Queue destination:** same envelope fields as `streambus.error.*` headers, persistent delivery, broker-confirmed before the source offset advances. After the fix: `int requeued = await bus.RequeueErrorsAsync("orders", errorQueue: "orders-errors", ct)` `BasicGet`-loops the queue and republishes bodies to the source stream (tail append, at-least-once), acking only after stream confirm; malformed entries are acked with a warning and counted as skipped.
+- **Queue destination (explicit or derived `{stream}_error` classic default):** same envelope fields as `streambus.error.*` headers — source stream/partition/offset, exception type/message/stack, attempts, timestamp, message/correlation ids, routing values — so the queue alone explains what happened; persistent delivery, broker-confirmed before the source offset advances. After the fix: `int requeued = await bus.RequeueErrorsAsync("orders", errorQueue: "orders-errors", ct)` `BasicGet`-loops the queue and republishes bodies to the source stream (tail append, at-least-once), acking only after stream confirm; malformed entries are acked with a warning and counted as skipped.
 - **Callback:** runs with the full `ExhaustedContext` (message, body, position, attempts, exception, metadata, `IServiceProvider`); return advances, throw recycles. No AMQP footprint, no declaration needed — the callback may publish anywhere, including queues the library never declares.
 
 ## A.7 Overrides and escape hatches (rare, still supported)
@@ -337,14 +336,14 @@ git commit -m "Add ReceiveEndpoint with explicit consumer-group identity"
 
 **Interfaces:**
 - Consumes: `RetryPolicy`, `ErrorStreamOptions` (for `Stream` destinations, unchanged v1 shape), endpoint/bus descriptors.
-- Produces: `cfg.UseMessageRetry(Action<IRetryConfigurator>)`, `e.UseMessageRetry(...)` (override), `cfg.UseRetry(RetryPolicy)` / `e.UseRetry(...)` escape hatches, `e.DeadLetterTo(string name, DeadLetterType type)` (name and type both required), `e.OnExhausted(Func<ExhaustedContext, CancellationToken, Task> handler)`. Precedence: callback present → callback owns the outcome and a declared destination is shadowed with a startup warning (never an error, eases migration); callback throw → warn + attach recycle (redeliver, never advance). Derivation: bounded+destination→`SkipAfterDeadline`; bounded+callback→callback; bounded+neither→`Strict` repeat-last-delay; unbounded+neither→`Strict` forever (default); unbounded+either→config error; `None()`+either→immediate; `None()`+neither→config error.
+- Produces: `cfg.UseMessageRetry(Action<IRetryConfigurator>)`, `e.UseMessageRetry(...)` (override), `cfg.UseRetry(RetryPolicy)` / `e.UseRetry(...)` escape hatches, `e.DeadLetterTo(string name, DeadLetterType type)` (name and type both required), `e.OnExhausted(Func<ExhaustedContext, CancellationToken, Task> handler)`. Precedence: callback present → callback owns the outcome and a declared destination is shadowed with a startup warning (never an error, eases migration); callback throw → warn + attach recycle (redeliver, never advance). Derivation: bounded+destination→`SkipAfterDeadline`; bounded+callback→callback; bounded+neither→`SkipAfterDeadline` to the derived `{stream}_error` classic default; unbounded+neither→`Strict` forever (default); unbounded+either→config error; `None()`→immediate (derived default when nothing configured).
 
-- [ ] **Step 1: Implement.** Schedule mapping: `Immediate(n)` → `MaxAttempts = n+1`, zero `DelayCalculator`; `Interval(n, d)` → `MaxAttempts = n+1`, constant calculator; `Intervals(ds)` → `MaxAttempts = ds.Length+1`, indexed calculator repeating last; `Exponential(count, b, max, m)` → knob mapping; `None()` → `MaxAttempts = 1`. Strict-with-bound repeat-last-delay behavior implemented in the dispatch loop: when `FailureMode.Strict` and attempts exceed `MaxAttempts`, keep waiting on the last delay instead of handing off (small, isolated change in `StreamPartitionConsumer` retry block, guarded by a flag on the internal config). Endpoint retry overrides global; absent endpoint retry inherits global; absent global keeps today's `Strict` unbounded default. Stream-destination descriptors flow into the existing handoff path untouched (envelope, advance-once, `ReplayErrorStreamAsync`); the v1 observe-only `OnRetryExhausted` hook is replaced by the owning `OnExhausted`. Callback exceptions recycle the attach via the existing failure path (no new machinery).
-- [ ] **Step 2: Verify.** `RetryConfigurationTests`: every row of the Part A.5 table (modes + config errors), both-present-shadows-with-warning, schedule calculators produce the exact delays, override beats global, default is Strict unbounded, callback-throw recycles (unit-test the outcome mapping; broker integration covers the recycle loop). Integration: one bounded+stream-destination test asserting handoff lands in the error stream. Run unit suite.
+- [ ] **Step 1: Implement.** Schedule mapping: `Immediate(n)` → `MaxAttempts = n+1`, zero `DelayCalculator`; `Interval(n, d)` → `MaxAttempts = n+1`, constant calculator; `Intervals(ds)` → `MaxAttempts = ds.Length+1`, indexed calculator repeating last; `Exponential(count, b, max, m)` → knob mapping; `None()` → `MaxAttempts = 1`. Bounded schedules always terminate in a handoff (explicit destination, callback, or derived classic default), so no dispatch-loop stall machinery is needed — `Strict` exists only as unbounded-forever. Endpoint retry overrides global; absent endpoint retry inherits global; absent global keeps today's `Strict` unbounded default. Stream-destination descriptors flow into the existing handoff path untouched (envelope, advance-once, `ReplayErrorStreamAsync`); the v1 observe-only `OnRetryExhausted` hook is replaced by the owning `OnExhausted`. Callback exceptions recycle the attach via the existing failure path (no new machinery).
+- [ ] **Step 2: Verify.** `RetryConfigurationTests`: every row of the Part A.5 table (including bounded+neither → derived `{stream}_error` classic), both-present-shadows-with-warning, schedule calculators produce the exact delays, override beats global, default is Strict unbounded, callback-throw recycles (unit-test the outcome mapping; broker integration covers the recycle loop). Integration: one bounded+stream-destination test and one derived-default test asserting handoff lands with full headers. Run unit suite.
 - [ ] **Step 3: Commit (with human approval)**
 
 ```bash
-git add src/StreamBus/Configuration/StreamBusConfigurator.cs src/StreamBus/Configuration/RetryConfiguration.cs src/StreamBus/Hosting.cs src/StreamBus/StreamPartitionConsumer.cs tests/StreamBus.UnitTests/RetryConfigurationTests.cs
+git add src/StreamBus/Configuration/StreamBusConfigurator.cs src/StreamBus/Configuration/RetryConfiguration.cs src/StreamBus/Hosting.cs tests/StreamBus.UnitTests/RetryConfigurationTests.cs
 git commit -m "Add layered retry with declared-or-owned exhaustion"
 ```
 
@@ -358,7 +357,7 @@ git commit -m "Add layered retry with declared-or-owned exhaustion"
 
 **Interfaces:**
 - Consumes: endpoint dead-letter descriptors with `ClassicQueue`/`QuorumQueue` type (Task 4), broker offset commit path (unchanged).
-- Produces: laziness guarantee (zero AMQP footprint without queue destinations — assert by construction: connector instantiated only from the queue-destination set), queue declare durable/non-exclusive/non-auto-delete with explicit `x-queue-type`, headers `streambus.error.*` (same names/values as app-properties), persistent delivery, `message-id`/`correlation-id` mapped, `StreamBusTimeoutException` on unknown confirm outcome (mirroring stream semantics). Requeue: `BasicGet` loop with idle termination (same 5s/200ms shape as replay), stream-republish as fresh messages (at-least-once, documented), ack only after stream confirm; malformed entries acked with warning + skipped count.
+- Produces: laziness guarantee (no effective queue destination — i.e. no bounded/`None()` retry without an explicit stream destination or callback, and no explicit queue destination — means no AMQP footprint; assert by construction: connector instantiated only from the effective queue-destination set, which includes derived `{stream}_error` defaults), queue declare durable/non-exclusive/non-auto-delete with explicit `x-queue-type`, headers `streambus.error.*` (same names/values as app-properties), persistent delivery, `message-id`/`correlation-id` mapped, `StreamBusTimeoutException` on unknown confirm outcome (mirroring stream semantics). Requeue: `BasicGet` loop with idle termination (same 5s/200ms shape as replay), stream-republish as fresh messages (at-least-once, documented), ack only after stream confirm; malformed entries acked with warning + skipped count.
 
 - [ ] **Step 1: Implement.** Supervisor mirrors `ConnectionSupervisor` states (transient retry with backoff, fatal on auth/protocol, shared classification); one `IConnection` per vhost from same host/credentials + `AmqpPort`; channels per operation with recreate-on-fault. Declare queues in the startup declare stage for queue-destination endpoints only.
 - [ ] **Step 2: Verify.** `ErrorQueueTests`: header round-trip, type-arg mapping, laziness (empty queue-destination set → connector never built). Integration (broker): bounded consumer exhausts → message in `orders-errors` with headers → `RequeueErrorsAsync` returns 1 → redelivered on source stream. Run unit suite + broker test where env allows.
