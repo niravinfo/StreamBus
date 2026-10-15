@@ -169,7 +169,7 @@ public sealed class TypedConsumerTests
     [Fact]
     public void Non_positive_timeout_rejected_at_config()
     {
-        Assert.Throws<StreamBusConfigurationException>(() => new StreamBusHostOptionsBuilder().BlockStartupUntilReady(TimeSpan.Zero));
-        Assert.Throws<StreamBusConfigurationException>(() => new StreamBusHostOptionsBuilder().BlockStartupUntilReady(TimeSpan.FromSeconds(-1)));
+        Assert.Throws<StreamBusConfigurationException>(() => new StreamBusHostingOptionsBuilder().BlockStartupUntilReady(TimeSpan.Zero));
+        Assert.Throws<StreamBusConfigurationException>(() => new StreamBusHostingOptionsBuilder().BlockStartupUntilReady(TimeSpan.FromSeconds(-1)));
     }
 }

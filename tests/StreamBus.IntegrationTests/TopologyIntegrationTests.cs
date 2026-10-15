@@ -202,8 +202,8 @@ public sealed class TopologyIntegrationTests : IAsyncDisposable
             cfg.Host("127.0.0.1", "/", h => h.Credentials(User(), Password()));
             cfg.DeclareStream(plain);
             cfg.DeclareSuperStream(super, 2);
-            cfg.Hosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(30)));
         });
+        services.AddStreamBusHosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(30)));
         await using var sp = services.BuildServiceProvider();
         var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
         await hosted.StartAsync(ct);
@@ -235,8 +235,8 @@ public sealed class TopologyIntegrationTests : IAsyncDisposable
         {
             cfg.Host("127.0.0.1", "/", h => h.Credentials(User(), Password()));
             cfg.DeclareSuperStream(super, 5);
-            cfg.Hosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(30)));
         });
+        services.AddStreamBusHosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(30)));
         await using var sp = services.BuildServiceProvider();
         var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
         var ex = await Assert.ThrowsAsync<StreamConfigurationConflictException>(() => hosted.StartAsync(ct));

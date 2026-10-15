@@ -64,7 +64,7 @@ public sealed class ErrorQueueIntegrationTests : IAsyncDisposable
         public ServiceProvider Provider { get; private set; } = null!;
         public StreamBusHostedService Hosted { get; private set; } = null!;
         public IStreamBus Bus { get; private set; } = null!;
-        public static async Task<BusInstance> StartAsync(Action<ServiceCollection>? configure = null, string vhost = "/", Action<IStreamBusConfigurator>? busConfigure = null)
+        public static async Task<BusInstance> StartAsync(Action<ServiceCollection>? configure = null, string vhost = "/", Action<IStreamBusConfigurator>? busConfigure = null, TimeSpan? blockTimeout = null)
         {
             var services = new ServiceCollection();
             services.AddLogging();
@@ -73,6 +73,8 @@ public sealed class ErrorQueueIntegrationTests : IAsyncDisposable
                 cfg.Host("127.0.0.1", vhost, h => h.Credentials(User(), Password()));
                 busConfigure?.Invoke(cfg);
             });
+            if (blockTimeout is { } timeout)
+                services.AddStreamBusHosting(h => h.BlockStartupUntilReady(timeout));
             configure?.Invoke(services);
             var sp = services.BuildServiceProvider();
             var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
@@ -144,7 +146,6 @@ public sealed class ErrorQueueIntegrationTests : IAsyncDisposable
             cfg =>
             {
                 cfg.DeclareStream(stream);
-                cfg.Hosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(60)));
                 cfg.ReceiveEndpoint(stream, e =>
                 {
                     e.Consumer<FailingConsumer>("eq-group");
@@ -152,7 +153,8 @@ public sealed class ErrorQueueIntegrationTests : IAsyncDisposable
                     if (explicitQueue)
                         e.DeadLetterTo(errorQueue, DeadLetterType.ClassicQueue);
                 });
-            });
+            },
+            TimeSpan.FromSeconds(60));
         await using var pub = await BusInstance.StartAsync();
         await pub.Bus.PublishRawAsync(stream, Body(poison), new PublishOptions(), ct);
 

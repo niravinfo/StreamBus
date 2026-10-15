@@ -79,7 +79,15 @@ public static class ServiceCollectionExtensions
                 marker => store.Registrations.Where(r => r.BusType == marker).Select(r => r.Options.Serializer).FirstOrDefault() ?? SystemTextJsonStreamSerializer.Default,
                 sp.GetService<IServiceScopeFactory>(),
                 DeclarationsFor));
-        services.TryAddSingleton<IHostedService, StreamBusHostedService>();
+        services.TryAddSingleton<IHostedService>(sp => new StreamBusHostedService(
+            sp.GetRequiredService<StreamBusConfigStore>(),
+            sp.GetRequiredService<IStreamBusRegistry>(),
+            sp.GetService<ILogger<StreamBusHostedService>>(),
+            sp.GetService<IServiceScopeFactory>(),
+            sp.GetService<StreamBusConsumerStore>(),
+            sp.GetService<StreamBusEndpointStore>(),
+            sp.GetService<StreamBusPublishStore>(),
+            sp.GetService<StreamBusHostingStore>()));
         services.TryAddSingleton<StreamBusHealthCheck>();
         services.TryAddSingleton<IHealthCheck>(sp => sp.GetRequiredService<StreamBusHealthCheck>());
         if (!services.Any(d => d.ServiceType == typeof(HealthCheckRegistrationMarker)))
@@ -133,6 +141,18 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<StreamBusPublishStore>(created);
         return created;
     }
+
+    public static IServiceCollection AddStreamBusHosting(this IServiceCollection services, Action<StreamBusHostingOptionsBuilder> configure)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(configure);
+        if (services.Any(d => d.ServiceType == typeof(StreamBusHostingStore) && d.ImplementationInstance is StreamBusHostingStore))
+            throw new StreamBusConfigurationException("AddStreamBusHosting may be called at most once per service.");
+        var builder = new StreamBusHostingOptionsBuilder();
+        configure(builder);
+        services.AddSingleton(new StreamBusHostingStore(builder.Build()));
+        return services;
+    }
 }
 
 public sealed class StreamBusConnectionOptionsBuilder
@@ -144,17 +164,34 @@ public sealed class StreamBusConnectionOptionsBuilder
     public StreamBusConnectionOptions Build() => new() { ProducersPerConnection = _producers, ConsumersPerConnection = _consumers };
 }
 
-public sealed class StreamBusHostOptionsBuilder
+public sealed record StreamBusHostingOptions
+{
+    public bool BlockStartupUntilReady { get; init; } = false;
+    public TimeSpan? StartupTimeout { get; init; }
+}
+
+public sealed class StreamBusHostingStore
+{
+    public StreamBusHostingStore(StreamBusHostingOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        Options = options;
+    }
+
+    public StreamBusHostingOptions Options { get; }
+}
+
+public sealed class StreamBusHostingOptionsBuilder
 {
     private bool _block;
     private TimeSpan? _timeout;
-    public StreamBusHostOptionsBuilder BlockStartupUntilReady(TimeSpan? timeout = null)
+    public StreamBusHostingOptionsBuilder BlockStartupUntilReady(TimeSpan? timeout = null)
     {
         if (timeout is { } t && t <= TimeSpan.Zero)
             throw new StreamBusConfigurationException("StartupTimeout must be positive when set.");
         _block = true; _timeout = timeout; return this;
     }
-    public StreamBusHostOptions Build() => new() { BlockStartupUntilReady = _block, StartupTimeout = _timeout };
+    public StreamBusHostingOptions Build() => new() { BlockStartupUntilReady = _block, StartupTimeout = _timeout };
 }
 
 public sealed class StreamTopologyDeclarationsBuilder
@@ -346,9 +383,10 @@ public sealed class StreamBusHostedService : IHostedService
     private readonly StreamBusConsumerStore? _consumers;
     private readonly StreamBusEndpointStore? _endpoints;
     private readonly StreamBusPublishStore? _publishes;
+    private readonly StreamBusHostingOptions _hosting;
     private CancellationTokenSource? _startupCts;
 
-    public StreamBusHostedService(StreamBusConfigStore store, IStreamBusRegistry registry, ILogger<StreamBusHostedService>? logger = null, IServiceScopeFactory? scopeFactory = null, StreamBusConsumerStore? consumerStore = null, StreamBusEndpointStore? endpointStore = null, StreamBusPublishStore? publishStore = null)
+    public StreamBusHostedService(StreamBusConfigStore store, IStreamBusRegistry registry, ILogger<StreamBusHostedService>? logger = null, IServiceScopeFactory? scopeFactory = null, StreamBusConsumerStore? consumerStore = null, StreamBusEndpointStore? endpointStore = null, StreamBusPublishStore? publishStore = null, StreamBusHostingStore? hostingStore = null)
     {
         _store = store;
         _registry = registry;
@@ -357,6 +395,7 @@ public sealed class StreamBusHostedService : IHostedService
         _consumers = consumerStore;
         _endpoints = endpointStore;
         _publishes = publishStore;
+        _hosting = hostingStore?.Options ?? new StreamBusHostingOptions();
     }
 
     public async Task StartAsync(CancellationToken ct)
@@ -382,8 +421,7 @@ public sealed class StreamBusHostedService : IHostedService
             var supervisor = _registry.SupervisorFor(vhost);
             await supervisor.StartAsync(ct).ConfigureAwait(false);
             lock (_gate) _started.Add(supervisor);
-            var timeout = _store.Registrations.First(r => r.Options.Vhost == vhost).Options.Hosting.StartupTimeout;
-            supervisors.Add((vhost, timeout, supervisor));
+            supervisors.Add((vhost, _hosting.StartupTimeout, supervisor));
         }
         CancellationTokenSource startupCts;
         lock (_gate)
@@ -392,7 +430,7 @@ public sealed class StreamBusHostedService : IHostedService
             _startupCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             startupCts = _startupCts;
         }
-        var blocking = _store.Registrations.Any(r => r.Options.Hosting.BlockStartupUntilReady);
+        var blocking = _hosting.BlockStartupUntilReady;
         var declareTasks = new List<Task>();
         foreach (var vhost in _store.Registrations.Select(r => r.Options.Vhost).Distinct())
         {
@@ -501,11 +539,10 @@ public sealed class StreamBusHostedService : IHostedService
                 consumerTasks.Add(task);
             }
         }
-        if (!_store.Registrations.Any(r => r.Options.Hosting.BlockStartupUntilReady)) return;
-        var timeouts = _store.Registrations
-            .Where(r => r.Options.Hosting is { BlockStartupUntilReady: true, StartupTimeout: not null })
-            .Select(r => r.Options.Hosting.StartupTimeout!.Value)
-            .ToList();
+        if (!_hosting.BlockStartupUntilReady) return;
+        var timeouts = new List<TimeSpan>();
+        if (_hosting is { BlockStartupUntilReady: true, StartupTimeout: not null })
+            timeouts.Add(_hosting.StartupTimeout!.Value);
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         if (timeouts.Count > 0) cts.CancelAfter(timeouts.Max());
         foreach (var (vhost, timeout, supervisor) in supervisors)

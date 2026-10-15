@@ -33,11 +33,6 @@ public interface IStreamBusConfigurator
     void ReceiveEndpoint(string stream, Action<IReceiveEndpointConfigurator> configure);
     void UseMessageRetry(Action<IRetryConfigurator> configure);
     void UseRetry(RetryPolicy policy);
-
-    /// <summary>
-    /// Temporary per-bus hosting carry-over. Task 7 replaces this with global AddStreamBusHosting.
-    /// </summary>
-    void Hosting(Action<StreamBusHostOptionsBuilder> configure);
 }
 
 public interface IReceiveEndpointConfigurator
@@ -120,7 +115,6 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
     private readonly List<(Type MessageType, string Stream, bool IsSuper)> _publishes = new();
     private readonly List<ReceiveEndpointDescriptor> _endpoints = new();
     private RetryPolicy? _globalRetry;
-    private StreamBusHostOptions _hosting = new();
     private bool _hostCalled;
 
     internal StreamBusConfigurator(Type busType)
@@ -203,14 +197,6 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
         _publishes.Add((typeof(TMessage), stream.Trim(), true));
     }
 
-    public void Hosting(Action<StreamBusHostOptionsBuilder> configure)
-    {
-        ArgumentNullException.ThrowIfNull(configure);
-        var builder = new StreamBusHostOptionsBuilder();
-        configure(builder);
-        _hosting = builder.Build();
-    }
-
     public void ReceiveEndpoint(string stream, Action<IReceiveEndpointConfigurator> configure)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(stream);
@@ -277,7 +263,6 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
                 ProducersPerConnection = _producers,
                 ConsumersPerConnection = _consumers,
             },
-            Hosting = _hosting,
             Topology = new StreamTopologyDeclarations
             {
                 Streams = _streams.ToList(),
