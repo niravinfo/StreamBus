@@ -30,7 +30,9 @@ public sealed record StreamBusOptions
     public required string UserName { get; init; }
     public required string Password { get; init; }
     public string Host { get; init; } = "127.0.0.1";
-    public int Port { get; init; } = 5552;
+    public int StreamPort { get; init; } = 5552;
+    public int AmqpPort { get; init; } = 5672;
+    public TimeSpan Heartbeat { get; init; } = TimeSpan.FromSeconds(60);
     public StreamBusConnectionOptions Connection { get; init; } = new();
     public StreamBusHostOptions Hosting { get; init; } = new();
     public StreamTopologyDeclarations Topology { get; init; } = new();

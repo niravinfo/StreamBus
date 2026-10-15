@@ -33,7 +33,9 @@ public sealed class StreamBusConfigStore
             && a.UserName == b.UserName
             && a.Password == b.Password
             && a.Host == b.Host
-            && a.Port == b.Port
+            && a.StreamPort == b.StreamPort
+            && a.AmqpPort == b.AmqpPort
+            && a.Heartbeat == b.Heartbeat
             && a.Connection == b.Connection;
 
     public StreamBusOptions ForVhost(string vhost)
@@ -48,33 +50,7 @@ public sealed class StreamBusConfigStore
 
 public static class ServiceCollectionExtensions
 {
-    public static IServiceCollection AddStreamBus(this IServiceCollection services, string vhost, Action<StreamBusOptionsBuilder> configure)
-    {
-        ArgumentNullException.ThrowIfNull(services);
-        ArgumentNullException.ThrowIfNull(vhost);
-        ArgumentNullException.ThrowIfNull(configure);
-        var builder = new StreamBusOptionsBuilder(vhost);
-        configure(builder);
-        var options = builder.Build();
-        AddShared(services, typeof(DefaultBus), options);
-        services.TryAddSingleton<IStreamBus>(sp => sp.GetRequiredService<IStreamBusRegistry>().GetOrCreateBus(options.Vhost));
-        return services;
-    }
-
-    public static IServiceCollection AddStreamBus<TBus>(this IServiceCollection services, string vhost, Action<StreamBusOptionsBuilder> configure)
-    {
-        ArgumentNullException.ThrowIfNull(services);
-        ArgumentNullException.ThrowIfNull(vhost);
-        ArgumentNullException.ThrowIfNull(configure);
-        var builder = new StreamBusOptionsBuilder(vhost);
-        configure(builder);
-        var options = builder.Build();
-        AddShared(services, typeof(TBus), options);
-        services.TryAddSingleton(typeof(IStreamBus<TBus>), sp => sp.GetRequiredService<IStreamBusRegistry>().GetOrCreateBus<TBus>(options.Vhost));
-        return services;
-    }
-
-    private static IServiceCollection AddShared(IServiceCollection services, Type busType, StreamBusOptions options)
+    internal static IServiceCollection AddShared(IServiceCollection services, Type busType, StreamBusOptions options)
     {
         var store = GetOrCreateStore(services);
         store.Add(busType, options);
@@ -138,66 +114,6 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<StreamBusConsumerStore>(created);
         return created;
     }
-}
-
-public sealed class StreamBusOptionsBuilder
-{
-    private string _user = "";
-    private string _password = "";
-    private string _host = "127.0.0.1";
-    private int _port = 5552;
-    private StreamBusConnectionOptions _connection = new();
-    private StreamBusHostOptions _hosting = new();
-    private StreamTopologyDeclarations _topology = new();
-    private IStreamSerializer _serializer = SystemTextJsonStreamSerializer.Default;
-    private readonly string _vhost;
-
-    public StreamBusOptionsBuilder(string vhost) => _vhost = vhost;
-    public StreamBusOptionsBuilder Credentials(string user, string password) { _user = user; _password = password; return this; }
-    public StreamBusOptionsBuilder Endpoint(string host, int port) { _host = host; _port = port; return this; }
-    public StreamBusOptionsBuilder Connection(Action<StreamBusConnectionOptionsBuilder> configure)
-    {
-        var b = new StreamBusConnectionOptionsBuilder();
-        configure(b);
-        _connection = b.Build();
-        return this;
-    }
-    public StreamBusOptionsBuilder Hosting(Action<StreamBusHostOptionsBuilder> configure)
-    {
-        var b = new StreamBusHostOptionsBuilder();
-        configure(b);
-        _hosting = b.Build();
-        return this;
-    }
-    public StreamBusOptionsBuilder Topology(Action<StreamTopologyDeclarationsBuilder> configure)
-    {
-        ArgumentNullException.ThrowIfNull(configure);
-        var b = new StreamTopologyDeclarationsBuilder();
-        configure(b);
-        _topology = b.Build();
-        return this;
-    }
-    public StreamBusOptionsBuilder Serializer(IStreamSerializer serializer) { _serializer = serializer ?? throw new ArgumentNullException(nameof(serializer)); return this; }
-    public StreamBusOptionsBuilder Serializer(Action<JsonSerializerOptions> configure)
-    {
-        ArgumentNullException.ThrowIfNull(configure);
-        var options = new JsonSerializerOptions();
-        configure(options);
-        _serializer = new SystemTextJsonStreamSerializer(options);
-        return this;
-    }
-    public StreamBusOptions Build() => new()
-    {
-        Vhost = _vhost,
-        UserName = _user,
-        Password = _password,
-        Host = _host,
-        Port = _port,
-        Connection = _connection,
-        Hosting = _hosting,
-        Topology = _topology,
-        Serializer = _serializer,
-    };
 }
 
 public sealed class StreamBusConnectionOptionsBuilder

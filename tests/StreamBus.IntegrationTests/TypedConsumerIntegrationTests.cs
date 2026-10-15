@@ -45,7 +45,7 @@ public sealed class TypedConsumerIntegrationTests : IAsyncDisposable
         {
             var services = new ServiceCollection();
             services.AddLogging();
-            services.AddStreamBus(vhost, o => o.Credentials(User(), Password()));
+            services.AddStreamBus((_, cfg) => cfg.Host("127.0.0.1", vhost, h => h.Credentials(User(), Password())));
             configure?.Invoke(services);
             var sp = services.BuildServiceProvider();
             var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
@@ -161,8 +161,8 @@ public sealed class TypedConsumerIntegrationTests : IAsyncDisposable
         var got = new List<(ConsumeContext<OrderEvent> Ctx, byte[] Raw)>();
         await using var inst = await BusInstance.StartAsync(s =>
         {
-            s.AddStreamBus<BusA>("/", o => o.Credentials(User(), Password()));
-            s.AddStreamBus<BusB>("/", o => o.Credentials(User(), Password()));
+            s.AddStreamBus<BusA>((_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials(User(), Password())));
+            s.AddStreamBus<BusB>((_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials(User(), Password())));
             s.AddSingleton(got);
             s.AddStreamBusConsumer<BusA, OrderEvent, OrderConsumer>(streamA);
             s.AddStreamBusConsumer<BusB, OrderEvent, OrderConsumer>(streamB);

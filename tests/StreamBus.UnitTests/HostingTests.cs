@@ -119,9 +119,9 @@ public sealed class HostingTests
     public void Same_vhost_different_password_throws_naming_vhost()
     {
         var services = new ServiceCollection();
-        services.AddStreamBus("/", o => o.Credentials("app", "secret"));
+        services.AddStreamBus((_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret")));
         var ex = Assert.Throws<StreamBusConfigurationException>(() =>
-            services.AddStreamBus<OrdersBus>("/", o => o.Credentials("app", "other-secret")));
+            services.AddStreamBus<OrdersBus>((_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "other-secret"))));
         Assert.Contains("/", ex.Message, StringComparison.Ordinal);
     }
 
@@ -129,11 +129,11 @@ public sealed class HostingTests
     public void Same_vhost_different_startup_timeout_only_is_allowed()
     {
         var services = new ServiceCollection();
-        services.AddStreamBus("/", o => o.Credentials("app", "secret"));
-        services.AddStreamBus<OrdersBus>("/", o =>
+        services.AddStreamBus((_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret")));
+        services.AddStreamBus<OrdersBus>((_, cfg) =>
         {
-            o.Credentials("app", "secret");
-            o.Hosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(5)));
+            cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret"));
+            cfg.Hosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(5)));
         });
         var sp = services.BuildServiceProvider();
         Assert.Equal("secret", sp.GetRequiredService<StreamBusConfigStore>().ForVhost("/").Password);
@@ -143,19 +143,19 @@ public sealed class HostingTests
     public void Duplicate_default_registration_fails()
     {
         var services = new ServiceCollection();
-        services.AddStreamBus("/", o => o.Credentials("app", "secret"));
+        services.AddStreamBus((_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret")));
         Assert.Throws<StreamBusConfigurationException>(() =>
-            services.AddStreamBus("/", o => o.Credentials("app", "secret")));
+            services.AddStreamBus((_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret"))));
     }
 
     [Fact]
     public void Duplicate_marker_registration_fails_but_distinct_markers_coexist()
     {
         var services = new ServiceCollection();
-        services.AddStreamBus<OrdersBus>("/", o => o.Credentials("app", "secret"));
+        services.AddStreamBus<OrdersBus>((_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret")));
         Assert.Throws<StreamBusConfigurationException>(() =>
-            services.AddStreamBus<OrdersBus>("/", o => o.Credentials("app", "secret")));
-        services.AddStreamBus<BillingBus>("/", o => o.Credentials("app", "secret"));
+            services.AddStreamBus<OrdersBus>((_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret"))));
+        services.AddStreamBus<BillingBus>((_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret")));
         var sp = services.BuildServiceProvider();
         Assert.NotSame(sp.GetRequiredService<IStreamBus<OrdersBus>>(), sp.GetRequiredService<IStreamBus<BillingBus>>());
     }
@@ -164,8 +164,8 @@ public sealed class HostingTests
     public void Default_and_marker_resolve_distinct_buses()
     {
         var services = new ServiceCollection();
-        services.AddStreamBus("/", o => o.Credentials("app", "secret"));
-        services.AddStreamBus<OrdersBus>("/", o => o.Credentials("app", "secret"));
+        services.AddStreamBus((_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret")));
+        services.AddStreamBus<OrdersBus>((_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret")));
         var sp = services.BuildServiceProvider();
         Assert.NotSame(sp.GetRequiredService<IStreamBus>(), (IStreamBus)sp.GetRequiredService<IStreamBus<OrdersBus>>());
     }
@@ -174,10 +174,14 @@ public sealed class HostingTests
     public void Pooling_defaults_are_one_and_overridable()
     {
         var services = new ServiceCollection();
-        services.AddStreamBus("/", o =>
+        services.AddStreamBus((_, cfg) =>
         {
-            o.Credentials("app", "secret");
-            o.Connection(c => c.ProducersPerConnection(3).ConsumersPerConnection(5));
+            cfg.Host("127.0.0.1", "/", h =>
+            {
+                h.Credentials("app", "secret");
+                h.ProducersPerConnection(3);
+                h.ConsumersPerConnection(5);
+            });
         });
         var sp = services.BuildServiceProvider();
         var opts = sp.GetRequiredService<StreamBusConfigStore>().ForVhost("/");
@@ -192,25 +196,25 @@ public sealed class HostingTests
     public void Duplicate_marker_across_vhosts_fails()
     {
         var services = new ServiceCollection();
-        services.AddStreamBus<OrdersBus>("/", o => o.Credentials("app", "secret"));
+        services.AddStreamBus<OrdersBus>((_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret")));
         Assert.Throws<StreamBusConfigurationException>(() =>
-            services.AddStreamBus<OrdersBus>("other", o => o.Credentials("app", "secret")));
+            services.AddStreamBus<OrdersBus>((_, cfg) => cfg.Host("127.0.0.1", "other", h => h.Credentials("app", "secret"))));
     }
 
     [Fact]
     public void Duplicate_default_across_vhosts_fails()
     {
         var services = new ServiceCollection();
-        services.AddStreamBus("/", o => o.Credentials("app", "secret"));
+        services.AddStreamBus((_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret")));
         Assert.Throws<StreamBusConfigurationException>(() =>
-            services.AddStreamBus("/other", o => o.Credentials("app", "secret")));
+            services.AddStreamBus((_, cfg) => cfg.Host("127.0.0.1", "/other", h => h.Credentials("app", "secret"))));
     }
 
     [Fact]
     public void Unknown_vhost_throws_configuration_naming_vhost()
     {
         var services = new ServiceCollection();
-        services.AddStreamBus("/", o => o.Credentials("app", "secret"));
+        services.AddStreamBus((_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret")));
         var sp = services.BuildServiceProvider();
         var store = sp.GetRequiredService<StreamBusConfigStore>();
         var ex = Assert.Throws<StreamBusConfigurationException>(() => store.ForVhost("missing-vh"));
@@ -221,12 +225,13 @@ public sealed class HostingTests
     public void AddStreamBus_null_arguments_throw()
     {
         var services = new ServiceCollection();
-        Assert.Throws<ArgumentNullException>(() => services.AddStreamBus(null!, o => o.Credentials("a", "b")));
-        Assert.Throws<ArgumentNullException>(() => services.AddStreamBus("/", null!));
-        Assert.Throws<ArgumentNullException>(() => services.AddStreamBus<OrdersBus>(null!, o => o.Credentials("a", "b")));
-        Assert.Throws<ArgumentNullException>(() => services.AddStreamBus<OrdersBus>("/", null!));
-        Assert.Throws<ArgumentNullException>(() => ((IServiceCollection)null!).AddStreamBus("/", o => o.Credentials("a", "b")));
-        Assert.Throws<ArgumentNullException>(() => ((IServiceCollection)null!).AddStreamBus<OrdersBus>("/", o => o.Credentials("a", "b")));
+        Action<IStreamRegistrationContext, IStreamBusConfigurator> configure = (_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials("a", "b"));
+        Assert.Throws<ArgumentNullException>(() => services.AddStreamBus(null!));
+        Assert.Throws<ArgumentNullException>(() => services.AddStreamBus<OrdersBus>(null!));
+        Assert.Throws<ArgumentNullException>(() => ((IServiceCollection)null!).AddStreamBus(configure));
+        Assert.Throws<ArgumentNullException>(() => ((IServiceCollection)null!).AddStreamBus<OrdersBus>(configure));
+        Assert.Throws<ArgumentNullException>(() => services.AddStreamBus((Microsoft.Extensions.Configuration.IConfigurationSection)null!));
+        Assert.Throws<ArgumentNullException>(() => services.AddStreamBus<OrdersBus>((Microsoft.Extensions.Configuration.IConfigurationSection)null!));
     }
 
     [Fact]
@@ -280,10 +285,10 @@ public sealed class HostingTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddStreamBus("/", o =>
+        services.AddStreamBus((_, cfg) =>
         {
-            o.Credentials("app", "secret");
-            o.Hosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(5)));
+            cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret"));
+            cfg.Hosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(5)));
         });
         services.AddSingleton<IStreamSystemConnector>(new SuccessConnector());
         await using var sp = services.BuildServiceProvider();
@@ -306,10 +311,10 @@ public sealed class HostingTests
         var timeout = TimeSpan.FromMilliseconds(200);
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddStreamBus("/", o =>
+        services.AddStreamBus((_, cfg) =>
         {
-            o.Credentials("app", "secret");
-            o.Hosting(h => h.BlockStartupUntilReady(timeout));
+            cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret"));
+            cfg.Hosting(h => h.BlockStartupUntilReady(timeout));
         });
         services.AddSingleton<IStreamSystemConnector>(new NeverReadyConnector());
         await using var sp = services.BuildServiceProvider();
@@ -331,7 +336,7 @@ public sealed class HostingTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddStreamBus("/", o => o.Credentials("app", "secret"));
+        services.AddStreamBus((_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret")));
         services.AddSingleton<IStreamSystemConnector>(new NeverReadyConnector());
         await using var sp = services.BuildServiceProvider();
         var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
@@ -355,10 +360,10 @@ public sealed class HostingTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddStreamBus("/", o =>
+        services.AddStreamBus((_, cfg) =>
         {
-            o.Credentials("app", "secret");
-            o.Hosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(30)));
+            cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret"));
+            cfg.Hosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(30)));
         });
         services.AddSingleton<IStreamSystemConnector>(new NeverReadyConnector());
         await using var sp = services.BuildServiceProvider();
@@ -379,8 +384,8 @@ public sealed class HostingTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddStreamBus("/", o => o.Credentials("app", "secret"));
-        services.AddStreamBus<OrdersBus>("orders-vh", o => o.Credentials("app", "secret"));
+        services.AddStreamBus((_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret")));
+        services.AddStreamBus<OrdersBus>((_, cfg) => cfg.Host("127.0.0.1", "orders-vh", h => h.Credentials("app", "secret")));
         services.AddSingleton<IStreamSystemConnector>(new NeverReadyConnector());
         await using var sp = services.BuildServiceProvider();
         Assert.NotNull(sp.GetRequiredService<StreamBusHealthCheck>());
@@ -410,7 +415,7 @@ public sealed class HostingTests
         var handle = new CountingHandle();
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddStreamBus("/", o => o.Credentials("app", "secret"));
+        services.AddStreamBus((_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret")));
         services.AddSingleton<IStreamSystemConnector>(new SuccessConnector(handle));
         await using var sp = services.BuildServiceProvider();
         var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
@@ -427,15 +432,15 @@ public sealed class HostingTests
         var handle = new StubHandle();
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddStreamBus("/", o =>
+        services.AddStreamBus((_, cfg) =>
         {
-            o.Credentials("app", "secret");
-            o.Topology(t => t.DeclareStream("stream-a"));
+            cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret"));
+            cfg.DeclareStream("stream-a");
         });
-        services.AddStreamBus<OrdersBus>("/", o =>
+        services.AddStreamBus<OrdersBus>((_, cfg) =>
         {
-            o.Credentials("app", "secret");
-            o.Topology(t => t.DeclareStream("stream-b"));
+            cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret"));
+            cfg.DeclareStream("stream-b");
         });
         services.AddSingleton<IStreamSystemConnector>(new SuccessConnector(handle));
         await using var sp = services.BuildServiceProvider();
@@ -464,14 +469,12 @@ public sealed class HostingTests
     }
 
     [Fact]
-    public async Task Guest_at_startup_fails_with_actionable_message()
+    public void Guest_at_registration_fails_with_actionable_message()
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddStreamBus("/", o => o.Credentials("guest", "guest"));
-        await using var sp = services.BuildServiceProvider();
-        var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
-        var ex = await Assert.ThrowsAsync<StreamBusConfigurationException>(() => hosted.StartAsync(TestContext.Current.CancellationToken));
+        var ex = Assert.Throws<StreamBusConfigurationException>(() =>
+            services.AddStreamBus((_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials("guest", "guest"))));
         Assert.Contains("guest", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
@@ -494,11 +497,11 @@ public sealed class HostingTests
         handle.StreamExistsFunc = async (_, ct2) => { await Task.Delay(Timeout.Infinite, ct2); return false; };
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddStreamBus("/", o =>
+        services.AddStreamBus((_, cfg) =>
         {
-            o.Credentials("app", "secret");
-            o.Topology(t => t.DeclareStream("hung-stream"));
-            o.Hosting(h => h.BlockStartupUntilReady(TimeSpan.FromMilliseconds(200)));
+            cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret"));
+            cfg.DeclareStream("hung-stream");
+            cfg.Hosting(h => h.BlockStartupUntilReady(TimeSpan.FromMilliseconds(200)));
         });
         services.AddSingleton<IStreamSystemConnector>(new SuccessConnector(handle));
         await using var sp = services.BuildServiceProvider();

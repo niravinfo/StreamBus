@@ -260,7 +260,7 @@ public sealed class PublishTests
     [Fact]
     public async Task Not_ready_failfast_throws_not_ready()
     {
-        var options = new StreamBusOptions { Vhost = "/", UserName = "app", Password = "secret", Host = "127.0.0.1", Port = 59999 };
+        var options = new StreamBusOptions { Vhost = "/", UserName = "app", Password = "secret", Host = "127.0.0.1", StreamPort = 59999 };
         await using var supervisor = new StreamBusConnectionSupervisor(options, new StreamSystemConnector());
         await supervisor.StartAsync(CancellationToken.None);
         var registry = new StreamProducerRegistry(supervisor, "/");

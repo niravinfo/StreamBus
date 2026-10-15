@@ -42,7 +42,7 @@ public sealed class TypedStartupIntegrationTests : IAsyncDisposable
         {
             var services = new ServiceCollection();
             services.AddLogging();
-            services.AddStreamBus(vhost, o => o.Credentials(User(), Password()));
+            services.AddStreamBus((_, cfg) => cfg.Host("127.0.0.1", vhost, h => h.Credentials(User(), Password())));
             configure?.Invoke(services);
             var sp = services.BuildServiceProvider();
             var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
@@ -109,10 +109,10 @@ public sealed class TypedStartupIntegrationTests : IAsyncDisposable
         services.AddLogging();
         services.AddSingleton(got);
         services.AddStreamBusConsumer<OrderEvent, OrderConsumer>(stream);
-        services.AddStreamBus("/", o =>
+        services.AddStreamBus((_, cfg) =>
         {
-            o.Credentials(User(), Password());
-            o.Topology(t => t.DeclareStream(stream));
+            cfg.Host("127.0.0.1", "/", h => h.Credentials(User(), Password()));
+            cfg.DeclareStream(stream);
         });
         await using var sp = services.BuildServiceProvider();
         var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
@@ -149,10 +149,10 @@ public sealed class TypedStartupIntegrationTests : IAsyncDisposable
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton(got);
-        services.AddStreamBus("/", o =>
+        services.AddStreamBus((_, cfg) =>
         {
-            o.Credentials(User(), Password());
-            o.Hosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(30)));
+            cfg.Host("127.0.0.1", "/", h => h.Credentials(User(), Password()));
+            cfg.Hosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(30)));
         });
         services.AddStreamBusConsumer<OrderEvent, OrderConsumer>(stream,
             o => o.Retry(new RetryPolicy { FailureMode = FailureMode.SkipAfterDeadline, MaxAttempts = 2 }));
@@ -177,7 +177,7 @@ public sealed class TypedStartupIntegrationTests : IAsyncDisposable
             var services = new ServiceCollection();
             services.AddLogging();
             services.AddSingleton(new List<(string Who, int Seq)>());
-            services.AddStreamBus("/", o => o.Credentials(User(), Password()));
+            services.AddStreamBus((_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials(User(), Password())));
             services.AddStreamBusConsumer<GhostBus, OrderEvent, OrderConsumer>(stream);
             await using var sp = services.BuildServiceProvider();
             var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
@@ -190,10 +190,10 @@ public sealed class TypedStartupIntegrationTests : IAsyncDisposable
             var services = new ServiceCollection();
             services.AddLogging();
             services.AddSingleton(new List<(string Who, int Seq)>());
-            services.AddStreamBus("/", o =>
+            services.AddStreamBus((_, cfg) =>
             {
-                o.Credentials(User(), Password());
-                o.Hosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(30)));
+                cfg.Host("127.0.0.1", "/", h => h.Credentials(User(), Password()));
+                cfg.Hosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(30)));
             });
             services.AddStreamBusConsumer<GhostBus, OrderEvent, OrderConsumer>(stream);
             await using var sp = services.BuildServiceProvider();

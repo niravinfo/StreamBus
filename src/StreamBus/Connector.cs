@@ -204,13 +204,14 @@ public sealed class StreamSystemConnector : IStreamSystemConnector
             throw new StreamBusConfigurationException(
                 $"ConsumersPerConnection must be <= {byte.MaxValue} (client pool limit).");
         EndPoint endpoint = IPAddress.TryParse(options.Host, out var address)
-            ? new IPEndPoint(address, options.Port)
-            : new DnsEndPoint(options.Host, options.Port);
+            ? new IPEndPoint(address, options.StreamPort)
+            : new DnsEndPoint(options.Host, options.StreamPort);
         var config = new StreamSystemConfig
         {
             UserName = options.UserName,
             Password = options.Password,
             VirtualHost = options.Vhost,
+            Heartbeat = options.Heartbeat,
             Endpoints = new List<EndPoint> { endpoint },
             ClientProvidedName = "streambus-locator",
             ConnectionPoolConfig = new ConnectionPoolConfig
