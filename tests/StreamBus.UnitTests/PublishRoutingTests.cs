@@ -63,10 +63,10 @@ public sealed class PublishRoutingTests
 
     private sealed class ReadyConnector : IStreamSystemConnector
     {
-        private readonly CapturingSystem _system;
-        public ReadyConnector(CapturingSystem system) => _system = system;
+        private readonly IStreamSystemHandle _system;
+        public ReadyConnector(IStreamSystemHandle system) => _system = system;
         public Task<IStreamSystemHandle> ConnectAsync(StreamBusOptions options, CancellationToken ct)
-            => Task.FromResult<IStreamSystemHandle>(_system);
+            => Task.FromResult(_system);
     }
 
     private static (StreamBusRegistry Registry, CapturingSystem System) CreateRegistry(Action<StreamBusPublishStore>? configureStore = null)
@@ -154,7 +154,7 @@ public sealed class PublishRoutingTests
     {
         var (registry, system) = CreateRegistry(s => s.Add(typeof(DefaultBus), typeof(OrderEvent), "orders", isSuper: false));
         var bus = registry.GetOrCreateBus("/");
-        await bus.PublishAsync(new OrderEvent("o-1", 1), ct: TestContext.Current.CancellationToken);
+        await bus.PublishAsync(new OrderEvent("o-1", 1), TestContext.Current.CancellationToken);
         Assert.Contains("orders", system.PlainStreams);
         var sent = Assert.Single(system.Plain.Sent);
         Assert.Equal(new OrderEvent("o-1", 1), SystemTextJsonStreamSerializer.Default.Deserialize<OrderEvent>(sent.Body));
@@ -201,7 +201,64 @@ public sealed class PublishRoutingTests
     {
         var (registry, system) = CreateRegistry(s => s.Add(typeof(DefaultBus), typeof(OrderEvent), "orders", isSuper: false));
         var bus = registry.GetOrCreateBus("/");
-        await bus.PublishAsync("orders-manual", new OrderEvent("o-1", 1), ct: TestContext.Current.CancellationToken);
+        await bus.PublishAsync("orders-manual", new OrderEvent("o-1", 1), TestContext.Current.CancellationToken);
         Assert.Contains("orders-manual", system.PlainStreams);
+    }
+
+    [Fact]
+    public async Task Explicit_super_override_publishes_with_key()
+    {
+        var (registry, system) = CreateRegistry();
+        var bus = registry.GetOrCreateBus("/");
+        await bus.PublishSuperAsync("manual-super", new OrderEvent("o-1", 1), "o-1", TestContext.Current.CancellationToken);
+        Assert.Contains("manual-super", system.SuperStreams);
+        Assert.Equal("o-1", Assert.Single(system.Super.Sent).RoutingKey);
+    }
+
+    private sealed class NotFoundSystem : IStreamSystemHandle
+    {
+        public bool IsClosed => false;
+        public Task<IStreamProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct)
+            => Task.FromException<IStreamProducerHandle>(new RabbitMQ.Stream.Client.CreateProducerException(
+                "producer could not be created code: StreamDoesNotExist",
+                RabbitMQ.Stream.Client.ResponseCode.StreamDoesNotExist));
+        public Task<IStreamProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
+            => throw new NotImplementedException("NotFoundSystem never replays.");
+        public Task<IStreamProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
+            => throw new NotImplementedException("NotFoundSystem never creates super producers.");
+        public Task<IStreamProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
+            => throw new NotImplementedException("NotFoundSystem never replays.");
+        public Task<ulong> QuerySequenceAsync(string reference, string stream, CancellationToken ct)
+            => throw new NotImplementedException("NotFoundSystem never queries sequences.");
+        public Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken ct) => Task.FromResult<ulong?>(null);
+        public Task StoreSystemOffsetAsync(string reference, string stream, ulong offset, CancellationToken ct) => Task.CompletedTask;
+        public Task<bool> StreamExistsAsync(string stream, CancellationToken ct) => Task.FromResult(false);
+        public Task<bool> SuperStreamExistsAsync(string superStream, CancellationToken ct) => Task.FromResult(false);
+        public Task<string[]> QueryPartitionAsync(string superStream, CancellationToken ct) => Task.FromResult(Array.Empty<string>());
+        public Task<RabbitMQ.Stream.Client.RawConsumer> CreateRawConsumerAsync(RabbitMQ.Stream.Client.RawConsumerConfig config, CancellationToken ct)
+            => throw new NotImplementedException("NotFoundSystem never consumes.");
+        public Task CreateStreamAsync(RabbitMQ.Stream.Client.StreamSpec spec, CancellationToken ct) => Task.CompletedTask;
+        public Task CreateSuperStreamAsync(RabbitMQ.Stream.Client.PartitionsSuperStreamSpec spec, CancellationToken ct) => Task.CompletedTask;
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    [Fact]
+    public async Task Explicit_override_of_undeclared_stream_surfaces_not_found()
+    {
+        var system = new NotFoundSystem();
+        var registry = new StreamBusRegistry(
+            vhost => new StreamBusOptions { Vhost = vhost, UserName = "app", Password = "secret" },
+            options => new StreamBusConnectionSupervisor(options, new ReadyConnector(system)),
+            null,
+            new StreamPublishRouter(new StreamBusPublishStore()),
+            _ => SystemTextJsonStreamSerializer.Default);
+        var supervisor = ((IStreamBusRegistry)registry).SupervisorFor("/");
+        await supervisor.StartAsync(TestContext.Current.CancellationToken);
+        var readiness = await supervisor.WaitUntilReadyAsync(ReadinessPolicy.Indefinitely, TestContext.Current.CancellationToken);
+        Assert.Equal(BusReadiness.Ready, readiness);
+        var bus = registry.GetOrCreateBus("/");
+        var ex = await Assert.ThrowsAsync<StreamBusStreamNotFoundException>(() =>
+            bus.PublishAsync("undeclared", new OrderEvent("o-1", 1), TestContext.Current.CancellationToken));
+        Assert.Contains("undeclared", ex.Message, StringComparison.Ordinal);
     }
 }

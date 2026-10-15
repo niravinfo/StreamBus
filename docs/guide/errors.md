@@ -79,7 +79,7 @@ never skip). Use `ctx.GetService<T>()` for buses and other services.
 ## Requeue
 
 ```csharp
-int requeued = await bus.RequeueErrorsAsync("orders", errorQueue: "orders-errors", ct);
+int requeued = await bus.RequeueErrorsAsync("orders", "orders-errors", ct);
 ```
 
 `BasicGet`-loops the queue and republishes bodies to the source stream as

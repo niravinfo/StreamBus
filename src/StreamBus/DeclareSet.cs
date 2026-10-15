@@ -84,6 +84,13 @@ internal static class DeclareSetBuilder
                 Source = "endpoint",
             });
         }
+        foreach (var group in publishes.GroupBy(p => p.MessageType))
+        {
+            var streams = group.Select(p => p.Stream).Distinct(StringComparer.Ordinal).ToList();
+            if (streams.Count > 1)
+                throw new StreamBusConfigurationException(
+                    $"Message {group.Key.FullName} is registered for multiple streams on bus {busName} ('{string.Join("', '", streams)}'). Register each message type on exactly one stream per bus; publish to other streams with the explicit-stream PublishAsync<T>(stream, message, ...) overload.");
+        }
         foreach (var publish in publishes)
         {
             var declaration = result.Find(d => d.Name == publish.Stream);

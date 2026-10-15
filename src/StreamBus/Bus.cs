@@ -6,9 +6,13 @@ public interface IStreamBus
     BusConnectionState State { get; }
     Task<BusReadiness> WaitUntilReadyAsync(ReadinessPolicy policy, CancellationToken ct = default);
     Task PublishAsync<T>(T message, PublishOptions? options = null, CancellationToken ct = default);
+    Task PublishAsync<T>(T message, CancellationToken ct);
     Task PublishAsync<T>(string stream, T message, PublishOptions? options = null, CancellationToken ct = default);
+    Task PublishAsync<T>(string stream, T message, CancellationToken ct);
     Task PublishSuperAsync<T>(T message, string routingKey, PublishOptions? options = null, CancellationToken ct = default);
+    Task PublishSuperAsync<T>(T message, string routingKey, CancellationToken ct);
     Task PublishSuperAsync<T>(string stream, T message, string routingKey, PublishOptions? options = null, CancellationToken ct = default);
+    Task PublishSuperAsync<T>(string stream, T message, string routingKey, CancellationToken ct);
     Task PublishRawAsync(string stream, ReadOnlyMemory<byte> body, PublishOptions? options = null, CancellationToken ct = default);
     Task<int> RequeueErrorsAsync(string stream, string errorQueue, CancellationToken ct = default);
     Task<IStreamConsumer> ConsumeAsync(string stream, ConsumeOptions options, Func<ConsumeContext, Task> handler, CancellationToken ct = default);
@@ -90,6 +94,8 @@ internal sealed class StreamBus : IStreamBus
         var effective = (options ?? new PublishOptions()) with { IsSuperStream = false, RoutingKey = null };
         return _producers.PublishAsync(reg.Stream, body, effective, ct);
     }
+    public Task PublishAsync<T>(T message, CancellationToken ct)
+        => PublishAsync(message, null, ct);
     public Task PublishAsync<T>(string stream, T message, PublishOptions? options = null, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(stream);
@@ -99,6 +105,8 @@ internal sealed class StreamBus : IStreamBus
         var effective = (options ?? new PublishOptions()) with { IsSuperStream = false, RoutingKey = null };
         return _producers.PublishAsync(stream, body, effective, ct);
     }
+    public Task PublishAsync<T>(string stream, T message, CancellationToken ct)
+        => PublishAsync(stream, message, null, ct);
     public Task PublishSuperAsync<T>(T message, string routingKey, PublishOptions? options = null, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(message);
@@ -110,6 +118,8 @@ internal sealed class StreamBus : IStreamBus
         var effective = (options ?? new PublishOptions()) with { IsSuperStream = true, RoutingKey = routingKey };
         return _producers.PublishAsync(reg.Stream, body, effective, ct);
     }
+    public Task PublishSuperAsync<T>(T message, string routingKey, CancellationToken ct)
+        => PublishSuperAsync(message, routingKey, null, ct);
     public Task PublishSuperAsync<T>(string stream, T message, string routingKey, PublishOptions? options = null, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(stream);
@@ -120,6 +130,8 @@ internal sealed class StreamBus : IStreamBus
         var effective = (options ?? new PublishOptions()) with { IsSuperStream = true, RoutingKey = routingKey };
         return _producers.PublishAsync(stream, body, effective, ct);
     }
+    public Task PublishSuperAsync<T>(string stream, T message, string routingKey, CancellationToken ct)
+        => PublishSuperAsync(stream, message, routingKey, null, ct);
     public Task PublishRawAsync(string stream, ReadOnlyMemory<byte> body, PublishOptions? options = null, CancellationToken ct = default)
         => _producers.PublishAsync(stream, body, options ?? new PublishOptions(), ct);
     public Task<int> RequeueErrorsAsync(string stream, string errorQueue, CancellationToken ct = default)
@@ -181,6 +193,8 @@ internal sealed class StreamBus<TBus> : IStreamBus<TBus>
         var effective = (options ?? new PublishOptions()) with { IsSuperStream = false, RoutingKey = null };
         return _producers.PublishAsync(reg.Stream, body, effective, ct);
     }
+    public Task PublishAsync<T>(T message, CancellationToken ct)
+        => PublishAsync(message, null, ct);
     public Task PublishAsync<T>(string stream, T message, PublishOptions? options = null, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(stream);
@@ -190,6 +204,8 @@ internal sealed class StreamBus<TBus> : IStreamBus<TBus>
         var effective = (options ?? new PublishOptions()) with { IsSuperStream = false, RoutingKey = null };
         return _producers.PublishAsync(stream, body, effective, ct);
     }
+    public Task PublishAsync<T>(string stream, T message, CancellationToken ct)
+        => PublishAsync(stream, message, null, ct);
     public Task PublishSuperAsync<T>(T message, string routingKey, PublishOptions? options = null, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(message);
@@ -201,6 +217,8 @@ internal sealed class StreamBus<TBus> : IStreamBus<TBus>
         var effective = (options ?? new PublishOptions()) with { IsSuperStream = true, RoutingKey = routingKey };
         return _producers.PublishAsync(reg.Stream, body, effective, ct);
     }
+    public Task PublishSuperAsync<T>(T message, string routingKey, CancellationToken ct)
+        => PublishSuperAsync(message, routingKey, null, ct);
     public Task PublishSuperAsync<T>(string stream, T message, string routingKey, PublishOptions? options = null, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(stream);
@@ -211,6 +229,8 @@ internal sealed class StreamBus<TBus> : IStreamBus<TBus>
         var effective = (options ?? new PublishOptions()) with { IsSuperStream = true, RoutingKey = routingKey };
         return _producers.PublishAsync(stream, body, effective, ct);
     }
+    public Task PublishSuperAsync<T>(string stream, T message, string routingKey, CancellationToken ct)
+        => PublishSuperAsync(stream, message, routingKey, null, ct);
     public Task PublishRawAsync(string stream, ReadOnlyMemory<byte> body, PublishOptions? options = null, CancellationToken ct = default)
         => _producers.PublishAsync(stream, body, options ?? new PublishOptions(), ct);
     public Task<int> RequeueErrorsAsync(string stream, string errorQueue, CancellationToken ct = default)

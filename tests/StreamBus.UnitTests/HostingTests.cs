@@ -628,6 +628,20 @@ public sealed class HostingTests
     }
 
     [Fact]
+    public void Same_type_on_two_streams_throws_listing_both_at_startup()
+    {
+        var ex = Assert.Throws<StreamBusConfigurationException>(() => DeclareSet(
+            publishes: new[]
+            {
+                new PublishRegistration { BusMarker = typeof(DefaultBus), MessageType = typeof(DerivedEvent), Stream = "orders-a", IsSuper = false },
+                new PublishRegistration { BusMarker = typeof(DefaultBus), MessageType = typeof(DerivedEvent), Stream = "orders-b", IsSuper = false },
+            }));
+        Assert.Contains("orders-a", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("orders-b", ex.Message, StringComparison.Ordinal);
+        Assert.Contains(typeof(DerivedEvent).FullName!, ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Super_publish_with_endpoint_partitions_is_satisfied()
     {
         var set = DeclareSet(
