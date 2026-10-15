@@ -109,6 +109,7 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
     private TimeSpan _heartbeat = TimeSpan.FromSeconds(60);
     private int _producers = 1;
     private int _consumers = 1;
+    private string? _sectionPath;
     private IStreamSerializer _serializer = SystemTextJsonStreamSerializer.Default;
     private readonly List<StreamDeclaration> _streams = new();
     private readonly List<SuperStreamDeclaration> _supers = new();
@@ -129,12 +130,20 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
 
     internal RetryPolicy? GlobalRetry => _globalRetry;
 
-    internal void ApplySectionVhost(IConfigurationSection section)
+    internal void ApplySectionPrimitives(SectionPrimitives primitives, string sectionPath)
     {
-        ArgumentNullException.ThrowIfNull(section);
-        var v = section.GetSection("Vhost").Value;
-        if (!string.IsNullOrWhiteSpace(v))
-            _vhost = v.Trim();
+        ArgumentNullException.ThrowIfNull(primitives);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sectionPath);
+        _host = primitives.Host;
+        _vhost = primitives.Vhost;
+        if (primitives.UserName is not null) _user = primitives.UserName;
+        if (primitives.Password is not null) _password = primitives.Password;
+        _streamPort = primitives.StreamPort;
+        _amqpPort = primitives.AmqpPort;
+        _heartbeat = primitives.Heartbeat;
+        _producers = primitives.ProducersPerConnection;
+        _consumers = primitives.ConsumersPerConnection;
+        _sectionPath = sectionPath;
     }
 
     public void Host(string host, string vhost, Action<IHostConfigurator> configure)
@@ -225,12 +234,14 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
         ArgumentNullException.ThrowIfNull(busType);
         if (busType != _busType)
             throw new StreamBusConfigurationException($"Internal error: configurator for {_busType.FullName} built as {busType.FullName}.");
-        if (!_hostCalled)
+        if (!_hostCalled && _sectionPath is null)
             throw new StreamBusConfigurationException($"Bus {busType.FullName}: Host must be configured exactly once.");
         if (string.IsNullOrWhiteSpace(_host))
             throw new StreamBusConfigurationException($"Bus {busType.FullName}: Host host must be supplied.");
         if (string.IsNullOrWhiteSpace(_vhost))
             throw new StreamBusConfigurationException($"Bus {busType.FullName}: Host vhost must be supplied.");
+        if ((string.IsNullOrWhiteSpace(_user) || string.IsNullOrWhiteSpace(_password)) && _sectionPath is not null && !_hostCalled)
+            throw new StreamBusConfigurationException($"Bus {busType.FullName}: StreamBus UserName and Password must be supplied (section '{_sectionPath}': UserName and Password, or cfg.Host(host, vhost, h => h.Credentials(user, password))).");
         if (_streamPort is < 1 or > 65535)
             throw new StreamBusConfigurationException($"Bus {busType.FullName}: StreamPort must be in 1..65535.");
         if (_amqpPort is < 1 or > 65535)
@@ -520,7 +531,7 @@ public static class StreamBusConfiguratorExtensions
     {
         var configurator = new StreamBusConfigurator(busType);
         if (section is not null)
-            configurator.ApplySectionVhost(section);
+            StreamBusConfigurationBinding.Apply(configurator, section);
         var context = new StreamRegistrationContext(services);
         configure?.Invoke(context, configurator);
         var options = configurator.Build(busType);
