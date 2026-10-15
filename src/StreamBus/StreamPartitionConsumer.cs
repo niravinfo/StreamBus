@@ -541,8 +541,36 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
             return;
         }
         if (_options.DeadLetter is { } queue)
-            throw new StreamBusConfigurationException(
-                $"Queue dead-letter destination '{queue.Name}' on stream '{_stream}' is not supported by this build (AMQP transport pending).");
+        {
+            var queueEnvelope = new ErrorEnvelope
+            {
+                ErrorStream = queue.Name,
+                SourceStream = _stream,
+                SourcePartition = _partitionIndex,
+                SourcePartitionStream = _partitionStream,
+                SourceOffset = offset,
+                Body = consumeContext.Body.ToArray(),
+                ExceptionType = lastError.GetType().FullName ?? lastError.GetType().Name,
+                ExceptionMessage = lastError.Message,
+                ExceptionStack = lastError.ToString(),
+                Attempts = attempts,
+                FailedAt = DateTimeOffset.UtcNow,
+                MessageId = consumeContext.Metadata.MessageId,
+                CorrelationId = consumeContext.Metadata.CorrelationId,
+                RoutingValue = consumeContext.RoutingValue,
+                ErrorRoutingValue = _stream,
+            };
+            _logger.LogWarning(lastError,
+                "Retry budget exhausted for stream {Stream} partition {Partition} offset {Offset} after {Attempts} attempts; handing off to error queue {ErrorQueue}.",
+                _stream, _partitionIndex, offset, attempts, queue.Name);
+            await _errors.HandOffAsync(
+                queueEnvelope,
+                (env, ct) => _errors.PublishQueueHandoffAsync(queue, env, ct),
+                () => AdmitAndCommitStoreAsync(consumer, offset, attach, attach.LoopToken),
+                (n, ex) => RetryDelays.ResolveDelay(_options.Retry, n, ex, _logger),
+                attach.LoopToken).ConfigureAwait(false);
+            return;
+        }
         var errorStream = _options.ErrorStream!.Stream;
         var failedAt = DateTimeOffset.UtcNow;
         var envelope = new ErrorEnvelope

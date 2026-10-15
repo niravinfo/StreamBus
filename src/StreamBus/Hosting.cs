@@ -400,6 +400,33 @@ public sealed class StreamBusHostedService : IHostedService
             }
         }
         var consumerTasks = new List<Task>();
+        var queuesByVhost = starters
+            .Where(s => s.Reg.Options.DeadLetter is not null && s.Reg.Options.ExhaustionCallback is null)
+            .GroupBy(s => s.Vhost, StringComparer.Ordinal)
+            .ToDictionary(
+                g => g.Key,
+                g => g.Select(s => s.Reg.Options.DeadLetter!).Distinct().ToList(),
+                StringComparer.Ordinal);
+        foreach (var (vhost, queues) in queuesByVhost)
+        {
+            var task = DeclareQueuesUntilReadyAsync(vhost, queues, startupCts.Token);
+            if (!blocking)
+            {
+                _ = task.ContinueWith(
+                    t =>
+                    {
+                        if (t.Exception is { } ex)
+                            _logger.LogCritical(ex, "Error-queue declaration for vhost '{Vhost}' failed permanently; queues were NOT declared.", vhost);
+                    },
+                    CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
+            }
+            else
+            {
+                declareTasks.Add(task);
+            }
+        }
         foreach (var (reg, vhost, serializer) in starters)
         {
             var task = StartConsumerUntilReadyAsync(reg, vhost, serializer, startupCts.Token);
@@ -520,6 +547,40 @@ public sealed class StreamBusHostedService : IHostedService
 
     internal static bool IsStartupTransient(Exception ex)
         => ex is StreamBusNotReadyException or StreamBusStreamNotFoundException;
+
+    private async Task DeclareQueuesUntilReadyAsync(string vhost, List<DeadLetterOptions> queues, CancellationToken ct)
+    {
+        if (_registry is not StreamBusRegistry concrete)
+            throw new StreamBusConfigurationException("Error-queue declaration requires the built-in registry (internal error).");
+        var attempt = 0;
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                await concrete.ErrorQueuesFor(vhost).DeclareAsync(queues, ct).ConfigureAwait(false);
+                return;
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (StreamConfigurationConflictException)
+            {
+                throw;
+            }
+            catch (StreamBusFatalException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                attempt++;
+                _logger.LogWarning(ex, "Error-queue declaration for vhost '{Vhost}' failed (attempt {Attempt}); retrying.", vhost, attempt);
+                await Task.Delay(StreamBusDelays.ExponentialCapped(attempt, TimeSpan.FromMilliseconds(200), TimeSpan.FromSeconds(30), 2.0, TimeSpan.FromSeconds(1)), ct).ConfigureAwait(false);
+            }
+        }
+    }
 
     private async Task StartConsumerUntilReadyAsync(TypedConsumerRegistration reg, string vhost, IStreamSerializer serializer, CancellationToken ct)
     {

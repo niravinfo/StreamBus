@@ -64,6 +64,13 @@ public sealed class StreamBusRegistry : IStreamBusRegistry
     private readonly ConcurrentDictionary<string, StreamProducerRegistry> _producers = new();
     private readonly ConcurrentDictionary<string, StreamConsumerRegistry> _consumers = new();
     private readonly ConcurrentDictionary<string, StreamTopologyRegistry> _topologies = new();
+    private readonly ConcurrentDictionary<string, ErrorQueueTransport> _errorQueues = new();
+
+    internal ErrorQueueTransport ErrorQueuesFor(string vhost)
+        => _errorQueues.GetOrAdd(vhost, _ => new ErrorQueueTransport(
+            _resolveOptions(vhost),
+            null,
+            _loggerFactory.CreateLogger<ErrorQueueTransport>()));
 
     internal StreamProducerRegistry ProducersFor(string vhost)
         => _producers.GetOrAdd(vhost, _ => new StreamProducerRegistry(SupervisorForCore(vhost), vhost));
@@ -74,7 +81,7 @@ public sealed class StreamBusRegistry : IStreamBusRegistry
         => _results.GetOrAdd(vhost, _ => new ResultProducerRegistry(SupervisorForCore(vhost), vhost));
 
     internal StreamConsumerRegistry ConsumersFor(string vhost)
-        => _consumers.GetOrAdd(vhost, _ => new StreamConsumerRegistry(SupervisorForCore(vhost), vhost, ProducersFor(vhost), _loggerFactory, ResultProducersFor(vhost), _scopes));
+        => _consumers.GetOrAdd(vhost, _ => new StreamConsumerRegistry(SupervisorForCore(vhost), vhost, ProducersFor(vhost), _loggerFactory, ResultProducersFor(vhost), _scopes, ErrorQueuesFor(vhost)));
 
     internal IReadOnlyCollection<IStreamConsumer> ActiveConsumers
         => _consumers.Values.SelectMany(r => r.ActiveConsumers).ToList();
@@ -100,8 +107,8 @@ public sealed class StreamBusRegistry : IStreamBusRegistry
             var supervisor = SupervisorForCore(vhost);
             var serializer = _serializerResolver(busType) ?? SystemTextJsonStreamSerializer.Default;
             IStreamBus bus = busType == typeof(DefaultBus)
-                ? new StreamBus(vhost, supervisor, ProducersFor(vhost), ConsumersFor(vhost), TopologyFor(vhost), serializer, _publishRouter)
-                : (IStreamBus)Activator.CreateInstance(typeof(StreamBus<>).MakeGenericType(busType), vhost, supervisor, ProducersFor(vhost), ConsumersFor(vhost), TopologyFor(vhost), serializer, _publishRouter)!;
+                ? new StreamBus(vhost, supervisor, ProducersFor(vhost), ConsumersFor(vhost), TopologyFor(vhost), serializer, _publishRouter, ErrorQueuesFor(vhost))
+                : (IStreamBus)Activator.CreateInstance(typeof(StreamBus<>).MakeGenericType(busType), vhost, supervisor, ProducersFor(vhost), ConsumersFor(vhost), TopologyFor(vhost), serializer, _publishRouter, ErrorQueuesFor(vhost))!;
             var created = new BusEntry { Supervisor = supervisor, Bus = bus };
             StreamBusMetrics.Shared.TrackConnection(vhost, busType.FullName ?? busType.Name, () => created.Supervisor.State);
             return created;

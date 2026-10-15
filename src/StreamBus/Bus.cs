@@ -10,6 +10,7 @@ public interface IStreamBus
     Task PublishSuperAsync<T>(T message, string routingKey, PublishOptions? options = null, CancellationToken ct = default);
     Task PublishSuperAsync<T>(string stream, T message, string routingKey, PublishOptions? options = null, CancellationToken ct = default);
     Task PublishRawAsync(string stream, ReadOnlyMemory<byte> body, PublishOptions? options = null, CancellationToken ct = default);
+    Task<int> RequeueErrorsAsync(string stream, string errorQueue, CancellationToken ct = default);
     Task<IStreamConsumer> ConsumeAsync(string stream, ConsumeOptions options, Func<ConsumeContext, Task> handler, CancellationToken ct = default);
     Task<ulong?> GetConsumerOffsetAsync(string stream, string reference, int partition, CancellationToken ct = default);
     Task SetConsumerOffsetAsync(string stream, string reference, int partition, ulong offset, CancellationToken ct = default);
@@ -60,7 +61,8 @@ internal sealed class StreamBus : IStreamBus
     private readonly IStreamTopology _topology;
     private readonly IStreamSerializer _serializer;
     private readonly StreamPublishRouter _router;
-    public StreamBus(string vhost, StreamBusConnectionSupervisor supervisor, StreamProducerRegistry producers, StreamConsumerRegistry consumers, IStreamTopology topology, IStreamSerializer serializer, StreamPublishRouter router)
+    private readonly ErrorQueueTransport _errorQueues;
+    public StreamBus(string vhost, StreamBusConnectionSupervisor supervisor, StreamProducerRegistry producers, StreamConsumerRegistry consumers, IStreamTopology topology, IStreamSerializer serializer, StreamPublishRouter router, ErrorQueueTransport errorQueues)
     {
         Vhost = vhost;
         _supervisor = supervisor;
@@ -69,6 +71,7 @@ internal sealed class StreamBus : IStreamBus
         _topology = topology;
         _serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
         _router = router ?? throw new ArgumentNullException(nameof(router));
+        _errorQueues = errorQueues ?? throw new ArgumentNullException(nameof(errorQueues));
     }
     public string Vhost { get; }
     public IStreamTopology Topology => _topology;
@@ -115,6 +118,13 @@ internal sealed class StreamBus : IStreamBus
     }
     public Task PublishRawAsync(string stream, ReadOnlyMemory<byte> body, PublishOptions? options = null, CancellationToken ct = default)
         => _producers.PublishAsync(stream, body, options ?? new PublishOptions(), ct);
+    public Task<int> RequeueErrorsAsync(string stream, string errorQueue, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(stream);
+        ArgumentException.ThrowIfNullOrWhiteSpace(errorQueue);
+        return _errorQueues.DrainAsync(errorQueue, (envelope, ct2) =>
+            _producers.PublishAsync(stream, envelope.Body, new PublishOptions(), ct2), ct);
+    }
     public Task<IStreamConsumer> ConsumeAsync(string stream, ConsumeOptions options, Func<ConsumeContext, Task> handler, CancellationToken ct = default)
         => _consumers.ConsumeAsync(typeof(DefaultBus), stream, options, handler, ct);
     public Task<ulong?> GetConsumerOffsetAsync(string stream, string reference, int partition, CancellationToken ct = default)
@@ -138,7 +148,8 @@ internal sealed class StreamBus<TBus> : IStreamBus<TBus>
     private readonly IStreamTopology _topology;
     private readonly IStreamSerializer _serializer;
     private readonly StreamPublishRouter _router;
-    public StreamBus(string vhost, StreamBusConnectionSupervisor supervisor, StreamProducerRegistry producers, StreamConsumerRegistry consumers, IStreamTopology topology, IStreamSerializer serializer, StreamPublishRouter router)
+    private readonly ErrorQueueTransport _errorQueues;
+    public StreamBus(string vhost, StreamBusConnectionSupervisor supervisor, StreamProducerRegistry producers, StreamConsumerRegistry consumers, IStreamTopology topology, IStreamSerializer serializer, StreamPublishRouter router, ErrorQueueTransport errorQueues)
     {
         Vhost = vhost;
         _supervisor = supervisor;
@@ -147,6 +158,7 @@ internal sealed class StreamBus<TBus> : IStreamBus<TBus>
         _topology = topology;
         _serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
         _router = router ?? throw new ArgumentNullException(nameof(router));
+        _errorQueues = errorQueues ?? throw new ArgumentNullException(nameof(errorQueues));
     }
     public string Vhost { get; }
     public IStreamTopology Topology => _topology;
@@ -193,6 +205,13 @@ internal sealed class StreamBus<TBus> : IStreamBus<TBus>
     }
     public Task PublishRawAsync(string stream, ReadOnlyMemory<byte> body, PublishOptions? options = null, CancellationToken ct = default)
         => _producers.PublishAsync(stream, body, options ?? new PublishOptions(), ct);
+    public Task<int> RequeueErrorsAsync(string stream, string errorQueue, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(stream);
+        ArgumentException.ThrowIfNullOrWhiteSpace(errorQueue);
+        return _errorQueues.DrainAsync(errorQueue, (envelope, ct2) =>
+            _producers.PublishAsync(stream, envelope.Body, new PublishOptions(), ct2), ct);
+    }
     public Task<IStreamConsumer> ConsumeAsync(string stream, ConsumeOptions options, Func<ConsumeContext, Task> handler, CancellationToken ct = default)
         => _consumers.ConsumeAsync(typeof(TBus), stream, options, handler, ct);
     public Task<ulong?> GetConsumerOffsetAsync(string stream, string reference, int partition, CancellationToken ct = default)

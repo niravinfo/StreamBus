@@ -76,8 +76,9 @@ internal sealed class StreamConsumerRegistry
     private readonly HashSet<StreamConsumerRegistration> _live = new();
     private readonly object _gate = new();
     private readonly IServiceScopeFactory? _scopes;
+    private readonly ErrorQueueTransport? _queues;
 
-    public StreamConsumerRegistry(StreamBusConnectionSupervisor supervisor, string vhost, StreamProducerRegistry producers, ILoggerFactory? loggerFactory, ResultProducerRegistry results, IServiceScopeFactory? scopeFactory = null)
+    public StreamConsumerRegistry(StreamBusConnectionSupervisor supervisor, string vhost, StreamProducerRegistry producers, ILoggerFactory? loggerFactory, ResultProducerRegistry results, IServiceScopeFactory? scopeFactory = null, ErrorQueueTransport? queues = null)
     {
         _supervisor = supervisor;
         _vhost = vhost;
@@ -85,6 +86,7 @@ internal sealed class StreamConsumerRegistry
         ArgumentNullException.ThrowIfNull(results);
         _results = results;
         _scopes = scopeFactory;
+        _queues = queues;
         _loggerFactory = loggerFactory ?? NullLoggerFactory.Instance;
         _logger = _loggerFactory.CreateLogger<StreamConsumerRegistry>();
     }
@@ -223,7 +225,7 @@ internal sealed class StreamConsumerRegistry
 
         var busName = busType.FullName ?? busType.Name;
         var family = new CancellationTokenSource();
-        var errors = new ErrorPublisher(_producers, _loggerFactory.CreateLogger<ErrorPublisher>());
+        var errors = new ErrorPublisher(_producers, _loggerFactory.CreateLogger<ErrorPublisher>(), _queues);
         var loops = new List<(StreamPartitionConsumer Loop, Task RunTask)>(partitionStreams.Length);
         var scopes = new List<IDisposable>(partitionStreams.Length);
         try
@@ -333,7 +335,7 @@ internal sealed class StreamConsumerRegistry
 
         var busName = busType.FullName ?? busType.Name;
         var family = new CancellationTokenSource();
-        var errors = new ErrorPublisher(_producers, _loggerFactory.CreateLogger<ErrorPublisher>());
+        var errors = new ErrorPublisher(_producers, _loggerFactory.CreateLogger<ErrorPublisher>(), _queues);
         var targetRouting = options.TargetRouting ?? (static ctx => ctx.RoutingValue);
         var loops = new List<(StreamPartitionConsumer Loop, Task RunTask)>(sourcePartitions.Length);
         var scopes = new List<IDisposable>(sourcePartitions.Length);
@@ -459,7 +461,7 @@ internal sealed class StreamConsumerRegistry
         var replayOptions = new ConsumeOptions { Offset = ConsumeOffset.AlwaysFirst };
         var guard = new MonotonicOffsetGuard(); // replay-scoped: never touches consumer watermarks.
         var state = new PartitionState(); // untracked: replay progress surfaces via the return count + logs, not the meter.
-        var errors = new ErrorPublisher(_producers, _loggerFactory.CreateLogger<ErrorPublisher>());
+        var errors = new ErrorPublisher(_producers, _loggerFactory.CreateLogger<ErrorPublisher>(), _queues);
         var replayed = 0;
         var skipped = 0;
         long lastTicks = DateTimeOffset.UtcNow.UtcTicks; // cross-thread via Interlocked below.
