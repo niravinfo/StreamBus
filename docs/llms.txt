@@ -1,0 +1,49 @@
+# StreamBus ground truths (v2 user-centric API)
+
+- Registration: `services.AddStreamBus((context, cfg) => ...)` for the
+  default bus, `services.AddStreamBus<TBus>((context, cfg) => ...)` per
+  extra bus. `IConfigurationSection` overload binds primitives; the code
+  lambda adds types, routes, endpoints, retry.
+- `cfg.Host(host, vhost, h => h.Credentials(user, password))` exactly
+  once per bus. `guest` is always rejected. Defaults: StreamPort 5552,
+  AmqpPort 5672 (queue dead letters only, else no AMQP connection),
+  Heartbeat 60s always mapped, pools 1/1.
+- Typed publish: `cfg.Publish<T>(stream)` for plain streams,
+  `cfg.PublishSuper<T>(stream)` for super streams.
+  `bus.PublishAsync(msg)` / `bus.PublishAsync(stream, msg)` are plain;
+  `bus.PublishSuperAsync(msg, key)` /
+  `bus.PublishSuperAsync(stream, msg, key)` are super with a required
+  routing key. Wrong method for the registration is a config error.
+  Same message type on two streams of one bus is an ambiguity error.
+  Explicit-stream targets on undeclared streams raise
+  `StreamBusStreamNotFoundException` and never auto-create.
+  Raw bytes go through `bus.PublishRawAsync`.
+- Consumer identity: `cfg.ReceiveEndpoint(stream, e =>
+  e.Consumer<TConsumer>("group"))`. The group is required, verbatim,
+  max 255 bytes, exactly one `Consumer` call per endpoint. Same group
+  scales out via a shared cursor; different groups are independent
+  cursors. Raw `ConsumeAsync` also requires `Reference`. The library
+  never derives group names.
+- Startup topology derives from explicit declarations plus endpoint and
+  publish registrations. Endpoints without an explicit declaration adopt
+  broker reality (matching kind consumed read-only, mismatch conflicts,
+  missing declarable streams are declared, otherwise config error).
+  Publish/endpoint kinds must agree with declarations.
+- Retry: `cfg.UseMessageRetry(...)` global default, per-endpoint
+  override, `UseRetry` escape hatches. Schedules: Immediate, Interval,
+  Intervals, Exponential, None. Unbounded default retries forever.
+- Exhaustion: bounded + `DeadLetterTo(name, type)` hands off; bounded +
+  `OnExhausted` callback owns the outcome (return advances, throw
+  recycles; declared destinations shadowed with a warning); bounded +
+  neither hands off to the derived classic queue `{stream}_error`;
+  unbounded + either is a config error.
+- Error destinations: `DeadLetterType.Stream` (envelope + advance-once +
+  `ReplayErrorStreamAsync`), `ClassicQueue` / `QuorumQueue` (durable,
+  persistent, confirmed, `streambus.error.*` headers +
+  `RequeueErrorsAsync`). Stream destinations must be explicitly
+  declared; queue destinations are transport-declared.
+- Startup blocking is service-level:
+  `services.AddStreamBusHosting(h =>
+  h.BlockStartupUntilReady(timeout?))`, at most once; default is
+  non-blocking.
+- Effectively-once (`ConsumeEffectivelyOnceAsync`) is unchanged.
