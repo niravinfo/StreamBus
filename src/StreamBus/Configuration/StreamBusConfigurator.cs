@@ -27,6 +27,8 @@ public interface IStreamBusConfigurator
     void Serializer(Action<JsonSerializerOptions> configure);
     void DeclareStream(string name, Action<StreamDeclarationKnobsBuilder>? configure = null);
     void DeclareSuperStream(string name, int partitions, Action<StreamDeclarationKnobsBuilder>? configure = null);
+    void Publish<TMessage>(string stream);
+    void PublishSuper<TMessage>(string stream);
 
     /// <summary>
     /// Temporary per-bus hosting carry-over. Task 7 replaces this with global AddStreamBusHosting.
@@ -42,6 +44,7 @@ internal sealed class StreamRegistrationContext : IStreamRegistrationContext
 
 internal sealed class StreamBusConfigurator : IStreamBusConfigurator
 {
+    private readonly Type _busType;
     private string? _host;
     private string? _vhost;
     private string _user = "";
@@ -54,8 +57,17 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
     private IStreamSerializer _serializer = SystemTextJsonStreamSerializer.Default;
     private readonly List<StreamDeclaration> _streams = new();
     private readonly List<SuperStreamDeclaration> _supers = new();
+    private readonly List<(Type MessageType, string Stream, bool IsSuper)> _publishes = new();
     private StreamBusHostOptions _hosting = new();
     private bool _hostCalled;
+
+    internal StreamBusConfigurator(Type busType)
+    {
+        ArgumentNullException.ThrowIfNull(busType);
+        _busType = busType;
+    }
+
+    internal IReadOnlyList<(Type MessageType, string Stream, bool IsSuper)> Publishes => _publishes;
 
     internal void ApplySectionVhost(IConfigurationSection section)
     {
@@ -113,6 +125,18 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
         _supers.Add(declaration);
     }
 
+    public void Publish<TMessage>(string stream)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(stream);
+        _publishes.Add((typeof(TMessage), stream.Trim(), false));
+    }
+
+    public void PublishSuper<TMessage>(string stream)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(stream);
+        _publishes.Add((typeof(TMessage), stream.Trim(), true));
+    }
+
     public void Hosting(Action<StreamBusHostOptionsBuilder> configure)
     {
         ArgumentNullException.ThrowIfNull(configure);
@@ -124,6 +148,8 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
     internal StreamBusOptions Build(Type busType)
     {
         ArgumentNullException.ThrowIfNull(busType);
+        if (busType != _busType)
+            throw new StreamBusConfigurationException($"Internal error: configurator for {_busType.FullName} built as {busType.FullName}.");
         if (!_hostCalled)
             throw new StreamBusConfigurationException($"Bus {busType.FullName}: Host must be configured exactly once.");
         if (string.IsNullOrWhiteSpace(_host))
@@ -270,12 +296,15 @@ public static class StreamBusConfiguratorExtensions
         IConfigurationSection? section,
         Action<IStreamRegistrationContext, IStreamBusConfigurator>? configure)
     {
-        var configurator = new StreamBusConfigurator();
+        var configurator = new StreamBusConfigurator(busType);
         if (section is not null)
             configurator.ApplySectionVhost(section);
         var context = new StreamRegistrationContext(services);
         configure?.Invoke(context, configurator);
         var options = configurator.Build(busType);
+        var publishStore = ServiceCollectionExtensions.GetOrCreatePublishStore(services);
+        foreach (var p in configurator.Publishes)
+            publishStore.Add(busType, p.MessageType, p.Stream, p.IsSuper);
         ServiceCollectionExtensions.AddShared(services, busType, options);
         if (busType == typeof(DefaultBus))
             services.TryAddSingleton<IStreamBus>(sp => sp.GetRequiredService<IStreamBusRegistry>().GetOrCreateBus(options.Vhost));

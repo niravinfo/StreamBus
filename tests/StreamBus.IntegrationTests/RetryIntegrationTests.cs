@@ -100,7 +100,7 @@ public sealed class RetryIntegrationTests : IAsyncDisposable
         try
         {
             foreach (var seq in Enumerable.Range(0, 5))
-                await pub.Bus.PublishAsync(stream, Body($"k:{seq}"), new PublishOptions(), TestContext.Current.CancellationToken);
+                await pub.Bus.PublishRawAsync(stream, Body($"k:{seq}"), new PublishOptions(), TestContext.Current.CancellationToken);
         }
         finally { await pub.DisposeAsync(); }
         await using var inst = await BusInstance.StartAsync("i");
@@ -172,7 +172,7 @@ public sealed class RetryIntegrationTests : IAsyncDisposable
         try
         {
             foreach (var seq in Enumerable.Range(0, 5))
-                await pub.Bus.PublishAsync(stream, Body($"k:{seq}"), new PublishOptions(), TestContext.Current.CancellationToken);
+                await pub.Bus.PublishRawAsync(stream, Body($"k:{seq}"), new PublishOptions(), TestContext.Current.CancellationToken);
         }
         finally { await pub.DisposeAsync(); }
         var attempts = new Dictionary<int, int>();
@@ -235,7 +235,7 @@ public sealed class RetryIntegrationTests : IAsyncDisposable
         {
             foreach (var seq in Enumerable.Range(1, 6))
                 foreach (var key in keys)
-                    await pub.Bus.PublishAsync(super, Body($"{key}:{seq}"),
+                    await pub.Bus.PublishRawAsync(super, Body($"{key}:{seq}"),
                         new PublishOptions { IsSuperStream = true, RoutingKey = key }, TestContext.Current.CancellationToken);
         }
         finally { await pub.DisposeAsync(); }
@@ -273,7 +273,7 @@ public sealed class RetryIntegrationTests : IAsyncDisposable
             {
                 foreach (var seq in Enumerable.Range(7, 6))
                     foreach (var key in keys)
-                        await pub2.Bus.PublishAsync(super, Body($"{key}:{seq}"),
+                        await pub2.Bus.PublishRawAsync(super, Body($"{key}:{seq}"),
                             new PublishOptions { IsSuperStream = true, RoutingKey = key }, TestContext.Current.CancellationToken);
             }
             finally { await pub2.DisposeAsync(); }
@@ -312,7 +312,7 @@ public sealed class RetryIntegrationTests : IAsyncDisposable
         try
         {
             foreach (var seq in Enumerable.Range(0, 3))
-                await pub.Bus.PublishAsync(stream, Body($"k:{seq}"), new PublishOptions(), TestContext.Current.CancellationToken);
+                await pub.Bus.PublishRawAsync(stream, Body($"k:{seq}"), new PublishOptions(), TestContext.Current.CancellationToken);
         }
         finally { await pub.DisposeAsync(); }
         await using var inst = await BusInstance.StartAsync("i");
@@ -346,7 +346,7 @@ public sealed class RetryIntegrationTests : IAsyncDisposable
         Assert.Equal(new[] { "k:0", "k:1", "k:2", "k:1" }, read);
         // Garbage on the error stream is skipped without throwing; the real envelope
         // replays again but broker dedup (stable name + id = source offset) stores nothing new.
-        await inst.Bus.PublishAsync(error, Body("not-an-envelope"), new PublishOptions(), TestContext.Current.CancellationToken);
+        await inst.Bus.PublishRawAsync(error, Body("not-an-envelope"), new PublishOptions(), TestContext.Current.CancellationToken);
         Assert.Equal(1, await inst.Bus.ReplayErrorStreamAsync(error, null, TestContext.Current.CancellationToken));
         await Task.Delay(TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken);
         await rc.DisposeAsync();
@@ -370,8 +370,8 @@ public sealed class RetryIntegrationTests : IAsyncDisposable
         await using var pub = await BusInstance.StartAsync("pub");
         try
         {
-            await pub.Bus.PublishAsync(s1, Body("a:0"), new PublishOptions(), TestContext.Current.CancellationToken);
-            await pub.Bus.PublishAsync(s2, Body("b:0"), new PublishOptions(), TestContext.Current.CancellationToken);
+            await pub.Bus.PublishRawAsync(s1, Body("a:0"), new PublishOptions(), TestContext.Current.CancellationToken);
+            await pub.Bus.PublishRawAsync(s2, Body("b:0"), new PublishOptions(), TestContext.Current.CancellationToken);
         }
         finally { await pub.DisposeAsync(); }
         await using var inst = await BusInstance.StartAsync("i");
@@ -431,9 +431,9 @@ public sealed class RetryIntegrationTests : IAsyncDisposable
         try
         {
             foreach (var seq in Enumerable.Range(0, 3))
-                await pub.Bus.PublishAsync(strictStream, Body($"s:{seq}"), new PublishOptions(), TestContext.Current.CancellationToken);
+                await pub.Bus.PublishRawAsync(strictStream, Body($"s:{seq}"), new PublishOptions(), TestContext.Current.CancellationToken);
             foreach (var seq in Enumerable.Range(0, 2))
-                await pub.Bus.PublishAsync(skipStream, Body($"k:{seq}"), new PublishOptions(), TestContext.Current.CancellationToken);
+                await pub.Bus.PublishRawAsync(skipStream, Body($"k:{seq}"), new PublishOptions(), TestContext.Current.CancellationToken);
         }
         finally { await pub.DisposeAsync(); }
         await using var inst = await BusInstance.StartAsync("i");
@@ -487,7 +487,7 @@ public sealed class RetryIntegrationTests : IAsyncDisposable
         await using var pub = await BusInstance.StartAsync("pub");
         try
         {
-            await pub.Bus.PublishAsync(stream, Body("k:0"), new PublishOptions(), TestContext.Current.CancellationToken);
+            await pub.Bus.PublishRawAsync(stream, Body("k:0"), new PublishOptions(), TestContext.Current.CancellationToken);
         }
         finally { await pub.DisposeAsync(); }
         await using var inst = await BusInstance.StartAsync("i");

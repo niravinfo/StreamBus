@@ -82,8 +82,8 @@ public sealed class AcceptanceIntegrationTests : IAsyncDisposable
         await admin.CreateStream(new StreamSpec(first));
         await admin.CreateStream(new StreamSpec(second));
         await using var inst = await BusInstance.StartAsync();
-        await inst.Bus.PublishAsync(first, Body("a:0"), new PublishOptions(), ct);
-        await inst.Bus.PublishAsync(second, Body("b:0"), new PublishOptions(), ct);
+        await inst.Bus.PublishRawAsync(first, Body("a:0"), new PublishOptions(), ct);
+        await inst.Bus.PublishRawAsync(second, Body("b:0"), new PublishOptions(), ct);
         var gotFirst = new List<string>();
         var gotSecond = new List<string>();
         await using var c1 = await inst.Bus.ConsumeAsync(first,
@@ -146,9 +146,9 @@ public sealed class AcceptanceIntegrationTests : IAsyncDisposable
         var pub = await BusInstance.StartAsync();
         try
         {
-            await pub.Bus.PublishAsync(stream, Body("poison-a"), new PublishOptions(), ct);
-            await pub.Bus.PublishAsync(stream, Body("poison-b"), new PublishOptions(), ct);
-            await pub.Bus.PublishAsync(stream, Body("good:2"), new PublishOptions(), ct);
+            await pub.Bus.PublishRawAsync(stream, Body("poison-a"), new PublishOptions(), ct);
+            await pub.Bus.PublishRawAsync(stream, Body("poison-b"), new PublishOptions(), ct);
+            await pub.Bus.PublishRawAsync(stream, Body("good:2"), new PublishOptions(), ct);
         }
         finally { await pub.DisposeAsync(); }
         var errors = new List<byte[]>();

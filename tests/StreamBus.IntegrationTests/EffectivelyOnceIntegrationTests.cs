@@ -109,7 +109,7 @@ public sealed class EffectivelyOnceIntegrationTests : IAsyncDisposable
         _streams.Add(target);
         await using var pub = await BusInstance.StartAsync("pub");
         for (var seq = 0; seq < 5; seq++)
-            await pub.Bus.PublishAsync(source, Body($"k:{seq}"), new PublishOptions(), ct);
+            await pub.Bus.PublishRawAsync(source, Body($"k:{seq}"), new PublishOptions(), ct);
         await pub.DisposeAsync();
         await using var eo = await BusInstance.StartAsync("eo");
         await using var consumer = await eo.Bus.ConsumeEffectivelyOnceAsync(source, target, new EffectivelyOnceOptions(), Echo, ct);
@@ -136,7 +136,7 @@ public sealed class EffectivelyOnceIntegrationTests : IAsyncDisposable
         _streams.Add(target);
         await using var pub = await BusInstance.StartAsync("pub");
         for (var seq = 0; seq < 3; seq++)
-            await pub.Bus.PublishAsync(source, Body($"k:{seq}"), new PublishOptions(), ct);
+            await pub.Bus.PublishRawAsync(source, Body($"k:{seq}"), new PublishOptions(), ct);
         await pub.DisposeAsync();
         await using var eo = await BusInstance.StartAsync("eo");
         await using var consumer = await eo.Bus.ConsumeEffectivelyOnceAsync(source, target, new EffectivelyOnceOptions(), Echo, ct);
@@ -166,7 +166,7 @@ public sealed class EffectivelyOnceIntegrationTests : IAsyncDisposable
         _streams.Add(target);
         await using var pub = await BusInstance.StartAsync("pub");
         for (var seq = 0; seq < 10; seq++)
-            await pub.Bus.PublishAsync(source, Body($"k:{seq}"), new PublishOptions(), ct);
+            await pub.Bus.PublishRawAsync(source, Body($"k:{seq}"), new PublishOptions(), ct);
         await pub.DisposeAsync();
         var gate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var seen = 0;
@@ -205,7 +205,7 @@ public sealed class EffectivelyOnceIntegrationTests : IAsyncDisposable
         _streams.Add(target);
         await using var pub = await BusInstance.StartAsync("pub");
         for (var seq = 0; seq < 5; seq++)
-            await pub.Bus.PublishAsync(source, Body($"k:{seq}"), new PublishOptions(), ct);
+            await pub.Bus.PublishRawAsync(source, Body($"k:{seq}"), new PublishOptions(), ct);
         await pub.DisposeAsync();
         await using var eo = await BusInstance.StartAsync("eo");
         var attempts = new Dictionary<int, int>();
@@ -237,7 +237,7 @@ public sealed class EffectivelyOnceIntegrationTests : IAsyncDisposable
         _streams.Add(target);
         await using var pub = await BusInstance.StartAsync("pub");
         for (var seq = 0; seq < 12; seq++)
-            await pub.Bus.PublishAsync(source, Body($"k{seq % 4}:{seq}"),
+            await pub.Bus.PublishRawAsync(source, Body($"k{seq % 4}:{seq}"),
                 new PublishOptions { IsSuperStream = true, RoutingKey = $"k{seq % 4}" }, ct);
         await pub.DisposeAsync();
         await using var eo = await BusInstance.StartAsync("eo");
@@ -263,7 +263,7 @@ public sealed class EffectivelyOnceIntegrationTests : IAsyncDisposable
         _superStreams.Add(target);
         await using var pub = await BusInstance.StartAsync("pub");
         for (var seq = 0; seq < 6; seq++)
-            await pub.Bus.PublishAsync(source, Body($"k{seq % 2}:{seq}"), new PublishOptions(), ct);
+            await pub.Bus.PublishRawAsync(source, Body($"k{seq % 2}:{seq}"), new PublishOptions(), ct);
         await pub.DisposeAsync();
         var eoOptions = new EffectivelyOnceOptions
         {
@@ -277,7 +277,7 @@ public sealed class EffectivelyOnceIntegrationTests : IAsyncDisposable
         // Second generation publishes more, then resumes: only the new offsets flow.
         await using var pub2 = await BusInstance.StartAsync("pub2");
         for (var seq = 6; seq < 8; seq++)
-            await pub2.Bus.PublishAsync(source, Body($"k{seq % 2}:{seq}"), new PublishOptions(), ct);
+            await pub2.Bus.PublishRawAsync(source, Body($"k{seq % 2}:{seq}"), new PublishOptions(), ct);
         await pub2.DisposeAsync();
         await using var eo2 = await BusInstance.StartAsync("eo2");
         await using var c2 = await eo2.Bus.ConsumeEffectivelyOnceAsync(source, target, eoOptions, Echo, ct);
@@ -299,7 +299,7 @@ public sealed class EffectivelyOnceIntegrationTests : IAsyncDisposable
         await admin.CreateSuperStream(new PartitionsSuperStreamSpec(target, 2));
         _superStreams.Add(target);
         await using var pub = await BusInstance.StartAsync("pub");
-        await pub.Bus.PublishAsync(source, Body("k:0"), new PublishOptions(), ct);
+        await pub.Bus.PublishRawAsync(source, Body("k:0"), new PublishOptions(), ct);
         await pub.DisposeAsync();
         await using var eo = await BusInstance.StartAsync("eo");
         var entries = 0;
@@ -335,7 +335,7 @@ public sealed class EffectivelyOnceIntegrationTests : IAsyncDisposable
         _streams.Add(target);
         await using var pub = await BusInstance.StartAsync("pub");
         for (var seq = 0; seq < 8; seq++)
-            await pub.Bus.PublishAsync(source, Body($"k{seq % 2}:{seq}"),
+            await pub.Bus.PublishRawAsync(source, Body($"k{seq % 2}:{seq}"),
                 new PublishOptions { IsSuperStream = true, RoutingKey = $"k{seq % 2}" }, ct);
         await pub.DisposeAsync();
         await using var a = await BusInstance.StartAsync("a");
@@ -365,7 +365,7 @@ public sealed class EffectivelyOnceIntegrationTests : IAsyncDisposable
         _superStreams.Add(target);
         await using var pub = await BusInstance.StartAsync("pub");
         for (var seq = 0; seq < 20; seq++)
-            await pub.Bus.PublishAsync(source, Body($"k{seq % 5}:{seq}"),
+            await pub.Bus.PublishRawAsync(source, Body($"k{seq % 5}:{seq}"),
                 new PublishOptions { IsSuperStream = true, RoutingKey = $"k{seq % 5}" }, ct);
         await pub.DisposeAsync();
         var eoOptions = new EffectivelyOnceOptions

@@ -57,7 +57,7 @@ public sealed class PublishIntegrationTests : IAsyncDisposable
             var bus = sp.GetRequiredService<IStreamBus>();
             Assert.Equal(BusReadiness.Ready, await bus.WaitUntilReadyAsync(ReadinessPolicy.UpTo(TimeSpan.FromSeconds(30)), TestContext.Current.CancellationToken));
             for (byte i = 0; i < 3; i++)
-                await bus.PublishAsync(stream, new ReadOnlyMemory<byte>(new[] { i }), new PublishOptions(), TestContext.Current.CancellationToken);
+                await bus.PublishRawAsync(stream, new ReadOnlyMemory<byte>(new[] { i }), new PublishOptions(), TestContext.Current.CancellationToken);
             var received = new List<byte>();
             var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var consumer = await admin.CreateRawConsumer(new RawConsumerConfig(stream)
@@ -97,7 +97,7 @@ public sealed class PublishIntegrationTests : IAsyncDisposable
             var bus = sp.GetRequiredService<IStreamBus>();
             Assert.Equal(BusReadiness.Ready, await bus.WaitUntilReadyAsync(ReadinessPolicy.UpTo(TimeSpan.FromSeconds(30)), TestContext.Current.CancellationToken));
             var ex = await Assert.ThrowsAsync<StreamBusStreamNotFoundException>(() =>
-                bus.PublishAsync(stream, new ReadOnlyMemory<byte>(new byte[] { 9 }), new PublishOptions(), TestContext.Current.CancellationToken));
+                bus.PublishRawAsync(stream, new ReadOnlyMemory<byte>(new byte[] { 9 }), new PublishOptions(), TestContext.Current.CancellationToken));
             Assert.Equal(stream, ex.Stream);
             await using var admin = await ConnectAdminAsync();
             Assert.False(await admin.StreamExists(stream));
@@ -123,7 +123,7 @@ public sealed class PublishIntegrationTests : IAsyncDisposable
             var bus = sp.GetRequiredService<IStreamBus>();
             Assert.Equal(BusReadiness.Ready, await bus.WaitUntilReadyAsync(ReadinessPolicy.UpTo(TimeSpan.FromSeconds(30)), TestContext.Current.CancellationToken));
             foreach (var key in new[] { "alpha", "beta", "alpha", "gamma", "beta", "alpha" })
-                await bus.PublishAsync(super,
+                await bus.PublishRawAsync(super,
                     new ReadOnlyMemory<byte>(Encoding.UTF8.GetBytes(key)),
                     new PublishOptions { IsSuperStream = true, RoutingKey = key },
                     TestContext.Current.CancellationToken);

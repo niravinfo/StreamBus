@@ -126,7 +126,7 @@ public sealed class TypedStartupIntegrationTests : IAsyncDisposable
             var admin = await ConnectAdminAsync();
             await using var _ = admin;
             await WaitForAsync(() => admin.StreamExists(stream).GetAwaiter().GetResult(), TimeSpan.FromSeconds(30), "startup topology declaration");
-            await bus.PublishAsync(stream, Body(new OrderEvent("o", 0)), new PublishOptions(), ct);
+            await bus.PublishRawAsync(stream, Body(new OrderEvent("o", 0)), new PublishOptions(), ct);
             await WaitForAsync(() => { lock (got) return got.Count >= 1; }, TimeSpan.FromSeconds(30), "typed receipt after startup");
             lock (got) Assert.Single(got);
         }
@@ -221,7 +221,7 @@ public sealed class TypedStartupIntegrationTests : IAsyncDisposable
             s.AddStreamBusConsumer<OrderEvent, AuditConsumer>(stream);
         });
         for (var seq = 0; seq < 4; seq++)
-            await inst.Bus.PublishAsync(stream, Body(new OrderEvent("o", seq)), new PublishOptions(), ct);
+            await inst.Bus.PublishRawAsync(stream, Body(new OrderEvent("o", seq)), new PublishOptions(), ct);
         await WaitForAsync(() => { lock (got) return got.Count >= 8; }, TimeSpan.FromSeconds(30), "two-type receipt");
         await Task.Delay(500, ct);
         lock (got)

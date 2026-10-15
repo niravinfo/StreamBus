@@ -27,15 +27,21 @@ public sealed class StreamBusRegistry : IStreamBusRegistry
     private readonly Func<string, StreamBusOptions> _resolveOptions;
     private readonly Func<StreamBusOptions, StreamBusConnectionSupervisor> _createSupervisor;
     private readonly ILoggerFactory _loggerFactory;
+    private readonly StreamPublishRouter _publishRouter;
+    private readonly Func<Type, IStreamSerializer> _serializerResolver;
 
     public StreamBusRegistry(
         Func<string, StreamBusOptions> resolveOptions,
         Func<StreamBusOptions, StreamBusConnectionSupervisor> createSupervisor,
-        ILoggerFactory? loggerFactory = null)
+        ILoggerFactory? loggerFactory = null,
+        StreamPublishRouter? publishRouter = null,
+        Func<Type, IStreamSerializer>? serializerResolver = null)
     {
         _resolveOptions = resolveOptions;
         _createSupervisor = createSupervisor;
         _loggerFactory = loggerFactory ?? NullLoggerFactory.Instance;
+        _publishRouter = publishRouter ?? new StreamPublishRouter(new StreamBusPublishStore());
+        _serializerResolver = serializerResolver ?? (_ => SystemTextJsonStreamSerializer.Default);
     }
 
     public IStreamBus GetOrCreateBus(string vhost)
@@ -88,9 +94,10 @@ public sealed class StreamBusRegistry : IStreamBusRegistry
         var entry = _entries.GetOrAdd(key, _ =>
         {
             var supervisor = SupervisorForCore(vhost);
+            var serializer = _serializerResolver(busType) ?? SystemTextJsonStreamSerializer.Default;
             IStreamBus bus = busType == typeof(DefaultBus)
-                ? new StreamBus(vhost, supervisor, ProducersFor(vhost), ConsumersFor(vhost), TopologyFor(vhost))
-                : (IStreamBus)Activator.CreateInstance(typeof(StreamBus<>).MakeGenericType(busType), vhost, supervisor, ProducersFor(vhost), ConsumersFor(vhost), TopologyFor(vhost))!;
+                ? new StreamBus(vhost, supervisor, ProducersFor(vhost), ConsumersFor(vhost), TopologyFor(vhost), serializer, _publishRouter)
+                : (IStreamBus)Activator.CreateInstance(typeof(StreamBus<>).MakeGenericType(busType), vhost, supervisor, ProducersFor(vhost), ConsumersFor(vhost), TopologyFor(vhost), serializer, _publishRouter)!;
             var created = new BusEntry { Supervisor = supervisor, Bus = bus };
             StreamBusMetrics.Shared.TrackConnection(vhost, busType.FullName ?? busType.Name, () => created.Supervisor.State);
             return created;

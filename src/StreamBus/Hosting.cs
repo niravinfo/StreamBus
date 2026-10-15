@@ -54,12 +54,16 @@ public static class ServiceCollectionExtensions
     {
         var store = GetOrCreateStore(services);
         store.Add(busType, options);
+        var publishStore = GetOrCreatePublishStore(services);
+        var router = new StreamPublishRouter(publishStore);
         services.TryAddSingleton<IStreamSystemConnector>(sp => new StreamSystemConnector(sp.GetService<ILoggerFactory>()));
         services.TryAddSingleton<IStreamBusRegistry>(sp =>
             new StreamBusRegistry(
                 store.ForVhost,
                 opts => new StreamBusConnectionSupervisor(opts, sp.GetRequiredService<IStreamSystemConnector>()),
-                sp.GetService<ILoggerFactory>()));
+                sp.GetService<ILoggerFactory>(),
+                router,
+                marker => store.Registrations.Where(r => r.BusType == marker).Select(r => r.Options.Serializer).FirstOrDefault() ?? SystemTextJsonStreamSerializer.Default));
         services.TryAddSingleton<IHostedService, StreamBusHostedService>();
         services.TryAddSingleton<StreamBusHealthCheck>();
         services.TryAddSingleton<IHealthCheck>(sp => sp.GetRequiredService<StreamBusHealthCheck>());
@@ -112,6 +116,16 @@ public static class ServiceCollectionExtensions
         if (existing?.ImplementationInstance is StreamBusConsumerStore store) return store;
         var created = new StreamBusConsumerStore();
         services.AddSingleton<StreamBusConsumerStore>(created);
+        return created;
+    }
+
+    internal static StreamBusPublishStore GetOrCreatePublishStore(IServiceCollection services)
+    {
+        var existing = services.FirstOrDefault(d =>
+            d.ServiceType == typeof(StreamBusPublishStore) && d.ImplementationInstance is StreamBusPublishStore);
+        if (existing?.ImplementationInstance is StreamBusPublishStore store) return store;
+        var created = new StreamBusPublishStore();
+        services.AddSingleton<StreamBusPublishStore>(created);
         return created;
     }
 }

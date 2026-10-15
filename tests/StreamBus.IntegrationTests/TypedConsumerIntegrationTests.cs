@@ -129,7 +129,7 @@ public sealed class TypedConsumerIntegrationTests : IAsyncDisposable
         });
         await using var pub = await BusInstance.StartAsync();
         for (var seq = 0; seq < 3; seq++)
-            await pub.Bus.PublishAsync(stream, Body(new OrderEvent("o", seq)), new PublishOptions(), ct);
+            await pub.Bus.PublishRawAsync(stream, Body(new OrderEvent("o", seq)), new PublishOptions(), ct);
         await pub.DisposeAsync();
         await WaitForAsync(() => { lock (got) return got.Count >= 3; }, TimeSpan.FromSeconds(30), "typed receipt");
         await Task.Delay(500, ct);
@@ -170,8 +170,8 @@ public sealed class TypedConsumerIntegrationTests : IAsyncDisposable
         await using var pub = await BusInstance.StartAsync();
         for (var seq = 0; seq < 3; seq++)
         {
-            await pub.Bus.PublishAsync(streamA, Body(new OrderEvent($"a-{seq}", seq)), new PublishOptions(), ct);
-            await pub.Bus.PublishAsync(streamB, Body(new OrderEvent($"b-{seq}", seq)), new PublishOptions(), ct);
+            await pub.Bus.PublishRawAsync(streamA, Body(new OrderEvent($"a-{seq}", seq)), new PublishOptions(), ct);
+            await pub.Bus.PublishRawAsync(streamB, Body(new OrderEvent($"b-{seq}", seq)), new PublishOptions(), ct);
         }
         await pub.DisposeAsync();
         await WaitForAsync(() => { lock (got) return got.Count >= 6; }, TimeSpan.FromSeconds(30), "multi-bus receipt");
@@ -205,10 +205,10 @@ public sealed class TypedConsumerIntegrationTests : IAsyncDisposable
             s.AddStreamBusConsumer<OrderEvent, OrderConsumer>(streamA);
         });
         await using var pub = await BusInstance.StartAsync();
-        await pub.Bus.PublishAsync(streamA, Body(new OrderEvent("a", 0)), new PublishOptions(), ct);
-        await pub.Bus.PublishAsync(streamA, Body(new OrderEvent("a", 1)), new PublishOptions(), ct);
-        await pub.Bus.PublishAsync(streamB, Body(new OrderEvent("b", 0)), new PublishOptions(), ct);
-        await pub.Bus.PublishAsync(streamB, Body(new OrderEvent("b", 1)), new PublishOptions(), ct);
+        await pub.Bus.PublishRawAsync(streamA, Body(new OrderEvent("a", 0)), new PublishOptions(), ct);
+        await pub.Bus.PublishRawAsync(streamA, Body(new OrderEvent("a", 1)), new PublishOptions(), ct);
+        await pub.Bus.PublishRawAsync(streamB, Body(new OrderEvent("b", 0)), new PublishOptions(), ct);
+        await pub.Bus.PublishRawAsync(streamB, Body(new OrderEvent("b", 1)), new PublishOptions(), ct);
         await pub.DisposeAsync();
         await WaitForAsync(() => { lock (got) return got.Count >= 2; }, TimeSpan.FromSeconds(30), "bound-stream receipt");
         await Task.Delay(TimeSpan.FromSeconds(2), ct);
@@ -236,7 +236,7 @@ public sealed class TypedConsumerIntegrationTests : IAsyncDisposable
         });
         await using var pub = await BusInstance.StartAsync();
         for (var seq = 0; seq < 12; seq++)
-            await pub.Bus.PublishAsync(super, Body(new OrderEvent($"k{seq % 4}", seq)),
+            await pub.Bus.PublishRawAsync(super, Body(new OrderEvent($"k{seq % 4}", seq)),
                 new PublishOptions { IsSuperStream = true, RoutingKey = $"k{seq % 4}" }, ct);
         await pub.DisposeAsync();
         await WaitForAsync(() => { lock (got) return got.Count >= 12; }, TimeSpan.FromSeconds(60), "keyed receipt");
@@ -270,8 +270,8 @@ public sealed class TypedConsumerIntegrationTests : IAsyncDisposable
                 .ErrorStream(new ErrorStreamOptions { Stream = error }));
         });
         await using var pub = await BusInstance.StartAsync();
-        await pub.Bus.PublishAsync(stream, Encoding.UTF8.GetBytes("{bad json"), new PublishOptions(), ct);
-        await pub.Bus.PublishAsync(stream, Body(new OrderEvent("ok", 1)), new PublishOptions(), ct);
+        await pub.Bus.PublishRawAsync(stream, Encoding.UTF8.GetBytes("{bad json"), new PublishOptions(), ct);
+        await pub.Bus.PublishRawAsync(stream, Body(new OrderEvent("ok", 1)), new PublishOptions(), ct);
         await pub.DisposeAsync();
         await WaitForAsync(() => { lock (got) return got.Count >= 1; }, TimeSpan.FromSeconds(30), "post-poison good message");
         Assert.Equal("ok", got[0].Ctx.Message.OrderId);
@@ -299,9 +299,9 @@ public sealed class TypedConsumerIntegrationTests : IAsyncDisposable
             s.AddStreamBusConsumer<OrderEvent, OrderConsumer>(stream);
         });
         await using var pub = await BusInstance.StartAsync();
-        await pub.Bus.PublishAsync(stream, Body(new OrderEvent("good", 0)), new PublishOptions(), ct);
-        await pub.Bus.PublishAsync(stream, Encoding.UTF8.GetBytes("{bad json"), new PublishOptions(), ct);
-        await pub.Bus.PublishAsync(stream, Body(new OrderEvent("good", 1)), new PublishOptions(), ct);
+        await pub.Bus.PublishRawAsync(stream, Body(new OrderEvent("good", 0)), new PublishOptions(), ct);
+        await pub.Bus.PublishRawAsync(stream, Encoding.UTF8.GetBytes("{bad json"), new PublishOptions(), ct);
+        await pub.Bus.PublishRawAsync(stream, Body(new OrderEvent("good", 1)), new PublishOptions(), ct);
         await pub.DisposeAsync();
         await WaitForAsync(() => { lock (got) return got.Count >= 1; }, TimeSpan.FromSeconds(30), "first good message");
         await Task.Delay(TimeSpan.FromSeconds(5), ct);
@@ -332,7 +332,7 @@ public sealed class TypedConsumerIntegrationTests : IAsyncDisposable
         });
         await using var pub = await BusInstance.StartAsync();
         for (var seq = 0; seq < 5; seq++)
-            await pub.Bus.PublishAsync(stream, Body(new OrderEvent("o", seq)), new PublishOptions(), ct);
+            await pub.Bus.PublishRawAsync(stream, Body(new OrderEvent("o", seq)), new PublishOptions(), ct);
         await pub.DisposeAsync();
         await WaitForAsync(() => { lock (got) return got.Count >= 5; }, TimeSpan.FromSeconds(60), "retry drain");
         await Task.Delay(500, ct);
@@ -371,7 +371,7 @@ public sealed class TypedConsumerIntegrationTests : IAsyncDisposable
         });
         await using var pub = await BusInstance.StartAsync();
         var mismatched = Encoding.UTF8.GetBytes("{\"OrderId\":123,\"Seq\":1}");
-        await pub.Bus.PublishAsync(stream, mismatched, new PublishOptions(), ct);
+        await pub.Bus.PublishRawAsync(stream, mismatched, new PublishOptions(), ct);
         await pub.DisposeAsync();
         var errors = new List<byte[]>();
         await using var reader = await inst.Bus.ConsumeAsync(error,

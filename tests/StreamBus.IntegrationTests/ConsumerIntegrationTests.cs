@@ -101,7 +101,7 @@ public sealed class ConsumerIntegrationTests : IAsyncDisposable
         {
             foreach (var seq in Enumerable.Range(1, 4))
                 foreach (var key in keys)
-                    await pub.Bus.PublishAsync(super, Body($"{key}:{seq}"),
+                    await pub.Bus.PublishRawAsync(super, Body($"{key}:{seq}"),
                         new PublishOptions { IsSuperStream = true, RoutingKey = key }, TestContext.Current.CancellationToken);
         }
         finally { await pub.DisposeAsync(); }
@@ -149,7 +149,7 @@ public sealed class ConsumerIntegrationTests : IAsyncDisposable
         {
             foreach (var seq in Enumerable.Range(1, 6))
                 foreach (var key in keys)
-                    await pub.Bus.PublishAsync(super, Body($"{key}:{seq}"),
+                    await pub.Bus.PublishRawAsync(super, Body($"{key}:{seq}"),
                         new PublishOptions { IsSuperStream = true, RoutingKey = key }, TestContext.Current.CancellationToken);
         }
         finally { await pub.DisposeAsync(); }
@@ -176,7 +176,7 @@ public sealed class ConsumerIntegrationTests : IAsyncDisposable
             {
                 foreach (var seq in Enumerable.Range(7, 6))
                     foreach (var key in keys)
-                        await pub2.Bus.PublishAsync(super, Body($"{key}:{seq}"),
+                        await pub2.Bus.PublishRawAsync(super, Body($"{key}:{seq}"),
                             new PublishOptions { IsSuperStream = true, RoutingKey = key }, TestContext.Current.CancellationToken);
             }
             finally { await pub2.DisposeAsync(); }
@@ -212,7 +212,7 @@ public sealed class ConsumerIntegrationTests : IAsyncDisposable
         try
         {
             foreach (var seq in Enumerable.Range(0, 6))
-                await pub.Bus.PublishAsync(stream, Body($"k:{seq}"), new PublishOptions(), TestContext.Current.CancellationToken);
+                await pub.Bus.PublishRawAsync(stream, Body($"k:{seq}"), new PublishOptions(), TestContext.Current.CancellationToken);
         }
         finally { await pub.DisposeAsync(); }
         var g1 = new List<(int Seq, int Partition)>();
@@ -250,7 +250,7 @@ public sealed class ConsumerIntegrationTests : IAsyncDisposable
         try
         {
             foreach (var seq in Enumerable.Range(0, 5))
-                await pub.Bus.PublishAsync(stream, Body($"k:{seq}"), new PublishOptions(), TestContext.Current.CancellationToken);
+                await pub.Bus.PublishRawAsync(stream, Body($"k:{seq}"), new PublishOptions(), TestContext.Current.CancellationToken);
         }
         finally { await pub.DisposeAsync(); }
         var first = new List<int>();
@@ -264,7 +264,7 @@ public sealed class ConsumerIntegrationTests : IAsyncDisposable
         try
         {
             foreach (var seq in Enumerable.Range(5, 5))
-                await pub2.Bus.PublishAsync(stream, Body($"k:{seq}"), new PublishOptions(), TestContext.Current.CancellationToken);
+                await pub2.Bus.PublishRawAsync(stream, Body($"k:{seq}"), new PublishOptions(), TestContext.Current.CancellationToken);
         }
         finally { await pub2.DisposeAsync(); }
         // Fresh instance => fresh guard water: only a broker resume passes this test.
@@ -289,14 +289,14 @@ public sealed class ConsumerIntegrationTests : IAsyncDisposable
         await admin.CreateStream(new StreamSpec(e1));
         _streams.Add(e1);
         foreach (var seq in Enumerable.Range(0, 3))
-            await inst.Bus.PublishAsync(e1, Body($"k:{seq}"), new PublishOptions(), TestContext.Current.CancellationToken);
+            await inst.Bus.PublishRawAsync(e1, Body($"k:{seq}"), new PublishOptions(), TestContext.Current.CancellationToken);
         var first = new List<int>();
         var c1 = await inst.Bus.ConsumeAsync(e1, new ConsumeOptions { Reference = "grp-e1" }, Rec(first), TestContext.Current.CancellationToken);
         await WaitForAsync(() => Count(first) == 3, TimeSpan.FromSeconds(60), "e1 first drain");
         await c1.DisposeAsync();
         Assert.Equal(new[] { 0, 1, 2 }, first);
         foreach (var seq in Enumerable.Range(3, 3))
-            await inst.Bus.PublishAsync(e1, Body($"k:{seq}"), new PublishOptions(), TestContext.Current.CancellationToken);
+            await inst.Bus.PublishRawAsync(e1, Body($"k:{seq}"), new PublishOptions(), TestContext.Current.CancellationToken);
         var second = new List<int>();
         var c2 = await inst.Bus.ConsumeAsync(e1, new ConsumeOptions { Reference = "grp-e1" }, Rec(second), TestContext.Current.CancellationToken);
         await WaitForAsync(() => Count(second) == 3, TimeSpan.FromSeconds(60), "e1 resume drain");
@@ -314,7 +314,7 @@ public sealed class ConsumerIntegrationTests : IAsyncDisposable
         await admin.CreateStream(new StreamSpec(e3));
         _streams.Add(e3);
         foreach (var seq in Enumerable.Range(0, 2))
-            await inst.Bus.PublishAsync(e3, Body($"k:{seq}"), new PublishOptions(), TestContext.Current.CancellationToken);
+            await inst.Bus.PublishRawAsync(e3, Body($"k:{seq}"), new PublishOptions(), TestContext.Current.CancellationToken);
         var replay = new List<int>();
         var c3 = await inst.Bus.ConsumeAsync(e3, new ConsumeOptions { Reference = "grp-e3", Offset = ConsumeOffset.AlwaysFirst }, Rec(replay), TestContext.Current.CancellationToken);
         await WaitForAsync(() => Count(replay) == 2, TimeSpan.FromSeconds(60), "e3 replay drain");
@@ -323,7 +323,7 @@ public sealed class ConsumerIntegrationTests : IAsyncDisposable
         var tail = new List<int>();
         var c4 = await inst.Bus.ConsumeAsync(e3, new ConsumeOptions { Reference = "grp-e3b", Offset = ConsumeOffset.AlwaysNext }, Rec(tail), TestContext.Current.CancellationToken);
         foreach (var seq in Enumerable.Range(2, 2))
-            await inst.Bus.PublishAsync(e3, Body($"k:{seq}"), new PublishOptions(), TestContext.Current.CancellationToken);
+            await inst.Bus.PublishRawAsync(e3, Body($"k:{seq}"), new PublishOptions(), TestContext.Current.CancellationToken);
         await WaitForAsync(() => Count(tail) == 2, TimeSpan.FromSeconds(60), "e3 tail drain");
         await c4.DisposeAsync();
         Assert.Equal(new[] { 2, 3 }, tail);
@@ -341,7 +341,7 @@ public sealed class ConsumerIntegrationTests : IAsyncDisposable
         try
         {
             foreach (var s in Enumerable.Range(0, 10))
-                await pub.Bus.PublishAsync(stream, Body($"k:{s}"), new PublishOptions(), TestContext.Current.CancellationToken);
+                await pub.Bus.PublishRawAsync(stream, Body($"k:{s}"), new PublishOptions(), TestContext.Current.CancellationToken);
         }
         finally { await pub.DisposeAsync(); }
         await using var inst = await BusInstance.StartAsync("i");
@@ -366,7 +366,7 @@ public sealed class ConsumerIntegrationTests : IAsyncDisposable
         try
         {
             foreach (var seq in Enumerable.Range(0, 5))
-                await pub.Bus.PublishAsync(stream, Body($"k:{seq}"), new PublishOptions(), TestContext.Current.CancellationToken);
+                await pub.Bus.PublishRawAsync(stream, Body($"k:{seq}"), new PublishOptions(), TestContext.Current.CancellationToken);
         }
         finally { await pub.DisposeAsync(); }
         await using var inst = await BusInstance.StartAsync("i");
@@ -400,7 +400,7 @@ public sealed class ConsumerIntegrationTests : IAsyncDisposable
         await using var pub = await BusInstance.StartAsync("pub");
         try
         {
-            await pub.Bus.PublishAsync(stream, Body("k:0"), new PublishOptions(), TestContext.Current.CancellationToken);
+            await pub.Bus.PublishRawAsync(stream, Body("k:0"), new PublishOptions(), TestContext.Current.CancellationToken);
         }
         finally { await pub.DisposeAsync(); }
         await using var inst = await BusInstance.StartAsync("i");

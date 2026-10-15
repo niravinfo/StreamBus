@@ -90,8 +90,8 @@ public sealed class TopologyIntegrationTests : IAsyncDisposable
         Assert.True(await admin.StreamExists(plain));
         Assert.True(await admin.SuperStreamExists(super));
         Assert.Equal(3, (await admin.QueryPartition(super)).Length);
-        await inst.Bus.PublishAsync(plain, Body("k:0"), new PublishOptions(), ct);
-        await inst.Bus.PublishAsync(super, Body("k:0"), new PublishOptions { IsSuperStream = true, RoutingKey = "k" }, ct);
+        await inst.Bus.PublishRawAsync(plain, Body("k:0"), new PublishOptions(), ct);
+        await inst.Bus.PublishRawAsync(super, Body("k:0"), new PublishOptions { IsSuperStream = true, RoutingKey = "k" }, ct);
     }
 
     [Fact]
@@ -255,7 +255,7 @@ public sealed class TopologyIntegrationTests : IAsyncDisposable
         _streams.Add(error);
         await using var inst = await BusInstance.StartAsync();
         await inst.Bus.Topology.EnsureStreamAsync(new StreamDeclaration { Name = error, MaxAge = TimeSpan.FromDays(7) }, ct);
-        await inst.Bus.PublishAsync(error, Body("k:0"), new PublishOptions(), ct);
+        await inst.Bus.PublishRawAsync(error, Body("k:0"), new PublishOptions(), ct);
         var got = new List<string>();
         await using var c = await inst.Bus.ConsumeAsync(error,
             new ConsumeOptions { Offset = ConsumeOffset.AlwaysFirst, Reference = Unique("read") },
