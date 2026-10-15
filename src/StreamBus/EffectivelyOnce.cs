@@ -53,7 +53,7 @@ internal static class ResultNaming
         ArgumentException.ThrowIfNullOrWhiteSpace(sourcePartitionStream);
         ArgumentException.ThrowIfNullOrWhiteSpace(targetStream);
         var full = $"streambus-eo-{sourcePartitionStream}-to-{targetStream}";
-        if (Encoding.UTF8.GetByteCount(full) <= ReferenceDerivation.MaxReferenceBytes)
+        if (Encoding.UTF8.GetByteCount(full) <= StreamBusLimits.MaxReferenceBytes)
             return full;
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(full)))[..32];
         return $"streambus-eo-{hash}";
@@ -65,7 +65,7 @@ internal static class ResultNaming
         ArgumentException.ThrowIfNullOrWhiteSpace(sourceStream);
         ArgumentException.ThrowIfNullOrWhiteSpace(targetStream);
         var full = $"streambus-eo:{busType.FullName}:{sourceStream}->{targetStream}";
-        if (Encoding.UTF8.GetByteCount(full) <= ReferenceDerivation.MaxReferenceBytes)
+        if (Encoding.UTF8.GetByteCount(full) <= StreamBusLimits.MaxReferenceBytes)
             return full;
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(full)))[..32];
         return $"streambus-eo-{hash}";
@@ -110,7 +110,7 @@ internal static class EffectivelyOnceValidation
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentException.ThrowIfNullOrWhiteSpace(options.ProducerName);
-        if (Encoding.UTF8.GetByteCount(options.ProducerName) > ReferenceDerivation.MaxReferenceBytes)
+        if (Encoding.UTF8.GetByteCount(options.ProducerName) > StreamBusLimits.MaxReferenceBytes)
             throw new StreamBusConfigurationException("PublishResultOptions.ProducerName exceeds the broker's 255-byte limit.");
         if (options.IsSuperStream && string.IsNullOrWhiteSpace(options.RoutingKey))
             throw new StreamBusConfigurationException("PublishResultOptions.RoutingKey is required for a super-stream result target.");

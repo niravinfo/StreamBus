@@ -39,13 +39,17 @@ public sealed class TypedConsumerTests
     }
 
     [Fact]
-    public void References_differ_per_consumer_type_but_stable()
+    public void Store_rejects_duplicates_but_allows_variants()
     {
-        var a = ReferenceDerivation.Derive(typeof(DefaultBus), typeof(OrderConsumer), "orders");
-        var b = ReferenceDerivation.Derive(typeof(OrderConsumerTests_Other), typeof(OrderConsumerTests_Other), "orders");
-        Assert.NotEqual(a, b);
-        Assert.Equal(a, ReferenceDerivation.Derive(typeof(DefaultBus), typeof(OrderConsumer), "orders"));
-        Assert.True(System.Text.Encoding.UTF8.GetByteCount(a) <= 255);
+        var store = new StreamBusConsumerStore();
+        var options = new ConsumeOptionsBuilder().Reference("grp").Build();
+        store.Add(typeof(DefaultBus), typeof(OrderEvent), typeof(OrderConsumer), "orders", options);
+        Assert.Throws<StreamBusConfigurationException>(() =>
+            store.Add(typeof(DefaultBus), typeof(OrderEvent), typeof(OrderConsumer), "orders", options));
+        store.Add(typeof(DefaultBus), typeof(OrderEvent), typeof(OrderConsumer), "orders", new ConsumeOptionsBuilder().Reference("other-grp").Build());
+        store.Add(typeof(DefaultBus), typeof(OrderEvent), typeof(OrderConsumer), "other-stream", options);
+        store.Add(typeof(DefaultBus), typeof(OrderEvent), typeof(OrderConsumerTests_Other), "orders", options);
+        Assert.Equal(4, store.Registrations.Count);
     }
 
     private sealed class OrderConsumerTests_Other : IConsumer<OrderEvent>
@@ -54,24 +58,11 @@ public sealed class TypedConsumerTests
     }
 
     [Fact]
-    public void Long_names_hash_within_cap()
-    {
-        var name = ReferenceDerivation.Derive(typeof(DefaultBus), typeof(OrderConsumer), new string('x', 300));
-        Assert.True(System.Text.Encoding.UTF8.GetByteCount(name) <= 255);
-        Assert.StartsWith("streambus-", name);
-    }
-
-    [Fact]
-    public void Store_rejects_duplicates_but_allows_variants()
+    public void Store_rejects_missing_reference()
     {
         var store = new StreamBusConsumerStore();
-        var options = new ConsumeOptionsBuilder().Build();
-        store.Add(typeof(DefaultBus), typeof(OrderEvent), typeof(OrderConsumer), "orders", options);
         Assert.Throws<StreamBusConfigurationException>(() =>
-            store.Add(typeof(DefaultBus), typeof(OrderEvent), typeof(OrderConsumer), "orders", options));
-        store.Add(typeof(DefaultBus), typeof(OrderEvent), typeof(OrderConsumer), "other-stream", options);
-        store.Add(typeof(DefaultBus), typeof(OrderEvent), typeof(OrderConsumerTests_Other), "orders", options);
-        Assert.Equal(3, store.Registrations.Count);
+            store.Add(typeof(DefaultBus), typeof(OrderEvent), typeof(OrderConsumer), "orders", new ConsumeOptionsBuilder().Build()));
     }
 
     [Fact]
@@ -81,7 +72,11 @@ public sealed class TypedConsumerTests
         var singleton = new OrderConsumer();
         services.AddSingleton<IConsumer<OrderEvent>>(singleton);
         services.AddSingleton(singleton);
-        services.AddStreamBusConsumer<OrderEvent, OrderConsumer>("orders");
+        services.AddStreamBus((_, cfg) =>
+        {
+            cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret"));
+            cfg.ReceiveEndpoint("orders", e => e.Consumer<OrderConsumer>("test-group"));
+        });
         var sp = services.BuildServiceProvider();
         Assert.Same(singleton, sp.GetRequiredService<OrderConsumer>());
     }
@@ -161,7 +156,7 @@ public sealed class TypedConsumerTests
         var store = new StreamBusConfigStore();
         store.Add(typeof(DefaultBus), new StreamBusOptions { Vhost = "/", UserName = "a", Password = "b" });
         var consumers = new StreamBusConsumerStore();
-        consumers.Add(typeof(DefaultBus), typeof(OrderEvent), typeof(OrderConsumer), "orders", new ConsumeOptionsBuilder().Build());
+        consumers.Add(typeof(DefaultBus), typeof(OrderEvent), typeof(OrderConsumer), "orders", new ConsumeOptionsBuilder().Reference("test-group").Build());
         var registry = new StreamBusRegistry(
             _ => throw new InvalidOperationException("no resolve"),
             _ => throw new InvalidOperationException("no supervisor"),

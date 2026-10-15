@@ -89,33 +89,23 @@ public static class ServiceCollectionExtensions
         return created;
     }
 
-    public static IServiceCollection AddStreamBusConsumer<TMessage, TConsumer>(this IServiceCollection services, string stream, Action<ConsumeOptionsBuilder>? configure = null)
-        where TConsumer : class, IConsumer<TMessage>
-        => AddStreamBusConsumerCore<TMessage, TConsumer>(services, typeof(DefaultBus), stream, configure);
-
-    public static IServiceCollection AddStreamBusConsumer<TBus, TMessage, TConsumer>(this IServiceCollection services, string stream, Action<ConsumeOptionsBuilder>? configure = null)
-        where TConsumer : class, IConsumer<TMessage>
-        => AddStreamBusConsumerCore<TMessage, TConsumer>(services, typeof(TBus), stream, configure);
-
-    private static IServiceCollection AddStreamBusConsumerCore<TMessage, TConsumer>(IServiceCollection services, Type busMarker, string stream, Action<ConsumeOptionsBuilder>? configure)
-        where TConsumer : class, IConsumer<TMessage>
-    {
-        ArgumentNullException.ThrowIfNull(services);
-        ArgumentException.ThrowIfNullOrWhiteSpace(stream);
-        services.TryAddTransient<TConsumer>();
-        var builder = new ConsumeOptionsBuilder();
-        configure?.Invoke(builder);
-        GetOrCreateConsumerStore(services).Add(busMarker, typeof(TMessage), typeof(TConsumer), stream, builder.Build());
-        return services;
-    }
-
-    private static StreamBusConsumerStore GetOrCreateConsumerStore(IServiceCollection services)
+    internal static StreamBusConsumerStore GetOrCreateConsumerStore(IServiceCollection services)
     {
         var existing = services.FirstOrDefault(d =>
             d.ServiceType == typeof(StreamBusConsumerStore) && d.ImplementationInstance is StreamBusConsumerStore);
         if (existing?.ImplementationInstance is StreamBusConsumerStore store) return store;
         var created = new StreamBusConsumerStore();
         services.AddSingleton<StreamBusConsumerStore>(created);
+        return created;
+    }
+
+    internal static StreamBusEndpointStore GetOrCreateEndpointStore(IServiceCollection services)
+    {
+        var existing = services.FirstOrDefault(d =>
+            d.ServiceType == typeof(StreamBusEndpointStore) && d.ImplementationInstance is StreamBusEndpointStore);
+        if (existing?.ImplementationInstance is StreamBusEndpointStore store) return store;
+        var created = new StreamBusEndpointStore();
+        services.AddSingleton<StreamBusEndpointStore>(created);
         return created;
     }
 
@@ -268,8 +258,9 @@ public sealed class StreamBusConsumerStore
         ArgumentNullException.ThrowIfNull(consumerType);
         ArgumentException.ThrowIfNullOrWhiteSpace(stream);
         ArgumentNullException.ThrowIfNull(options);
-        if (_registrations.Any(r => r.BusMarker == busMarker && r.MessageType == messageType && r.ConsumerType == consumerType && r.Stream == stream))
-            throw new StreamBusConfigurationException($"Duplicate typed consumer registration for {consumerType.FullName} on stream '{stream}' (marker {busMarker.FullName}).");
+        ConsumerReferenceValidation.Require(options.Reference, stream);
+        if (_registrations.Any(r => r.BusMarker == busMarker && r.MessageType == messageType && r.ConsumerType == consumerType && r.Stream == stream && r.Options.Reference == options.Reference))
+            throw new StreamBusConfigurationException($"Duplicate typed consumer registration for {consumerType.FullName} on stream '{stream}' with group '{options.Reference}' (marker {busMarker.FullName}).");
         _registrations.Add(new TypedConsumerRegistration { BusMarker = busMarker, MessageType = messageType, ConsumerType = consumerType, Stream = stream, Options = options });
     }
 
@@ -532,8 +523,7 @@ public sealed class StreamBusHostedService : IHostedService
     private async Task StartConsumerUntilReadyAsync(TypedConsumerRegistration reg, string vhost, IStreamSerializer serializer, CancellationToken ct)
     {
         var entry = _registry.GetOrCreateEntry(reg.BusMarker, vhost);
-        var reference = reg.Options.Reference ?? ReferenceDerivation.Derive(reg.BusMarker, reg.ConsumerType, reg.Stream);
-        ReferenceDerivation.Validate(reference);
+        var reference = ConsumerReferenceValidation.Require(reg.Options.Reference, reg.Stream);
         var options = reg.Options with { Reference = reference };
         var handler = TypedConsumerHandler.Create(reg.MessageType, reg.ConsumerType, _scopes!, serializer);
         var attempt = 0;

@@ -157,8 +157,7 @@ internal sealed class StreamConsumerRegistry
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(errorOptions.Stream);
         }
-        var reference = options.Reference ?? ReferenceDerivation.Derive(busType, stream);
-        ReferenceDerivation.Validate(reference);
+        var reference = ConsumerReferenceValidation.Require(options.Reference, stream);
 
         var readiness = await _supervisor.WaitUntilReadyAsync(options.ReadinessPolicy, ct).ConfigureAwait(false);
         if (readiness == BusReadiness.Fatal)
@@ -286,8 +285,8 @@ internal sealed class StreamConsumerRegistry
         ArgumentNullException.ThrowIfNull(options.ReadinessPolicy);
         EffectivelyOnceValidation.ValidateConsume(options.Retry);
         var reference = options.Reference ?? ResultNaming.ConsumerReference(busType, sourceStream, targetStream);
-        ReferenceDerivation.Validate(reference);
-        if (options.Reference is not null) ReferenceDerivation.Validate(options.Reference);
+        ConsumerReferenceValidation.Validate(reference);
+        if (options.Reference is not null) ConsumerReferenceValidation.Validate(options.Reference);
 
         var readiness = await _supervisor.WaitUntilReadyAsync(options.ReadinessPolicy, ct).ConfigureAwait(false);
         if (readiness == BusReadiness.Fatal)
@@ -403,7 +402,7 @@ internal sealed class StreamConsumerRegistry
     public async Task<ulong?> GetOffsetAsync(string stream, string reference, int partition, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(stream);
-        ReferenceDerivation.Validate(reference);
+        ConsumerReferenceValidation.Validate(reference);
         await EnsureReadyAsync(stream, ct).ConfigureAwait(false);
         var handle = _supervisor.CurrentHandle
             ?? throw new StreamBusNotReadyException($"StreamBus for vhost '{_vhost}' is not ready; offset query for '{stream}' refused.");
@@ -414,7 +413,7 @@ internal sealed class StreamConsumerRegistry
     public async Task SetOffsetAsync(string stream, string reference, int partition, ulong offset, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(stream);
-        ReferenceDerivation.Validate(reference);
+        ConsumerReferenceValidation.Validate(reference);
         await EnsureReadyAsync(stream, ct).ConfigureAwait(false);
         var handle = _supervisor.CurrentHandle
             ?? throw new StreamBusNotReadyException($"StreamBus for vhost '{_vhost}' is not ready; offset store for '{stream}' refused.");

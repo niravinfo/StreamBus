@@ -85,18 +85,15 @@ public sealed class OffsetResolutionTests
     }
 
     [Fact]
-    public void Derivation_is_stable_distinct_and_bounded()
+    public void Reference_validation_is_stable_distinct_and_bounded()
     {
-        var a1 = ReferenceDerivation.Derive(typeof(DefaultBus), "orders");
-        var a2 = ReferenceDerivation.Derive(typeof(DefaultBus), "orders");
-        Assert.Equal(a1, a2);
-        Assert.StartsWith("streambus:", a1);
-        Assert.NotEqual(a1, ReferenceDerivation.Derive(typeof(DefaultBus), "billing"));
-        var longStream = new string('s', 300);
-        var hashed = ReferenceDerivation.Derive(typeof(DefaultBus), longStream);
-        Assert.True(System.Text.Encoding.UTF8.GetByteCount(hashed) <= 255);
-        Assert.Throws<StreamBusConfigurationException>(() => ReferenceDerivation.Validate(new string('r', 300)));
-        ReferenceDerivation.Validate(a1);
+        ConsumerReferenceValidation.Validate("orders");
+        var ex = Assert.Throws<StreamBusConfigurationException>(() =>
+            ConsumerReferenceValidation.Require(null, "orders"));
+        Assert.Contains("orders", ex.Message, StringComparison.Ordinal);
+        Assert.Throws<StreamBusConfigurationException>(() =>
+            ConsumerReferenceValidation.Validate(new string('r', 300)));
+        Assert.Equal("grp", ConsumerReferenceValidation.Require("grp", "orders"));
     }
 }
 
@@ -228,7 +225,7 @@ public sealed class ConsumeValidationTests
         var handle = new StubSystemHandle { Exists = false, SuperExists = false };
         var registry = RegistryWithLogging(factory, handle);
         await Assert.ThrowsAsync<StreamBusStreamNotFoundException>(() =>
-            registry.ConsumeAsync(typeof(DefaultBus), "missing", new ConsumeOptions(), _ => Task.CompletedTask, TestContext.Current.CancellationToken));
+            registry.ConsumeAsync(typeof(DefaultBus), "missing", new ConsumeOptions { Reference = "grp" }, _ => Task.CompletedTask, TestContext.Current.CancellationToken));
         await Assert.ThrowsAsync<StreamBusStreamNotFoundException>(() =>
             registry.GetOffsetAsync("missing", "grp", 0, TestContext.Current.CancellationToken));
         await Assert.ThrowsAsync<StreamBusStreamNotFoundException>(() =>
