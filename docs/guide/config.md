@@ -85,3 +85,25 @@ services.AddStreamBusHosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(
 A second `AddStreamBusHosting` call throws. Without it, startup is
 non-blocking (today's default): declarations and consumer attaches run
 in the background.
+
+## Full key reference
+
+All keys live under the section you pass (here `StreamBus`). Failures
+are collected and reported together, each naming section path and key.
+
+| Key | Default | Notes |
+|---|---|---|
+| `Vhost` | `/` | |
+| `UserName` / `Password` | required | `guest` rejected |
+| `Host` | `127.0.0.1` | DNS name or IP |
+| `StreamPort` | `5552` | 1..65535 |
+| `AmqpPort` | `5672` | 1..65535; queue dead letters only |
+| `HeartbeatSeconds` | `60` | > 0, always mapped |
+| `Connection:ProducersPerConnection` | `1` | 1..255 |
+| `Connection:ConsumersPerConnection` | `1` | 1..255 |
+| `Topology:Streams[]:Name` | required | |
+| `Topology:Streams[]:MaxAgeDays` | unset | > 0 |
+| `Topology:Streams[]:MaxLengthBytes` | unset | >= 1 |
+| `Topology:Streams[]:MaxSegmentSizeBytes` | unset | >= 1 |
+| `Topology:Streams[]:LeaderLocator` | `LeastLeaders` | `LeastLeaders`, `ClientLocal`, `Random` |
+| `Topology:SuperStreams[]` | | same knobs as streams plus required `Partitions` >= 1 |

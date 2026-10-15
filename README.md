@@ -83,6 +83,26 @@ public sealed class CheckoutWorker(IStreamBus bus) : BackgroundService
 }
 ```
 
+## Features
+
+Every capability links to its guide section:
+
+- Buses: default + marker + `IConfigurationSection` registration (`guide/config.md`)
+- Connection: host/credentials/ports/heartbeat/pools, `guest` rejected (`guide/config.md`)
+- Serialization: JSON options per bus (`guide/config.md`)
+- Declarations: streams/super-streams + retention/placement knobs (`guide/topology.md`)
+- Startup: block/timeout/non-blocking, readiness waits, health checks (`guide/hosting.md`)
+- Typed publish: route table, keyed super publish, overrides, raw bytes (`guide/publish.md`)
+- Endpoints: required groups, scale-out, SAC/offset/store knobs (`guide/consume.md`)
+- Raw consume + manual offset get/set (`guide/consume.md`)
+- Effectively-once pipelines + manual result publish (`guide/effectively-once.md`)
+- Retry: global + per-endpoint schedules, escape hatch (`guide/errors.md`)
+- Exhaustion: stream / classic+quorum queues (derived `{stream}_error` default) / owning callback (`guide/errors.md`)
+- Replay (streams) and requeue (queues) (`guide/errors.md`)
+- Topology derivation + broker adopt rule + conflicts (`guide/topology.md`)
+- Multi-bus markers + shared consumer classes (`guide/multi-bus.md`)
+- Observability: health data, metrics, log events (`guide/observability.md`)
+
 ## Concepts
 
 - **Bus registration** (`guide/config.md`): one `AddStreamBus` per bus,
@@ -101,9 +121,13 @@ public sealed class CheckoutWorker(IStreamBus bus) : BackgroundService
 
 ## Docs map
 
-- `docs/guide/config.md` — connection, declarations, JSON binding, hosting.
+- `docs/guide/config.md` — connection, declarations, JSON binding, full key reference.
+- `docs/guide/hosting.md` — startup blocking, readiness, health checks.
 - `docs/guide/publish.md` — typed publish, super streams, escape hatches.
-- `docs/guide/consume.md` — endpoints, groups, raw consume, effectively-once.
+- `docs/guide/consume.md` — endpoints, groups, raw consume, offsets.
+- `docs/guide/effectively-once.md` — read-process-write pipelines.
 - `docs/guide/multi-bus.md` — marker buses and shared consumers.
 - `docs/guide/errors.md` — retry layering, dead letters, requeue.
+- `docs/guide/topology.md` — declarations, derivation, adopt rule.
+- `docs/guide/observability.md` — health data, metrics, log events.
 - `docs/llms.txt` — ground truths for automated consumers.

@@ -43,3 +43,33 @@ cfg.ReceiveEndpoint("invoices", e => e.Consumer<SharedConsumer>("billing-team"))
 Publish registrations are per bus too: the same message type on two
 streams of one bus is an ambiguity error, while the same type on two
 buses resolves independently through each bus's own route table.
+
+## Full example
+
+Two services share one consumer class with different groups — no
+default exists to collide on, and each bus keeps its own cursor:
+
+```csharp
+public sealed class SharedConsumer(ILogger<SharedConsumer> log) : IConsumer<OrderEvent>
+{
+    public Task Consume(ConsumeContext<OrderEvent> ctx, CancellationToken ct)
+    {
+        log.LogInformation("Saw {Id} on {Stream}", ctx.Message.OrderId, ctx.Stream);
+        return Task.CompletedTask;
+    }
+}
+
+services.AddStreamBus<OrdersBus>((context, cfg) =>
+{
+    cfg.Host("localhost", "/orders", h => h.Credentials("app", "s3cret"));
+    cfg.Publish<OrderEvent>("orders");
+    cfg.ReceiveEndpoint("orders", e => e.Consumer<SharedConsumer>("orders-team"));
+});
+
+services.AddStreamBus<BillingBus>((context, cfg) =>
+{
+    cfg.Host("localhost", "/billing", h => h.Credentials("app", "s3cret"));
+    cfg.Publish<OrderEvent>("invoices");
+    cfg.ReceiveEndpoint("invoices", e => e.Consumer<SharedConsumer>("billing-team"));
+});
+```

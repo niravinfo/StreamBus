@@ -47,3 +47,12 @@
   h.BlockStartupUntilReady(timeout?))`, at most once; default is
   non-blocking.
 - Effectively-once (`ConsumeEffectivelyOnceAsync`) is unchanged.
+- Startup topology derives from explicit declarations plus endpoint and
+  publish registrations; endpoints without an explicit declaration adopt
+  broker reality (match consumed read-only, mismatch conflicts, missing
+  declarable declared, else config error). Single-partition reads are
+  plain consumes of `{super}-{N}` with no declaration.
+- Observability: `streambus` health check keyed `{vhost}|{busType}`;
+  meter `StreamBus` (`streambus_partition_lag/_inflight/_retry_blocked`,
+  `streambus_connection_state`, `streambus_offset_store_rejected_total`,
+  `streambus_offset_regressed_total`, `streambus_offset_fallback_total`).

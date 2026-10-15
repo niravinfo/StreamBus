@@ -58,9 +58,34 @@ Raw consume also requires `Reference` — a missing group throws
 ## Effectively-once
 
 Read-process-write pipelines are unchanged apart from the bus they run
-on, which is unambiguous by construction:
+on, which is unambiguous by construction. See
+`guide/effectively-once.md` for the full projection example:
 
 ```csharp
 await using var pipe = await bus.ConsumeEffectivelyOnceAsync("orders", "invoices",
     new EffectivelyOnceOptions(), async (ctx, ct) => resultBytes, ct);
+```
+
+## Full example
+
+```csharp
+cfg.ReceiveEndpoint("orders", e =>
+{
+    e.Consumer<OrderConsumer>("order-processors");
+    e.SingleActiveConsumer();
+    e.Offset(ConsumeOffset.ResumeOrFirst);
+    e.OffsetStore(new OffsetStoreOptions { EveryMessages = 10, MaxInterval = TimeSpan.FromSeconds(5) });
+});
+
+// Raw tail with manual offset control.
+await using var tail = await bus.ConsumeAsync(
+    "audit",
+    new ConsumeOptions { Offset = ConsumeOffset.AlwaysFirst, Reference = "ops-tail" },
+    async (ctx, ct) =>
+    {
+        await bus.SetConsumerOffsetAsync("audit", "ops-tail", ctx.Partition, ctx.Offset, ct);
+    },
+    ct);
+
+var stored = await bus.GetConsumerOffsetAsync("audit", "ops-tail", partition: 0, ct);
 ```

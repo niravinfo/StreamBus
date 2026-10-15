@@ -64,3 +64,33 @@ site never auto-creates. `PublishRawAsync` sends pre-serialized bytes.
 ```csharp
 cfg.Serializer(json => json.PropertyNamingPolicy = JsonNamingPolicy.CamelCase);
 ```
+
+## Full example
+
+```csharp
+services.AddStreamBus((context, cfg) =>
+{
+    cfg.Host("localhost", "/", h => h.Credentials("app", "s3cret"));
+    cfg.DeclareSuperStream("orders-super", partitions: 3);
+    cfg.PublishSuper<OrderEvent>("orders-super");
+    cfg.Publish<OrderEvent>("orders-manual");
+});
+
+public sealed class CheckoutWorker(IStreamBus bus) : BackgroundService
+{
+    protected override async Task ExecuteAsync(CancellationToken ct)
+    {
+        await bus.WaitUntilReadyAsync(ReadinessPolicy.UpTo(TimeSpan.FromSeconds(30)), ct);
+
+        // Routed publish: the key selects the partition.
+        await bus.PublishSuperAsync(new OrderEvent("o-1", 1), "o-1", ct);
+
+        // Explicit-stream override to a second registered stream.
+        await bus.PublishAsync("orders-manual", new OrderEvent("o-2", 1), ct);
+
+        // Raw bytes escape hatch (pre-serialized payload).
+        var raw = SystemTextJsonStreamSerializer.Default.Serialize(new OrderEvent("o-3", 1));
+        await bus.PublishRawAsync("orders-manual", raw, new PublishOptions(), ct);
+    }
+}
+```

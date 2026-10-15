@@ -87,3 +87,30 @@ fresh messages (tail append, at-least-once), acknowledging only after the
 stream confirm. Malformed entries are acknowledged with a warning and
 skipped. Stream destinations replay with `ReplayErrorStreamAsync`
 instead.
+
+## Full example
+
+Bounded retry hands the poison message to a classic error queue; the
+operator drains it back after deploying the fix:
+
+```csharp
+services.AddStreamBus((context, cfg) =>
+{
+    cfg.Host("localhost", "/", h => h.Credentials("app", "s3cret"));
+    cfg.DeclareStream("orders");
+    cfg.Publish<OrderEvent>("orders");
+    cfg.ReceiveEndpoint("orders", e =>
+    {
+        e.Consumer<OrderConsumer>("order-processors");
+        e.UseMessageRetry(r => r.None());
+        e.DeadLetterTo("orders-errors", DeadLetterType.ClassicQueue);
+    });
+});
+services.AddStreamBusHosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(30)));
+
+// ... poison message exhausts on first failure, lands in "orders-errors"
+// with full streambus.error.* headers ...
+
+// After the fix is deployed, redeliver everything:
+int requeued = await bus.RequeueErrorsAsync("orders", "orders-errors", ct);
+```
