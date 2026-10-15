@@ -62,7 +62,8 @@ internal sealed class StreamBus : IStreamBus
     private readonly IStreamSerializer _serializer;
     private readonly StreamPublishRouter _router;
     private readonly ErrorQueueTransport _errorQueues;
-    public StreamBus(string vhost, StreamBusConnectionSupervisor supervisor, StreamProducerRegistry producers, StreamConsumerRegistry consumers, IStreamTopology topology, IStreamSerializer serializer, StreamPublishRouter router, ErrorQueueTransport errorQueues)
+    private readonly Func<string, DeclaredStream?> _findDeclaration;
+    public StreamBus(string vhost, StreamBusConnectionSupervisor supervisor, StreamProducerRegistry producers, StreamConsumerRegistry consumers, IStreamTopology topology, IStreamSerializer serializer, StreamPublishRouter router, ErrorQueueTransport errorQueues, Func<string, DeclaredStream?>? findDeclaration = null)
     {
         Vhost = vhost;
         _supervisor = supervisor;
@@ -72,6 +73,7 @@ internal sealed class StreamBus : IStreamBus
         _serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
         _router = router ?? throw new ArgumentNullException(nameof(router));
         _errorQueues = errorQueues ?? throw new ArgumentNullException(nameof(errorQueues));
+        _findDeclaration = findDeclaration ?? (_ => null);
     }
     public string Vhost { get; }
     public IStreamTopology Topology => _topology;
@@ -92,6 +94,7 @@ internal sealed class StreamBus : IStreamBus
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(stream);
         ArgumentNullException.ThrowIfNull(message);
+        DeclareSetBuilder.ValidateCallTarget(_findDeclaration(stream), stream, wantSuper: false);
         var body = _serializer.Serialize(message);
         var effective = (options ?? new PublishOptions()) with { IsSuperStream = false, RoutingKey = null };
         return _producers.PublishAsync(stream, body, effective, ct);
@@ -112,6 +115,7 @@ internal sealed class StreamBus : IStreamBus
         ArgumentException.ThrowIfNullOrWhiteSpace(stream);
         ArgumentNullException.ThrowIfNull(message);
         ArgumentException.ThrowIfNullOrWhiteSpace(routingKey);
+        DeclareSetBuilder.ValidateCallTarget(_findDeclaration(stream), stream, wantSuper: true);
         var body = _serializer.Serialize(message);
         var effective = (options ?? new PublishOptions()) with { IsSuperStream = true, RoutingKey = routingKey };
         return _producers.PublishAsync(stream, body, effective, ct);
@@ -149,7 +153,8 @@ internal sealed class StreamBus<TBus> : IStreamBus<TBus>
     private readonly IStreamSerializer _serializer;
     private readonly StreamPublishRouter _router;
     private readonly ErrorQueueTransport _errorQueues;
-    public StreamBus(string vhost, StreamBusConnectionSupervisor supervisor, StreamProducerRegistry producers, StreamConsumerRegistry consumers, IStreamTopology topology, IStreamSerializer serializer, StreamPublishRouter router, ErrorQueueTransport errorQueues)
+    private readonly Func<string, DeclaredStream?> _findDeclaration;
+    public StreamBus(string vhost, StreamBusConnectionSupervisor supervisor, StreamProducerRegistry producers, StreamConsumerRegistry consumers, IStreamTopology topology, IStreamSerializer serializer, StreamPublishRouter router, ErrorQueueTransport errorQueues, Func<string, DeclaredStream?>? findDeclaration = null)
     {
         Vhost = vhost;
         _supervisor = supervisor;
@@ -159,6 +164,7 @@ internal sealed class StreamBus<TBus> : IStreamBus<TBus>
         _serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
         _router = router ?? throw new ArgumentNullException(nameof(router));
         _errorQueues = errorQueues ?? throw new ArgumentNullException(nameof(errorQueues));
+        _findDeclaration = findDeclaration ?? (_ => null);
     }
     public string Vhost { get; }
     public IStreamTopology Topology => _topology;
@@ -179,6 +185,7 @@ internal sealed class StreamBus<TBus> : IStreamBus<TBus>
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(stream);
         ArgumentNullException.ThrowIfNull(message);
+        DeclareSetBuilder.ValidateCallTarget(_findDeclaration(stream), stream, wantSuper: false);
         var body = _serializer.Serialize(message);
         var effective = (options ?? new PublishOptions()) with { IsSuperStream = false, RoutingKey = null };
         return _producers.PublishAsync(stream, body, effective, ct);
@@ -199,6 +206,7 @@ internal sealed class StreamBus<TBus> : IStreamBus<TBus>
         ArgumentException.ThrowIfNullOrWhiteSpace(stream);
         ArgumentNullException.ThrowIfNull(message);
         ArgumentException.ThrowIfNullOrWhiteSpace(routingKey);
+        DeclareSetBuilder.ValidateCallTarget(_findDeclaration(stream), stream, wantSuper: true);
         var body = _serializer.Serialize(message);
         var effective = (options ?? new PublishOptions()) with { IsSuperStream = true, RoutingKey = routingKey };
         return _producers.PublishAsync(stream, body, effective, ct);

@@ -14,6 +14,7 @@ public sealed class HostingTests
     private sealed class StubHandle : IStreamSystemHandle
     {
         public readonly List<string> CreatedStreams = new();
+        public readonly List<string> CreatedSupers = new();
         public Func<string, CancellationToken, Task<bool>> StreamExistsFunc = (_, _) => Task.FromResult(false);
         public Func<string, CancellationToken, Task<bool>> SuperExistsFunc = (_, _) => Task.FromResult(false);
         public bool IsClosed => false;
@@ -46,7 +47,10 @@ public sealed class HostingTests
             return Task.CompletedTask;
         }
         public Task CreateSuperStreamAsync(PartitionsSuperStreamSpec spec, CancellationToken ct)
-            => Task.CompletedTask;
+        {
+            lock (CreatedSupers) CreatedSupers.Add(spec.Name);
+            return Task.CompletedTask;
+        }
     }
 
     private sealed class CountingHandle : IStreamSystemHandle
@@ -510,6 +514,250 @@ public sealed class HostingTests
         {
             var ex = await Assert.ThrowsAsync<StreamBusTimeoutException>(() => hosted.StartAsync(ct));
             Assert.Contains("topology", ex.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            await hosted.StopAsync(CancellationToken.None);
+        }
+    }
+
+    private sealed record DerivedEvent(string Id);
+
+    private sealed class DerivedConsumer : IConsumer<DerivedEvent>
+    {
+        public Task Consume(ConsumeContext<DerivedEvent> context, CancellationToken ct) => Task.CompletedTask;
+    }
+
+    private sealed class OtherDerivedConsumer : IConsumer<DerivedEvent>
+    {
+        public Task Consume(ConsumeContext<DerivedEvent> context, CancellationToken ct) => Task.CompletedTask;
+    }
+
+    private static IReadOnlyList<DeclaredStream> DeclareSet(
+        IEnumerable<StreamDeclaration>? streams = null,
+        IEnumerable<SuperStreamDeclaration>? supers = null,
+        IEnumerable<ReceiveEndpointDescriptor>? endpoints = null,
+        IEnumerable<PublishRegistration>? publishes = null)
+        => DeclareSetBuilder.Build(
+            streams ?? Array.Empty<StreamDeclaration>(),
+            supers ?? Array.Empty<SuperStreamDeclaration>(),
+            endpoints ?? Array.Empty<ReceiveEndpointDescriptor>(),
+            publishes ?? Array.Empty<PublishRegistration>(),
+            "TestBus");
+
+    private static ReceiveEndpointDescriptor EndpointDescriptor(
+        string stream, bool super = false, int? partitions = null, Type? consumer = null, string reference = "grp")
+    {
+        var consumerType = consumer ?? typeof(DerivedConsumer);
+        return new ReceiveEndpointDescriptor
+        {
+            Stream = stream,
+            MessageType = typeof(DerivedEvent),
+            ConsumerType = consumerType,
+            Reference = reference,
+            IsSuperStream = super,
+            SuperPartitions = partitions,
+        };
+    }
+
+    [Fact]
+    public void Declare_set_is_consumer_publish_explicit_union()
+    {
+        var set = DeclareSet(
+            streams: new[] { new StreamDeclaration { Name = "explicit-plain" } },
+            supers: new[] { new SuperStreamDeclaration { Name = "explicit-super", Partitions = 2 } },
+            endpoints: new[] { EndpointDescriptor("endpoint-plain"), EndpointDescriptor("endpoint-super", super: true, partitions: 3) },
+            publishes: new[] { new PublishRegistration { BusMarker = typeof(DefaultBus), MessageType = typeof(DerivedEvent), Stream = "publish-plain", IsSuper = false } });
+        Assert.Equal(5, set.Count);
+        Assert.Contains(set, d => d.Name == "explicit-plain" && !d.IsSuper && d.Source == "explicit");
+        Assert.Contains(set, d => d is { Name: "explicit-super", IsSuper: true, Partitions: 2 } && d.Source == "explicit");
+        Assert.Contains(set, d => d.Name == "endpoint-plain" && !d.IsSuper && d.Source == "endpoint");
+        Assert.Contains(set, d => d is { Name: "endpoint-super", IsSuper: true, Partitions: 3 } && d.Source == "endpoint");
+        Assert.Contains(set, d => d.Name == "publish-plain" && !d.IsSuper && d.Source == "publish");
+    }
+
+    [Fact]
+    public void Explicit_declaration_wins_over_derived()
+    {
+        var set = DeclareSet(
+            streams: new[] { new StreamDeclaration { Name = "orders" } },
+            endpoints: new[] { EndpointDescriptor("orders") });
+        var match = Assert.Single(set);
+        Assert.Equal("explicit", match.Source);
+    }
+
+    [Fact]
+    public void Derived_super_plain_mismatch_against_explicit_throws_naming_sources()
+    {
+        var ex = Assert.Throws<StreamConfigurationConflictException>(() => DeclareSet(
+            streams: new[] { new StreamDeclaration { Name = "orders" } },
+            endpoints: new[] { EndpointDescriptor("orders", super: true, partitions: 3) }));
+        Assert.Contains("orders", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("endpoint", ex.Expected, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Publish_kind_mismatch_throws_naming_type_and_stream()
+    {
+        var plainSuper = Assert.Throws<StreamBusConfigurationException>(() => DeclareSet(
+            supers: new[] { new SuperStreamDeclaration { Name = "orders-super", Partitions = 3 } },
+            publishes: new[] { new PublishRegistration { BusMarker = typeof(DefaultBus), MessageType = typeof(DerivedEvent), Stream = "orders-super", IsSuper = false } }));
+        Assert.Contains(typeof(DerivedEvent).FullName!, plainSuper.Message, StringComparison.Ordinal);
+        Assert.Contains("orders-super", plainSuper.Message, StringComparison.Ordinal);
+        Assert.Contains("PublishSuper", plainSuper.Message, StringComparison.Ordinal);
+
+        var superPlain = Assert.Throws<StreamBusConfigurationException>(() => DeclareSet(
+            streams: new[] { new StreamDeclaration { Name = "orders" } },
+            publishes: new[] { new PublishRegistration { BusMarker = typeof(DefaultBus), MessageType = typeof(DerivedEvent), Stream = "orders", IsSuper = true } }));
+        Assert.Contains(typeof(DerivedEvent).FullName!, superPlain.Message, StringComparison.Ordinal);
+        Assert.Contains("PublishAsync", superPlain.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Super_publish_without_declaration_throws_naming_stream()
+    {
+        var ex = Assert.Throws<StreamBusConfigurationException>(() => DeclareSet(
+            publishes: new[] { new PublishRegistration { BusMarker = typeof(DefaultBus), MessageType = typeof(DerivedEvent), Stream = "orders-super", IsSuper = true } }));
+        Assert.Contains("orders-super", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Super_publish_with_endpoint_partitions_is_satisfied()
+    {
+        var set = DeclareSet(
+            endpoints: new[] { EndpointDescriptor("orders-super", super: true, partitions: 3) },
+            publishes: new[] { new PublishRegistration { BusMarker = typeof(DefaultBus), MessageType = typeof(DerivedEvent), Stream = "orders-super", IsSuper = true } });
+        Assert.DoesNotContain(set, d => d.Source == "publish");
+        Assert.Contains(set, d => d is { Name: "orders-super", IsSuper: true, Partitions: 3 });
+    }
+
+    [Fact]
+    public async Task Missing_plain_endpoint_is_declared_at_startup()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var handle = new StubHandle();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddStreamBus((_, cfg) =>
+        {
+            cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret"));
+            cfg.ReceiveEndpoint("derived-plain", e => e.Consumer<DerivedConsumer>("grp"));
+        });
+        services.AddSingleton<IStreamSystemConnector>(new SuccessConnector(handle));
+        await using var sp = services.BuildServiceProvider();
+        var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
+        await hosted.StartAsync(ct);
+        try
+        {
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+            while (true)
+            {
+                List<string> snapshot;
+                lock (handle.CreatedStreams) snapshot = handle.CreatedStreams.ToList();
+                if (snapshot.Contains("derived-plain")) break;
+                if (DateTime.UtcNow >= deadline) break;
+                await Task.Delay(TimeSpan.FromMilliseconds(50), ct);
+            }
+            List<string> created;
+            lock (handle.CreatedStreams) created = handle.CreatedStreams.ToList();
+            Assert.Contains("derived-plain", created);
+        }
+        finally
+        {
+            await hosted.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task Adopt_existing_super_skips_declare()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var handle = new StubHandle();
+        handle.SuperExistsFunc = (_, _) => Task.FromResult(true);
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddStreamBus((_, cfg) =>
+        {
+            cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret"));
+            cfg.Hosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(30)));
+            cfg.ReceiveEndpoint("adopted-super", e =>
+            {
+                e.Consumer<DerivedConsumer>("grp");
+                e.SuperStream();
+            });
+        });
+        services.AddSingleton<IStreamSystemConnector>(new SuccessConnector(handle));
+        await using var sp = services.BuildServiceProvider();
+        var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
+        await hosted.StartAsync(ct);
+        try
+        {
+            List<string> supers;
+            lock (handle.CreatedSupers) supers = handle.CreatedSupers.ToList();
+            Assert.DoesNotContain("adopted-super", supers);
+        }
+        finally
+        {
+            await hosted.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task Adopt_plain_against_super_expectation_throws_conflict()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var handle = new StubHandle();
+        handle.StreamExistsFunc = (_, _) => Task.FromResult(true);
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddStreamBus((_, cfg) =>
+        {
+            cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret"));
+            cfg.Hosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(30)));
+            cfg.ReceiveEndpoint("clashing", e =>
+            {
+                e.Consumer<DerivedConsumer>("grp");
+                e.SetSuperStream(3);
+            });
+        });
+        services.AddSingleton<IStreamSystemConnector>(new SuccessConnector(handle));
+        await using var sp = services.BuildServiceProvider();
+        var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
+        try
+        {
+            var ex = await Assert.ThrowsAsync<StreamConfigurationConflictException>(() => hosted.StartAsync(ct));
+            Assert.Contains("clashing", ex.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            await hosted.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task Missing_super_without_partitions_throws_naming_stream()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var handle = new StubHandle();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddStreamBus((_, cfg) =>
+        {
+            cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret"));
+            cfg.Hosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(5)));
+            cfg.ReceiveEndpoint("partitionless-super", e =>
+            {
+                e.Consumer<DerivedConsumer>("grp");
+                e.SuperStream();
+            });
+        });
+        services.AddSingleton<IStreamSystemConnector>(new SuccessConnector(handle));
+        await using var sp = services.BuildServiceProvider();
+        var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
+        try
+        {
+            var ex = await Assert.ThrowsAsync<StreamBusConfigurationException>(() => hosted.StartAsync(ct));
+            Assert.Contains("partitionless-super", ex.Message, StringComparison.Ordinal);
         }
         finally
         {

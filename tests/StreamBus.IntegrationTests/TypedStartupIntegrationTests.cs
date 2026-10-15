@@ -103,8 +103,8 @@ public sealed class TypedStartupIntegrationTests : IAsyncDisposable
     [Fact]
     public async Task Startup_with_topology_and_consumer_converges()
     {
-        // Consumer registered BEFORE the bus (order independence) + stream declared
-        // via Topology in the same config: everything converges after one Start.
+        // No explicit DeclareStream: the endpoint registration alone derives the
+        // stream declaration at startup; everything converges after one Start.
         var ct = TestContext.Current.CancellationToken;
         var stream = Unique("typed-orders");
         _streams.Add(stream);
@@ -115,7 +115,6 @@ public sealed class TypedStartupIntegrationTests : IAsyncDisposable
         services.AddStreamBus((_, cfg) =>
         {
             cfg.Host("127.0.0.1", "/", h => h.Credentials(User(), Password()));
-            cfg.DeclareStream(stream);
             cfg.ReceiveEndpoint(stream, e => e.Consumer<OrderConsumer>("startup-group"));
         });
         await using var sp = services.BuildServiceProvider();

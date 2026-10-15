@@ -56,6 +56,19 @@ public static class ServiceCollectionExtensions
         store.Add(busType, options);
         var publishStore = GetOrCreatePublishStore(services);
         var router = new StreamPublishRouter(publishStore);
+        var endpointStore = GetOrCreateEndpointStore(services);
+        IReadOnlyList<DeclaredStream> DeclarationsFor(Type marker)
+        {
+            var markerVhost = store.Registrations.Where(r => r.BusType == marker).Select(r => r.Options.Vhost).FirstOrDefault();
+            if (markerVhost is null) return Array.Empty<DeclaredStream>();
+            var explicits = store.Registrations.Where(r => r.Options.Vhost == markerVhost).ToList();
+            return DeclareSetBuilder.Build(
+                explicits.SelectMany(r => r.Options.Topology.Streams),
+                explicits.SelectMany(r => r.Options.Topology.SuperStreams),
+                endpointStore.Endpoints.Where(e => e.BusMarker == marker).Select(e => e.Descriptor),
+                publishStore.Registrations.Where(r => r.BusMarker == marker),
+                marker.FullName ?? marker.Name);
+        }
         services.TryAddSingleton<IStreamSystemConnector>(sp => new StreamSystemConnector(sp.GetService<ILoggerFactory>()));
         services.TryAddSingleton<IStreamBusRegistry>(sp =>
             new StreamBusRegistry(
@@ -64,7 +77,8 @@ public static class ServiceCollectionExtensions
                 sp.GetService<ILoggerFactory>(),
                 router,
                 marker => store.Registrations.Where(r => r.BusType == marker).Select(r => r.Options.Serializer).FirstOrDefault() ?? SystemTextJsonStreamSerializer.Default,
-                sp.GetService<IServiceScopeFactory>()));
+                sp.GetService<IServiceScopeFactory>(),
+                DeclarationsFor));
         services.TryAddSingleton<IHostedService, StreamBusHostedService>();
         services.TryAddSingleton<StreamBusHealthCheck>();
         services.TryAddSingleton<IHealthCheck>(sp => sp.GetRequiredService<StreamBusHealthCheck>());
@@ -330,15 +344,19 @@ public sealed class StreamBusHostedService : IHostedService
     private readonly ILogger<StreamBusHostedService> _logger;
     private readonly IServiceScopeFactory? _scopes;
     private readonly StreamBusConsumerStore? _consumers;
+    private readonly StreamBusEndpointStore? _endpoints;
+    private readonly StreamBusPublishStore? _publishes;
     private CancellationTokenSource? _startupCts;
 
-    public StreamBusHostedService(StreamBusConfigStore store, IStreamBusRegistry registry, ILogger<StreamBusHostedService>? logger = null, IServiceScopeFactory? scopeFactory = null, StreamBusConsumerStore? consumerStore = null)
+    public StreamBusHostedService(StreamBusConfigStore store, IStreamBusRegistry registry, ILogger<StreamBusHostedService>? logger = null, IServiceScopeFactory? scopeFactory = null, StreamBusConsumerStore? consumerStore = null, StreamBusEndpointStore? endpointStore = null, StreamBusPublishStore? publishStore = null)
     {
         _store = store;
         _registry = registry;
         _logger = logger ?? NullLogger<StreamBusHostedService>.Instance;
         _scopes = scopeFactory;
         _consumers = consumerStore;
+        _endpoints = endpointStore;
+        _publishes = publishStore;
     }
 
     public async Task StartAsync(CancellationToken ct)
@@ -400,6 +418,42 @@ public sealed class StreamBusHostedService : IHostedService
             }
         }
         var consumerTasks = new List<Task>();
+        foreach (var (busType, busOptions) in _store.Registrations)
+        {
+            var endpoints = _endpoints?.Endpoints
+                .Where(e => e.BusMarker == busType)
+                .Select(e => e.Descriptor)
+                .ToList() ?? new List<ReceiveEndpointDescriptor>();
+            var publishes = _publishes?.Registrations
+                .Where(r => r.BusMarker == busType)
+                .ToList() ?? new List<PublishRegistration>();
+            if (endpoints.Count == 0 && publishes.Count == 0) continue;
+            var explicitStreams = _store.Registrations
+                .Where(r => r.Options.Vhost == busOptions.Vhost)
+                .SelectMany(r => r.Options.Topology.Streams)
+                .ToList();
+            var explicitSupers = _store.Registrations
+                .Where(r => r.Options.Vhost == busOptions.Vhost)
+                .SelectMany(r => r.Options.Topology.SuperStreams)
+                .ToList();
+            var task = DeclareDerivedUntilReadyAsync(busType, busOptions.Vhost, explicitStreams, explicitSupers, endpoints, publishes, startupCts.Token);
+            if (!blocking)
+            {
+                _ = task.ContinueWith(
+                    t =>
+                    {
+                        if (t.Exception is { } ex)
+                            _logger.LogCritical(ex, "Derived topology for vhost '{Vhost}' failed permanently; streams were NOT derived.", busOptions.Vhost);
+                    },
+                    CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
+            }
+            else
+            {
+                declareTasks.Add(task);
+            }
+        }
         var queuesByVhost = starters
             .Where(s => s.Reg.Options.DeadLetter is not null && s.Reg.Options.ExhaustionCallback is null)
             .GroupBy(s => s.Vhost, StringComparer.Ordinal)
@@ -476,7 +530,7 @@ public sealed class StreamBusHostedService : IHostedService
                 _ = task.ContinueWith(
                     t =>
                     {
-                        if (t.Exception?.InnerExceptions.Any(e => e is StreamConfigurationConflictException) == true)
+                        if (t.Exception?.InnerExceptions.Any(e => e is StreamConfigurationConflictException or StreamBusConfigurationException) == true)
                         {
                             try { startupCts.Cancel(); }
                             catch (ObjectDisposedException) { }
@@ -547,6 +601,97 @@ public sealed class StreamBusHostedService : IHostedService
 
     internal static bool IsStartupTransient(Exception ex)
         => ex is StreamBusNotReadyException or StreamBusStreamNotFoundException;
+
+    private async Task DeclareDerivedUntilReadyAsync(
+        Type busType,
+        string vhost,
+        List<StreamDeclaration> explicitStreams,
+        List<SuperStreamDeclaration> explicitSupers,
+        List<ReceiveEndpointDescriptor> endpoints,
+        List<PublishRegistration> publishes,
+        CancellationToken ct)
+    {
+        var busName = busType.FullName ?? busType.Name;
+        var declareSet = DeclareSetBuilder.Build(explicitStreams, explicitSupers, endpoints, publishes, busName);
+        var topology = _registry.TopologyFor(vhost);
+        var attempt = 0;
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                foreach (var entry in declareSet)
+                {
+                    if (entry.Source == "explicit") continue;
+                    if (entry.Source == "publish")
+                    {
+                        await topology.EnsureStreamAsync(new StreamDeclaration { Name = entry.Name }, ct).ConfigureAwait(false);
+                        continue;
+                    }
+                    var probe = await topology.ProbeStreamAsync(entry.Name, ct).ConfigureAwait(false);
+                    if (entry.IsSuper)
+                    {
+                        if (probe.SuperExists) continue;
+                        if (probe.PlainExists)
+                            throw new StreamConfigurationConflictException(entry.Name,
+                                $"endpoint '{entry.Name}' expects a super stream",
+                                "a plain stream");
+                        if (entry.Partitions is null)
+                            throw new StreamBusConfigurationException(
+                                $"Endpoint stream '{entry.Name}' is expected to be a super stream but does not exist and no partitions were configured (SetSuperStream) and no explicit DeclareSuperStream covers it. The owning service must declare it.");
+                        await topology.EnsureSuperStreamAsync(new SuperStreamDeclaration
+                        {
+                            Name = entry.Name,
+                            Partitions = entry.Partitions.Value,
+                            MaxAge = entry.MaxAge,
+                            MaxLengthBytes = entry.MaxLengthBytes,
+                            MaxSegmentSizeBytes = entry.MaxSegmentSizeBytes,
+                            LeaderLocator = entry.LeaderLocator ?? StreamLeaderLocator.LeastLeaders,
+                        }, ct).ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        if (probe.PlainExists) continue;
+                        if (probe.SuperExists)
+                            throw new StreamConfigurationConflictException(entry.Name,
+                                $"endpoint '{entry.Name}' expects a plain stream",
+                                "a super stream");
+                        await topology.EnsureStreamAsync(new StreamDeclaration
+                        {
+                            Name = entry.Name,
+                            MaxAge = entry.MaxAge,
+                            MaxLengthBytes = entry.MaxLengthBytes,
+                            MaxSegmentSizeBytes = entry.MaxSegmentSizeBytes,
+                            LeaderLocator = entry.LeaderLocator ?? StreamLeaderLocator.LeastLeaders,
+                        }, ct).ConfigureAwait(false);
+                    }
+                }
+                return;
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (StreamConfigurationConflictException)
+            {
+                throw;
+            }
+            catch (StreamBusConfigurationException)
+            {
+                throw;
+            }
+            catch (StreamBusFatalException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                attempt++;
+                _logger.LogWarning(ex, "Derived topology for vhost '{Vhost}' failed (attempt {Attempt}); retrying.", vhost, attempt);
+                await Task.Delay(StreamBusDelays.ExponentialCapped(attempt, TimeSpan.FromMilliseconds(200), TimeSpan.FromSeconds(30), 2.0, TimeSpan.FromSeconds(1)), ct).ConfigureAwait(false);
+            }
+        }
+    }
 
     private async Task DeclareQueuesUntilReadyAsync(string vhost, List<DeadLetterOptions> queues, CancellationToken ct)
     {
