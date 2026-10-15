@@ -31,6 +31,8 @@ public interface IStreamBusConfigurator
     void Publish<TMessage>(string stream);
     void PublishSuper<TMessage>(string stream);
     void ReceiveEndpoint(string stream, Action<IReceiveEndpointConfigurator> configure);
+    void UseMessageRetry(Action<IRetryConfigurator> configure);
+    void UseRetry(RetryPolicy policy);
 
     /// <summary>
     /// Temporary per-bus hosting carry-over. Task 7 replaces this with global AddStreamBusHosting.
@@ -46,21 +48,15 @@ public interface IReceiveEndpointConfigurator
     void Offset(ConsumeOffset offset);
     void OffsetStore(OffsetStoreOptions options);
     void Readiness(ReadinessPolicy policy);
-    void OnRetryExhausted(Func<ErrorHandoff, Task>? hook);
+    void UseMessageRetry(Action<IRetryConfigurator> configure);
+    void UseRetry(RetryPolicy policy);
+    void DeadLetterTo(string name, DeadLetterType type);
+    void OnExhausted(Func<ExhaustedContext, CancellationToken, Task> handler);
     void SetSuperStream(int partitions);
     void SetMaxAge(TimeSpan maxAge);
     void SetMaxLengthBytes(ulong maxLengthBytes);
     void SetMaxSegmentSizeBytes(int maxSegmentSizeBytes);
     void SetLeaderLocator(StreamLeaderLocator locator);
-
-    /// <summary>
-    /// Temporary v1 retry carry-over. Task 4 replaces this with layered UseMessageRetry.
-    /// </summary>
-    void Retry(RetryPolicy policy);
-    /// <summary>
-    /// Temporary v1 error-stream carry-over. Task 4 replaces this with DeadLetterTo/OnExhausted.
-    /// </summary>
-    void ErrorStream(ErrorStreamOptions? options);
 }
 
 public sealed record ReceiveEndpointDescriptor
@@ -78,9 +74,9 @@ public sealed record ReceiveEndpointDescriptor
     public bool SingleActiveConsumer { get; init; } = true;
     public ConsumeOffset Offset { get; init; } = ConsumeOffset.ResumeOrFirst;
     public OffsetStoreOptions OffsetStore { get; init; } = new();
-    public RetryPolicy Retry { get; init; } = new();
-    public ErrorStreamOptions? ErrorStream { get; init; }
-    public Func<ErrorHandoff, Task>? OnRetryExhausted { get; init; }
+    public RetryPolicy? RetryOverride { get; init; }
+    public DeadLetterOptions? DeadLetter { get; init; }
+    public Func<ExhaustedContext, CancellationToken, Task>? OnExhausted { get; init; }
     public ReadinessPolicy Readiness { get; init; } = ReadinessPolicy.FailFastPolicy;
 }
 
@@ -123,6 +119,7 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
     private readonly List<SuperStreamDeclaration> _supers = new();
     private readonly List<(Type MessageType, string Stream, bool IsSuper)> _publishes = new();
     private readonly List<ReceiveEndpointDescriptor> _endpoints = new();
+    private RetryPolicy? _globalRetry;
     private StreamBusHostOptions _hosting = new();
     private bool _hostCalled;
 
@@ -135,6 +132,8 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
     internal IReadOnlyList<(Type MessageType, string Stream, bool IsSuper)> Publishes => _publishes;
 
     internal IReadOnlyList<ReceiveEndpointDescriptor> Endpoints => _endpoints;
+
+    internal RetryPolicy? GlobalRetry => _globalRetry;
 
     internal void ApplySectionVhost(IConfigurationSection section)
     {
@@ -219,6 +218,20 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
         var endpoint = new ReceiveEndpointConfigurator(stream.Trim());
         configure(endpoint);
         _endpoints.Add(endpoint.Build());
+    }
+
+    public void UseMessageRetry(Action<IRetryConfigurator> configure)
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+        var retry = new RetryConfigurator();
+        configure(retry);
+        _globalRetry = ((IRetryConfigurator)retry).BuildPolicy();
+    }
+
+    public void UseRetry(RetryPolicy policy)
+    {
+        ArgumentNullException.ThrowIfNull(policy);
+        _globalRetry = policy;
     }
 
     internal StreamBusOptions Build(Type busType)
@@ -355,9 +368,9 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
         private bool _sac = true;
         private ConsumeOffset _offset = ConsumeOffset.ResumeOrFirst;
         private OffsetStoreOptions _store = new();
-        private RetryPolicy _retry = new();
-        private ErrorStreamOptions? _error;
-        private Func<ErrorHandoff, Task>? _hook;
+        private RetryPolicy? _retryOverride;
+        private DeadLetterOptions? _deadLetter;
+        private Func<ExhaustedContext, CancellationToken, Task>? _onExhausted;
         private ReadinessPolicy _readiness = ReadinessPolicy.FailFastPolicy;
 
         public ReceiveEndpointConfigurator(string stream) => _stream = stream;
@@ -390,13 +403,30 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
             ArgumentNullException.ThrowIfNull(policy);
             _readiness = policy;
         }
-        public void OnRetryExhausted(Func<ErrorHandoff, Task>? hook) => _hook = hook;
-        public void Retry(RetryPolicy policy)
+        public void OnExhausted(Func<ExhaustedContext, CancellationToken, Task> handler)
+        {
+            ArgumentNullException.ThrowIfNull(handler);
+            _onExhausted = handler;
+        }
+        public void UseMessageRetry(Action<IRetryConfigurator> configure)
+        {
+            ArgumentNullException.ThrowIfNull(configure);
+            var retry = new RetryConfigurator();
+            configure(retry);
+            _retryOverride = ((IRetryConfigurator)retry).BuildPolicy();
+        }
+        public void UseRetry(RetryPolicy policy)
         {
             ArgumentNullException.ThrowIfNull(policy);
-            _retry = policy;
+            _retryOverride = policy;
         }
-        public void ErrorStream(ErrorStreamOptions? options) => _error = options;
+        public void DeadLetterTo(string name, DeadLetterType type)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(name);
+            if (!Enum.IsDefined(type))
+                throw new StreamBusConfigurationException($"ReceiveEndpoint '{_stream}': DeadLetterType has an undefined value.");
+            _deadLetter = new DeadLetterOptions { Name = name.Trim(), Type = type };
+        }
         public void SetSuperStream(int partitions)
         {
             if (partitions < 1)
@@ -448,9 +478,9 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
                 SingleActiveConsumer = _sac,
                 Offset = _offset,
                 OffsetStore = _store,
-                Retry = _retry,
-                ErrorStream = _error,
-                OnRetryExhausted = _hook,
+                RetryOverride = _retryOverride,
+                DeadLetter = _deadLetter,
+                OnExhausted = _onExhausted,
                 Readiness = _readiness,
             };
         }
@@ -518,6 +548,14 @@ public static class StreamBusConfiguratorExtensions
         {
             endpointStore.Add(busType, descriptor);
             services.TryAddTransient(descriptor.ConsumerType, descriptor.ConsumerType);
+            var busName = busType.FullName ?? busType.Name;
+            var derived = RetryDerivation.Derive(
+                configurator.GlobalRetry,
+                descriptor.RetryOverride,
+                descriptor.DeadLetter,
+                descriptor.OnExhausted is not null,
+                descriptor.Stream,
+                busName);
             consumerStore.Add(busType, descriptor.MessageType, descriptor.ConsumerType, descriptor.Stream, new ConsumeOptions
             {
                 IsSuperStream = descriptor.IsSuperStream,
@@ -525,10 +563,12 @@ public static class StreamBusConfiguratorExtensions
                 SingleActiveConsumer = descriptor.SingleActiveConsumer,
                 Offset = descriptor.Offset,
                 OffsetStore = descriptor.OffsetStore,
-                Retry = descriptor.Retry,
-                ErrorStream = descriptor.ErrorStream,
-                OnRetryExhausted = descriptor.OnRetryExhausted,
+                Retry = derived.Policy,
+                ErrorStream = derived.Kind == ExhaustionKind.StreamHandoff ? derived.Stream : null,
                 ReadinessPolicy = descriptor.Readiness,
+                ExhaustionCallback = derived.Kind == ExhaustionKind.Callback ? descriptor.OnExhausted : null,
+                DeadLetter = derived.Kind == ExhaustionKind.QueueHandoff ? derived.Queue : null,
+                ShadowedDeadLetter = derived.DestinationShadowed ? descriptor.DeadLetter : null,
             });
         }
         ServiceCollectionExtensions.AddShared(services, busType, options);

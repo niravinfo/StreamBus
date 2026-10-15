@@ -1,3 +1,4 @@
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -74,14 +75,16 @@ internal sealed class StreamConsumerRegistry
     private readonly MonotonicOffsetGuard _guard = new();
     private readonly HashSet<StreamConsumerRegistration> _live = new();
     private readonly object _gate = new();
+    private readonly IServiceScopeFactory? _scopes;
 
-    public StreamConsumerRegistry(StreamBusConnectionSupervisor supervisor, string vhost, StreamProducerRegistry producers, ILoggerFactory? loggerFactory, ResultProducerRegistry results)
+    public StreamConsumerRegistry(StreamBusConnectionSupervisor supervisor, string vhost, StreamProducerRegistry producers, ILoggerFactory? loggerFactory, ResultProducerRegistry results, IServiceScopeFactory? scopeFactory = null)
     {
         _supervisor = supervisor;
         _vhost = vhost;
         _producers = producers;
         ArgumentNullException.ThrowIfNull(results);
         _results = results;
+        _scopes = scopeFactory;
         _loggerFactory = loggerFactory ?? NullLoggerFactory.Instance;
         _logger = _loggerFactory.CreateLogger<StreamConsumerRegistry>();
     }
@@ -149,9 +152,9 @@ internal sealed class StreamConsumerRegistry
         {
             throw new StreamBusConfigurationException("ConsumeOptions.ErrorStream must not be configured with FailureMode.Strict.");
         }
-        if (retry.FailureMode == FailureMode.SkipAfterDeadline && options.ErrorStream is null)
+        if (retry.FailureMode == FailureMode.SkipAfterDeadline && options.ErrorStream is null && options.DeadLetter is null && options.ExhaustionCallback is null)
         {
-            throw new StreamBusConfigurationException("ConsumeOptions.ErrorStream is required with FailureMode.SkipAfterDeadline.");
+            throw new StreamBusConfigurationException("ConsumeOptions.ErrorStream is required with FailureMode.SkipAfterDeadline (or a queue DeadLetter destination / OnExhausted callback).");
         }
         if (options.ErrorStream is { } errorOptions)
         {
@@ -233,7 +236,7 @@ internal sealed class StreamConsumerRegistry
                 var loop = new StreamPartitionConsumer(
                     handle, stream, partitionStream, index, reference, options, handler,
                     _guard, state, StreamBusMetrics.Shared, _vhost, busName, errors,
-                    _loggerFactory.CreateLogger<StreamPartitionConsumer>());
+                    _loggerFactory.CreateLogger<StreamPartitionConsumer>(), null, null, _scopes);
                 loops.Add((loop, loop.RunAsync(family.Token)));
             }
             // The attach point is fixed before ConsumeAsync returns: wait for every
@@ -362,7 +365,7 @@ internal sealed class StreamConsumerRegistry
                     handle, sourceStream, partitionStream, index, reference, consumeOptions,
                     static _ => Task.CompletedTask, // unreached in EO mode (the branch above calls ResultHandler)
                     _guard, state, StreamBusMetrics.Shared, _vhost, busName, errors,
-                    _loggerFactory.CreateLogger<StreamPartitionConsumer>(), consumeOptions.EffectivelyOnce, _results);
+                    _loggerFactory.CreateLogger<StreamPartitionConsumer>(), consumeOptions.EffectivelyOnce, _results, _scopes);
                 loops.Add((loop, loop.RunAsync(family.Token)));
             }
             // Same attach contract as ConsumeAsync: every partition's first broker

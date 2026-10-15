@@ -63,7 +63,8 @@ public static class ServiceCollectionExtensions
                 opts => new StreamBusConnectionSupervisor(opts, sp.GetRequiredService<IStreamSystemConnector>()),
                 sp.GetService<ILoggerFactory>(),
                 router,
-                marker => store.Registrations.Where(r => r.BusType == marker).Select(r => r.Options.Serializer).FirstOrDefault() ?? SystemTextJsonStreamSerializer.Default));
+                marker => store.Registrations.Where(r => r.BusType == marker).Select(r => r.Options.Serializer).FirstOrDefault() ?? SystemTextJsonStreamSerializer.Default,
+                sp.GetService<IServiceScopeFactory>()));
         services.TryAddSingleton<IHostedService, StreamBusHostedService>();
         services.TryAddSingleton<StreamBusHealthCheck>();
         services.TryAddSingleton<IHealthCheck>(sp => sp.GetRequiredService<StreamBusHealthCheck>());
@@ -525,6 +526,10 @@ public sealed class StreamBusHostedService : IHostedService
         var entry = _registry.GetOrCreateEntry(reg.BusMarker, vhost);
         var reference = ConsumerReferenceValidation.Require(reg.Options.Reference, reg.Stream);
         var options = reg.Options with { Reference = reference };
+        if (options.ExhaustionCallback is not null && options.ShadowedDeadLetter is { } shadowed)
+            _logger.LogWarning(
+                "ReceiveEndpoint '{Stream}' sets both OnExhausted and a dead-letter destination '{Destination}'; the callback owns exhaustion and the destination is shadowed.",
+                reg.Stream, shadowed.Name);
         var handler = TypedConsumerHandler.Create(reg.MessageType, reg.ConsumerType, _scopes!, serializer);
         var attempt = 0;
         while (true)

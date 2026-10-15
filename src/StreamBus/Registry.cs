@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -29,19 +30,22 @@ public sealed class StreamBusRegistry : IStreamBusRegistry
     private readonly ILoggerFactory _loggerFactory;
     private readonly StreamPublishRouter _publishRouter;
     private readonly Func<Type, IStreamSerializer> _serializerResolver;
+    private readonly IServiceScopeFactory? _scopes;
 
     public StreamBusRegistry(
         Func<string, StreamBusOptions> resolveOptions,
         Func<StreamBusOptions, StreamBusConnectionSupervisor> createSupervisor,
         ILoggerFactory? loggerFactory = null,
         StreamPublishRouter? publishRouter = null,
-        Func<Type, IStreamSerializer>? serializerResolver = null)
+        Func<Type, IStreamSerializer>? serializerResolver = null,
+        IServiceScopeFactory? scopeFactory = null)
     {
         _resolveOptions = resolveOptions;
         _createSupervisor = createSupervisor;
         _loggerFactory = loggerFactory ?? NullLoggerFactory.Instance;
         _publishRouter = publishRouter ?? new StreamPublishRouter(new StreamBusPublishStore());
         _serializerResolver = serializerResolver ?? (_ => SystemTextJsonStreamSerializer.Default);
+        _scopes = scopeFactory;
     }
 
     public IStreamBus GetOrCreateBus(string vhost)
@@ -70,7 +74,7 @@ public sealed class StreamBusRegistry : IStreamBusRegistry
         => _results.GetOrAdd(vhost, _ => new ResultProducerRegistry(SupervisorForCore(vhost), vhost));
 
     internal StreamConsumerRegistry ConsumersFor(string vhost)
-        => _consumers.GetOrAdd(vhost, _ => new StreamConsumerRegistry(SupervisorForCore(vhost), vhost, ProducersFor(vhost), _loggerFactory, ResultProducersFor(vhost)));
+        => _consumers.GetOrAdd(vhost, _ => new StreamConsumerRegistry(SupervisorForCore(vhost), vhost, ProducersFor(vhost), _loggerFactory, ResultProducersFor(vhost), _scopes));
 
     internal IReadOnlyCollection<IStreamConsumer> ActiveConsumers
         => _consumers.Values.SelectMany(r => r.ActiveConsumers).ToList();

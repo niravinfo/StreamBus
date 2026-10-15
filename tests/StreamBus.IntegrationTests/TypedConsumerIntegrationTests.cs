@@ -279,8 +279,8 @@ public sealed class TypedConsumerIntegrationTests : IAsyncDisposable
             cfg => cfg.ReceiveEndpoint(stream, e =>
             {
                 e.Consumer<OrderConsumer>("poison-group");
-                e.Retry(new RetryPolicy { FailureMode = FailureMode.SkipAfterDeadline, MaxAttempts = 2, BaseDelay = TimeSpan.FromMilliseconds(10), MaxJitter = TimeSpan.Zero });
-                e.ErrorStream(new ErrorStreamOptions { Stream = error });
+                e.UseRetry(new RetryPolicy { FailureMode = FailureMode.SkipAfterDeadline, MaxAttempts = 2, BaseDelay = TimeSpan.FromMilliseconds(10), MaxJitter = TimeSpan.Zero });
+                e.DeadLetterTo(error, DeadLetterType.Stream);
             }));
         await using var pub = await BusInstance.StartAsync();
         await pub.Bus.PublishRawAsync(stream, Encoding.UTF8.GetBytes("{bad json"), new PublishOptions(), ct);
@@ -345,7 +345,7 @@ public sealed class TypedConsumerIntegrationTests : IAsyncDisposable
             cfg => cfg.ReceiveEndpoint(stream, e =>
             {
                 e.Consumer<FlakyTypedConsumer>("retry-group");
-                e.Retry(new RetryPolicy { BaseDelay = TimeSpan.FromMilliseconds(10), MaxJitter = TimeSpan.Zero });
+                e.UseRetry(new RetryPolicy { BaseDelay = TimeSpan.FromMilliseconds(10), MaxJitter = TimeSpan.Zero });
             }));
         await using var pub = await BusInstance.StartAsync();
         for (var seq = 0; seq < 5; seq++)
@@ -385,8 +385,8 @@ public sealed class TypedConsumerIntegrationTests : IAsyncDisposable
             cfg => cfg.ReceiveEndpoint(stream, e =>
             {
                 e.Consumer<OrderConsumer>("mismatch-group");
-                e.Retry(new RetryPolicy { FailureMode = FailureMode.SkipAfterDeadline, MaxAttempts = 1, BaseDelay = TimeSpan.FromMilliseconds(10), MaxJitter = TimeSpan.Zero });
-                e.ErrorStream(new ErrorStreamOptions { Stream = error });
+                e.UseRetry(new RetryPolicy { FailureMode = FailureMode.SkipAfterDeadline, MaxAttempts = 1, BaseDelay = TimeSpan.FromMilliseconds(10), MaxJitter = TimeSpan.Zero });
+                e.DeadLetterTo(error, DeadLetterType.Stream);
             }));
         await using var pub = await BusInstance.StartAsync();
         var mismatched = Encoding.UTF8.GetBytes("{\"OrderId\":123,\"Seq\":1}");

@@ -141,33 +141,21 @@ public sealed class TypedStartupIntegrationTests : IAsyncDisposable
     }
 
     [Fact]
-    public async Task Invalid_options_fail_blocking_startup()
+    public void Unbounded_retry_with_destination_fails_at_registration()
     {
-        var ct = TestContext.Current.CancellationToken;
-        var stream = Unique("typed-invalid");
-        _streams.Add(stream);
-        var admin = await ConnectAdminAsync();
-        await using var _ = admin;
-        await admin.CreateStream(new StreamSpec(stream));
-        var got = new List<(string Who, int Seq)>();
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddSingleton(got);
-        services.AddStreamBus((_, cfg) =>
-        {
-            cfg.Host("127.0.0.1", "/", h => h.Credentials(User(), Password()));
-            cfg.Hosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(30)));
-            cfg.ReceiveEndpoint(stream, e =>
+        var ex = Assert.Throws<StreamBusConfigurationException>(() =>
+            services.AddStreamBus((_, cfg) =>
             {
-                e.Consumer<OrderConsumer>("invalid-group");
-                e.Retry(new RetryPolicy { FailureMode = FailureMode.SkipAfterDeadline, MaxAttempts = 2 });
-            });
-        });
-        await using var sp = services.BuildServiceProvider();
-        var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
-        var ex = await Assert.ThrowsAsync<StreamBusConfigurationException>(() => hosted.StartAsync(ct));
-        Assert.Contains("ErrorStream", ex.Message);
-        await hosted.StopAsync(ct);
+                cfg.Host("127.0.0.1", "/", h => h.Credentials(User(), Password()));
+                cfg.ReceiveEndpoint("typed-invalid", e =>
+                {
+                    e.Consumer<OrderConsumer>("invalid-group");
+                    e.DeadLetterTo("typed-invalid-errors", DeadLetterType.Stream);
+                });
+            }));
+        Assert.Contains("bound", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

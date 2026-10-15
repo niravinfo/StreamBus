@@ -1,3 +1,4 @@
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using RabbitMQ.Stream.Client;
@@ -93,6 +94,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
     private readonly ResultProducerRegistry? _results;
     private readonly string _waterKey;
     private readonly OffsetStorer _storer;
+    private readonly IServiceScopeFactory? _scopes;
 
     private readonly SemaphoreSlim _dispatchGate = new(1, 1);
     private readonly SemaphoreSlim _storeGate = new(1, 1);
@@ -120,7 +122,8 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
         ErrorPublisher errorPublisher,
         ILogger<StreamPartitionConsumer>? logger = null,
         EffectivelyOnceConfig? effectivelyOnce = null,
-        ResultProducerRegistry? results = null)
+        ResultProducerRegistry? results = null,
+        IServiceScopeFactory? scopeFactory = null)
     {
         ArgumentNullException.ThrowIfNull(system);
         ArgumentNullException.ThrowIfNull(stream);
@@ -140,6 +143,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
             throw new ArgumentException("A result producer registry without effectively-once config is inconsistent.", nameof(effectivelyOnce));
         _eo = effectivelyOnce;
         _results = results;
+        _scopes = scopeFactory;
         _system = system;
         _stream = stream;
         _partitionStream = partitionStream;
@@ -502,6 +506,43 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
     // recycle + redeliver), never to a silent skip.
     private async Task ExhaustAsync(RawConsumer consumer, ulong offset, ConsumeContext consumeContext, int attempts, Exception lastError, AttachState attach)
     {
+        if (_options.ExhaustionCallback is { } owned)
+        {
+            _logger.LogWarning(lastError,
+                "Retry budget exhausted for stream {Stream} partition {Partition} offset {Offset} after {Attempts} attempts; handing off to the OnExhausted callback.",
+                _stream, _partitionIndex, offset, attempts);
+            var scopes = _scopes ?? throw new StreamBusConfigurationException(
+                $"OnExhausted callback for stream '{_stream}' has no IServiceScopeFactory available (internal error).");
+            using var scope = scopes.CreateScope();
+            var exhausted = new ExhaustedContext
+            {
+                Stream = _stream,
+                Partition = _partitionIndex,
+                Offset = offset,
+                Body = consumeContext.Body,
+                Metadata = consumeContext.Metadata,
+                Attempts = attempts,
+                Exception = lastError,
+                FailedAt = DateTimeOffset.UtcNow,
+                Services = scope.ServiceProvider,
+            };
+            await ExhaustionCallbackRunner.RunAsync(
+                owned,
+                exhausted,
+                () => AdmitAndCommitStoreAsync(consumer, offset, attach, attach.LoopToken),
+                ex =>
+                {
+                    _logger.LogWarning(ex,
+                        "OnExhausted callback faulted for stream {Stream} partition {Partition}; recycling the attach (redeliver, never skip).",
+                        _stream, _partitionIndex);
+                    FailAttach(attach, offset, ex, "OnExhausted callback faulted");
+                },
+                attach.LoopToken).ConfigureAwait(false);
+            return;
+        }
+        if (_options.DeadLetter is { } queue)
+            throw new StreamBusConfigurationException(
+                $"Queue dead-letter destination '{queue.Name}' on stream '{_stream}' is not supported by this build (AMQP transport pending).");
         var errorStream = _options.ErrorStream!.Stream;
         var failedAt = DateTimeOffset.UtcNow;
         var envelope = new ErrorEnvelope
