@@ -5,7 +5,16 @@ public interface IStreamBus
     string Vhost { get; }
     BusConnectionState State { get; }
     Task<BusReadiness> WaitUntilReadyAsync(ReadinessPolicy policy, CancellationToken ct = default);
-    Task PublishAsync(string stream, ReadOnlyMemory<byte> body, PublishOptions? options = null, CancellationToken ct = default);
+    Task PublishAsync<T>(T message, PublishOptions? options = null, CancellationToken ct = default);
+    Task PublishAsync<T>(T message, CancellationToken ct);
+    Task PublishAsync<T>(string stream, T message, PublishOptions? options = null, CancellationToken ct = default);
+    Task PublishAsync<T>(string stream, T message, CancellationToken ct);
+    Task PublishSuperAsync<T>(T message, string routingKey, PublishOptions? options = null, CancellationToken ct = default);
+    Task PublishSuperAsync<T>(T message, string routingKey, CancellationToken ct);
+    Task PublishSuperAsync<T>(string stream, T message, string routingKey, PublishOptions? options = null, CancellationToken ct = default);
+    Task PublishSuperAsync<T>(string stream, T message, string routingKey, CancellationToken ct);
+    Task PublishRawAsync(string stream, ReadOnlyMemory<byte> body, PublishOptions? options = null, CancellationToken ct = default);
+    Task<int> RequeueErrorsAsync(string stream, string errorQueue, CancellationToken ct = default);
     Task<IStreamConsumer> ConsumeAsync(string stream, ConsumeOptions options, Func<ConsumeContext, Task> handler, CancellationToken ct = default);
     Task<ulong?> GetConsumerOffsetAsync(string stream, string reference, int partition, CancellationToken ct = default);
     Task SetConsumerOffsetAsync(string stream, string reference, int partition, ulong offset, CancellationToken ct = default);
@@ -36,7 +45,7 @@ public interface IStreamBus
     Task<IStreamConsumer> ConsumeEffectivelyOnceAsync(string sourceStream, string targetStream, EffectivelyOnceOptions options, Func<ConsumeContext, Task<ReadOnlyMemory<byte>>> handler, CancellationToken ct = default);
     /// <summary>
     /// Declares streams and super streams idempotently (FR-7). Startup
-    /// declarations configured via <c>Topology(...)</c> are declared automatically;
+    /// declarations configured via topology are declared automatically;
     /// these methods cover explicit/operator-driven declaration anytime.
     /// </summary>
     IStreamTopology Topology { get; }
@@ -54,21 +63,84 @@ internal sealed class StreamBus : IStreamBus
     private readonly StreamProducerRegistry _producers;
     private readonly StreamConsumerRegistry _consumers;
     private readonly IStreamTopology _topology;
-    public StreamBus(string vhost, StreamBusConnectionSupervisor supervisor, StreamProducerRegistry producers, StreamConsumerRegistry consumers, IStreamTopology topology)
+    private readonly IStreamSerializer _serializer;
+    private readonly StreamPublishRouter _router;
+    private readonly ErrorQueueTransport _errorQueues;
+    private readonly Func<string, DeclaredStream?> _findDeclaration;
+    public StreamBus(string vhost, StreamBusConnectionSupervisor supervisor, StreamProducerRegistry producers, StreamConsumerRegistry consumers, IStreamTopology topology, IStreamSerializer serializer, StreamPublishRouter router, ErrorQueueTransport errorQueues, Func<string, DeclaredStream?>? findDeclaration = null)
     {
         Vhost = vhost;
         _supervisor = supervisor;
         _producers = producers;
         _consumers = consumers;
         _topology = topology;
+        _serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
+        _router = router ?? throw new ArgumentNullException(nameof(router));
+        _errorQueues = errorQueues ?? throw new ArgumentNullException(nameof(errorQueues));
+        _findDeclaration = findDeclaration ?? (_ => null);
     }
     public string Vhost { get; }
     public IStreamTopology Topology => _topology;
     public BusConnectionState State => _supervisor.State;
     public Task<BusReadiness> WaitUntilReadyAsync(ReadinessPolicy policy, CancellationToken ct = default)
         => _supervisor.WaitUntilReadyAsync(policy, ct);
-    public Task PublishAsync(string stream, ReadOnlyMemory<byte> body, PublishOptions? options = null, CancellationToken ct = default)
+    public Task PublishAsync<T>(T message, PublishOptions? options = null, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+        var reg = _router.Resolve(typeof(DefaultBus), typeof(T));
+        if (reg.IsSuper)
+            throw new StreamBusConfigurationException($"Message {typeof(T).FullName} is registered with PublishSuper for stream '{reg.Stream}'. Use PublishSuperAsync (routing key required).");
+        var body = _serializer.Serialize(message);
+        var effective = (options ?? new PublishOptions()) with { IsSuperStream = false, RoutingKey = null };
+        return _producers.PublishAsync(reg.Stream, body, effective, ct);
+    }
+    public Task PublishAsync<T>(T message, CancellationToken ct)
+        => PublishAsync(message, null, ct);
+    public Task PublishAsync<T>(string stream, T message, PublishOptions? options = null, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(stream);
+        ArgumentNullException.ThrowIfNull(message);
+        DeclareSetBuilder.ValidateCallTarget(_findDeclaration(stream), stream, wantSuper: false);
+        var body = _serializer.Serialize(message);
+        var effective = (options ?? new PublishOptions()) with { IsSuperStream = false, RoutingKey = null };
+        return _producers.PublishAsync(stream, body, effective, ct);
+    }
+    public Task PublishAsync<T>(string stream, T message, CancellationToken ct)
+        => PublishAsync(stream, message, null, ct);
+    public Task PublishSuperAsync<T>(T message, string routingKey, PublishOptions? options = null, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+        ArgumentException.ThrowIfNullOrWhiteSpace(routingKey);
+        var reg = _router.Resolve(typeof(DefaultBus), typeof(T));
+        if (!reg.IsSuper)
+            throw new StreamBusConfigurationException($"Message {typeof(T).FullName} is registered with Publish for stream '{reg.Stream}'. Use PublishAsync (no routing key).");
+        var body = _serializer.Serialize(message);
+        var effective = (options ?? new PublishOptions()) with { IsSuperStream = true, RoutingKey = routingKey };
+        return _producers.PublishAsync(reg.Stream, body, effective, ct);
+    }
+    public Task PublishSuperAsync<T>(T message, string routingKey, CancellationToken ct)
+        => PublishSuperAsync(message, routingKey, null, ct);
+    public Task PublishSuperAsync<T>(string stream, T message, string routingKey, PublishOptions? options = null, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(stream);
+        ArgumentNullException.ThrowIfNull(message);
+        ArgumentException.ThrowIfNullOrWhiteSpace(routingKey);
+        DeclareSetBuilder.ValidateCallTarget(_findDeclaration(stream), stream, wantSuper: true);
+        var body = _serializer.Serialize(message);
+        var effective = (options ?? new PublishOptions()) with { IsSuperStream = true, RoutingKey = routingKey };
+        return _producers.PublishAsync(stream, body, effective, ct);
+    }
+    public Task PublishSuperAsync<T>(string stream, T message, string routingKey, CancellationToken ct)
+        => PublishSuperAsync(stream, message, routingKey, null, ct);
+    public Task PublishRawAsync(string stream, ReadOnlyMemory<byte> body, PublishOptions? options = null, CancellationToken ct = default)
         => _producers.PublishAsync(stream, body, options ?? new PublishOptions(), ct);
+    public Task<int> RequeueErrorsAsync(string stream, string errorQueue, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(stream);
+        ArgumentException.ThrowIfNullOrWhiteSpace(errorQueue);
+        return _errorQueues.DrainAsync(errorQueue, (envelope, ct2) =>
+            _producers.PublishAsync(stream, envelope.Body, new PublishOptions(), ct2), ct);
+    }
     public Task<IStreamConsumer> ConsumeAsync(string stream, ConsumeOptions options, Func<ConsumeContext, Task> handler, CancellationToken ct = default)
         => _consumers.ConsumeAsync(typeof(DefaultBus), stream, options, handler, ct);
     public Task<ulong?> GetConsumerOffsetAsync(string stream, string reference, int partition, CancellationToken ct = default)
@@ -90,21 +162,84 @@ internal sealed class StreamBus<TBus> : IStreamBus<TBus>
     private readonly StreamProducerRegistry _producers;
     private readonly StreamConsumerRegistry _consumers;
     private readonly IStreamTopology _topology;
-    public StreamBus(string vhost, StreamBusConnectionSupervisor supervisor, StreamProducerRegistry producers, StreamConsumerRegistry consumers, IStreamTopology topology)
+    private readonly IStreamSerializer _serializer;
+    private readonly StreamPublishRouter _router;
+    private readonly ErrorQueueTransport _errorQueues;
+    private readonly Func<string, DeclaredStream?> _findDeclaration;
+    public StreamBus(string vhost, StreamBusConnectionSupervisor supervisor, StreamProducerRegistry producers, StreamConsumerRegistry consumers, IStreamTopology topology, IStreamSerializer serializer, StreamPublishRouter router, ErrorQueueTransport errorQueues, Func<string, DeclaredStream?>? findDeclaration = null)
     {
         Vhost = vhost;
         _supervisor = supervisor;
         _producers = producers;
         _consumers = consumers;
         _topology = topology;
+        _serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
+        _router = router ?? throw new ArgumentNullException(nameof(router));
+        _errorQueues = errorQueues ?? throw new ArgumentNullException(nameof(errorQueues));
+        _findDeclaration = findDeclaration ?? (_ => null);
     }
     public string Vhost { get; }
     public IStreamTopology Topology => _topology;
     public BusConnectionState State => _supervisor.State;
     public Task<BusReadiness> WaitUntilReadyAsync(ReadinessPolicy policy, CancellationToken ct = default)
         => _supervisor.WaitUntilReadyAsync(policy, ct);
-    public Task PublishAsync(string stream, ReadOnlyMemory<byte> body, PublishOptions? options = null, CancellationToken ct = default)
+    public Task PublishAsync<T>(T message, PublishOptions? options = null, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+        var reg = _router.Resolve(typeof(TBus), typeof(T));
+        if (reg.IsSuper)
+            throw new StreamBusConfigurationException($"Message {typeof(T).FullName} is registered with PublishSuper for stream '{reg.Stream}'. Use PublishSuperAsync (routing key required).");
+        var body = _serializer.Serialize(message);
+        var effective = (options ?? new PublishOptions()) with { IsSuperStream = false, RoutingKey = null };
+        return _producers.PublishAsync(reg.Stream, body, effective, ct);
+    }
+    public Task PublishAsync<T>(T message, CancellationToken ct)
+        => PublishAsync(message, null, ct);
+    public Task PublishAsync<T>(string stream, T message, PublishOptions? options = null, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(stream);
+        ArgumentNullException.ThrowIfNull(message);
+        DeclareSetBuilder.ValidateCallTarget(_findDeclaration(stream), stream, wantSuper: false);
+        var body = _serializer.Serialize(message);
+        var effective = (options ?? new PublishOptions()) with { IsSuperStream = false, RoutingKey = null };
+        return _producers.PublishAsync(stream, body, effective, ct);
+    }
+    public Task PublishAsync<T>(string stream, T message, CancellationToken ct)
+        => PublishAsync(stream, message, null, ct);
+    public Task PublishSuperAsync<T>(T message, string routingKey, PublishOptions? options = null, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+        ArgumentException.ThrowIfNullOrWhiteSpace(routingKey);
+        var reg = _router.Resolve(typeof(TBus), typeof(T));
+        if (!reg.IsSuper)
+            throw new StreamBusConfigurationException($"Message {typeof(T).FullName} is registered with Publish for stream '{reg.Stream}'. Use PublishAsync (no routing key).");
+        var body = _serializer.Serialize(message);
+        var effective = (options ?? new PublishOptions()) with { IsSuperStream = true, RoutingKey = routingKey };
+        return _producers.PublishAsync(reg.Stream, body, effective, ct);
+    }
+    public Task PublishSuperAsync<T>(T message, string routingKey, CancellationToken ct)
+        => PublishSuperAsync(message, routingKey, null, ct);
+    public Task PublishSuperAsync<T>(string stream, T message, string routingKey, PublishOptions? options = null, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(stream);
+        ArgumentNullException.ThrowIfNull(message);
+        ArgumentException.ThrowIfNullOrWhiteSpace(routingKey);
+        DeclareSetBuilder.ValidateCallTarget(_findDeclaration(stream), stream, wantSuper: true);
+        var body = _serializer.Serialize(message);
+        var effective = (options ?? new PublishOptions()) with { IsSuperStream = true, RoutingKey = routingKey };
+        return _producers.PublishAsync(stream, body, effective, ct);
+    }
+    public Task PublishSuperAsync<T>(string stream, T message, string routingKey, CancellationToken ct)
+        => PublishSuperAsync(stream, message, routingKey, null, ct);
+    public Task PublishRawAsync(string stream, ReadOnlyMemory<byte> body, PublishOptions? options = null, CancellationToken ct = default)
         => _producers.PublishAsync(stream, body, options ?? new PublishOptions(), ct);
+    public Task<int> RequeueErrorsAsync(string stream, string errorQueue, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(stream);
+        ArgumentException.ThrowIfNullOrWhiteSpace(errorQueue);
+        return _errorQueues.DrainAsync(errorQueue, (envelope, ct2) =>
+            _producers.PublishAsync(stream, envelope.Body, new PublishOptions(), ct2), ct);
+    }
     public Task<IStreamConsumer> ConsumeAsync(string stream, ConsumeOptions options, Func<ConsumeContext, Task> handler, CancellationToken ct = default)
         => _consumers.ConsumeAsync(typeof(TBus), stream, options, handler, ct);
     public Task<ulong?> GetConsumerOffsetAsync(string stream, string reference, int partition, CancellationToken ct = default)

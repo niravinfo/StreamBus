@@ -1,3 +1,4 @@
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -74,14 +75,18 @@ internal sealed class StreamConsumerRegistry
     private readonly MonotonicOffsetGuard _guard = new();
     private readonly HashSet<StreamConsumerRegistration> _live = new();
     private readonly object _gate = new();
+    private readonly IServiceScopeFactory? _scopes;
+    private readonly ErrorQueueTransport? _queues;
 
-    public StreamConsumerRegistry(StreamBusConnectionSupervisor supervisor, string vhost, StreamProducerRegistry producers, ILoggerFactory? loggerFactory, ResultProducerRegistry results)
+    public StreamConsumerRegistry(StreamBusConnectionSupervisor supervisor, string vhost, StreamProducerRegistry producers, ILoggerFactory? loggerFactory, ResultProducerRegistry results, IServiceScopeFactory? scopeFactory = null, ErrorQueueTransport? queues = null)
     {
         _supervisor = supervisor;
         _vhost = vhost;
         _producers = producers;
         ArgumentNullException.ThrowIfNull(results);
         _results = results;
+        _scopes = scopeFactory;
+        _queues = queues;
         _loggerFactory = loggerFactory ?? NullLoggerFactory.Instance;
         _logger = _loggerFactory.CreateLogger<StreamConsumerRegistry>();
     }
@@ -149,16 +154,15 @@ internal sealed class StreamConsumerRegistry
         {
             throw new StreamBusConfigurationException("ConsumeOptions.ErrorStream must not be configured with FailureMode.Strict.");
         }
-        if (retry.FailureMode == FailureMode.SkipAfterDeadline && options.ErrorStream is null)
+        if (retry.FailureMode == FailureMode.SkipAfterDeadline && options.ErrorStream is null && options.DeadLetter is null && options.ExhaustionCallback is null)
         {
-            throw new StreamBusConfigurationException("ConsumeOptions.ErrorStream is required with FailureMode.SkipAfterDeadline.");
+            throw new StreamBusConfigurationException("ConsumeOptions.ErrorStream is required with FailureMode.SkipAfterDeadline (or a queue DeadLetter destination / OnExhausted callback).");
         }
         if (options.ErrorStream is { } errorOptions)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(errorOptions.Stream);
         }
-        var reference = options.Reference ?? ReferenceDerivation.Derive(busType, stream);
-        ReferenceDerivation.Validate(reference);
+        var reference = ConsumerReferenceValidation.Require(options.Reference, stream);
 
         var readiness = await _supervisor.WaitUntilReadyAsync(options.ReadinessPolicy, ct).ConfigureAwait(false);
         if (readiness == BusReadiness.Fatal)
@@ -221,7 +225,7 @@ internal sealed class StreamConsumerRegistry
 
         var busName = busType.FullName ?? busType.Name;
         var family = new CancellationTokenSource();
-        var errors = new ErrorPublisher(_producers, _loggerFactory.CreateLogger<ErrorPublisher>());
+        var errors = new ErrorPublisher(_producers, _loggerFactory.CreateLogger<ErrorPublisher>(), _queues);
         var loops = new List<(StreamPartitionConsumer Loop, Task RunTask)>(partitionStreams.Length);
         var scopes = new List<IDisposable>(partitionStreams.Length);
         try
@@ -234,7 +238,7 @@ internal sealed class StreamConsumerRegistry
                 var loop = new StreamPartitionConsumer(
                     handle, stream, partitionStream, index, reference, options, handler,
                     _guard, state, StreamBusMetrics.Shared, _vhost, busName, errors,
-                    _loggerFactory.CreateLogger<StreamPartitionConsumer>());
+                    _loggerFactory.CreateLogger<StreamPartitionConsumer>(), null, null, _scopes);
                 loops.Add((loop, loop.RunAsync(family.Token)));
             }
             // The attach point is fixed before ConsumeAsync returns: wait for every
@@ -286,8 +290,8 @@ internal sealed class StreamConsumerRegistry
         ArgumentNullException.ThrowIfNull(options.ReadinessPolicy);
         EffectivelyOnceValidation.ValidateConsume(options.Retry);
         var reference = options.Reference ?? ResultNaming.ConsumerReference(busType, sourceStream, targetStream);
-        ReferenceDerivation.Validate(reference);
-        if (options.Reference is not null) ReferenceDerivation.Validate(options.Reference);
+        ConsumerReferenceValidation.Validate(reference);
+        if (options.Reference is not null) ConsumerReferenceValidation.Validate(options.Reference);
 
         var readiness = await _supervisor.WaitUntilReadyAsync(options.ReadinessPolicy, ct).ConfigureAwait(false);
         if (readiness == BusReadiness.Fatal)
@@ -331,7 +335,7 @@ internal sealed class StreamConsumerRegistry
 
         var busName = busType.FullName ?? busType.Name;
         var family = new CancellationTokenSource();
-        var errors = new ErrorPublisher(_producers, _loggerFactory.CreateLogger<ErrorPublisher>());
+        var errors = new ErrorPublisher(_producers, _loggerFactory.CreateLogger<ErrorPublisher>(), _queues);
         var targetRouting = options.TargetRouting ?? (static ctx => ctx.RoutingValue);
         var loops = new List<(StreamPartitionConsumer Loop, Task RunTask)>(sourcePartitions.Length);
         var scopes = new List<IDisposable>(sourcePartitions.Length);
@@ -363,7 +367,7 @@ internal sealed class StreamConsumerRegistry
                     handle, sourceStream, partitionStream, index, reference, consumeOptions,
                     static _ => Task.CompletedTask, // unreached in EO mode (the branch above calls ResultHandler)
                     _guard, state, StreamBusMetrics.Shared, _vhost, busName, errors,
-                    _loggerFactory.CreateLogger<StreamPartitionConsumer>(), consumeOptions.EffectivelyOnce, _results);
+                    _loggerFactory.CreateLogger<StreamPartitionConsumer>(), consumeOptions.EffectivelyOnce, _results, _scopes);
                 loops.Add((loop, loop.RunAsync(family.Token)));
             }
             // Same attach contract as ConsumeAsync: every partition's first broker
@@ -403,7 +407,7 @@ internal sealed class StreamConsumerRegistry
     public async Task<ulong?> GetOffsetAsync(string stream, string reference, int partition, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(stream);
-        ReferenceDerivation.Validate(reference);
+        ConsumerReferenceValidation.Validate(reference);
         await EnsureReadyAsync(stream, ct).ConfigureAwait(false);
         var handle = _supervisor.CurrentHandle
             ?? throw new StreamBusNotReadyException($"StreamBus for vhost '{_vhost}' is not ready; offset query for '{stream}' refused.");
@@ -414,7 +418,7 @@ internal sealed class StreamConsumerRegistry
     public async Task SetOffsetAsync(string stream, string reference, int partition, ulong offset, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(stream);
-        ReferenceDerivation.Validate(reference);
+        ConsumerReferenceValidation.Validate(reference);
         await EnsureReadyAsync(stream, ct).ConfigureAwait(false);
         var handle = _supervisor.CurrentHandle
             ?? throw new StreamBusNotReadyException($"StreamBus for vhost '{_vhost}' is not ready; offset store for '{stream}' refused.");
@@ -457,7 +461,7 @@ internal sealed class StreamConsumerRegistry
         var replayOptions = new ConsumeOptions { Offset = ConsumeOffset.AlwaysFirst };
         var guard = new MonotonicOffsetGuard(); // replay-scoped: never touches consumer watermarks.
         var state = new PartitionState(); // untracked: replay progress surfaces via the return count + logs, not the meter.
-        var errors = new ErrorPublisher(_producers, _loggerFactory.CreateLogger<ErrorPublisher>());
+        var errors = new ErrorPublisher(_producers, _loggerFactory.CreateLogger<ErrorPublisher>(), _queues);
         var replayed = 0;
         var skipped = 0;
         long lastTicks = DateTimeOffset.UtcNow.UtcTicks; // cross-thread via Interlocked below.

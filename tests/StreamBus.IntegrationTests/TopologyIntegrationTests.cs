@@ -41,11 +41,11 @@ public sealed class TopologyIntegrationTests : IAsyncDisposable
         public ServiceProvider Provider { get; private set; } = null!;
         public StreamBusHostedService Hosted { get; private set; } = null!;
         public IStreamBus Bus { get; private set; } = null!;
-        public static async Task<BusInstance> StartAsync(string vhost = "/", Action<StreamBusOptionsBuilder>? configure = null)
+        public static async Task<BusInstance> StartAsync(string vhost = "/", Action<IStreamRegistrationContext, IStreamBusConfigurator>? configure = null)
         {
             var services = new ServiceCollection();
             services.AddLogging();
-            services.AddStreamBus(vhost, o => { o.Credentials(User(), Password()); configure?.Invoke(o); });
+            services.AddStreamBus((ctx, cfg) => { cfg.Host("127.0.0.1", vhost, h => h.Credentials(User(), Password())); configure?.Invoke(ctx, cfg); });
             var sp = services.BuildServiceProvider();
             var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
             await hosted.StartAsync(TestContext.Current.CancellationToken);
@@ -90,8 +90,8 @@ public sealed class TopologyIntegrationTests : IAsyncDisposable
         Assert.True(await admin.StreamExists(plain));
         Assert.True(await admin.SuperStreamExists(super));
         Assert.Equal(3, (await admin.QueryPartition(super)).Length);
-        await inst.Bus.PublishAsync(plain, Body("k:0"), new PublishOptions(), ct);
-        await inst.Bus.PublishAsync(super, Body("k:0"), new PublishOptions { IsSuperStream = true, RoutingKey = "k" }, ct);
+        await inst.Bus.PublishRawAsync(plain, Body("k:0"), new PublishOptions(), ct);
+        await inst.Bus.PublishRawAsync(super, Body("k:0"), new PublishOptions { IsSuperStream = true, RoutingKey = "k" }, ct);
     }
 
     [Fact]
@@ -175,9 +175,11 @@ public sealed class TopologyIntegrationTests : IAsyncDisposable
         var super = Unique("topo-super");
         _streams.Add(plain);
         _superStreams.Add(super);
-        await using var inst = await BusInstance.StartAsync("/", o => o.Topology(t => t
-            .DeclareStream(plain)
-            .DeclareSuperStream(super, 2)));
+        await using var inst = await BusInstance.StartAsync("/", (_, cfg) =>
+        {
+            cfg.DeclareStream(plain);
+            cfg.DeclareSuperStream(super, 2);
+        });
         var admin = await ConnectAdminAsync();
         await using var _ = admin;
         await WaitForAsync(() => admin.StreamExists(plain).GetAwaiter().GetResult()
@@ -195,12 +197,13 @@ public sealed class TopologyIntegrationTests : IAsyncDisposable
         _superStreams.Add(super);
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddStreamBus("/", o =>
+        services.AddStreamBus((_, cfg) =>
         {
-            o.Credentials(User(), Password());
-            o.Topology(t => t.DeclareStream(plain).DeclareSuperStream(super, 2));
-            o.Hosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(30)));
+            cfg.Host("127.0.0.1", "/", h => h.Credentials(User(), Password()));
+            cfg.DeclareStream(plain);
+            cfg.DeclareSuperStream(super, 2);
         });
+        services.AddStreamBusHosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(30)));
         await using var sp = services.BuildServiceProvider();
         var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
         await hosted.StartAsync(ct);
@@ -228,12 +231,12 @@ public sealed class TopologyIntegrationTests : IAsyncDisposable
         await admin.CreateSuperStream(new PartitionsSuperStreamSpec(super, 3));
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddStreamBus("/", o =>
+        services.AddStreamBus((_, cfg) =>
         {
-            o.Credentials(User(), Password());
-            o.Topology(t => t.DeclareSuperStream(super, 5));
-            o.Hosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(30)));
+            cfg.Host("127.0.0.1", "/", h => h.Credentials(User(), Password()));
+            cfg.DeclareSuperStream(super, 5);
         });
+        services.AddStreamBusHosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(30)));
         await using var sp = services.BuildServiceProvider();
         var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
         var ex = await Assert.ThrowsAsync<StreamConfigurationConflictException>(() => hosted.StartAsync(ct));
@@ -252,7 +255,7 @@ public sealed class TopologyIntegrationTests : IAsyncDisposable
         _streams.Add(error);
         await using var inst = await BusInstance.StartAsync();
         await inst.Bus.Topology.EnsureStreamAsync(new StreamDeclaration { Name = error, MaxAge = TimeSpan.FromDays(7) }, ct);
-        await inst.Bus.PublishAsync(error, Body("k:0"), new PublishOptions(), ct);
+        await inst.Bus.PublishRawAsync(error, Body("k:0"), new PublishOptions(), ct);
         var got = new List<string>();
         await using var c = await inst.Bus.ConsumeAsync(error,
             new ConsumeOptions { Offset = ConsumeOffset.AlwaysFirst, Reference = Unique("read") },

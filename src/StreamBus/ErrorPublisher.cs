@@ -7,12 +7,14 @@ internal sealed class ErrorPublisher
 {
     private readonly StreamProducerRegistry _producers;
     private readonly ILogger<ErrorPublisher> _logger;
+    private readonly ErrorQueueTransport? _queues;
 
-    public ErrorPublisher(StreamProducerRegistry producers, ILogger<ErrorPublisher>? logger = null)
+    public ErrorPublisher(StreamProducerRegistry producers, ILogger<ErrorPublisher>? logger = null, ErrorQueueTransport? queues = null)
     {
         ArgumentNullException.ThrowIfNull(producers);
         _producers = producers;
         _logger = logger ?? NullLogger<ErrorPublisher>.Instance;
+        _queues = queues;
     }
 
     public Task PublishHandoffAsync(string errorStream, ErrorEnvelope envelope, CancellationToken ct)
@@ -22,6 +24,15 @@ internal sealed class ErrorPublisher
         return _producers.PublishEnvelopeAsync(
             errorStream, envelope.Body, routingKey: null,
             envelope.ToApplicationProperties(), envelope.MessageId, envelope.CorrelationId, ct);
+    }
+
+    public Task PublishQueueHandoffAsync(DeadLetterOptions queue, ErrorEnvelope envelope, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(queue);
+        ArgumentNullException.ThrowIfNull(envelope);
+        if (_queues is null)
+            throw new StreamBusConfigurationException("Queue dead-letter destinations require an error-queue transport (internal error).");
+        return _queues.PublishAsync(queue, envelope, ct);
     }
 
     // Orchestration with injectable transport (unit-testable without a broker):

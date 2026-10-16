@@ -252,3 +252,50 @@ Final green evidence (Release, broker localhost:5552, 2026-10-13):
 
 Directed verdicts applied (controller rulings): FR-3.2 → ✅ (R8, rationale in
 row); FR-10.12 → ✅ (R7 reword approved and applied).
+
+## v2 amendment (user-centric API)
+
+Date: 2026-10-15. Broker: localhost:5552 + AMQP localhost:5672 (both
+reachable this session). Branch: `redesign/user-centric-api`. Head:
+d46a363 (this amendment lands on top).
+
+Matrix discipline carries over: a row is ✅ ONLY if a test asserts the
+criterion. v1 rows whose API changed are re-pinned below; unchanged
+runtime rows (ordering, offsets, effectively-once, metrics) keep their
+v1 pins and stayed green unmodified.
+
+| Area | v2 behavior (one line) | Pinning tests | Status |
+|---|---|---|---|
+| Registration | `AddStreamBus((context, cfg))` + markers + section overloads; `Host` exactly once; `guest` rejected at registration; full `IConfigurationSection` binding with collected path-named errors | `ConfiguratorTests` (10) + `ConfigurationBindingTests` (6) + registration rows in `HostingTests` | ✅ |
+| Removed APIs | `AddStreamBusConsumer*`, `StreamBusOptionsBuilder`, `ReferenceDerivation`, per-bus `Hosting`, raw `PublishAsync(stream, bytes)` (now `PublishRawAsync`) — zero hits in `src`/`tests` by grep | build green + grep | ✅ |
+| Typed publish | Route table per bus; unknown/ambiguous/wrong-method/empty-key errors; explicit-stream overrides never auto-create (`StreamNotFound`) | `PublishRoutingTests` (10) | ✅ |
+| Endpoints | Required verbatim groups, no derivation; same group scales out, different groups independent; raw `ConsumeAsync` requires `Reference` | `ReceiveEndpointTests` (13) + rewritten `TypedConsumerTests`/`OffsetResolutionTests` store/validation rows | ✅ |
+| Retry layering | Global default + endpoint override; Immediate/Interval/Intervals/Exponential/None mappings; derivation table incl. derived `{stream}_error` classic default; unbounded+either is a registration error; callback return advances / throw recycles | `RetryConfigurationTests` (16) | ✅ |
+| Queue dead letters | Opt-in AMQP transport (lazy: no queue destination means no connection); header round-trip; confirmed persistent publish; `RequeueErrorsAsync` ack-after-confirm with malformed skip | Unit `ErrorQueueTests` (7) + broker `ErrorQueueIntegrationTests` (explicit classic + derived default: exhaust → headers → requeue 1 → redelivered) | ✅ |
+| Topology derivation | Declare-set (explicit + endpoint + publish) with explicit-wins and kind-table errors; adopt-if-undeclared (match consumed read-only, mismatch conflicts, missing declarable declared, else config error); early-cancel wiring extended so deterministic declare errors fail fast | `HostingTests` Task-6 block (10) + `Startup_with_topology_and_consumer_converges` with `DeclareStream` dropped (green via derivation) | ✅ |
+| Startup hosting | Service-level `AddStreamBusHosting` (second call throws, default non-blocking); per-bus hosting deleted | Rewritten `HostingTests` hosting rows + new double-registration/null-args rows | ✅ |
+| Docs | Root README + five guide chapters + `llms.txt` ground truths; snippets verified against the Task 1–8 signatures | build green + removed-name grep + review | ✅ |
+
+Behavior deltas vs v1 rows: `Invalid_options_fail_blocking_startup`
+became `Unbounded_retry_with_destination_fails_at_registration`
+(unbounded + destination is now a registration error, not a startup
+error); the v1 observe-only `OnRetryExhausted` hook survives only on the
+raw `ConsumeOptions` path (`OnRetryExhausted_observes_but_never_changes_outcome`
+still green); endpoint exhaustion is owned by `OnExhausted` or a
+dead-letter destination. FR-8.1 (multi-bus markers) semantics unchanged,
+now expressed through `AddStreamBus<TBus>` + per-bus endpoints.
+
+Final green evidence (Release, broker localhost:5552 + AMQP localhost:5672,
+2026-10-15):
+- `dotnet test tests/StreamBus.UnitTests -c Release --nologo -v q`
+  `Passed!  - Failed: 0, Passed: 252, Skipped: 0, Total: 252, Duration: 2 s - StreamBus.UnitTests.dll (net10.0)`
+- `dotnet test tests/StreamBus.IntegrationTests -c Release --nologo -v q`
+  `Passed!  - Failed: 0, Passed: 56, Skipped: 2, Total: 58, Duration: 23 s - StreamBus.IntegrationTests.dll (net10.0)`
+  The 2 skips are exactly the known v1 env-skips (verified by name):
+  `TopologyIntegrationTests.Policy_applied_tuning_is_effective` (management-API
+  gated) and `TopologyIntegrationTests.Leader_placement_gate_G3` (single node).
+  No other failure or skip.
+- Flake note (not a gap): one Debug full-suite run showed
+  `TopologyIntegrationTests.Nonblocking_startup_declares_in_background`
+  failing under parallel load; it passed in isolation (443 ms) and in
+  both subsequent full runs (Debug + Release). No action.

@@ -38,11 +38,15 @@ public sealed class TypedStartupIntegrationTests : IAsyncDisposable
         public ServiceProvider Provider { get; private set; } = null!;
         public StreamBusHostedService Hosted { get; private set; } = null!;
         public IStreamBus Bus { get; private set; } = null!;
-        public static async Task<BusInstance> StartAsync(Action<ServiceCollection>? configure = null, string vhost = "/")
+        public static async Task<BusInstance> StartAsync(Action<ServiceCollection>? configure = null, string vhost = "/", Action<IStreamBusConfigurator>? busConfigure = null)
         {
             var services = new ServiceCollection();
             services.AddLogging();
-            services.AddStreamBus(vhost, o => o.Credentials(User(), Password()));
+            services.AddStreamBus((_, cfg) =>
+            {
+                cfg.Host("127.0.0.1", vhost, h => h.Credentials(User(), Password()));
+                busConfigure?.Invoke(cfg);
+            });
             configure?.Invoke(services);
             var sp = services.BuildServiceProvider();
             var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
@@ -99,8 +103,8 @@ public sealed class TypedStartupIntegrationTests : IAsyncDisposable
     [Fact]
     public async Task Startup_with_topology_and_consumer_converges()
     {
-        // Consumer registered BEFORE the bus (order independence) + stream declared
-        // via Topology in the same config: everything converges after one Start.
+        // No explicit DeclareStream: the endpoint registration alone derives the
+        // stream declaration at startup; everything converges after one Start.
         var ct = TestContext.Current.CancellationToken;
         var stream = Unique("typed-orders");
         _streams.Add(stream);
@@ -108,11 +112,10 @@ public sealed class TypedStartupIntegrationTests : IAsyncDisposable
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton(got);
-        services.AddStreamBusConsumer<OrderEvent, OrderConsumer>(stream);
-        services.AddStreamBus("/", o =>
+        services.AddStreamBus((_, cfg) =>
         {
-            o.Credentials(User(), Password());
-            o.Topology(t => t.DeclareStream(stream));
+            cfg.Host("127.0.0.1", "/", h => h.Credentials(User(), Password()));
+            cfg.ReceiveEndpoint(stream, e => e.Consumer<OrderConsumer>("startup-group"));
         });
         await using var sp = services.BuildServiceProvider();
         var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
@@ -126,7 +129,7 @@ public sealed class TypedStartupIntegrationTests : IAsyncDisposable
             var admin = await ConnectAdminAsync();
             await using var _ = admin;
             await WaitForAsync(() => admin.StreamExists(stream).GetAwaiter().GetResult(), TimeSpan.FromSeconds(30), "startup topology declaration");
-            await bus.PublishAsync(stream, Body(new OrderEvent("o", 0)), new PublishOptions(), ct);
+            await bus.PublishRawAsync(stream, Body(new OrderEvent("o", 0)), new PublishOptions(), ct);
             await WaitForAsync(() => { lock (got) return got.Count >= 1; }, TimeSpan.FromSeconds(30), "typed receipt after startup");
             lock (got) Assert.Single(got);
         }
@@ -137,30 +140,21 @@ public sealed class TypedStartupIntegrationTests : IAsyncDisposable
     }
 
     [Fact]
-    public async Task Invalid_options_fail_blocking_startup()
+    public void Unbounded_retry_with_destination_fails_at_registration()
     {
-        var ct = TestContext.Current.CancellationToken;
-        var stream = Unique("typed-invalid");
-        _streams.Add(stream);
-        var admin = await ConnectAdminAsync();
-        await using var _ = admin;
-        await admin.CreateStream(new StreamSpec(stream));
-        var got = new List<(string Who, int Seq)>();
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddSingleton(got);
-        services.AddStreamBus("/", o =>
-        {
-            o.Credentials(User(), Password());
-            o.Hosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(30)));
-        });
-        services.AddStreamBusConsumer<OrderEvent, OrderConsumer>(stream,
-            o => o.Retry(new RetryPolicy { FailureMode = FailureMode.SkipAfterDeadline, MaxAttempts = 2 }));
-        await using var sp = services.BuildServiceProvider();
-        var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
-        var ex = await Assert.ThrowsAsync<StreamBusConfigurationException>(() => hosted.StartAsync(ct));
-        Assert.Contains("ErrorStream", ex.Message);
-        await hosted.StopAsync(ct);
+        var ex = Assert.Throws<StreamBusConfigurationException>(() =>
+            services.AddStreamBus((_, cfg) =>
+            {
+                cfg.Host("127.0.0.1", "/", h => h.Credentials(User(), Password()));
+                cfg.ReceiveEndpoint("typed-invalid", e =>
+                {
+                    e.Consumer<OrderConsumer>("invalid-group");
+                    e.DeadLetterTo("typed-invalid-errors", DeadLetterType.Stream);
+                });
+            }));
+        Assert.Contains("bound", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -177,9 +171,9 @@ public sealed class TypedStartupIntegrationTests : IAsyncDisposable
             var services = new ServiceCollection();
             services.AddLogging();
             services.AddSingleton(new List<(string Who, int Seq)>());
-            services.AddStreamBus("/", o => o.Credentials(User(), Password()));
-            services.AddStreamBusConsumer<GhostBus, OrderEvent, OrderConsumer>(stream);
+            services.AddStreamBus((_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials(User(), Password())));
             await using var sp = services.BuildServiceProvider();
+            sp.GetRequiredService<StreamBusConsumerStore>().Add(typeof(GhostBus), typeof(OrderEvent), typeof(OrderConsumer), stream, new ConsumeOptions { Reference = "ghost-group" });
             var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
             var ex = await Assert.ThrowsAsync<StreamBusConfigurationException>(() => hosted.StartAsync(ct));
             Assert.Contains("GhostBus", ex.Message);
@@ -190,13 +184,10 @@ public sealed class TypedStartupIntegrationTests : IAsyncDisposable
             var services = new ServiceCollection();
             services.AddLogging();
             services.AddSingleton(new List<(string Who, int Seq)>());
-            services.AddStreamBus("/", o =>
-            {
-                o.Credentials(User(), Password());
-                o.Hosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(30)));
-            });
-            services.AddStreamBusConsumer<GhostBus, OrderEvent, OrderConsumer>(stream);
+            services.AddStreamBus((_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials(User(), Password())));
+            services.AddStreamBusHosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(30)));
             await using var sp = services.BuildServiceProvider();
+            sp.GetRequiredService<StreamBusConsumerStore>().Add(typeof(GhostBus), typeof(OrderEvent), typeof(OrderConsumer), stream, new ConsumeOptions { Reference = "ghost-group" });
             var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
             var ex = await Assert.ThrowsAsync<StreamBusConfigurationException>(() => hosted.StartAsync(ct));
             Assert.Contains("GhostBus", ex.Message);
@@ -214,14 +205,16 @@ public sealed class TypedStartupIntegrationTests : IAsyncDisposable
         await using var _ = admin;
         await admin.CreateStream(new StreamSpec(stream));
         var got = new List<(string Who, int Seq)>();
-        await using var inst = await BusInstance.StartAsync(s =>
-        {
-            s.AddSingleton(got);
-            s.AddStreamBusConsumer<OrderEvent, OrderConsumer>(stream);
-            s.AddStreamBusConsumer<OrderEvent, AuditConsumer>(stream);
-        });
+        await using var inst = await BusInstance.StartAsync(
+            s => { s.AddSingleton(got); },
+            "/",
+            cfg =>
+            {
+                cfg.ReceiveEndpoint(stream, e => e.Consumer<OrderConsumer>("orders-group"));
+                cfg.ReceiveEndpoint(stream, e => e.Consumer<AuditConsumer>("audit-group"));
+            });
         for (var seq = 0; seq < 4; seq++)
-            await inst.Bus.PublishAsync(stream, Body(new OrderEvent("o", seq)), new PublishOptions(), ct);
+            await inst.Bus.PublishRawAsync(stream, Body(new OrderEvent("o", seq)), new PublishOptions(), ct);
         await WaitForAsync(() => { lock (got) return got.Count >= 8; }, TimeSpan.FromSeconds(30), "two-type receipt");
         await Task.Delay(500, ct);
         lock (got)

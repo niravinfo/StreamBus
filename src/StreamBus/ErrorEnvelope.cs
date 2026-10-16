@@ -39,39 +39,68 @@ public sealed record ErrorEnvelope
         [P + "error-routing-value"] = ErrorRoutingValue,
     };
 
+    public Dictionary<string, object?> ToHeaders()
+    {
+        var headers = new Dictionary<string, object?>(StringComparer.Ordinal);
+        foreach (var (key, value) in ToApplicationProperties())
+        {
+            if (value is not null)
+                headers[key] = value;
+        }
+        return headers;
+    }
+
     public static bool TryParse(string errorStream, byte[] body, IReadOnlyDictionary<string, object?> app, out ErrorEnvelope? envelope)
     {
         envelope = null;
         if (string.IsNullOrWhiteSpace(errorStream) || body is null || app is null) return false;
         string? Get(string name) => app.TryGetValue(P + name, out var v) ? v?.ToString() : null;
-        var sourceStream = Get("source-stream");
-        var partitionStream = Get("source-partition-stream");
-        var exceptionType = Get("exception-type");
+        return TryParseCore(errorStream, body, Get, out envelope);
+    }
+
+    public static bool TryParseHeaders(string errorQueue, byte[] body, IReadOnlyDictionary<string, object?> headers, out ErrorEnvelope? envelope)
+    {
+        envelope = null;
+        if (string.IsNullOrWhiteSpace(errorQueue) || body is null || headers is null) return false;
+        string? Get(string name)
+        {
+            if (!headers.TryGetValue(P + name, out var v) || v is null) return null;
+            return v is byte[] bytes ? System.Text.Encoding.UTF8.GetString(bytes) : v.ToString();
+        }
+        return TryParseCore(errorQueue, body, Get, out envelope);
+    }
+
+    private static bool TryParseCore(string errorDestination, byte[] body, Func<string, string?> get, out ErrorEnvelope? envelope)
+    {
+        envelope = null;
+        var sourceStream = get("source-stream");
+        var partitionStream = get("source-partition-stream");
+        var exceptionType = get("exception-type");
         if (string.IsNullOrWhiteSpace(sourceStream)
             || string.IsNullOrWhiteSpace(partitionStream)
             || string.IsNullOrWhiteSpace(exceptionType)
-            || Get("source-partition") is not { } partRaw || !int.TryParse(partRaw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var partition)
-            || Get("source-offset") is not { } offsetRaw || !ulong.TryParse(offsetRaw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var offset)
-            || Get("attempts") is not { } attemptsRaw || !int.TryParse(attemptsRaw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var attempts)
-            || Get("failed-at") is not { } failedRaw || !DateTimeOffset.TryParse(failedRaw, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var failedAt)
-            || Get("error-routing-value") is not { } routing || string.IsNullOrWhiteSpace(routing))
+            || get("source-partition") is not { } partRaw || !int.TryParse(partRaw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var partition)
+            || get("source-offset") is not { } offsetRaw || !ulong.TryParse(offsetRaw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var offset)
+            || get("attempts") is not { } attemptsRaw || !int.TryParse(attemptsRaw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var attempts)
+            || get("failed-at") is not { } failedRaw || !DateTimeOffset.TryParse(failedRaw, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var failedAt)
+            || get("error-routing-value") is not { } routing || string.IsNullOrWhiteSpace(routing))
             return false;
         envelope = new ErrorEnvelope
         {
-            ErrorStream = errorStream,
+            ErrorStream = errorDestination,
             SourceStream = sourceStream,
             SourcePartition = partition,
             SourcePartitionStream = partitionStream,
             SourceOffset = offset,
             Body = body,
             ExceptionType = exceptionType,
-            ExceptionMessage = Get("exception-message") ?? string.Empty,
-            ExceptionStack = Get("exception-stack") ?? string.Empty,
+            ExceptionMessage = get("exception-message") ?? string.Empty,
+            ExceptionStack = get("exception-stack") ?? string.Empty,
             Attempts = attempts,
             FailedAt = failedAt,
-            MessageId = Get("message-id"),
-            CorrelationId = Get("correlation-id"),
-            RoutingValue = Get("routing-value"),
+            MessageId = get("message-id"),
+            CorrelationId = get("correlation-id"),
+            RoutingValue = get("routing-value"),
             ErrorRoutingValue = routing,
         };
         return true;

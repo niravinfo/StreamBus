@@ -24,6 +24,17 @@ internal sealed class StreamTopologyRegistry : IStreamTopology
 
     public string Vhost => _vhost;
 
+    internal sealed record StreamExistence(bool SuperExists, bool PlainExists);
+
+    internal async Task<StreamExistence> ProbeStreamAsync(string stream, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(stream);
+        var handle = await ReadyHandleAsync(stream, ct).ConfigureAwait(false);
+        var super = await handle.SuperStreamExistsAsync(stream, ct).ConfigureAwait(false);
+        var plain = await handle.StreamExistsAsync(stream, ct).ConfigureAwait(false);
+        return new StreamExistence(super, plain);
+    }
+
     public async Task EnsureStreamAsync(StreamDeclaration declaration, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(declaration);

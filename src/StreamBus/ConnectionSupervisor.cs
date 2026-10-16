@@ -25,6 +25,12 @@ public sealed class StreamBusConnectionSupervisor : IAsyncDisposable
         _connector = connector;
         foreach (var error in options.Connection.Validate())
             throw new StreamBusConfigurationException(error);
+        if (options.StreamPort is < 1 or > 65535)
+            throw new StreamBusConfigurationException("StreamPort must be in 1..65535.");
+        if (options.AmqpPort is < 1 or > 65535)
+            throw new StreamBusConfigurationException("AmqpPort must be in 1..65535.");
+        if (options.Heartbeat <= TimeSpan.Zero)
+            throw new StreamBusConfigurationException("Heartbeat must be positive.");
         StreamBusCredentialValidator.Validate(options);
     }
 

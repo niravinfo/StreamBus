@@ -33,4 +33,7 @@ public sealed record ConsumeOptions
     public Func<ErrorHandoff, Task>? OnRetryExhausted { get; init; }
     public ReadinessPolicy ReadinessPolicy { get; init; } = ReadinessPolicy.FailFastPolicy;
     internal EffectivelyOnceConfig? EffectivelyOnce { get; init; }
+    internal Func<ExhaustedContext, CancellationToken, Task>? ExhaustionCallback { get; init; }
+    internal DeadLetterOptions? DeadLetter { get; init; }
+    internal DeadLetterOptions? ShadowedDeadLetter { get; init; }
 }
