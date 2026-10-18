@@ -1,4 +1,3 @@
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace StreamBus.UnitTests;
@@ -93,44 +92,23 @@ public sealed class ConfiguratorTests
             sp.GetRequiredService<IStreamBus<BillingBus>>());
     }
 
+    private sealed record AuditEvent;
+    private sealed record OrdersSuperEvent;
+
     [Fact]
-    public void Declare_streams_accumulate()
+    public void Publish_registrations_carry_the_stream_spec()
     {
         var services = new ServiceCollection();
         services.AddStreamBus((_, cfg) =>
         {
             cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret"));
-            cfg.DeclareStream("audit", k => k.MaxAge(TimeSpan.FromDays(30)));
-            cfg.DeclareSuperStream("orders-super", 3);
+            cfg.Publish<AuditEvent>("audit", s => s.MaxAge(TimeSpan.FromDays(30)));
+            cfg.PublishSuper<OrdersSuperEvent>("orders-super", s => s.Partitions(3));
         });
         var sp = services.BuildServiceProvider();
-        var options = sp.GetRequiredService<StreamBusConfigStore>().ForVhost("/");
-        Assert.Contains(options.Topology.Streams, s => s.Name == "audit" && s.MaxAge == TimeSpan.FromDays(30));
-        Assert.Contains(options.Topology.SuperStreams, s => s is { Name: "orders-super", Partitions: 3 });
-    }
-
-    [Fact]
-    public void Section_vhost_is_overridden_by_code_host()
-    {
-        var config = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?> { ["StreamBus:Vhost"] = "/section-vh" })
-            .Build();
-        var section = config.GetSection("StreamBus");
-        var services = new ServiceCollection();
-        services.AddStreamBus(section, (_, cfg) => cfg.Host("127.0.0.1", "/code-vh", h => h.Credentials("app", "secret")));
-        var sp = services.BuildServiceProvider();
-        Assert.Equal("/code-vh", sp.GetRequiredService<StreamBusConfigStore>().ForVhost("/code-vh").Vhost);
-    }
-
-    [Fact]
-    public void Section_without_host_still_requires_host()
-    {
-        var config = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?> { ["StreamBus:Vhost"] = "/section-vh" })
-            .Build();
-        var services = new ServiceCollection();
-        Assert.Throws<StreamBusConfigurationException>(() =>
-            services.AddStreamBus(config.GetSection("StreamBus")));
+        var publishes = sp.GetRequiredService<StreamBusPublishStore>().Registrations;
+        Assert.Contains(publishes, r => r.Stream == "audit" && !r.IsSuper && r.MaxAge == TimeSpan.FromDays(30));
+        Assert.Contains(publishes, r => r.Stream == "orders-super" && r.IsSuper && r.Partitions == 3);
     }
 
     [Fact]

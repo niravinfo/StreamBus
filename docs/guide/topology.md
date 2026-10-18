@@ -1,63 +1,92 @@
 # Topology
 
-## Explicit declarations
+## Stream specifications live on registrations
+
+There is no explicit declare API: every stream's broker spec is carried by
+the registrations that reference that stream — the publish registration,
+consuming endpoints, and dead-letter stream destinations. A registration
+without a spec counts: it references the stream but sets no knobs, and
+the stream is declared with defaults.
+
+Plain (non-super) references:
 
 ```csharp
-cfg.DeclareStream("audit", k => k
-    .MaxAge(TimeSpan.FromDays(30))
-    .MaxLengthBytes(1_000_000_000)
-    .MaxSegmentSizeBytes(16_000_000)
-    .LeaderLocator(StreamLeaderLocator.LeastLeaders));
+cfg.Publish<InvoiceEvent>("invoices", s =>
+{
+    s.MaxAge(TimeSpan.FromDays(30));
+    s.MaxLengthBytes(1_000_000_000);
+    s.MaxSegmentSizeBytes(16_000_000);
+    s.LeaderLocator(StreamLeaderLocator.LeastLeaders);
+});
 
-cfg.DeclareSuperStream("orders-super", partitions: 3);
+// Bare form: reference "audit" with broker defaults.
+cfg.Publish<AuditEvent>("audit");
 ```
 
-Declarations are created or verified at startup (a conflicting
-pre-existing spec throws `StreamConfigurationConflictException`).
-Plain-stream argument drift is not readable via the stream protocol, so
-keep declarations in sync across processes.
+Super references add partitions:
 
-## Derived topology
+```csharp
+cfg.PublishSuper<OrdersEvent>("orders-super", s => s.Partitions(3));
+```
 
-The startup declare-set is the union of explicit declarations, endpoint
-streams, and publish registrations:
+`Partitions` exists only on the super spec builder, so a plain stream
+with partitions is not expressible. Setters return void by design: one
+knob per statement, no fluent chaining.
 
-- Plain endpoints and plain publishes without an explicit declaration
-  are declared automatically.
-- Super endpoints carry their partitions (`SetSuperStream(n)`) and are
-  declared with them.
-- A `PublishSuper` registration needs partitions from a matching
-  endpoint or an explicit `DeclareSuperStream` — otherwise startup
-  fails naming the stream.
-- Explicit declarations win: a derived entry for the same name is
-  skipped, and a kind mismatch between derived and explicit fails with
-  a conflict naming both sources.
-- Publish registration kind must agree with the declaration
-  (`Publish`↔plain, `PublishSuper`↔super); mismatches fail naming the
-  message type and the stream.
+```csharp
+s.Partitions(3).MaxAge(TimeSpan.FromDays(7)); // does not compile
+```
+
+## Derived topology and agreement rules
+
+The startup declare-set is the union of all registrations of one bus:
+consuming endpoints, publish registrations, and stream dead-letter
+destinations. Multiple references to the same stream must agree:
+
+- **Kind** (topology-shaping, one choice): super vs plain must agree
+  across every reference. Conflicts throw
+  `StreamConfigurationConflictException` naming the stream and both
+  disagreeing references.
+- **Every knob** (per-knob agreement): where two references set the same
+  knob, the values must match; where only one sets it, its value fills
+  the hole. A second reference that silently disagrees instead of being
+  dropped is the rule — the conflict names both values.
+- A `PublishSuper` registration whose stream resolves no partition
+  count anywhere (its own spec or a consuming endpoint's
+  `Partitions(n)`) fails at startup naming the message type and the
+  stream.
+- Publish kind must match the merged kind (`Publish`↔plain,
+  `PublishSuper`↔super); mismatches fail naming the message type and
+  the stream.
+
+## Declare semantics
+
+Registration-owned streams are create-or-verify at startup. A
+conflicting detected pre-existing spec throws
+`StreamConfigurationConflictException`. Plain-stream argument drift is
+not readable via the stream protocol, so an existing plain stream is
+adopted with a warning; keep specs in sync across services.
+
+Dead-letter **stream** destinations are declared by the service that
+owns the endpoint (knobs from their `StreamOptions`); queue destinations
+are declared by the AMQP transport, never by topology.
 
 ## Broker adopt rule
 
-An endpoint stream with an explicit declaration in the same service is
-declared and verified. Without one, the endpoint adopts broker reality
-instead of creating:
+A consuming endpoint adopts broker reality instead of assuming it owns
+topology the broker owns:
 
-- broker has the expected kind → consumed directly, read-only (no
-  declare call; broker-reported partitions rule for super streams);
+- broker has the expected kind → consumed directly (for super streams
+  the broker-reported partition count rules);
 - broker has the other kind → `StreamConfigurationConflictException`;
-- broker has nothing → a declarable stream is declared, otherwise a
-  configuration error names the stream and the owning service.
+- broker has nothing → the endpoint's registration declares it.
 
 ```csharp
-// This service only consumes: no DeclareStream here. If another service
-// owns "orders", this endpoint adopts it; if nobody created it yet,
-// startup fails naming "orders" instead of silently creating it.
+// This service only consumes: it adopts "orders" if another service
+// registered it; if nothing exists yet, this service's registration
+// declares it.
 cfg.ReceiveEndpoint("orders", e => e.Consumer<OrderConsumer>("order-processors"));
 ```
-
-Error-stream dead-letter destinations are never derived — they must be
-explicitly declared. Queue destinations are declared by the AMQP
-transport, never by topology.
 
 ## Partition reads
 

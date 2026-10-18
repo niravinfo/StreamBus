@@ -1,16 +1,25 @@
 namespace StreamBus;
 
-public enum DeadLetterType
+public enum DeadLetterQueueType
 {
-    Stream = 0,
     ClassicQueue = 1,
     QuorumQueue = 2,
 }
 
+/// <summary>
+/// Kind-based dead-letter destination. A stream destination sets
+/// <see cref="Spec"/> (queue type unset); a queue destination sets
+/// <see cref="QueueType"/> (stream spec unset). Setting both is
+/// unrepresentable by construction — <see cref="IsStream"/> is
+/// <see cref="QueueType"/> being null.
+/// </summary>
 public sealed record DeadLetterOptions
 {
     public required string Name { get; init; }
-    public required DeadLetterType Type { get; init; }
+    public DeadLetterQueueType? QueueType { get; init; }
+    public StreamOptions? Spec { get; init; }
+
+    public bool IsStream => QueueType is null;
 }
 
 public sealed record ExhaustedContext
@@ -158,11 +167,11 @@ internal static class RetryDerivation
             return new DerivedExhaustion(effective, ExhaustionKind.Callback, null, null, destination is not null);
         if (destination is not null)
         {
-            if (destination.Type == DeadLetterType.Stream)
+            if (destination.IsStream)
                 return new DerivedExhaustion(effective, ExhaustionKind.StreamHandoff, new ErrorStreamOptions { Stream = destination.Name }, null, false);
             return new DerivedExhaustion(effective, ExhaustionKind.QueueHandoff, null, destination, false);
         }
-        return new DerivedExhaustion(effective, ExhaustionKind.QueueHandoff, null, new DeadLetterOptions { Name = $"{stream}_error", Type = DeadLetterType.ClassicQueue }, false);
+        return new DerivedExhaustion(effective, ExhaustionKind.QueueHandoff, null, new DeadLetterOptions { Name = $"{stream}_error", QueueType = DeadLetterQueueType.ClassicQueue }, false);
     }
 }
 

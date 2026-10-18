@@ -145,13 +145,13 @@ public sealed class ErrorQueueIntegrationTests : IAsyncDisposable
             "/",
             cfg =>
             {
-                cfg.DeclareStream(stream);
+                cfg.Publish<OrderEvent>(stream);
                 cfg.ReceiveEndpoint(stream, e =>
                 {
                     e.Consumer<FailingConsumer>("eq-group");
                     e.UseMessageRetry(r => r.None());
                     if (explicitQueue)
-                        e.DeadLetterTo(errorQueue, DeadLetterType.ClassicQueue);
+                        e.DeadLetterToQueue(errorQueue, DeadLetterQueueType.ClassicQueue);
                 });
             },
             TimeSpan.FromSeconds(60));

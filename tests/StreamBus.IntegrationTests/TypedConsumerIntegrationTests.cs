@@ -280,7 +280,7 @@ public sealed class TypedConsumerIntegrationTests : IAsyncDisposable
             {
                 e.Consumer<OrderConsumer>("poison-group");
                 e.UseRetry(new RetryPolicy { FailureMode = FailureMode.SkipAfterDeadline, MaxAttempts = 2, BaseDelay = TimeSpan.FromMilliseconds(10), MaxJitter = TimeSpan.Zero });
-                e.DeadLetterTo(error, DeadLetterType.Stream);
+                e.DeadLetterToStream(error);
             }));
         await using var pub = await BusInstance.StartAsync();
         await pub.Bus.PublishRawAsync(stream, Encoding.UTF8.GetBytes("{bad json"), new PublishOptions(), ct);
@@ -386,7 +386,7 @@ public sealed class TypedConsumerIntegrationTests : IAsyncDisposable
             {
                 e.Consumer<OrderConsumer>("mismatch-group");
                 e.UseRetry(new RetryPolicy { FailureMode = FailureMode.SkipAfterDeadline, MaxAttempts = 1, BaseDelay = TimeSpan.FromMilliseconds(10), MaxJitter = TimeSpan.Zero });
-                e.DeadLetterTo(error, DeadLetterType.Stream);
+                e.DeadLetterToStream(error);
             }));
         await using var pub = await BusInstance.StartAsync();
         var mismatched = Encoding.UTF8.GetBytes("{\"OrderId\":123,\"Seq\":1}");

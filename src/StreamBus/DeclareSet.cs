@@ -10,80 +10,37 @@ public sealed record DeclaredStream
     public int? MaxSegmentSizeBytes { get; init; }
     public StreamLeaderLocator? LeaderLocator { get; init; }
     public required string Source { get; init; }
+    public string SourceDescription { get; init; } = "";
 }
 
 internal static class DeclareSetBuilder
 {
     public static IReadOnlyList<DeclaredStream> Build(
-        IEnumerable<StreamDeclaration> explicitStreams,
-        IEnumerable<SuperStreamDeclaration> explicitSupers,
         IEnumerable<ReceiveEndpointDescriptor> endpoints,
         IEnumerable<PublishRegistration> publishes,
         string busName)
     {
-        ArgumentNullException.ThrowIfNull(explicitStreams);
-        ArgumentNullException.ThrowIfNull(explicitSupers);
         ArgumentNullException.ThrowIfNull(endpoints);
         ArgumentNullException.ThrowIfNull(publishes);
         ArgumentException.ThrowIfNullOrWhiteSpace(busName);
         var result = new List<DeclaredStream>();
-        var explicitNames = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var s in explicitStreams)
-        {
-            result.Add(new DeclaredStream { Name = s.Name, IsSuper = false, Source = "explicit" });
-            explicitNames.Add(s.Name);
-        }
-        foreach (var s in explicitSupers)
-        {
-            result.Add(new DeclaredStream
-            {
-                Name = s.Name,
-                IsSuper = true,
-                Partitions = s.Partitions,
-                MaxAge = s.MaxAge,
-                MaxLengthBytes = s.MaxLengthBytes,
-                MaxSegmentSizeBytes = s.MaxSegmentSizeBytes,
-                LeaderLocator = s.LeaderLocator,
-                Source = "explicit",
-            });
-            explicitNames.Add(s.Name);
-        }
+        var index = new Dictionary<string, int>(StringComparer.Ordinal);
+        var superPublishWithoutPartitions = new Dictionary<string, PublishRegistration>(StringComparer.Ordinal);
+
         foreach (var endpoint in endpoints)
         {
-            if (explicitNames.Contains(endpoint.Stream))
-            {
-                var explicitIsSuper = explicitSupers.Any(s => s.Name == endpoint.Stream);
-                if (explicitIsSuper != endpoint.IsSuperStream)
-                    throw new StreamConfigurationConflictException(endpoint.Stream,
-                        $"endpoint '{endpoint.Stream}' expects {(endpoint.IsSuperStream ? "a super stream" : "a plain stream")}",
-                        $"explicit {(explicitIsSuper ? "super-stream" : "stream")} declaration");
-                continue;
-            }
-            var existing = result.Find(d => d.Name == endpoint.Stream && d.Source == "endpoint");
-            if (existing is not null)
-            {
-                if (existing.IsSuper != endpoint.IsSuperStream)
-                    throw new StreamConfigurationConflictException(endpoint.Stream,
-                        $"endpoint '{endpoint.Stream}' expects {(endpoint.IsSuperStream ? "a super stream" : "a plain stream")}",
-                        $"another endpoint '{endpoint.Stream}' expects {(existing.IsSuper ? "a super stream" : "a plain stream")}");
-                if (existing.Partitions is null && endpoint.SuperPartitions is not null)
-                {
-                    result[result.IndexOf(existing)] = existing with { Partitions = endpoint.SuperPartitions };
-                }
-                continue;
-            }
-            result.Add(new DeclaredStream
-            {
-                Name = endpoint.Stream,
-                IsSuper = endpoint.IsSuperStream,
-                Partitions = endpoint.SuperPartitions,
-                MaxAge = endpoint.MaxAge,
-                MaxLengthBytes = endpoint.MaxLengthBytes,
-                MaxSegmentSizeBytes = endpoint.MaxSegmentSizeBytes,
-                LeaderLocator = endpoint.LeaderLocator,
-                Source = "endpoint",
-            });
+            Merge(result, index,
+                stream: endpoint.Stream,
+                wantSuper: endpoint.IsSuperStream,
+                partitions: endpoint.SuperPartitions,
+                maxAge: endpoint.MaxAge,
+                maxLengthBytes: endpoint.MaxLengthBytes,
+                maxSegmentSizeBytes: endpoint.MaxSegmentSizeBytes,
+                leaderLocator: endpoint.LeaderLocator,
+                source: "endpoint",
+                describe: $"endpoint '{endpoint.Stream}'");
         }
+
         foreach (var group in publishes.GroupBy(p => p.MessageType))
         {
             var streams = group.Select(p => p.Stream).Distinct(StringComparer.Ordinal).ToList();
@@ -91,23 +48,167 @@ internal static class DeclareSetBuilder
                 throw new StreamBusConfigurationException(
                     $"Message {group.Key.FullName} is registered for multiple streams on bus {busName} ('{string.Join("', '", streams)}'). Register each message type on exactly one stream per bus; publish to other streams with the explicit-stream PublishAsync<T>(stream, message, ...) overload.");
         }
+
         foreach (var publish in publishes)
         {
-            var declaration = result.Find(d => d.Name == publish.Stream);
-            if (declaration is not null)
+            var describe = $"publish {publish.MessageType.FullName}";
+            if (index.TryGetValue(publish.Stream, out var position) && result[position].IsSuper != publish.IsSuper)
             {
-                if (declaration.IsSuper != publish.IsSuper)
-                    throw new StreamBusConfigurationException(
-                        $"Message {publish.MessageType.FullName} is registered with {(publish.IsSuper ? "PublishSuper" : "Publish")} for {(declaration.IsSuper ? "super" : "plain")} stream '{publish.Stream}'. Use {(declaration.IsSuper ? "PublishSuperAsync (routing key required)" : "PublishAsync (no routing key)")}.");
-                continue;
-            }
-            if (publish.IsSuper)
+                var knownSuper = result[position].IsSuper;
                 throw new StreamBusConfigurationException(
-                    $"Message {publish.MessageType.FullName} is registered with PublishSuper for stream '{publish.Stream}' with no super-stream declaration. Declare it with DeclareSuperStream(\"{publish.Stream}\", partitions) or SetSuperStream on the consuming endpoint.");
-            result.Add(new DeclaredStream { Name = publish.Stream, IsSuper = false, Source = "publish" });
+                    $"Message {publish.MessageType.FullName} is registered with {(publish.IsSuper ? "PublishSuper" : "Publish")} for {(knownSuper ? "super" : "plain")} stream '{publish.Stream}'. Use {(knownSuper ? "PublishSuperAsync (routing key required)" : "PublishAsync (no routing key)")}.");
+            }
+            Merge(result, index,
+                stream: publish.Stream,
+                wantSuper: publish.IsSuper,
+                partitions: publish.Partitions,
+                maxAge: publish.MaxAge,
+                maxLengthBytes: publish.MaxLengthBytes,
+                maxSegmentSizeBytes: publish.MaxSegmentSizeBytes,
+                leaderLocator: publish.LeaderLocator,
+                source: "publish",
+                describe: describe);
+            if (publish.IsSuper)
+            {
+                var entry = result[index[publish.Stream]];
+                if (entry.Partitions is null)
+                    superPublishWithoutPartitions.TryAdd(publish.Stream, publish);
+                else
+                    superPublishWithoutPartitions.Remove(publish.Stream);
+            }
         }
+
+        foreach (var endpoint in endpoints)
+        {
+            var destination = endpoint.DeadLetter;
+            if (destination is null || !destination.IsStream)
+                continue;
+            Merge(result, index,
+                stream: destination.Name,
+                wantSuper: false,
+                partitions: null,
+                maxAge: destination.Spec?.MaxAge,
+                maxLengthBytes: destination.Spec?.MaxLengthBytes,
+                maxSegmentSizeBytes: destination.Spec?.MaxSegmentSizeBytes,
+                leaderLocator: destination.Spec?.LeaderLocator,
+                source: "dead-letter",
+                describe: $"error-stream destination '{destination.Name}' of endpoint '{endpoint.Stream}'");
+        }
+
+        foreach (var (stream, pending) in superPublishWithoutPartitions)
+        {
+            throw new StreamBusConfigurationException(
+                $"Message {pending.MessageType.FullName} is registered with PublishSuper for super stream '{stream}' with no partitions. Set Partitions on the PublishSuper registration (s.Partitions(n)) or Partitions on a consuming endpoint.");
+        }
+
         return result;
     }
+
+    private static void Merge(
+        List<DeclaredStream> result,
+        Dictionary<string, int> index,
+        string stream,
+        bool wantSuper,
+        int? partitions,
+        TimeSpan? maxAge,
+        ulong? maxLengthBytes,
+        int? maxSegmentSizeBytes,
+        StreamLeaderLocator? leaderLocator,
+        string source,
+        string describe)
+    {
+        if (index.TryGetValue(stream, out var position))
+        {
+            var existing = result[position];
+            if (existing.IsSuper != wantSuper)
+            {
+                if (existing.Source == "endpoint" && source == "endpoint")
+                {
+                    throw new StreamConfigurationConflictException(stream,
+                        $"endpoint '{stream}' expects {(wantSuper ? "a super stream" : "a plain stream")}",
+                        $"another endpoint '{stream}' expects {(existing.IsSuper ? "a super stream" : "a plain stream")}");
+                }
+                throw new StreamConfigurationConflictException(stream,
+                    $"{describe} expects {(wantSuper ? "a super stream" : "a plain stream")}",
+                    $"{SourceDescription(existing)} expects {(existing.IsSuper ? "a super stream" : "a plain stream")}");
+            }
+            var updated = existing;
+            if (existing.Source == "endpoint" && source == "endpoint")
+                describe = $"another endpoint '{stream}'";
+            if (partitions is { } incomingPartitions)
+            {
+                if (existing.Partitions is { } knownPartitions && knownPartitions != incomingPartitions)
+                    throw new StreamConfigurationConflictException(stream,
+                        $"{SourceDescription(existing)} sets Partitions {knownPartitions}",
+                        $"{describe} sets Partitions {incomingPartitions}");
+                if (existing.Partitions is null)
+                    updated = updated with { Partitions = incomingPartitions };
+            }
+            if (maxAge is { } incomingMaxAge)
+            {
+                if (existing.MaxAge is { } knownMaxAge && knownMaxAge != incomingMaxAge)
+                    throw new StreamConfigurationConflictException(stream,
+                        $"{SourceDescription(existing)} sets MaxAge {Format(knownMaxAge)}",
+                        $"{describe} sets MaxAge {Format(incomingMaxAge)}");
+                if (existing.MaxAge is null)
+                    updated = updated with { MaxAge = incomingMaxAge };
+            }
+            if (maxLengthBytes is { } incomingMaxLength)
+            {
+                if (existing.MaxLengthBytes is { } knownMaxLength && knownMaxLength != incomingMaxLength)
+                    throw new StreamConfigurationConflictException(stream,
+                        $"{SourceDescription(existing)} sets MaxLengthBytes {knownMaxLength}",
+                        $"{describe} sets MaxLengthBytes {incomingMaxLength}");
+                if (existing.MaxLengthBytes is null)
+                    updated = updated with { MaxLengthBytes = incomingMaxLength };
+            }
+            if (maxSegmentSizeBytes is { } incomingMaxSegment)
+            {
+                if (existing.MaxSegmentSizeBytes is { } knownMaxSegment && knownMaxSegment != incomingMaxSegment)
+                    throw new StreamConfigurationConflictException(stream,
+                        $"{SourceDescription(existing)} sets MaxSegmentSizeBytes {knownMaxSegment}",
+                        $"{describe} sets MaxSegmentSizeBytes {incomingMaxSegment}");
+                if (existing.MaxSegmentSizeBytes is null)
+                    updated = updated with { MaxSegmentSizeBytes = incomingMaxSegment };
+            }
+            if (leaderLocator is { } incomingLocator)
+            {
+                if (existing.LeaderLocator is { } knownLocator && knownLocator != incomingLocator)
+                    throw new StreamConfigurationConflictException(stream,
+                        $"{SourceDescription(existing)} sets LeaderLocator {knownLocator}",
+                        $"{describe} sets LeaderLocator {incomingLocator}");
+                if (existing.LeaderLocator is null)
+                    updated = updated with { LeaderLocator = incomingLocator };
+            }
+            result[position] = updated;
+            return;
+        }
+        var created = new DeclaredStream
+        {
+            Name = stream,
+            IsSuper = wantSuper,
+            Partitions = partitions,
+            MaxAge = maxAge,
+            MaxLengthBytes = maxLengthBytes,
+            MaxSegmentSizeBytes = maxSegmentSizeBytes,
+            LeaderLocator = leaderLocator,
+            Source = source,
+            SourceDescription = describe,
+        };
+        result.Add(created);
+        index.Add(stream, result.Count - 1);
+    }
+
+    private static string SourceDescription(DeclaredStream stream)
+        => stream.Source switch
+        {
+            "endpoint" => $"endpoint '{stream.Name}'",
+            "publish" => string.IsNullOrWhiteSpace(stream.SourceDescription) ? $"publish registration for '{stream.Name}'" : stream.SourceDescription,
+            "dead-letter" => string.IsNullOrWhiteSpace(stream.SourceDescription) ? $"error-stream destination '{stream.Name}'" : stream.SourceDescription,
+            _ => stream.SourceDescription,
+        };
+
+    private static string Format(TimeSpan value) => value.ToString("c");
 
     public static void ValidateCallTarget(DeclaredStream? known, string stream, bool wantSuper)
     {

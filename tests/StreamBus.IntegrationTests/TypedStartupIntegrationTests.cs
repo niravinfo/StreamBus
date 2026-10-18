@@ -151,7 +151,7 @@ public sealed class TypedStartupIntegrationTests : IAsyncDisposable
                 cfg.ReceiveEndpoint("typed-invalid", e =>
                 {
                     e.Consumer<OrderConsumer>("invalid-group");
-                    e.DeadLetterTo("typed-invalid-errors", DeadLetterType.Stream);
+                    e.DeadLetterToStream("typed-invalid-errors");
                 });
             }));
         Assert.Contains("bound", ex.Message, StringComparison.OrdinalIgnoreCase);

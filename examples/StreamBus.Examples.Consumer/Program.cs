@@ -17,27 +17,40 @@ var builder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings
     ContentRootPath = AppContext.BaseDirectory,
 });
 
-builder.Services.AddStreamBus(
-    builder.Configuration.GetSection("StreamBus"),
-    (context, cfg) =>
+// The library never reads configuration by itself: the user owns it.
+// Connection values are read here (in the app) and handed to the configurator.
+builder.Services.AddStreamBus((context, cfg) =>
+{
+    cfg.Host(
+        builder.Configuration["StreamBus:Host"] ?? "127.0.0.1",
+        builder.Configuration["StreamBus:Vhost"] ?? "/",
+        h =>
+        {
+            h.Credentials(
+                builder.Configuration["StreamBus:UserName"] ?? "app",
+                builder.Configuration["StreamBus:Password"] ?? "");
+            h.StreamPort();
+            h.Heartbeat(TimeSpan.FromSeconds(
+                double.TryParse(builder.Configuration["StreamBus:HeartbeatSeconds"], out var seconds) ? seconds : 60));
+        });
+
+    // The group is the cursor identity, used verbatim. The same group
+    // across instances scales out through one shared cursor; a different
+    // group is an independent cursor that receives everything again.
+    cfg.ReceiveEndpoint("orders", e =>
     {
-        // The group is the cursor identity, used verbatim. The same group
-        // across instances scales out through one shared cursor; a different
-        // group is an independent cursor that receives everything again.
-        cfg.ReceiveEndpoint("orders", e =>
-        {
-            e.Consumer<OrderConsumer>("example-order-consumers");
-        });
-
-        cfg.ReceiveEndpoint("payments-super", e =>
-        {
-            e.Consumer<PaymentConsumer>("example-payment-consumers");
-
-            // Expect a super stream without declaring partitions here: this
-            // service reads all partitions, and the broker rules the count.
-            e.SuperStream();
-        });
+        e.Consumer<OrderConsumer>("example-order-consumers");
     });
+
+    cfg.ReceiveEndpoint("payments-super", e =>
+    {
+        e.Consumer<PaymentConsumer>("example-payment-consumers");
+
+        // Expect a super stream without declaring partitions here: this
+        // service reads all partitions, and the broker rules the count.
+        e.SuperStream();
+    });
+});
 
 builder.Services.AddStreamBusHosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(30)));
 

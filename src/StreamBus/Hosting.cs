@@ -61,10 +61,7 @@ public static class ServiceCollectionExtensions
         {
             var markerVhost = store.Registrations.Where(r => r.BusType == marker).Select(r => r.Options.Vhost).FirstOrDefault();
             if (markerVhost is null) return Array.Empty<DeclaredStream>();
-            var explicits = store.Registrations.Where(r => r.Options.Vhost == markerVhost).ToList();
             return DeclareSetBuilder.Build(
-                explicits.SelectMany(r => r.Options.Topology.Streams),
-                explicits.SelectMany(r => r.Options.Topology.SuperStreams),
                 endpointStore.Endpoints.Where(e => e.BusMarker == marker).Select(e => e.Descriptor),
                 publishStore.Registrations.Where(r => r.BusMarker == marker),
                 marker.FullName ?? marker.Name);
@@ -192,63 +189,6 @@ public sealed class StreamBusHostingOptionsBuilder
         _block = true; _timeout = timeout; return this;
     }
     public StreamBusHostingOptions Build() => new() { BlockStartupUntilReady = _block, StartupTimeout = _timeout };
-}
-
-public sealed class StreamTopologyDeclarationsBuilder
-{
-    private readonly List<StreamDeclaration> _streams = new();
-    private readonly List<SuperStreamDeclaration> _supers = new();
-
-    public StreamTopologyDeclarationsBuilder DeclareStream(string name, Action<StreamDeclarationKnobsBuilder>? configure = null)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
-        var knobs = new StreamDeclarationKnobsBuilder();
-        configure?.Invoke(knobs);
-        _streams.Add(knobs.BuildStream(name));
-        return this;
-    }
-
-    public StreamTopologyDeclarationsBuilder DeclareSuperStream(string name, int partitions, Action<StreamDeclarationKnobsBuilder>? configure = null)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
-        var knobs = new StreamDeclarationKnobsBuilder();
-        configure?.Invoke(knobs);
-        _supers.Add(knobs.BuildSuper(name, partitions));
-        return this;
-    }
-
-    public StreamTopologyDeclarations Build()
-    {
-        var built = new StreamTopologyDeclarations { Streams = _streams.ToList(), SuperStreams = _supers.ToList() };
-        foreach (var s in built.Streams) TopologyValidation.ValidateStream(s);
-        foreach (var s in built.SuperStreams) TopologyValidation.ValidateSuper(s);
-        return built;
-    }
-}
-
-public sealed class StreamDeclarationKnobsBuilder
-{
-    private TimeSpan? _maxAge;
-    private ulong? _maxLengthBytes;
-    private int? _maxSegmentSizeBytes;
-    private StreamLeaderLocator _locator = StreamLeaderLocator.LeastLeaders;
-
-    public StreamDeclarationKnobsBuilder MaxAge(TimeSpan maxAge) { _maxAge = maxAge; return this; }
-    public StreamDeclarationKnobsBuilder MaxLengthBytes(ulong maxLengthBytes) { _maxLengthBytes = maxLengthBytes; return this; }
-    public StreamDeclarationKnobsBuilder MaxSegmentSizeBytes(int maxSegmentSizeBytes) { _maxSegmentSizeBytes = maxSegmentSizeBytes; return this; }
-    public StreamDeclarationKnobsBuilder LeaderLocator(StreamLeaderLocator locator) { _locator = locator; return this; }
-
-    internal StreamDeclaration BuildStream(string name) => new()
-    {
-        Name = name, MaxAge = _maxAge, MaxLengthBytes = _maxLengthBytes,
-        MaxSegmentSizeBytes = _maxSegmentSizeBytes, LeaderLocator = _locator,
-    };
-
-    internal SuperStreamDeclaration BuildSuper(string name, int partitions) => new()
-    {
-        Name = name, Partitions = partitions, MaxAge = _maxAge, MaxLengthBytes = _maxLengthBytes,
-        MaxSegmentSizeBytes = _maxSegmentSizeBytes, LeaderLocator = _locator,
-    };
 }
 
 public sealed class ConsumeOptionsBuilder
@@ -432,29 +372,6 @@ public sealed class StreamBusHostedService : IHostedService
         }
         var blocking = _hosting.BlockStartupUntilReady;
         var declareTasks = new List<Task>();
-        foreach (var vhost in _store.Registrations.Select(r => r.Options.Vhost).Distinct())
-        {
-            var streams = _store.Registrations.Where(r => r.Options.Vhost == vhost).SelectMany(r => r.Options.Topology.Streams).ToList();
-            var supers = _store.Registrations.Where(r => r.Options.Vhost == vhost).SelectMany(r => r.Options.Topology.SuperStreams).ToList();
-            if (streams.Count == 0 && supers.Count == 0) continue;
-            var task = DeclareUntilReadyAsync(vhost, streams, supers, startupCts.Token);
-            if (!blocking)
-            {
-                _ = task.ContinueWith(
-                    t =>
-                    {
-                        if (t.Exception is { } ex)
-                            _logger.LogCritical(ex, "Topology declaration for vhost '{Vhost}' failed permanently; streams were NOT declared.", vhost);
-                    },
-                    CancellationToken.None,
-                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
-                    TaskScheduler.Default);
-            }
-            else
-            {
-                declareTasks.Add(task);
-            }
-        }
         var consumerTasks = new List<Task>();
         foreach (var (busType, busOptions) in _store.Registrations)
         {
@@ -466,15 +383,7 @@ public sealed class StreamBusHostedService : IHostedService
                 .Where(r => r.BusMarker == busType)
                 .ToList() ?? new List<PublishRegistration>();
             if (endpoints.Count == 0 && publishes.Count == 0) continue;
-            var explicitStreams = _store.Registrations
-                .Where(r => r.Options.Vhost == busOptions.Vhost)
-                .SelectMany(r => r.Options.Topology.Streams)
-                .ToList();
-            var explicitSupers = _store.Registrations
-                .Where(r => r.Options.Vhost == busOptions.Vhost)
-                .SelectMany(r => r.Options.Topology.SuperStreams)
-                .ToList();
-            var task = DeclareDerivedUntilReadyAsync(busType, busOptions.Vhost, explicitStreams, explicitSupers, endpoints, publishes, startupCts.Token);
+            var task = DeclareDerivedUntilReadyAsync(busType, busOptions.Vhost, endpoints, publishes, startupCts.Token);
             if (!blocking)
             {
                 _ = task.ContinueWith(
@@ -600,56 +509,18 @@ public sealed class StreamBusHostedService : IHostedService
         }
     }
 
-    private async Task DeclareUntilReadyAsync(string vhost, List<StreamDeclaration> streams, List<SuperStreamDeclaration> supers, CancellationToken ct)
-    {
-        var topology = _registry.TopologyFor(vhost);
-        var attempt = 0;
-        while (true)
-        {
-            ct.ThrowIfCancellationRequested();
-            try
-            {
-                foreach (var s in streams)
-                    await topology.EnsureStreamAsync(s, ct).ConfigureAwait(false);
-                foreach (var s in supers)
-                    await topology.EnsureSuperStreamAsync(s, ct).ConfigureAwait(false);
-                return;
-            }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (StreamConfigurationConflictException)
-            {
-                throw;
-            }
-            catch (StreamBusFatalException)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                attempt++;
-                _logger.LogWarning(ex, "Topology declaration for vhost '{Vhost}' failed (attempt {Attempt}); retrying.", vhost, attempt);
-                await Task.Delay(StreamBusDelays.ExponentialCapped(attempt, TimeSpan.FromMilliseconds(200), TimeSpan.FromSeconds(30), 2.0, TimeSpan.FromSeconds(1)), ct).ConfigureAwait(false);
-            }
-        }
-    }
-
     internal static bool IsStartupTransient(Exception ex)
         => ex is StreamBusNotReadyException or StreamBusStreamNotFoundException;
 
     private async Task DeclareDerivedUntilReadyAsync(
         Type busType,
         string vhost,
-        List<StreamDeclaration> explicitStreams,
-        List<SuperStreamDeclaration> explicitSupers,
         List<ReceiveEndpointDescriptor> endpoints,
         List<PublishRegistration> publishes,
         CancellationToken ct)
     {
         var busName = busType.FullName ?? busType.Name;
-        var declareSet = DeclareSetBuilder.Build(explicitStreams, explicitSupers, endpoints, publishes, busName);
+        var declareSet = DeclareSetBuilder.Build(endpoints, publishes, busName);
         var topology = _registry.TopologyFor(vhost);
         var attempt = 0;
         while (true)
@@ -659,23 +530,32 @@ public sealed class StreamBusHostedService : IHostedService
             {
                 foreach (var entry in declareSet)
                 {
-                    if (entry.Source == "explicit") continue;
-                    if (entry.Source == "publish")
+                    if (!entry.IsSuper && entry.Source is "publish" or "dead-letter")
                     {
-                        await topology.EnsureStreamAsync(new StreamDeclaration { Name = entry.Name }, ct).ConfigureAwait(false);
+                        await topology.EnsureStreamAsync(new StreamDeclaration
+                        {
+                            Name = entry.Name,
+                            MaxAge = entry.MaxAge,
+                            MaxLengthBytes = entry.MaxLengthBytes,
+                            MaxSegmentSizeBytes = entry.MaxSegmentSizeBytes,
+                            LeaderLocator = entry.LeaderLocator ?? StreamLeaderLocator.LeastLeaders,
+                        }, ct).ConfigureAwait(false);
                         continue;
                     }
                     var probe = await topology.ProbeStreamAsync(entry.Name, ct).ConfigureAwait(false);
+                    var who = entry.Source == "endpoint" ? $"endpoint '{entry.Name}'" : $"publish registration for '{entry.Name}'";
                     if (entry.IsSuper)
                     {
-                        if (probe.SuperExists) continue;
                         if (probe.PlainExists)
                             throw new StreamConfigurationConflictException(entry.Name,
-                                $"endpoint '{entry.Name}' expects a super stream",
+                                $"{who} expects a super stream",
                                 "a plain stream");
                         if (entry.Partitions is null)
+                        {
+                            if (probe.SuperExists) continue; // adopt: broker rules the partition count
                             throw new StreamBusConfigurationException(
-                                $"Endpoint stream '{entry.Name}' is expected to be a super stream but does not exist and no partitions were configured (SetSuperStream) and no explicit DeclareSuperStream covers it. The owning service must declare it.");
+                                $"Endpoint stream '{entry.Name}' is expected to be a super stream but does not exist and no registration resolves its partition count. Set Partitions on the PublishSuper registration (s.Partitions(n)) or Partitions on a consuming endpoint.");
+                        }
                         await topology.EnsureSuperStreamAsync(new SuperStreamDeclaration
                         {
                             Name = entry.Name,
@@ -691,7 +571,7 @@ public sealed class StreamBusHostedService : IHostedService
                         if (probe.PlainExists) continue;
                         if (probe.SuperExists)
                             throw new StreamConfigurationConflictException(entry.Name,
-                                $"endpoint '{entry.Name}' expects a plain stream",
+                                $"{who} expects a plain stream",
                                 "a super stream");
                         await topology.EnsureStreamAsync(new StreamDeclaration
                         {

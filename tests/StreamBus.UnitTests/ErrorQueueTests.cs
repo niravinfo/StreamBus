@@ -90,8 +90,8 @@ public sealed class ErrorQueueTests
     [Fact]
     public void Queue_arguments_map_classic_and_quorum()
     {
-        Assert.Equal("classic", ErrorQueueTransport.QueueArguments(DeadLetterType.ClassicQueue)["x-queue-type"]);
-        Assert.Equal("quorum", ErrorQueueTransport.QueueArguments(DeadLetterType.QuorumQueue)["x-queue-type"]);
+        Assert.Equal("classic", ErrorQueueTransport.QueueArguments(DeadLetterQueueType.ClassicQueue)["x-queue-type"]);
+        Assert.Equal("quorum", ErrorQueueTransport.QueueArguments(DeadLetterQueueType.QuorumQueue)["x-queue-type"]);
     }
 
     [Fact]
@@ -122,8 +122,8 @@ public sealed class ErrorQueueTests
             {
                 Reference = "grp",
                 Retry = new RetryPolicy { FailureMode = FailureMode.SkipAfterDeadline, MaxAttempts = 2 },
-                ErrorStream = deadLetter is { Type: DeadLetterType.Stream } ? new ErrorStreamOptions { Stream = deadLetter.Name } : null,
-                DeadLetter = deadLetter is { Type: not DeadLetterType.Stream } ? deadLetter : null,
+                ErrorStream = deadLetter is { IsStream: true } ? new ErrorStreamOptions { Stream = deadLetter.Name } : null,
+                DeadLetter = deadLetter is { IsStream: false } ? deadLetter : null,
                 ExhaustionCallback = callback ? (_, _) => Task.CompletedTask : null,
             },
         };
@@ -133,15 +133,15 @@ public sealed class ErrorQueueTests
     {
         var regs = new[]
         {
-            Registration("orders", new DeadLetterOptions { Name = "orders_error", Type = DeadLetterType.ClassicQueue }, callback: false),
-            Registration("audit", new DeadLetterOptions { Name = "audit-errors", Type = DeadLetterType.QuorumQueue }, callback: false),
-            Registration("pay", new DeadLetterOptions { Name = "pay-errors", Type = DeadLetterType.ClassicQueue }, callback: true),
+            Registration("orders", new DeadLetterOptions { Name = "orders_error", QueueType = DeadLetterQueueType.ClassicQueue }, callback: false),
+            Registration("audit", new DeadLetterOptions { Name = "audit-errors", QueueType = DeadLetterQueueType.QuorumQueue }, callback: false),
+            Registration("pay", new DeadLetterOptions { Name = "pay-errors", QueueType = DeadLetterQueueType.ClassicQueue }, callback: true),
             Registration("plain", null, callback: false),
         };
         var queues = ErrorQueueTransport.CollectQueueDeclarations(regs);
         Assert.Equal(2, queues.Count);
-        Assert.Contains(queues, q => q.Name == "orders_error" && q.Type == DeadLetterType.ClassicQueue);
-        Assert.Contains(queues, q => q.Name == "audit-errors" && q.Type == DeadLetterType.QuorumQueue);
+        Assert.Contains(queues, q => q.Name == "orders_error" && q.QueueType == DeadLetterQueueType.ClassicQueue);
+        Assert.Contains(queues, q => q.Name == "audit-errors" && q.QueueType == DeadLetterQueueType.QuorumQueue);
     }
 
     [Fact]

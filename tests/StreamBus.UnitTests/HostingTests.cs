@@ -249,8 +249,6 @@ public sealed class HostingTests
         Assert.Throws<ArgumentNullException>(() => services.AddStreamBus<OrdersBus>(null!));
         Assert.Throws<ArgumentNullException>(() => ((IServiceCollection)null!).AddStreamBus(configure));
         Assert.Throws<ArgumentNullException>(() => ((IServiceCollection)null!).AddStreamBus<OrdersBus>(configure));
-        Assert.Throws<ArgumentNullException>(() => services.AddStreamBus((Microsoft.Extensions.Configuration.IConfigurationSection)null!));
-        Assert.Throws<ArgumentNullException>(() => services.AddStreamBus<OrdersBus>((Microsoft.Extensions.Configuration.IConfigurationSection)null!));
     }
 
     [Fact]
@@ -445,12 +443,12 @@ public sealed class HostingTests
         services.AddStreamBus((_, cfg) =>
         {
             cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret"));
-            cfg.DeclareStream("stream-a");
+            cfg.Publish<DerivedEvent>("stream-a");
         });
         services.AddStreamBus<OrdersBus>((_, cfg) =>
         {
             cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret"));
-            cfg.DeclareStream("stream-b");
+            cfg.Publish<DerivedEvent>("stream-b");
         });
         services.AddSingleton<IStreamSystemConnector>(new SuccessConnector(handle));
         await using var sp = services.BuildServiceProvider();
@@ -489,11 +487,11 @@ public sealed class HostingTests
     }
 
     [Fact]
-    public void Same_vhost_union_declarations_allowed()
+    public void Same_vhost_union_registrations_allowed()
     {
         var store = new StreamBusConfigStore();
-        var a = new StreamBusOptions { Vhost = "/", UserName = "u", Password = "p", Topology = new StreamTopologyDeclarations { Streams = new[] { new StreamDeclaration { Name = "a" } } } };
-        var b = new StreamBusOptions { Vhost = "/", UserName = "u", Password = "p", Topology = new StreamTopologyDeclarations { SuperStreams = new[] { new SuperStreamDeclaration { Name = "b", Partitions = 2 } } } };
+        var a = new StreamBusOptions { Vhost = "/", UserName = "u", Password = "p" };
+        var b = new StreamBusOptions { Vhost = "/", UserName = "u", Password = "p" };
         store.Add(typeof(DefaultBus), a);
         store.Add(typeof(OrdersBus), b);
         Assert.Equal(2, store.Registrations.Count);
@@ -510,7 +508,7 @@ public sealed class HostingTests
         services.AddStreamBus((_, cfg) =>
         {
             cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret"));
-            cfg.DeclareStream("hung-stream");
+            cfg.Publish<DerivedEvent>("hung-stream");
         });
         services.AddStreamBusHosting(h => h.BlockStartupUntilReady(TimeSpan.FromMilliseconds(200)));
         services.AddSingleton<IStreamSystemConnector>(new SuccessConnector(handle));
@@ -540,13 +538,9 @@ public sealed class HostingTests
     }
 
     private static IReadOnlyList<DeclaredStream> DeclareSet(
-        IEnumerable<StreamDeclaration>? streams = null,
-        IEnumerable<SuperStreamDeclaration>? supers = null,
         IEnumerable<ReceiveEndpointDescriptor>? endpoints = null,
         IEnumerable<PublishRegistration>? publishes = null)
         => DeclareSetBuilder.Build(
-            streams ?? Array.Empty<StreamDeclaration>(),
-            supers ?? Array.Empty<SuperStreamDeclaration>(),
             endpoints ?? Array.Empty<ReceiveEndpointDescriptor>(),
             publishes ?? Array.Empty<PublishRegistration>(),
             "TestBus");
@@ -567,37 +561,43 @@ public sealed class HostingTests
     }
 
     [Fact]
-    public void Declare_set_is_consumer_publish_explicit_union()
+    public void Declare_set_is_consumer_publish_deadletter_union()
     {
         var set = DeclareSet(
-            streams: new[] { new StreamDeclaration { Name = "explicit-plain" } },
-            supers: new[] { new SuperStreamDeclaration { Name = "explicit-super", Partitions = 2 } },
             endpoints: new[] { EndpointDescriptor("endpoint-plain"), EndpointDescriptor("endpoint-super", super: true, partitions: 3) },
             publishes: new[] { new PublishRegistration { BusMarker = typeof(DefaultBus), MessageType = typeof(DerivedEvent), Stream = "publish-plain", IsSuper = false } });
-        Assert.Equal(5, set.Count);
-        Assert.Contains(set, d => d.Name == "explicit-plain" && !d.IsSuper && d.Source == "explicit");
-        Assert.Contains(set, d => d is { Name: "explicit-super", IsSuper: true, Partitions: 2 } && d.Source == "explicit");
+        Assert.Equal(3, set.Count);
         Assert.Contains(set, d => d.Name == "endpoint-plain" && !d.IsSuper && d.Source == "endpoint");
         Assert.Contains(set, d => d is { Name: "endpoint-super", IsSuper: true, Partitions: 3 } && d.Source == "endpoint");
         Assert.Contains(set, d => d.Name == "publish-plain" && !d.IsSuper && d.Source == "publish");
     }
 
     [Fact]
-    public void Explicit_declaration_wins_over_derived()
+    public void Stream_deadletter_destinations_join_the_declare_set()
     {
-        var set = DeclareSet(
-            streams: new[] { new StreamDeclaration { Name = "orders" } },
-            endpoints: new[] { EndpointDescriptor("orders") });
-        var match = Assert.Single(set);
-        Assert.Equal("explicit", match.Source);
+        var errorEndpoint = new ReceiveEndpointDescriptor
+        {
+            Stream = "orders",
+            MessageType = typeof(DerivedEvent),
+            ConsumerType = typeof(DerivedConsumer),
+            Reference = "grp",
+            DeadLetter = new DeadLetterOptions { Name = "orders-errors", Spec = new StreamOptions() },
+        };
+        var set = DeclareSet(endpoints: new[] { errorEndpoint });
+        Assert.Equal(2, set.Count);
+        Assert.Contains(set, d => d.Name == "orders-errors" && !d.IsSuper && d.Source == "dead-letter");
+        Assert.Contains(set, d => d.Name == "orders" && !d.IsSuper && d.Source == "endpoint");
     }
 
     [Fact]
-    public void Derived_super_plain_mismatch_against_explicit_throws_naming_sources()
+    public void Endpoint_kind_conflict_throws_naming_stream()
     {
         var ex = Assert.Throws<StreamConfigurationConflictException>(() => DeclareSet(
-            streams: new[] { new StreamDeclaration { Name = "orders" } },
-            endpoints: new[] { EndpointDescriptor("orders", super: true, partitions: 3) }));
+            endpoints: new[]
+            {
+                EndpointDescriptor("orders"),
+                EndpointDescriptor("orders", super: true, partitions: 3),
+            }));
         Assert.Contains("orders", ex.Message, StringComparison.Ordinal);
         Assert.Contains("endpoint", ex.Expected, StringComparison.OrdinalIgnoreCase);
     }
@@ -606,25 +606,26 @@ public sealed class HostingTests
     public void Publish_kind_mismatch_throws_naming_type_and_stream()
     {
         var plainSuper = Assert.Throws<StreamBusConfigurationException>(() => DeclareSet(
-            supers: new[] { new SuperStreamDeclaration { Name = "orders-super", Partitions = 3 } },
+            endpoints: new[] { EndpointDescriptor("orders-super", super: true, partitions: 3) },
             publishes: new[] { new PublishRegistration { BusMarker = typeof(DefaultBus), MessageType = typeof(DerivedEvent), Stream = "orders-super", IsSuper = false } }));
         Assert.Contains(typeof(DerivedEvent).FullName!, plainSuper.Message, StringComparison.Ordinal);
         Assert.Contains("orders-super", plainSuper.Message, StringComparison.Ordinal);
         Assert.Contains("PublishSuper", plainSuper.Message, StringComparison.Ordinal);
 
         var superPlain = Assert.Throws<StreamBusConfigurationException>(() => DeclareSet(
-            streams: new[] { new StreamDeclaration { Name = "orders" } },
+            endpoints: new[] { EndpointDescriptor("orders") },
             publishes: new[] { new PublishRegistration { BusMarker = typeof(DefaultBus), MessageType = typeof(DerivedEvent), Stream = "orders", IsSuper = true } }));
         Assert.Contains(typeof(DerivedEvent).FullName!, superPlain.Message, StringComparison.Ordinal);
         Assert.Contains("PublishAsync", superPlain.Message, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void Super_publish_without_declaration_throws_naming_stream()
+    public void Super_publish_without_partitions_throws_naming_stream()
     {
         var ex = Assert.Throws<StreamBusConfigurationException>(() => DeclareSet(
             publishes: new[] { new PublishRegistration { BusMarker = typeof(DefaultBus), MessageType = typeof(DerivedEvent), Stream = "orders-super", IsSuper = true } }));
         Assert.Contains("orders-super", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("Partitions", ex.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -736,7 +737,7 @@ public sealed class HostingTests
             cfg.ReceiveEndpoint("clashing", e =>
             {
                 e.Consumer<DerivedConsumer>("grp");
-                e.SetSuperStream(3);
+                e.Partitions(3);
             });
         });
         services.AddStreamBusHosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(30)));

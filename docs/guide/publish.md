@@ -22,28 +22,31 @@ a random destination.
 ## Super streams
 
 ```csharp
-cfg.PublishSuper<OrderEvent>("orders-super");
+cfg.PublishSuper<OrderEvent>("orders-super", s => s.Partitions(3));
 
 await bus.PublishSuperAsync(new OrderEvent("o-1", 1), "o-1", ct);
 ```
 
 The routing key is a required `PublishSuperAsync` parameter — forgetting
-it is a compile error, not a runtime surprise. Registration kind must
-agree with the declaration: `Publish` for a super stream (or `PublishSuper`
-for a plain one) fails at startup naming the type and the stream, as does
-a `PublishSuper` registration with no super-stream declaration anywhere.
+it is a compile error, not a runtime surprise. A `PublishSuper`
+registration carries its own spec (`s.Partitions(n)`), or a consuming
+endpoint on the same stream supplies the count with `e.Partitions(n)`;
+with neither, startup fails naming the type and the stream. Registration
+kind must agree across every reference to the stream: `Publish` for a
+super stream (or `PublishSuper` for a plain one) fails at startup naming
+the type and the stream.
 Calling the wrong method for a registration (`PublishAsync` on a
 `PublishSuper` registration and vice versa) throws
 `StreamBusConfigurationException` telling you which method to use.
 
 Consumers never route — an endpoint on a super stream reads all
-partitions. Declare the partitions on the endpoint and auto-declare works:
+partitions. `Partitions` on the endpoint mirrors the super expectation:
 
 ```csharp
 cfg.ReceiveEndpoint("orders-super", e =>
 {
     e.Consumer<SuperOrderConsumer>("super-processors");
-    e.SetSuperStream(partitions: 3);
+    e.Partitions(3);
 });
 ```
 
@@ -71,8 +74,7 @@ cfg.Serializer(json => json.PropertyNamingPolicy = JsonNamingPolicy.CamelCase);
 services.AddStreamBus((context, cfg) =>
 {
     cfg.Host("localhost", "/", h => h.Credentials("app", "s3cret"));
-    cfg.DeclareSuperStream("orders-super", partitions: 3);
-    cfg.PublishSuper<OrderEvent>("orders-super");
+    cfg.PublishSuper<OrderEvent>("orders-super", s => s.Partitions(3));
     cfg.Publish<OrderEvent>("orders-manual");
 });
 

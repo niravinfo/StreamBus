@@ -56,17 +56,14 @@ public sealed class TopologyTests
     }
 
     [Fact]
-    public void Builder_validates_at_build_time()
+    public void Stream_spec_options_validate_at_registration()
     {
         var ex = Assert.Throws<StreamBusConfigurationException>(() =>
-            new StreamTopologyDeclarationsBuilder().DeclareSuperStream("ss", 0).Build());
+            StreamOptionsValidation.Validate(new StreamOptions { Partitions = 0 }, "test", allowPartitions: true));
         Assert.Contains("Partitions", ex.Message);
-        var topology = new StreamTopologyDeclarationsBuilder()
-            .DeclareStream("s", k => k.MaxAge(TimeSpan.FromDays(7))).DeclareSuperStream("ss", 3)
-            .Build();
-        Assert.Single(topology.Streams);
-        Assert.Single(topology.SuperStreams);
-        Assert.Equal(TimeSpan.FromDays(7), topology.Streams[0].MaxAge);
+        var plain = Assert.Throws<StreamBusConfigurationException>(() =>
+            StreamOptionsValidation.Validate(new StreamOptions { Partitions = 3 }, "test", allowPartitions: false));
+        Assert.Contains("no partitions", plain.Message);
     }
 
     private sealed class ScriptSystem : IStreamSystemHandle

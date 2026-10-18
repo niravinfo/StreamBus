@@ -42,7 +42,7 @@ public sealed class RetryConfigurationTests
         {
             e.Consumer<OrderConsumer>("grp");
             e.UseMessageRetry(r => r.Intervals(TimeSpan.FromMilliseconds(200), TimeSpan.FromSeconds(2)));
-            e.DeadLetterTo("audit-errors", DeadLetterType.Stream);
+            e.DeadLetterToStream("audit-errors");
         });
         Assert.Equal(FailureMode.SkipAfterDeadline, options.Retry.FailureMode);
         Assert.Equal(3, options.Retry.MaxAttempts);
@@ -79,7 +79,7 @@ public sealed class RetryConfigurationTests
         Assert.Null(options.ErrorStream);
         Assert.NotNull(options.DeadLetter);
         Assert.Equal("orders_error", options.DeadLetter.Name);
-        Assert.Equal(DeadLetterType.ClassicQueue, options.DeadLetter.Type);
+        Assert.Equal(DeadLetterQueueType.ClassicQueue, options.DeadLetter!.QueueType);
     }
 
     [Fact]
@@ -104,7 +104,7 @@ public sealed class RetryConfigurationTests
                 cfg.ReceiveEndpoint("orders", e =>
                 {
                     e.Consumer<OrderConsumer>("grp");
-                    e.DeadLetterTo("audit-errors", DeadLetterType.Stream);
+                    e.DeadLetterToStream("audit-errors");
                 });
             }));
         Assert.Contains("bound", ex.Message, StringComparison.OrdinalIgnoreCase);
@@ -146,7 +146,7 @@ public sealed class RetryConfigurationTests
         {
             e.Consumer<OrderConsumer>("grp");
             e.UseMessageRetry(r => r.Immediate(1));
-            e.DeadLetterTo("audit-errors", DeadLetterType.Stream);
+            e.DeadLetterToStream("audit-errors");
             e.OnExhausted((_, _) => Task.CompletedTask);
         });
         Assert.NotNull(options.ExhaustionCallback);
@@ -217,7 +217,7 @@ public sealed class RetryConfigurationTests
                 cfg.ReceiveEndpoint("orders", e =>
                 {
                     e.Consumer<OrderConsumer>("grp");
-                    e.DeadLetterTo("  ", DeadLetterType.Stream);
+                    e.DeadLetterToStream("  ");
                 });
             }));
     }

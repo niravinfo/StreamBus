@@ -1,17 +1,36 @@
 # Config
 
-## Code-first
+## Code-first, user-owned
+
+The library never reads configuration automatically — the user owns the
+values and passes them in code. Everything is validated together at
+registration (`Build`), so bad inputs fail once at startup, each error
+naming the knob.
 
 ```csharp
+// Read the settings yourself (appsettings, environment, vault — anywhere).
+var section = builder.Configuration.GetSection("StreamBus");
 services.AddStreamBus((context, cfg) =>
 {
-    cfg.Host("rabbitmq.internal", "/", h => h.Credentials("app", "s3cret"));
+    cfg.Host(
+        section["Host"] ?? "127.0.0.1",
+        section["Vhost"] ?? "/",
+        h =>
+        {
+            h.Credentials(section["UserName"] ?? "app", section["Password"] ?? "");
+            h.StreamPort(int.TryParse(section["StreamPort"], out var sp) ? sp : 5552);
+            h.Heartbeat(TimeSpan.FromSeconds(
+                double.TryParse(section["HeartbeatSeconds"], out var hb) ? hb : 60));
+        });
 
-    cfg.Serializer(json => json.PropertyNamingPolicy = JsonNamingPolicy.CamelCase);
-    cfg.DeclareStream("audit", k => k.MaxAge(TimeSpan.FromDays(30)));
-    cfg.DeclareSuperStream("orders-super", partitions: 3);
+    // Stream specs live on the registrations that reference the stream.
+    cfg.Publish<InvoiceEvent>("invoices", s =>
+    {
+        s.MaxAge(TimeSpan.FromDays(30));
+        s.MaxLengthBytes(1_000_000_000);
+    });
+    cfg.PublishSuper<OrdersEvent>("orders-super", s => s.Partitions(3));
 
-    cfg.Publish<OrderEvent>("orders");
     cfg.ReceiveEndpoint("orders", e => e.Consumer<OrderConsumer>("order-processors"));
 });
 ```
@@ -34,45 +53,9 @@ cfg.Host("rabbitmq.internal", "/", h =>
 });
 ```
 
-## JSON binding
-
-```json
-{
-  "StreamBus": {
-    "Vhost": "/",
-    "UserName": "app",
-    "Password": "s3cret",
-    "Host": "127.0.0.1",
-    "StreamPort": 5552,
-    "AmqpPort": 5672,
-    "HeartbeatSeconds": 60,
-    "Connection": { "ProducersPerConnection": 1, "ConsumersPerConnection": 1 },
-    "Topology": {
-      "Streams": [{ "Name": "audit", "MaxAgeDays": 30 }],
-      "SuperStreams": [{ "Name": "orders-super", "Partitions": 3 }]
-    }
-  }
-}
-```
-
-```csharp
-services.AddStreamBus(
-    builder.Configuration.GetSection("StreamBus"),
-    (context, cfg) =>
-    {
-        cfg.Publish<OrderEvent>("orders");
-        cfg.ReceiveEndpoint("orders", e => e.Consumer<OrderConsumer>("order-processors"));
-    });
-```
-
-Binding keys and defaults: `Vhost` (`/`), `UserName`/`Password`
-(required), `Host` (`127.0.0.1`), `StreamPort` (5552), `AmqpPort` (5672),
-`HeartbeatSeconds` (60), `Connection:ProducersPerConnection` /
-`Connection:ConsumersPerConnection` (1), `Topology:Streams[]:{Name,
-MaxAgeDays, MaxLengthBytes, MaxSegmentSizeBytes, LeaderLocator}`,
-`Topology:SuperStreams[]:{... + Partitions}`. Malformed values fail
-together in one error naming each section path and key. The code lambda
-runs after binding and adds types, routes, endpoints, and retry.
+Credentials are validated centrally at startup: `UserName`/`Password`
+are required and `guest` is rejected (the stream client follows broker
+metadata to non-loopback addresses, where the broker refuses `guest`).
 
 ## Startup hosting
 
@@ -83,27 +66,5 @@ services.AddStreamBusHosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(
 ```
 
 A second `AddStreamBusHosting` call throws. Without it, startup is
-non-blocking (today's default): declarations and consumer attaches run
-in the background.
-
-## Full key reference
-
-All keys live under the section you pass (here `StreamBus`). Failures
-are collected and reported together, each naming section path and key.
-
-| Key | Default | Notes |
-|---|---|---|
-| `Vhost` | `/` | |
-| `UserName` / `Password` | required | `guest` rejected |
-| `Host` | `127.0.0.1` | DNS name or IP |
-| `StreamPort` | `5552` | 1..65535 |
-| `AmqpPort` | `5672` | 1..65535; queue dead letters only |
-| `HeartbeatSeconds` | `60` | > 0, always mapped |
-| `Connection:ProducersPerConnection` | `1` | 1..255 |
-| `Connection:ConsumersPerConnection` | `1` | 1..255 |
-| `Topology:Streams[]:Name` | required | |
-| `Topology:Streams[]:MaxAgeDays` | unset | > 0 |
-| `Topology:Streams[]:MaxLengthBytes` | unset | >= 1 |
-| `Topology:Streams[]:MaxSegmentSizeBytes` | unset | >= 1 |
-| `Topology:Streams[]:LeaderLocator` | `LeastLeaders` | `LeastLeaders`, `ClientLocal`, `Random` |
-| `Topology:SuperStreams[]` | | same knobs as streams plus required `Partitions` >= 1 |
+non-blocking (today's default): stream declarations and consumer
+attaches run in the background.

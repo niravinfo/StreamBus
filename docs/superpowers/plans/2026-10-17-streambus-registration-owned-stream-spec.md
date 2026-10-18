@@ -1,7 +1,7 @@
 # Spec: Registration-owned stream specs (delete Declare*, delete section binding)
 
 Date: 2026-10-17
-Status: approved — all decisions settled (2026-10-18)
+Status: implemented (2026-10-18); see "Implementation record" at the end
 Supersedes (in part): the explicit-declaration rules of
 `2026-10-13-streambus-phase8-topology.md` and the `IConfigurationSection`
 overload reserved in `2026-10-13-streambus-v2-user-centric-api.md`
@@ -54,6 +54,11 @@ configuration automatically, so all validation stays in one place.
   IsSuperStream) stays per-call runtime behavior — untouched.
 
 ## API surface (after)
+
+> Naming note: the spec record shipped as `StreamOptions` and the
+> builders as `IStreamOptionsBuilder`/`ISuperStreamOptionsBuilder` —
+> see "Verification results — Q1". The samples below keep the
+> original `StreamSpec` names from the approved spec.
 
 ```csharp
 public interface IStreamBusConfigurator
@@ -332,6 +337,16 @@ changes are limited to error wording and the new S2 conflict check.
   always fully qualified (`RabbitMQ.Stream.Client.StreamSpec` —
   Connector.cs:24/124, Topology.cs:44-47), so a public
   `StreamBus.StreamSpec` record causes no collision.
+  **Overturned during implementation (2026-10-18):** the library's src
+  never collides, but test and user code that imports
+  `RabbitMQ.Stream.Client` and uses `StreamSpec` unqualified does
+  (stub implementations of `IStreamSystemHandle.CreateStreamAsync(StreamSpec, …)`
+  stopped compiling the moment the library exported its own
+  `StreamSpec`). Renamed the public record to **`StreamOptions`** —
+  consistent with the existing `PublishOptions`/`ConsumeOptions`/
+  `OffsetStoreOptions` family and collision-free. Builders:
+  `IStreamOptionsBuilder`/`ISuperStreamOptionsBuilder`, internal
+  `StreamOptionsBuilder`. Resolved in file `src/StreamBus/StreamOptions.cs`.
 - **Q4 resolved — `Options.Topology` consumers are all explicit-declare
   plumbing this spec removes anyway:** Hosting.cs:66-67 (explicit-list
   extraction), Hosting.cs:435-457 (the vhost-level
@@ -355,3 +370,43 @@ changes are limited to error wording and the new S2 conflict check.
   2026-10-18): a second dead-letter call on an endpoint throws at
   registration, mirroring the `Consumer<T>` duplicate guard; the
   `OnExhausted` funnels-to-callback shadowing rule stays as-is.
+
+## Implementation record (2026-10-18)
+
+Implemented per this spec. Points where implementation went beyond the
+written rules (all verified against the suites):
+
+- **Renamed the public spec record `StreamSpec` → `StreamOptions`**
+  (see the overturned Q1 above). Object overloads are
+  `Publish<T>(stream, StreamOptions)` / `PublishSuper<T>(stream,
+  StreamOptions)` / `DeadLetterToStream(name, StreamOptions)`.
+- **`DeclaredStream` gained `SourceDescription`** (optional, default
+  `""`): conflict messages name the concrete disagreeing references
+  (`endpoint 'orders'`, `publish X`, `error-stream destination 'orders'
+  of endpoint 'orders'`) rather than only a source category.
+- **Super declares from any source validate broker reality.** The old
+  derive path adopted an existing super silently (`probe.SuperExists →
+  continue`); that silently skipped the partition-count comparison the
+  explicit `EnsureSuperStreamAsync` path performed
+  (`TopologyRegistry.CompareSuperAsync`). The derived path now always
+  runs `EnsureSuperStreamAsync` when partitions are configured
+  (creates missing / validates count conflicts) and keeps the silent
+  adopt only when the endpoint configured no partitions — broker rules
+  the count, as before. This is what caught
+  `TopologyIntegrationTests.Blocking_startup_with_conflict_fails_loudly`
+  (3-partition super vs 5-partition registration must still throw).
+- **Publish-source plain streams now declare with knobs** (the old code
+  declared a bare `StreamDeclaration { Name }`, so publish-entry knobs
+  never reached the broker); dead-letter stream destinations declare
+  the same way, from the owning service.
+- S4 rewordings shipped as spec'd in both places:
+  `DeclareSetBuilder` (no partition anywhere for a `PublishSuper`
+  registration → error naming message type + stream) and the host-side
+  endpoint probe error (missing stream + no resolvable partitions).
+
+Verification: `tests/StreamBus.UnitTests` **247/247 passed**;
+`tests/StreamBus.IntegrationTests` **56 passed / 2 environment-gated
+skips** (cluster-gated G-3 + a management-API skip), 0 failures —
+including the no-regression proof
+`TypedStartupIntegrationTests.Startup_with_topology_and_consumer_converges`.
+Examples (`Producer`, `Consumer`) compile against the new surface.

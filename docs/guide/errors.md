@@ -26,7 +26,7 @@ services.AddStreamBus((context, cfg) =>
     {
         e.Consumer<AuditConsumer>("audit-log");
         e.UseMessageRetry(r => r.Immediate(5));
-        e.DeadLetterTo("audit-errors", DeadLetterType.Stream);
+        e.DeadLetterToStream("audit-errors");
     });
 
     cfg.ReceiveEndpoint("payments", e =>
@@ -56,20 +56,25 @@ a raw `RetryPolicy` as an escape hatch on both levels.
 
 | Retry | Exhaustion | Effective mode |
 |---|---|---|
-| bounded schedule | `DeadLetterTo` | handoff to the declared destination, then advance |
+| bounded schedule | `DeadLetterToStream` / `DeadLetterToQueue` | handoff to the declared destination, then advance |
 | bounded schedule | `OnExhausted` | the callback owns the outcome (a declared destination is shadowed with a startup warning) |
 | bounded schedule | neither | handoff to the derived default: classic queue `{stream}_error` (durable, full headers) |
 | unbounded (default) | neither | `Strict`: retry forever |
 | unbounded | destination or callback | configuration error at startup (a handoff needs a bound) |
 | `None()` | explicit/callback/nothing | immediate handoff or callback on first failure |
 
-`DeadLetterType`: `Stream` (v1 envelope semantics, advance-once,
-replayable with `ReplayErrorStreamAsync`), `ClassicQueue`,
-`QuorumQueue` (durable, persistent, broker-confirmed, full
-`streambus.error.*` headers, requeue with `RequeueErrorsAsync`).
-Explicit `DeadLetterTo` requires both name and type. Stream
-destinations must be explicitly declared; queue destinations are
-declared by the transport, never by topology.
+Dead-letter destinations are kind-split, and a second call on the same
+endpoint throws at registration (the destination choice is a one-time,
+exactly-once decision — `OnExhausted` knobs stay last-call-wins):
+
+- `DeadLetterToStream(name, spec?)`: an error **stream** with v1
+  envelope semantics, advance-once, replayable with
+  `ReplayErrorStreamAsync`. The destination stream is declared with the
+  destination's `StreamOptions` at startup.
+- `DeadLetterToQueue(name, type)`: a durable AMQP queue
+  (`DeadLetterQueueType.ClassicQueue` or `DeadLetterQueueType.QuorumQueue`),
+  broker-confirmed, full `streambus.error.*` headers, requeue with
+  `RequeueErrorsAsync`. The transport declares it, never topology.
 
 `OnExhausted` runs with the full `ExhaustedContext` (stream, partition,
 offset, body, metadata, attempts, exception, services). Returning
@@ -97,13 +102,12 @@ operator drains it back after deploying the fix:
 services.AddStreamBus((context, cfg) =>
 {
     cfg.Host("localhost", "/", h => h.Credentials("app", "s3cret"));
-    cfg.DeclareStream("orders");
     cfg.Publish<OrderEvent>("orders");
     cfg.ReceiveEndpoint("orders", e =>
     {
         e.Consumer<OrderConsumer>("order-processors");
         e.UseMessageRetry(r => r.None());
-        e.DeadLetterTo("orders-errors", DeadLetterType.ClassicQueue);
+        e.DeadLetterToQueue("orders-errors", DeadLetterQueueType.ClassicQueue);
     });
 });
 services.AddStreamBusHosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(30)));

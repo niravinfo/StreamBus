@@ -179,7 +179,7 @@ public sealed class ReceiveEndpointTests
                 e.Consumer<OrderConsumer>("grp");
                 e.SingleActiveConsumer(false);
                 e.Offset(ConsumeOffset.AlwaysFirst);
-                e.SetSuperStream(3);
+                e.Partitions(3);
             });
         });
         var sp = services.BuildServiceProvider();

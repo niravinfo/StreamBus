@@ -26,12 +26,6 @@ public sealed record SuperStreamDeclaration
     public StreamLeaderLocator LeaderLocator { get; init; } = StreamLeaderLocator.LeastLeaders;
 }
 
-public sealed record StreamTopologyDeclarations
-{
-    public IReadOnlyList<StreamDeclaration> Streams { get; init; } = Array.Empty<StreamDeclaration>();
-    public IReadOnlyList<SuperStreamDeclaration> SuperStreams { get; init; } = Array.Empty<SuperStreamDeclaration>();
-}
-
 public interface IStreamTopology
 {
     string Vhost { get; }

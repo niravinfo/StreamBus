@@ -28,6 +28,5 @@ public sealed record StreamBusOptions
     public int AmqpPort { get; init; } = 5672;
     public TimeSpan Heartbeat { get; init; } = TimeSpan.FromSeconds(60);
     public StreamBusConnectionOptions Connection { get; init; } = new();
-    public StreamTopologyDeclarations Topology { get; init; } = new();
     public IStreamSerializer Serializer { get; init; } = SystemTextJsonStreamSerializer.Default;
 }

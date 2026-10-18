@@ -15,24 +15,37 @@ var builder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings
     ContentRootPath = AppContext.BaseDirectory,
 });
 
-// The section overload binds the connection primitives from appsettings.json
-// (docs/guide/config.md); the code lambda adds declarations and publish routes.
-builder.Services.AddStreamBus(
-    builder.Configuration.GetSection("StreamBus"),
-    (context, cfg) =>
+// The library never reads configuration by itself: the user owns it.
+// Connection values are read here (in the app) and handed to the
+// configurator so every knob is validated in code at startup.
+builder.Services.AddStreamBus((context, cfg) =>
+{
+    cfg.Host(
+        builder.Configuration["StreamBus:Host"] ?? "127.0.0.1",
+        builder.Configuration["StreamBus:Vhost"] ?? "/",
+        h =>
+        {
+            h.Credentials(
+                builder.Configuration["StreamBus:UserName"] ?? "app",
+                builder.Configuration["StreamBus:Password"] ?? "");
+            h.StreamPort();
+            h.Heartbeat(TimeSpan.FromSeconds(
+                double.TryParse(builder.Configuration["StreamBus:HeartbeatSeconds"], out var seconds) ? seconds : 60));
+        });
+
+    // The stream spec lives on the registration that references the
+    // stream — no manual DeclareStream/DeclareSuperStream anywhere.
+    cfg.Publish<OrderEvent>("orders", s =>
     {
-        // Topology ownership: this service creates (or verifies) both streams
-        // at startup. A conflicting pre-existing spec throws at startup.
-        cfg.DeclareStream("orders", k => k
-            .MaxAge(TimeSpan.FromDays(7))
-            .MaxLengthBytes(500_000_000));
-
-        cfg.DeclareSuperStream("payments-super", partitions: 3);
-
-        // Typed routes: one message type -> one stream per bus.
-        cfg.Publish<OrderEvent>("orders");
-        cfg.PublishSuper<PaymentEvent>("payments-super");
+        s.MaxAge(TimeSpan.FromDays(7));
+        s.MaxLengthBytes(500_000_000);
     });
+
+    cfg.PublishSuper<PaymentEvent>("payments-super", s =>
+    {
+        s.Partitions(3);
+    });
+});
 
 // Blocking startup waits for connections and topology declarations first.
 builder.Services.AddStreamBusHosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(30)));
