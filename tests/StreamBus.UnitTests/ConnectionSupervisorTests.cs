@@ -68,12 +68,23 @@ public sealed class ConnectionSupervisorTests
     };
 
     [Fact]
-    public void Guest_credentials_fail_fast_with_actionable_message()
+    public async Task Empty_credentials_fail_fast_with_actionable_message()
     {
-        var ex = Assert.Throws<StreamBusConfigurationException>(() =>
-            new StreamBusConnectionSupervisor(Valid("guest"), new ScriptedConnector()));
-        Assert.Contains("guest", ex.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("loopback", ex.Message, StringComparison.OrdinalIgnoreCase);
+        var userEx = Assert.Throws<StreamBusConfigurationException>(() =>
+            new StreamBusConnectionSupervisor(new StreamBusOptions { Vhost = "/", UserName = "", Password = "guest" }, new ScriptedConnector()));
+        Assert.Contains("UserName must be supplied", userEx.Message, StringComparison.Ordinal);
+        var passwordEx = Assert.Throws<StreamBusConfigurationException>(() =>
+            new StreamBusConnectionSupervisor(new StreamBusOptions { Vhost = "/", UserName = "guest", Password = "" }, new ScriptedConnector()));
+        Assert.Contains("Password must be supplied", passwordEx.Message, StringComparison.Ordinal);
+        var sup = new StreamBusConnectionSupervisor(new StreamBusOptions { Vhost = "/", UserName = "guest", Password = "guest" }, new ScriptedConnector());
+        try
+        {
+            Assert.Equal(BusConnectionState.Starting, sup.State);
+        }
+        finally
+        {
+            await sup.DisposeAsync();
+        }
     }
 
     [Fact]

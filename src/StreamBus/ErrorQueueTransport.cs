@@ -33,7 +33,8 @@ internal sealed class AmqpConnectionFactory : IErrorQueueConnectionFactory
         catch (AuthenticationFailureException ex)
         {
             throw new StreamBusFatalException(
-                $"AMQP authentication failed for vhost '{options.Vhost}' (user '{options.UserName}'). Create a dedicated non-guest user and reconfigure UserName/Password.", ex);
+                $"AMQP authentication failed for vhost '{options.Vhost}' (user '{options.UserName}'). Check UserName/Password, or create a dedicated non-guest user.",
+                ex);
         }
     }
 }

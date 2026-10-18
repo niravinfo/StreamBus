@@ -40,7 +40,7 @@ public sealed class ReceiveEndpointTests
         var services = new ServiceCollection();
         services.AddStreamBus((_, cfg) =>
         {
-            cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret"));
+            cfg.Host("localhost", "/", h => h.Credentials("app", "secret"));
             cfg.ReceiveEndpoint("orders", e => e.Consumer<OrderConsumer>("order-processors"));
         });
         var sp = services.BuildServiceProvider();
@@ -60,7 +60,7 @@ public sealed class ReceiveEndpointTests
         Assert.Throws<StreamBusConfigurationException>(() =>
             services.AddStreamBus((_, cfg) =>
             {
-                cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret"));
+                cfg.Host("localhost", "/", h => h.Credentials("app", "secret"));
                 cfg.ReceiveEndpoint("orders", e => e.Consumer<OrderConsumer>(group));
             }));
     }
@@ -72,7 +72,7 @@ public sealed class ReceiveEndpointTests
         var ex = Assert.Throws<StreamBusConfigurationException>(() =>
             services.AddStreamBus((_, cfg) =>
             {
-                cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret"));
+                cfg.Host("localhost", "/", h => h.Credentials("app", "secret"));
                 cfg.ReceiveEndpoint("orders", e => e.Consumer<OrderConsumer>(new string('g', 300)));
             }));
         Assert.Contains("255", ex.Message, StringComparison.Ordinal);
@@ -85,7 +85,7 @@ public sealed class ReceiveEndpointTests
         Assert.Throws<StreamBusConfigurationException>(() =>
             services.AddStreamBus((_, cfg) =>
             {
-                cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret"));
+                cfg.Host("localhost", "/", h => h.Credentials("app", "secret"));
                 cfg.ReceiveEndpoint("orders", e =>
                 {
                     e.Consumer<OrderConsumer>("first");
@@ -101,7 +101,7 @@ public sealed class ReceiveEndpointTests
         Assert.Throws<StreamBusConfigurationException>(() =>
             services.AddStreamBus((_, cfg) =>
             {
-                cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret"));
+                cfg.Host("localhost", "/", h => h.Credentials("app", "secret"));
                 cfg.ReceiveEndpoint("orders", _ => { });
             }));
     }
@@ -113,7 +113,7 @@ public sealed class ReceiveEndpointTests
         var ex = Assert.Throws<StreamBusConfigurationException>(() =>
             services.AddStreamBus((_, cfg) =>
             {
-                cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret"));
+                cfg.Host("localhost", "/", h => h.Credentials("app", "secret"));
                 cfg.ReceiveEndpoint("orders", e => e.Consumer<NotAConsumer>("grp"));
             }));
         Assert.Contains(typeof(NotAConsumer).FullName!, ex.Message, StringComparison.Ordinal);
@@ -125,7 +125,7 @@ public sealed class ReceiveEndpointTests
         var services = new ServiceCollection();
         services.AddStreamBus((_, cfg) =>
         {
-            cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret"));
+            cfg.Host("localhost", "/", h => h.Credentials("app", "secret"));
             cfg.ReceiveEndpoint("orders", e => e.Consumer<OrderConsumer>("group-a"));
             cfg.ReceiveEndpoint("orders", e => e.Consumer<OrderConsumer>("group-b"));
         });
@@ -144,7 +144,7 @@ public sealed class ReceiveEndpointTests
             var services = new ServiceCollection();
             services.AddStreamBus((_, cfg) =>
             {
-                cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret"));
+                cfg.Host("localhost", "/", h => h.Credentials("app", "secret"));
                 cfg.ReceiveEndpoint("orders", e => e.Consumer<OrderConsumer>("shared-scale-out"));
             });
             var sp = services.BuildServiceProvider();
@@ -173,7 +173,7 @@ public sealed class ReceiveEndpointTests
         var services = new ServiceCollection();
         services.AddStreamBus((_, cfg) =>
         {
-            cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret"));
+            cfg.Host("localhost", "/", h => h.Credentials("app", "secret"));
             cfg.ReceiveEndpoint("orders", e =>
             {
                 e.Consumer<OrderConsumer>("grp");

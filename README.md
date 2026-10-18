@@ -12,8 +12,9 @@ with per-endpoint override hands exhausted messages to per-stream classic
 - .NET 10 SDK.
 - RabbitMQ 4.x with streams enabled: stream port `5552`, AMQP `5672`
   (AMQP is only used when a queue dead-letter destination exists).
-- A dedicated non-`guest` user (`STREAMBUS_USER` / `STREAMBUS_PASSWORD`);
-  `guest` is rejected at configuration time.
+- Default credentials `guest`/`guest` over `localhost` work against a
+  local broker; remote deployments need a dedicated non-`guest` user
+  (`STREAMBUS_USER` / `STREAMBUS_PASSWORD`).
 
 ## Install
 
@@ -29,9 +30,9 @@ with per-endpoint override hands exhausted messages to per-stream classic
 {
   "StreamBus": {
     "Vhost": "/",
-    "UserName": "app",
-    "Password": "s3cret",
-    "Host": "127.0.0.1",
+    "UserName": "guest",
+    "Password": "guest",
+    "Host": "localhost",
     "StreamPort": 5552,
     "AmqpPort": 5672,
     "HeartbeatSeconds": 60
@@ -88,7 +89,7 @@ public sealed class CheckoutWorker(IStreamBus bus) : BackgroundService
 Every capability links to its guide section:
 
 - Buses: default + marker + `IConfigurationSection` registration (`guide/config.md`)
-- Connection: host/credentials/ports/heartbeat/pools, `guest` rejected (`guide/config.md`)
+- Connection: host/credentials/ports/heartbeat/pools (`guide/config.md`)
 - Serialization: JSON options per bus (`guide/config.md`)
 - Declarations: streams/super-streams + retention/placement knobs (`guide/topology.md`)
 - Startup: block/timeout/non-blocking, readiness waits, health checks (`guide/hosting.md`)

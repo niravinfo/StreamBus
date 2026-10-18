@@ -22,13 +22,13 @@ var builder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings
 builder.Services.AddStreamBus((context, cfg) =>
 {
     cfg.Host(
-        builder.Configuration["StreamBus:Host"] ?? "127.0.0.1",
+        builder.Configuration["StreamBus:Host"] ?? "localhost",
         builder.Configuration["StreamBus:Vhost"] ?? "/",
         h =>
         {
             h.Credentials(
-                builder.Configuration["StreamBus:UserName"] ?? "app",
-                builder.Configuration["StreamBus:Password"] ?? "");
+                builder.Configuration["StreamBus:UserName"] ?? "guest",
+                builder.Configuration["StreamBus:Password"] ?? "guest");
             h.StreamPort();
             h.Heartbeat(TimeSpan.FromSeconds(
                 double.TryParse(builder.Configuration["StreamBus:HeartbeatSeconds"], out var seconds) ? seconds : 60));

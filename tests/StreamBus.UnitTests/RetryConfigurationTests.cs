@@ -17,7 +17,7 @@ public sealed class RetryConfigurationTests
         var services = new ServiceCollection();
         services.AddStreamBus((_, cfg) =>
         {
-            cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret"));
+            cfg.Host("localhost", "/", h => h.Credentials("app", "secret"));
             bus?.Invoke(cfg);
             cfg.ReceiveEndpoint("orders", endpoint);
         });
@@ -100,7 +100,7 @@ public sealed class RetryConfigurationTests
         var ex = Assert.Throws<StreamBusConfigurationException>(() =>
             services.AddStreamBus((_, cfg) =>
             {
-                cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret"));
+                cfg.Host("localhost", "/", h => h.Credentials("app", "secret"));
                 cfg.ReceiveEndpoint("orders", e =>
                 {
                     e.Consumer<OrderConsumer>("grp");
@@ -117,7 +117,7 @@ public sealed class RetryConfigurationTests
         var ex = Assert.Throws<StreamBusConfigurationException>(() =>
             services.AddStreamBus((_, cfg) =>
             {
-                cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret"));
+                cfg.Host("localhost", "/", h => h.Credentials("app", "secret"));
                 cfg.ReceiveEndpoint("orders", e =>
                 {
                     e.Consumer<OrderConsumer>("grp");
@@ -213,7 +213,7 @@ public sealed class RetryConfigurationTests
         Assert.ThrowsAny<ArgumentException>(() =>
             services.AddStreamBus((_, cfg) =>
             {
-                cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret"));
+                cfg.Host("localhost", "/", h => h.Credentials("app", "secret"));
                 cfg.ReceiveEndpoint("orders", e =>
                 {
                     e.Consumer<OrderConsumer>("grp");

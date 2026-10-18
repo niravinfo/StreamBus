@@ -14,7 +14,7 @@ public sealed class BusCoreIntegrationTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddStreamBus((_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials(User(), Password())));
+        services.AddStreamBus((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials(User(), Password())));
         await using var sp = services.BuildServiceProvider();
         var bus = sp.GetRequiredService<IStreamBus>();
         var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
@@ -35,7 +35,7 @@ public sealed class BusCoreIntegrationTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddStreamBus((_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials(User(), Password())));
+        services.AddStreamBus((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials(User(), Password())));
         await using var sp = services.BuildServiceProvider();
         var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
         await hosted.StartAsync(CancellationToken.None);
@@ -62,7 +62,7 @@ public sealed class BusCoreIntegrationTests
             Vhost = "/",
             UserName = User(),
             Password = Password(),
-            Host = "127.0.0.1",
+            Host = "localhost",
             StreamPort = 59999,
         };
         await using var supervisor = new StreamBusConnectionSupervisor(options, new StreamSystemConnector());

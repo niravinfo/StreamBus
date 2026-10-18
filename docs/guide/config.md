@@ -13,11 +13,13 @@ var section = builder.Configuration.GetSection("StreamBus");
 services.AddStreamBus((context, cfg) =>
 {
     cfg.Host(
-        section["Host"] ?? "127.0.0.1",
+        section["Host"] ?? "localhost",
         section["Vhost"] ?? "/",
         h =>
         {
-            h.Credentials(section["UserName"] ?? "app", section["Password"] ?? "");
+            h.Credentials(
+                section["UserName"] ?? "guest",
+                section["Password"] ?? "guest");
             h.StreamPort(int.TryParse(section["StreamPort"], out var sp) ? sp : 5552);
             h.Heartbeat(TimeSpan.FromSeconds(
                 double.TryParse(section["HeartbeatSeconds"], out var hb) ? hb : 60));
@@ -54,8 +56,10 @@ cfg.Host("rabbitmq.internal", "/", h =>
 ```
 
 Credentials are validated centrally at startup: `UserName`/`Password`
-are required and `guest` is rejected (the stream client follows broker
-metadata to non-loopback addresses, where the broker refuses `guest`).
+must be non-empty. The defaults (`guest`/`guest`, `localhost`) work
+against a machine-local broker:
+- For remote or multi-service deployments pass a dedicated non-`guest`
+  user.
 
 ## Startup hosting
 

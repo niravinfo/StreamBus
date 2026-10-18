@@ -47,7 +47,7 @@ public sealed class TypedConsumerIntegrationTests : IAsyncDisposable
             services.AddLogging();
             services.AddStreamBus((_, cfg) =>
             {
-                cfg.Host("127.0.0.1", vhost, h => h.Credentials(User(), Password()));
+                cfg.Host("localhost", vhost, h => h.Credentials(User(), Password()));
                 busConfigure?.Invoke(cfg);
             });
             configure?.Invoke(services);
@@ -166,12 +166,12 @@ public sealed class TypedConsumerIntegrationTests : IAsyncDisposable
         {
             s.AddStreamBus<BusA>((_, cfg) =>
             {
-                cfg.Host("127.0.0.1", "/", h => h.Credentials(User(), Password()));
+                cfg.Host("localhost", "/", h => h.Credentials(User(), Password()));
                 cfg.ReceiveEndpoint(streamA, e => e.Consumer<OrderConsumer>("bus-a-group"));
             });
             s.AddStreamBus<BusB>((_, cfg) =>
             {
-                cfg.Host("127.0.0.1", "/", h => h.Credentials(User(), Password()));
+                cfg.Host("localhost", "/", h => h.Credentials(User(), Password()));
                 cfg.ReceiveEndpoint(streamB, e => e.Consumer<OrderConsumer>("bus-b-group"));
             });
             s.AddSingleton(got);

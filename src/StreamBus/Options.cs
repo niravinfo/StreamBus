@@ -21,9 +21,9 @@ public sealed record StreamBusConnectionOptions
 public sealed record StreamBusOptions
 {
     public required string Vhost { get; init; }
-    public required string UserName { get; init; }
-    public required string Password { get; init; }
-    public string Host { get; init; } = "127.0.0.1";
+    public string UserName { get; init; } = "guest";
+    public string Password { get; init; } = "guest";
+    public string Host { get; init; } = "localhost";
     public int StreamPort { get; init; } = 5552;
     public int AmqpPort { get; init; } = 5672;
     public TimeSpan Heartbeat { get; init; } = TimeSpan.FromSeconds(60);
