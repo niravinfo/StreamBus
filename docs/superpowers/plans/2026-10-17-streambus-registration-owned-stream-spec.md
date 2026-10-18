@@ -91,8 +91,10 @@ Rules:
   `IStreamSpecBuilder` (no `Partitions` reachable), `PublishSuper` takes
   `ISuperStreamSpecBuilder` (`Partitions` available). One internal
   `StreamSpecBuilder` class implements both.
-- Builder setters are last-call-wins (same as the endpoint `Set*`
-  methods today); calling a setter twice is not an error.
+- Builder setters return `void` and are last-call-wins (same as the
+  endpoint `Set*` methods today); calling a setter twice is not an
+  error. **No fluent chaining ("rail" style):** `s.Partitions(3).MaxAge(…)`
+  does not compile — every call is its own statement on its own line.
 - Overloads are mutually exclusive by shape: the callback mutates a
   fresh builder; the object overload is taken as-is. No combined form.
 - `Publish` given a `StreamSpec` with `Partitions` set → registration-time
