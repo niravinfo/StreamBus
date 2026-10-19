@@ -308,9 +308,9 @@ Note: M1 before M3 deliberately — liveness first, then refactor on a correctly
 
 ## 12. Open items (need human answers before final plan)
 
-1. The decoration-only publish + skip-capable consume shape is the recommended default, adopted unless the user wants publish-suppression use-cases (tenant-gating/outbox-only).
-2. **CI platform/permissions** available for this repo (GitHub Actions? Azure DevOps?), and is there a hosted/attainable RabbitMQ 4 broker image path (docker) in that CI?
-3. **Breaking-change tolerance**: 0.x break list acceptable (upstream bikeshed? any internal consumers pin to the API at all)?
-4. **ActivitySource default**: always-on-if-listened (recommended) vs opt-in toggle?
-5. **Monitor interval default**: 5s acceptable (drains seconds-level sensitivity; cheap poll)?
-6. **Well-known filters beyond correlation/tenant** wanted in-box (e.g. user forwarding header convention used at your shop)?
+1. **Pipeline shape — adopted**: decoration-only publish (no short-circuit/veto) + consume-with-skip (capability-gated). ADR-2 stands. Reopening trigger: if a tenant-gating/outbox-suppression use case appears, reopen ADR-2 with veto semantics.
+2. **CI platform — adopted**: GitHub Actions with a `rabbitmq:4-management` service container (streams plugin enabled via mounted config); targeted at port 5552 + management 15672. The workflow is written to be swappable to Azure DevOps if the repo host changes.
+3. **Breaking-change tolerance — adopted**: 0.2.0 with a complete break list in CHANGELOG.md; no compat shims; no known internal consumers pin the current surface.
+4. **Defaults — adopted**: ActivitySource ("StreamBus") always-on-if-listened; supervisor `MonitorInterval` 5s; in-box helpers limited to correlation/tenant reference samples in `examples/` (no product-assembly filters in v2).
+
+> Defaults were adopted 2026-10-19 (question round was skipped by the design owner). Each is veto-able during plan review without reopening the architecture.
