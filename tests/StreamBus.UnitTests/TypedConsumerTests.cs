@@ -74,7 +74,7 @@ public sealed class TypedConsumerTests
         services.AddSingleton(singleton);
         services.AddStreamBus((_, cfg) =>
         {
-            cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret"));
+            cfg.Host("localhost", "/", h => h.Credentials("app", "secret"));
             cfg.ReceiveEndpoint("orders", e => e.Consumer<OrderConsumer>("test-group"));
         });
         var sp = services.BuildServiceProvider();

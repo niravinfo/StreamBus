@@ -37,7 +37,7 @@ public sealed class ErrorQueueIntegrationTests : IAsyncDisposable
             {
                 var factory = new ConnectionFactory
                 {
-                    HostName = "127.0.0.1",
+                    HostName = "localhost",
                     Port = 5672,
                     UserName = User(),
                     Password = Password(),
@@ -70,7 +70,7 @@ public sealed class ErrorQueueIntegrationTests : IAsyncDisposable
             services.AddLogging();
             services.AddStreamBus((_, cfg) =>
             {
-                cfg.Host("127.0.0.1", vhost, h => h.Credentials(User(), Password()));
+                cfg.Host("localhost", vhost, h => h.Credentials(User(), Password()));
                 busConfigure?.Invoke(cfg);
             });
             if (blockTimeout is { } timeout)
@@ -107,7 +107,7 @@ public sealed class ErrorQueueIntegrationTests : IAsyncDisposable
         var ct = TestContext.Current.CancellationToken;
         var factory = new ConnectionFactory
         {
-            HostName = "127.0.0.1",
+            HostName = "localhost",
             Port = 5672,
             UserName = User(),
             Password = Password(),
@@ -145,13 +145,13 @@ public sealed class ErrorQueueIntegrationTests : IAsyncDisposable
             "/",
             cfg =>
             {
-                cfg.DeclareStream(stream);
+                cfg.Publish<OrderEvent>(stream);
                 cfg.ReceiveEndpoint(stream, e =>
                 {
                     e.Consumer<FailingConsumer>("eq-group");
                     e.UseMessageRetry(r => r.None());
                     if (explicitQueue)
-                        e.DeadLetterTo(errorQueue, DeadLetterType.ClassicQueue);
+                        e.DeadLetterToQueue(errorQueue, DeadLetterQueueType.ClassicQueue);
                 });
             },
             TimeSpan.FromSeconds(60));

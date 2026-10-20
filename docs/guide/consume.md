@@ -33,14 +33,14 @@ cfg.ReceiveEndpoint("orders", e =>
 });
 ```
 
-Stream declaration knobs live on the endpoint too and feed startup
-topology derivation: `SetSuperStream(partitions)`, `SetMaxAge`,
-`SetMaxLengthBytes`, `SetMaxSegmentSizeBytes`, `SetLeaderLocator`.
-An endpoint stream with an explicit `DeclareStream`/`DeclareSuperStream`
-in the same service is declared and verified; without one the endpoint
-adopts the broker reality (matching kind is consumed read-only, a kind
-mismatch is a conflict, a missing stream is declared when possible and a
-configuration error otherwise).
+Stream spec knobs live on the endpoint too and feed startup topology
+derivation: `Partitions(n)` (super expectation, mirrors the publish
+registration's `s.Partitions(n)`), `MaxAge`, `MaxLengthBytes`,
+`MaxSegmentSizeBytes`, `LeaderLocator`. Multiple references to one
+stream must agree per knob; see `guide/topology.md` for the full
+declare-level rules. The endpoint adopts the broker reality (matching
+kind is consumed as-is, a kind mismatch is a conflict, a missing stream
+is declared from the endpoint's and any publish registration's spec).
 
 ## Raw consume
 

@@ -48,7 +48,7 @@ public sealed class PublishIntegrationTests : IAsyncDisposable
         _streams.Add(stream);
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddStreamBus((_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials(User(), Password())));
+        services.AddStreamBus((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials(User(), Password())));
         await using var sp = services.BuildServiceProvider();
         var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
         await hosted.StartAsync(CancellationToken.None);
@@ -88,7 +88,7 @@ public sealed class PublishIntegrationTests : IAsyncDisposable
         var stream = Unique("pub-missing");
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddStreamBus((_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials(User(), Password())));
+        services.AddStreamBus((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials(User(), Password())));
         await using var sp = services.BuildServiceProvider();
         var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
         await hosted.StartAsync(CancellationToken.None);
@@ -114,7 +114,7 @@ public sealed class PublishIntegrationTests : IAsyncDisposable
         _superStreams.Add(super);
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddStreamBus((_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials(User(), Password())));
+        services.AddStreamBus((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials(User(), Password())));
         await using var sp = services.BuildServiceProvider();
         var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
         await hosted.StartAsync(CancellationToken.None);

@@ -1,6 +1,5 @@
 using System.Text;
 using System.Text.Json;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
@@ -26,10 +25,10 @@ public interface IStreamBusConfigurator
     void Host(string host, string vhost, Action<IHostConfigurator> configure);
     void Serializer(IStreamSerializer serializer);
     void Serializer(Action<JsonSerializerOptions> configure);
-    void DeclareStream(string name, Action<StreamDeclarationKnobsBuilder>? configure = null);
-    void DeclareSuperStream(string name, int partitions, Action<StreamDeclarationKnobsBuilder>? configure = null);
-    void Publish<TMessage>(string stream);
-    void PublishSuper<TMessage>(string stream);
+    void Publish<TMessage>(string stream, Action<IStreamOptionsBuilder>? configure = null);
+    void Publish<TMessage>(string stream, StreamOptions spec);
+    void PublishSuper<TMessage>(string stream, Action<ISuperStreamOptionsBuilder> configure);
+    void PublishSuper<TMessage>(string stream, StreamOptions spec);
     void ReceiveEndpoint(string stream, Action<IReceiveEndpointConfigurator> configure);
     void UseMessageRetry(Action<IRetryConfigurator> configure);
     void UseRetry(RetryPolicy policy);
@@ -45,13 +44,15 @@ public interface IReceiveEndpointConfigurator
     void Readiness(ReadinessPolicy policy);
     void UseMessageRetry(Action<IRetryConfigurator> configure);
     void UseRetry(RetryPolicy policy);
-    void DeadLetterTo(string name, DeadLetterType type);
+    void DeadLetterToStream(string name, Action<IStreamOptionsBuilder>? configure = null);
+    void DeadLetterToStream(string name, StreamOptions spec);
+    void DeadLetterToQueue(string name, DeadLetterQueueType type);
     void OnExhausted(Func<ExhaustedContext, CancellationToken, Task> handler);
-    void SetSuperStream(int partitions);
-    void SetMaxAge(TimeSpan maxAge);
-    void SetMaxLengthBytes(ulong maxLengthBytes);
-    void SetMaxSegmentSizeBytes(int maxSegmentSizeBytes);
-    void SetLeaderLocator(StreamLeaderLocator locator);
+    void Partitions(int partitions);
+    void MaxAge(TimeSpan maxAge);
+    void MaxLengthBytes(ulong maxLengthBytes);
+    void MaxSegmentSizeBytes(int maxSegmentSizeBytes);
+    void LeaderLocator(StreamLeaderLocator locator);
 }
 
 public sealed record ReceiveEndpointDescriptor
@@ -109,11 +110,8 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
     private TimeSpan _heartbeat = TimeSpan.FromSeconds(60);
     private int _producers = 1;
     private int _consumers = 1;
-    private string? _sectionPath;
     private IStreamSerializer _serializer = SystemTextJsonStreamSerializer.Default;
-    private readonly List<StreamDeclaration> _streams = new();
-    private readonly List<SuperStreamDeclaration> _supers = new();
-    private readonly List<(Type MessageType, string Stream, bool IsSuper)> _publishes = new();
+    private readonly List<(Type MessageType, string Stream, bool IsSuper, StreamOptions Spec)> _publishes = new();
     private readonly List<ReceiveEndpointDescriptor> _endpoints = new();
     private RetryPolicy? _globalRetry;
     private bool _hostCalled;
@@ -124,27 +122,11 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
         _busType = busType;
     }
 
-    internal IReadOnlyList<(Type MessageType, string Stream, bool IsSuper)> Publishes => _publishes;
+    internal IReadOnlyList<(Type MessageType, string Stream, bool IsSuper, StreamOptions Spec)> Publishes => _publishes;
 
     internal IReadOnlyList<ReceiveEndpointDescriptor> Endpoints => _endpoints;
 
     internal RetryPolicy? GlobalRetry => _globalRetry;
-
-    internal void ApplySectionPrimitives(SectionPrimitives primitives, string sectionPath)
-    {
-        ArgumentNullException.ThrowIfNull(primitives);
-        ArgumentException.ThrowIfNullOrWhiteSpace(sectionPath);
-        _host = primitives.Host;
-        _vhost = primitives.Vhost;
-        if (primitives.UserName is not null) _user = primitives.UserName;
-        if (primitives.Password is not null) _password = primitives.Password;
-        _streamPort = primitives.StreamPort;
-        _amqpPort = primitives.AmqpPort;
-        _heartbeat = primitives.Heartbeat;
-        _producers = primitives.ProducersPerConnection;
-        _consumers = primitives.ConsumersPerConnection;
-        _sectionPath = sectionPath;
-    }
 
     public void Host(string host, string vhost, Action<IHostConfigurator> configure)
     {
@@ -174,36 +156,41 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
         _serializer = new SystemTextJsonStreamSerializer(options);
     }
 
-    public void DeclareStream(string name, Action<StreamDeclarationKnobsBuilder>? configure = null)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
-        var knobs = new StreamDeclarationKnobsBuilder();
-        configure?.Invoke(knobs);
-        var declaration = knobs.BuildStream(name.Trim());
-        TopologyValidation.ValidateStream(declaration);
-        _streams.Add(declaration);
-    }
-
-    public void DeclareSuperStream(string name, int partitions, Action<StreamDeclarationKnobsBuilder>? configure = null)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
-        var knobs = new StreamDeclarationKnobsBuilder();
-        configure?.Invoke(knobs);
-        var declaration = knobs.BuildSuper(name.Trim(), partitions);
-        TopologyValidation.ValidateSuper(declaration);
-        _supers.Add(declaration);
-    }
-
-    public void Publish<TMessage>(string stream)
+    public void Publish<TMessage>(string stream, Action<IStreamOptionsBuilder>? configure = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(stream);
-        _publishes.Add((typeof(TMessage), stream.Trim(), false));
+        var builder = new StreamOptionsBuilder();
+        configure?.Invoke(builder);
+        AddPublish(typeof(TMessage), stream, isSuper: false, spec: builder.Build());
     }
 
-    public void PublishSuper<TMessage>(string stream)
+    public void Publish<TMessage>(string stream, StreamOptions spec)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(stream);
-        _publishes.Add((typeof(TMessage), stream.Trim(), true));
+        ArgumentNullException.ThrowIfNull(spec);
+        AddPublish(typeof(TMessage), stream, isSuper: false, spec: spec);
+    }
+
+    public void PublishSuper<TMessage>(string stream, Action<ISuperStreamOptionsBuilder> configure)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(stream);
+        ArgumentNullException.ThrowIfNull(configure);
+        var builder = new StreamOptionsBuilder();
+        configure(builder);
+        AddPublish(typeof(TMessage), stream, isSuper: true, spec: builder.Build());
+    }
+
+    public void PublishSuper<TMessage>(string stream, StreamOptions spec)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(stream);
+        ArgumentNullException.ThrowIfNull(spec);
+        AddPublish(typeof(TMessage), stream, isSuper: true, spec: spec);
+    }
+
+    private void AddPublish(Type messageType, string stream, bool isSuper, StreamOptions spec)
+    {
+        StreamOptionsValidation.Validate(spec, $"Publish '{stream.Trim()}'", allowPartitions: isSuper);
+        _publishes.Add((messageType, stream.Trim(), isSuper, spec));
     }
 
     public void ReceiveEndpoint(string stream, Action<IReceiveEndpointConfigurator> configure)
@@ -234,14 +221,12 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
         ArgumentNullException.ThrowIfNull(busType);
         if (busType != _busType)
             throw new StreamBusConfigurationException($"Internal error: configurator for {_busType.FullName} built as {busType.FullName}.");
-        if (!_hostCalled && _sectionPath is null)
+        if (!_hostCalled)
             throw new StreamBusConfigurationException($"Bus {busType.FullName}: Host must be configured exactly once.");
         if (string.IsNullOrWhiteSpace(_host))
             throw new StreamBusConfigurationException($"Bus {busType.FullName}: Host host must be supplied.");
         if (string.IsNullOrWhiteSpace(_vhost))
             throw new StreamBusConfigurationException($"Bus {busType.FullName}: Host vhost must be supplied.");
-        if ((string.IsNullOrWhiteSpace(_user) || string.IsNullOrWhiteSpace(_password)) && _sectionPath is not null && !_hostCalled)
-            throw new StreamBusConfigurationException($"Bus {busType.FullName}: StreamBus UserName and Password must be supplied (section '{_sectionPath}': UserName and Password, or cfg.Host(host, vhost, h => h.Credentials(user, password))).");
         if (_streamPort is < 1 or > 65535)
             throw new StreamBusConfigurationException($"Bus {busType.FullName}: StreamPort must be in 1..65535.");
         if (_amqpPort is < 1 or > 65535)
@@ -252,13 +237,6 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
             throw new StreamBusConfigurationException($"Bus {busType.FullName}: ProducersPerConnection must be in 1..{byte.MaxValue}.");
         if (_consumers < 1 || _consumers > byte.MaxValue)
             throw new StreamBusConfigurationException($"Bus {busType.FullName}: ConsumersPerConnection must be in 1..{byte.MaxValue}.");
-
-        var plainNames = new HashSet<string>(_streams.Select(s => s.Name), StringComparer.Ordinal);
-        foreach (var s in _supers)
-        {
-            if (plainNames.Contains(s.Name))
-                throw new StreamConfigurationConflictException(s.Name, $"super stream '{s.Name}'", $"plain stream '{s.Name}'");
-        }
 
         var options = new StreamBusOptions
         {
@@ -273,11 +251,6 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
             {
                 ProducersPerConnection = _producers,
                 ConsumersPerConnection = _consumers,
-            },
-            Topology = new StreamTopologyDeclarations
-            {
-                Streams = _streams.ToList(),
-                SuperStreams = _supers.ToList(),
             },
             Serializer = _serializer,
         };
@@ -416,39 +389,69 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
             ArgumentNullException.ThrowIfNull(policy);
             _retryOverride = policy;
         }
-        public void DeadLetterTo(string name, DeadLetterType type)
+        public void DeadLetterToStream(string name, Action<IStreamOptionsBuilder>? configure = null)
         {
+            EnsureDeadLetterSlot("stream");
+            ArgumentException.ThrowIfNullOrWhiteSpace(name);
+            var builder = new StreamOptionsBuilder();
+            configure?.Invoke(builder);
+            var spec = builder.Build();
+            StreamOptionsValidation.Validate(spec, $"ReceiveEndpoint '{_stream}' error-stream destination '{name.Trim()}'", allowPartitions: false);
+            _deadLetter = new DeadLetterOptions { Name = name.Trim(), Spec = spec };
+        }
+        public void DeadLetterToStream(string name, StreamOptions spec)
+        {
+            EnsureDeadLetterSlot("stream");
+            ArgumentException.ThrowIfNullOrWhiteSpace(name);
+            ArgumentNullException.ThrowIfNull(spec);
+            StreamOptionsValidation.Validate(spec, $"ReceiveEndpoint '{_stream}' error-stream destination '{name.Trim()}'", allowPartitions: false);
+            _deadLetter = new DeadLetterOptions { Name = name.Trim(), Spec = spec };
+        }
+        public void DeadLetterToQueue(string name, DeadLetterQueueType type)
+        {
+            EnsureDeadLetterSlot("queue");
             ArgumentException.ThrowIfNullOrWhiteSpace(name);
             if (!Enum.IsDefined(type))
-                throw new StreamBusConfigurationException($"ReceiveEndpoint '{_stream}': DeadLetterType has an undefined value.");
-            _deadLetter = new DeadLetterOptions { Name = name.Trim(), Type = type };
+                throw new StreamBusConfigurationException($"ReceiveEndpoint '{_stream}': DeadLetterQueueType has an undefined value.");
+            _deadLetter = new DeadLetterOptions { Name = name.Trim(), QueueType = type };
         }
-        public void SetSuperStream(int partitions)
+        private void EnsureDeadLetterSlot(string attempted)
+        {
+            if (_deadLetter is not { } existing)
+                return;
+            throw new StreamBusConfigurationException(
+                $"ReceiveEndpoint '{_stream}': a dead-letter destination is already configured ({Describe(existing)}); at most one is allowed per endpoint. Remove the duplicate {attempted} call.");
+        }
+        private static string Describe(DeadLetterOptions destination)
+            => destination.QueueType is { } queueType
+                ? $"queue ({queueType}) '{destination.Name}'"
+                : $"stream '{destination.Name}'";
+        public void Partitions(int partitions)
         {
             if (partitions < 1)
                 throw new StreamBusConfigurationException($"ReceiveEndpoint '{_stream}': super-stream partitions must be >= 1.");
             _super = true;
             _superPartitions = partitions;
         }
-        public void SetMaxAge(TimeSpan maxAge)
+        public void MaxAge(TimeSpan maxAge)
         {
             if (maxAge <= TimeSpan.Zero)
                 throw new StreamBusConfigurationException($"ReceiveEndpoint '{_stream}': MaxAge must be positive when set.");
             _maxAge = maxAge;
         }
-        public void SetMaxLengthBytes(ulong maxLengthBytes)
+        public void MaxLengthBytes(ulong maxLengthBytes)
         {
             if (maxLengthBytes < 1)
                 throw new StreamBusConfigurationException($"ReceiveEndpoint '{_stream}': MaxLengthBytes must be >= 1 when set.");
             _maxLengthBytes = maxLengthBytes;
         }
-        public void SetMaxSegmentSizeBytes(int maxSegmentSizeBytes)
+        public void MaxSegmentSizeBytes(int maxSegmentSizeBytes)
         {
             if (maxSegmentSizeBytes < 1)
                 throw new StreamBusConfigurationException($"ReceiveEndpoint '{_stream}': MaxSegmentSizeBytes must be >= 1 when set.");
             _maxSegmentSizeBytes = maxSegmentSizeBytes;
         }
-        public void SetLeaderLocator(StreamLeaderLocator locator)
+        public void LeaderLocator(StreamLeaderLocator locator)
         {
             if (!Enum.IsDefined(locator))
                 throw new StreamBusConfigurationException($"ReceiveEndpoint '{_stream}': LeaderLocator has an undefined value.");
@@ -491,7 +494,7 @@ public static class StreamBusConfiguratorExtensions
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configure);
-        return AddCore(services, typeof(DefaultBus), section: null, configure);
+        return AddCore(services, typeof(DefaultBus), configure);
     }
 
     public static IServiceCollection AddStreamBus<TBus>(
@@ -500,44 +503,21 @@ public static class StreamBusConfiguratorExtensions
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configure);
-        return AddCore(services, typeof(TBus), section: null, configure);
-    }
-
-    public static IServiceCollection AddStreamBus(
-        this IServiceCollection services,
-        IConfigurationSection section,
-        Action<IStreamRegistrationContext, IStreamBusConfigurator>? configure = null)
-    {
-        ArgumentNullException.ThrowIfNull(services);
-        ArgumentNullException.ThrowIfNull(section);
-        return AddCore(services, typeof(DefaultBus), section, configure);
-    }
-
-    public static IServiceCollection AddStreamBus<TBus>(
-        this IServiceCollection services,
-        IConfigurationSection section,
-        Action<IStreamRegistrationContext, IStreamBusConfigurator>? configure = null)
-    {
-        ArgumentNullException.ThrowIfNull(services);
-        ArgumentNullException.ThrowIfNull(section);
-        return AddCore(services, typeof(TBus), section, configure);
+        return AddCore(services, typeof(TBus), configure);
     }
 
     private static IServiceCollection AddCore(
         IServiceCollection services,
         Type busType,
-        IConfigurationSection? section,
         Action<IStreamRegistrationContext, IStreamBusConfigurator>? configure)
     {
         var configurator = new StreamBusConfigurator(busType);
-        if (section is not null)
-            StreamBusConfigurationBinding.Apply(configurator, section);
         var context = new StreamRegistrationContext(services);
         configure?.Invoke(context, configurator);
         var options = configurator.Build(busType);
         var publishStore = ServiceCollectionExtensions.GetOrCreatePublishStore(services);
         foreach (var p in configurator.Publishes)
-            publishStore.Add(busType, p.MessageType, p.Stream, p.IsSuper);
+            publishStore.Add(busType, p.MessageType, p.Stream, p.IsSuper, p.Spec);
         var endpointStore = ServiceCollectionExtensions.GetOrCreateEndpointStore(services);
         var consumerStore = ServiceCollectionExtensions.GetOrCreateConsumerStore(services);
         foreach (var descriptor in configurator.Endpoints)

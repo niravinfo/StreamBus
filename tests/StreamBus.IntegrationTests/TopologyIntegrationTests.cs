@@ -45,7 +45,7 @@ public sealed class TopologyIntegrationTests : IAsyncDisposable
         {
             var services = new ServiceCollection();
             services.AddLogging();
-            services.AddStreamBus((ctx, cfg) => { cfg.Host("127.0.0.1", vhost, h => h.Credentials(User(), Password())); configure?.Invoke(ctx, cfg); });
+            services.AddStreamBus((ctx, cfg) => { cfg.Host("localhost", vhost, h => h.Credentials(User(), Password())); configure?.Invoke(ctx, cfg); });
             var sp = services.BuildServiceProvider();
             var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
             await hosted.StartAsync(TestContext.Current.CancellationToken);
@@ -177,8 +177,8 @@ public sealed class TopologyIntegrationTests : IAsyncDisposable
         _superStreams.Add(super);
         await using var inst = await BusInstance.StartAsync("/", (_, cfg) =>
         {
-            cfg.DeclareStream(plain);
-            cfg.DeclareSuperStream(super, 2);
+            cfg.Publish<TopologyPlainEvent>(plain);
+            cfg.PublishSuper<TopologySuperEvent>(super, s => s.Partitions(2));
         });
         var admin = await ConnectAdminAsync();
         await using var _ = admin;
@@ -199,9 +199,9 @@ public sealed class TopologyIntegrationTests : IAsyncDisposable
         services.AddLogging();
         services.AddStreamBus((_, cfg) =>
         {
-            cfg.Host("127.0.0.1", "/", h => h.Credentials(User(), Password()));
-            cfg.DeclareStream(plain);
-            cfg.DeclareSuperStream(super, 2);
+            cfg.Host("localhost", "/", h => h.Credentials(User(), Password()));
+            cfg.Publish<TopologyPlainEvent>(plain);
+            cfg.PublishSuper<TopologySuperEvent>(super, s => s.Partitions(2));
         });
         services.AddStreamBusHosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(30)));
         await using var sp = services.BuildServiceProvider();
@@ -233,8 +233,8 @@ public sealed class TopologyIntegrationTests : IAsyncDisposable
         services.AddLogging();
         services.AddStreamBus((_, cfg) =>
         {
-            cfg.Host("127.0.0.1", "/", h => h.Credentials(User(), Password()));
-            cfg.DeclareSuperStream(super, 5);
+            cfg.Host("localhost", "/", h => h.Credentials(User(), Password()));
+            cfg.PublishSuper<TopologySuperEvent>(super, s => s.Partitions(5));
         });
         services.AddStreamBusHosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(30)));
         await using var sp = services.BuildServiceProvider();
@@ -333,4 +333,8 @@ public sealed class TopologyIntegrationTests : IAsyncDisposable
         // not apply (xUnit2002) — assert the leader endpoint is populated.
         Assert.False(string.IsNullOrEmpty(info.Leader.Host));
     }
+
+    private sealed record TopologyPlainEvent;
+
+    private sealed record TopologySuperEvent;
 }

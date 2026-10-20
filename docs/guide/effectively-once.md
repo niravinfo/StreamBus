@@ -11,8 +11,8 @@ attach, so at-most-one pipeline may run per (source, target) pair.
 services.AddStreamBus((context, cfg) =>
 {
     cfg.Host("localhost", "/", h => h.Credentials("app", "s3cret"));
-    cfg.DeclareStream("orders");
-    cfg.DeclareStream("invoices");
+    cfg.Publish<OrderEvent>("orders");
+    cfg.Publish<InvoiceEvent>("invoices");
 });
 
 await using var pipe = await bus.ConsumeEffectivelyOnceAsync(

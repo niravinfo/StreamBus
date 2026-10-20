@@ -138,9 +138,9 @@ public sealed class PublishRoutingTests
         var services = new ServiceCollection();
         services.AddStreamBus((_, cfg) =>
         {
-            cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret"));
+            cfg.Host("localhost", "/", h => h.Credentials("app", "secret"));
             cfg.Publish<OrderEvent>("orders");
-            cfg.PublishSuper<InvoiceEvent>("invoices-super");
+            cfg.PublishSuper<InvoiceEvent>("invoices-super", s => s.Partitions(3));
         });
         var sp = services.BuildServiceProvider();
         var store = sp.GetRequiredService<StreamBusPublishStore>();

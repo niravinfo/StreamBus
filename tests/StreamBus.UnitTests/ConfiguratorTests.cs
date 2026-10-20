@@ -1,4 +1,3 @@
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace StreamBus.UnitTests;
@@ -24,35 +23,49 @@ public sealed class ConfiguratorTests
         var ex = Assert.Throws<StreamBusConfigurationException>(() =>
             services.AddStreamBus((_, cfg) =>
             {
-                cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret"));
-                cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret"));
+                cfg.Host("localhost", "/", h => h.Credentials("app", "secret"));
+                cfg.Host("localhost", "/", h => h.Credentials("app", "secret"));
             }));
         Assert.Contains("exactly once", ex.Message, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void Guest_credentials_rejected()
+    public void Guest_credentials_accepted_for_local_brokers()
     {
         var services = new ServiceCollection();
-        var ex = Assert.Throws<StreamBusConfigurationException>(() =>
-            services.AddStreamBus((_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials("guest", "guest"))));
-        Assert.Contains("guest", ex.Message, StringComparison.OrdinalIgnoreCase);
+        services.AddStreamBus((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("guest", "guest")));
+        var sp = services.BuildServiceProvider();
+        var options = sp.GetRequiredService<StreamBusConfigStore>().ForVhost("/");
+        Assert.Equal("guest", options.UserName);
+        Assert.Equal("guest", options.Password);
     }
 
     [Fact]
     public void Defaults_are_pinned()
     {
         var services = new ServiceCollection();
-        services.AddStreamBus((_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret")));
+        services.AddStreamBus((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("app", "secret")));
         var sp = services.BuildServiceProvider();
         var options = sp.GetRequiredService<StreamBusConfigStore>().ForVhost("/");
-        Assert.Equal("127.0.0.1", options.Host);
+        Assert.Equal("localhost", options.Host);
         Assert.Equal("/", options.Vhost);
         Assert.Equal(5552, options.StreamPort);
         Assert.Equal(5672, options.AmqpPort);
         Assert.Equal(TimeSpan.FromSeconds(60), options.Heartbeat);
         Assert.Equal(1, options.Connection.ProducersPerConnection);
         Assert.Equal(1, options.Connection.ConsumersPerConnection);
+    }
+
+    [Fact]
+    public void Stream_options_default_to_localhost_and_guest()
+    {
+        var options = new StreamBusOptions { Vhost = "/" };
+        Assert.Equal("localhost", options.Host);
+        Assert.Equal("guest", options.UserName);
+        Assert.Equal("guest", options.Password);
+        Assert.Equal(5552, options.StreamPort);
+        Assert.Equal(5672, options.AmqpPort);
+        Assert.Equal(TimeSpan.FromSeconds(60), options.Heartbeat);
     }
 
     [Fact]
@@ -83,9 +96,9 @@ public sealed class ConfiguratorTests
     public void Marker_and_default_coexist()
     {
         var services = new ServiceCollection();
-        services.AddStreamBus((_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret")));
-        services.AddStreamBus<OrdersBus>((_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret")));
-        services.AddStreamBus<BillingBus>((_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret")));
+        services.AddStreamBus((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("app", "secret")));
+        services.AddStreamBus<OrdersBus>((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("app", "secret")));
+        services.AddStreamBus<BillingBus>((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("app", "secret")));
         var sp = services.BuildServiceProvider();
         Assert.NotNull(sp.GetRequiredService<IStreamBus>());
         Assert.NotSame(
@@ -93,44 +106,23 @@ public sealed class ConfiguratorTests
             sp.GetRequiredService<IStreamBus<BillingBus>>());
     }
 
+    private sealed record AuditEvent;
+    private sealed record OrdersSuperEvent;
+
     [Fact]
-    public void Declare_streams_accumulate()
+    public void Publish_registrations_carry_the_stream_spec()
     {
         var services = new ServiceCollection();
         services.AddStreamBus((_, cfg) =>
         {
-            cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret"));
-            cfg.DeclareStream("audit", k => k.MaxAge(TimeSpan.FromDays(30)));
-            cfg.DeclareSuperStream("orders-super", 3);
+            cfg.Host("localhost", "/", h => h.Credentials("app", "secret"));
+            cfg.Publish<AuditEvent>("audit", s => s.MaxAge(TimeSpan.FromDays(30)));
+            cfg.PublishSuper<OrdersSuperEvent>("orders-super", s => s.Partitions(3));
         });
         var sp = services.BuildServiceProvider();
-        var options = sp.GetRequiredService<StreamBusConfigStore>().ForVhost("/");
-        Assert.Contains(options.Topology.Streams, s => s.Name == "audit" && s.MaxAge == TimeSpan.FromDays(30));
-        Assert.Contains(options.Topology.SuperStreams, s => s is { Name: "orders-super", Partitions: 3 });
-    }
-
-    [Fact]
-    public void Section_vhost_is_overridden_by_code_host()
-    {
-        var config = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?> { ["StreamBus:Vhost"] = "/section-vh" })
-            .Build();
-        var section = config.GetSection("StreamBus");
-        var services = new ServiceCollection();
-        services.AddStreamBus(section, (_, cfg) => cfg.Host("127.0.0.1", "/code-vh", h => h.Credentials("app", "secret")));
-        var sp = services.BuildServiceProvider();
-        Assert.Equal("/code-vh", sp.GetRequiredService<StreamBusConfigStore>().ForVhost("/code-vh").Vhost);
-    }
-
-    [Fact]
-    public void Section_without_host_still_requires_host()
-    {
-        var config = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?> { ["StreamBus:Vhost"] = "/section-vh" })
-            .Build();
-        var services = new ServiceCollection();
-        Assert.Throws<StreamBusConfigurationException>(() =>
-            services.AddStreamBus(config.GetSection("StreamBus")));
+        var publishes = sp.GetRequiredService<StreamBusPublishStore>().Registrations;
+        Assert.Contains(publishes, r => r.Stream == "audit" && !r.IsSuper && r.MaxAge == TimeSpan.FromDays(30));
+        Assert.Contains(publishes, r => r.Stream == "orders-super" && r.IsSuper && r.Partitions == 3);
     }
 
     [Fact]
@@ -138,13 +130,13 @@ public sealed class ConfiguratorTests
     {
         var services = new ServiceCollection();
         Assert.Throws<StreamBusConfigurationException>(() =>
-            services.AddStreamBus((_, cfg) => cfg.Host("127.0.0.1", "/", h =>
+            services.AddStreamBus((_, cfg) => cfg.Host("localhost", "/", h =>
             {
                 h.Credentials("app", "secret");
                 h.StreamPort(0);
             })));
         Assert.Throws<StreamBusConfigurationException>(() =>
-            services.AddStreamBus((_, cfg) => cfg.Host("127.0.0.1", "/", h =>
+            services.AddStreamBus((_, cfg) => cfg.Host("localhost", "/", h =>
             {
                 h.Credentials("app", "secret");
                 h.Heartbeat(TimeSpan.Zero);

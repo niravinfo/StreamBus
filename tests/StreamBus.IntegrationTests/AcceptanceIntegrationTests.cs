@@ -41,7 +41,7 @@ public sealed class AcceptanceIntegrationTests : IAsyncDisposable
         {
             var services = new ServiceCollection();
             services.AddLogging();
-            services.AddStreamBus((_, cfg) => cfg.Host("127.0.0.1", vhost, h => h.Credentials(User(), Password())));
+            services.AddStreamBus((_, cfg) => cfg.Host("localhost", vhost, h => h.Credentials(User(), Password())));
             var sp = services.BuildServiceProvider();
             var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
             await hosted.StartAsync(TestContext.Current.CancellationToken);

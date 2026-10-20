@@ -33,7 +33,8 @@ internal sealed class AmqpConnectionFactory : IErrorQueueConnectionFactory
         catch (AuthenticationFailureException ex)
         {
             throw new StreamBusFatalException(
-                $"AMQP authentication failed for vhost '{options.Vhost}' (user '{options.UserName}'). Create a dedicated non-guest user and reconfigure UserName/Password.", ex);
+                $"AMQP authentication failed for vhost '{options.Vhost}' (user '{options.UserName}'). Check UserName/Password, or create a dedicated non-guest user.",
+                ex);
         }
     }
 }
@@ -63,9 +64,9 @@ public sealed class ErrorQueueTransport : IAsyncDisposable
         _logger = logger ?? NullLogger<ErrorQueueTransport>.Instance;
     }
 
-    internal static Dictionary<string, object?> QueueArguments(DeadLetterType type) => new()
+    internal static Dictionary<string, object?> QueueArguments(DeadLetterQueueType type) => new()
     {
-        ["x-queue-type"] = type == DeadLetterType.QuorumQueue ? "quorum" : "classic",
+        ["x-queue-type"] = type == DeadLetterQueueType.QuorumQueue ? "quorum" : "classic",
     };
 
     internal static IReadOnlyList<DeadLetterOptions> CollectQueueDeclarations(IEnumerable<TypedConsumerRegistration> registrations)
@@ -87,6 +88,8 @@ public sealed class ErrorQueueTransport : IAsyncDisposable
         foreach (var queue in distinct)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(queue.Name);
+            if (queue.QueueType is not { } queueType)
+                throw new StreamBusConfigurationException($"Internal error: stream dead-letter destination '{queue.Name}' reached the queue transport; it must never declare an AMQP queue.");
             await using var channel = await connection.CreateChannelAsync(new CreateChannelOptions(false, false, null, null), ct).ConfigureAwait(false);
             try
             {
@@ -95,7 +98,7 @@ public sealed class ErrorQueueTransport : IAsyncDisposable
                     durable: true,
                     exclusive: false,
                     autoDelete: false,
-                    arguments: QueueArguments(queue.Type),
+                    arguments: QueueArguments(queueType),
                     passive: false,
                     noWait: false,
                     cancellationToken: ct).ConfigureAwait(false);
@@ -103,7 +106,7 @@ public sealed class ErrorQueueTransport : IAsyncDisposable
             catch (OperationInterruptedException ex) when (ex.ShutdownReason is { ReplyCode: 406 })
             {
                 throw new StreamConfigurationConflictException(queue.Name,
-                    $"queue '{queue.Name}' ({queue.Type}, durable)",
+                    $"queue '{queue.Name}' ({queueType}, durable)",
                     "an existing queue with conflicting type or arguments");
             }
         }

@@ -123,9 +123,9 @@ public sealed class HostingTests
     public void Same_vhost_different_password_throws_naming_vhost()
     {
         var services = new ServiceCollection();
-        services.AddStreamBus((_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret")));
+        services.AddStreamBus((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("app", "secret")));
         var ex = Assert.Throws<StreamBusConfigurationException>(() =>
-            services.AddStreamBus<OrdersBus>((_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "other-secret"))));
+            services.AddStreamBus<OrdersBus>((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("app", "other-secret"))));
         Assert.Contains("/", ex.Message, StringComparison.Ordinal);
     }
 
@@ -133,8 +133,8 @@ public sealed class HostingTests
     public void Same_vhost_registrations_coexist_with_global_hosting()
     {
         var services = new ServiceCollection();
-        services.AddStreamBus((_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret")));
-        services.AddStreamBus<OrdersBus>((_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret")));
+        services.AddStreamBus((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("app", "secret")));
+        services.AddStreamBus<OrdersBus>((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("app", "secret")));
         services.AddStreamBusHosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(5)));
         var sp = services.BuildServiceProvider();
         Assert.Equal("secret", sp.GetRequiredService<StreamBusConfigStore>().ForVhost("/").Password);
@@ -162,19 +162,19 @@ public sealed class HostingTests
     public void Duplicate_default_registration_fails()
     {
         var services = new ServiceCollection();
-        services.AddStreamBus((_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret")));
+        services.AddStreamBus((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("app", "secret")));
         Assert.Throws<StreamBusConfigurationException>(() =>
-            services.AddStreamBus((_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret"))));
+            services.AddStreamBus((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("app", "secret"))));
     }
 
     [Fact]
     public void Duplicate_marker_registration_fails_but_distinct_markers_coexist()
     {
         var services = new ServiceCollection();
-        services.AddStreamBus<OrdersBus>((_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret")));
+        services.AddStreamBus<OrdersBus>((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("app", "secret")));
         Assert.Throws<StreamBusConfigurationException>(() =>
-            services.AddStreamBus<OrdersBus>((_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret"))));
-        services.AddStreamBus<BillingBus>((_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret")));
+            services.AddStreamBus<OrdersBus>((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("app", "secret"))));
+        services.AddStreamBus<BillingBus>((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("app", "secret")));
         var sp = services.BuildServiceProvider();
         Assert.NotSame(sp.GetRequiredService<IStreamBus<OrdersBus>>(), sp.GetRequiredService<IStreamBus<BillingBus>>());
     }
@@ -183,8 +183,8 @@ public sealed class HostingTests
     public void Default_and_marker_resolve_distinct_buses()
     {
         var services = new ServiceCollection();
-        services.AddStreamBus((_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret")));
-        services.AddStreamBus<OrdersBus>((_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret")));
+        services.AddStreamBus((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("app", "secret")));
+        services.AddStreamBus<OrdersBus>((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("app", "secret")));
         var sp = services.BuildServiceProvider();
         Assert.NotSame(sp.GetRequiredService<IStreamBus>(), (IStreamBus)sp.GetRequiredService<IStreamBus<OrdersBus>>());
     }
@@ -195,7 +195,7 @@ public sealed class HostingTests
         var services = new ServiceCollection();
         services.AddStreamBus((_, cfg) =>
         {
-            cfg.Host("127.0.0.1", "/", h =>
+            cfg.Host("localhost", "/", h =>
             {
                 h.Credentials("app", "secret");
                 h.ProducersPerConnection(3);
@@ -215,25 +215,25 @@ public sealed class HostingTests
     public void Duplicate_marker_across_vhosts_fails()
     {
         var services = new ServiceCollection();
-        services.AddStreamBus<OrdersBus>((_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret")));
+        services.AddStreamBus<OrdersBus>((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("app", "secret")));
         Assert.Throws<StreamBusConfigurationException>(() =>
-            services.AddStreamBus<OrdersBus>((_, cfg) => cfg.Host("127.0.0.1", "other", h => h.Credentials("app", "secret"))));
+            services.AddStreamBus<OrdersBus>((_, cfg) => cfg.Host("localhost", "other", h => h.Credentials("app", "secret"))));
     }
 
     [Fact]
     public void Duplicate_default_across_vhosts_fails()
     {
         var services = new ServiceCollection();
-        services.AddStreamBus((_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret")));
+        services.AddStreamBus((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("app", "secret")));
         Assert.Throws<StreamBusConfigurationException>(() =>
-            services.AddStreamBus((_, cfg) => cfg.Host("127.0.0.1", "/other", h => h.Credentials("app", "secret"))));
+            services.AddStreamBus((_, cfg) => cfg.Host("localhost", "/other", h => h.Credentials("app", "secret"))));
     }
 
     [Fact]
     public void Unknown_vhost_throws_configuration_naming_vhost()
     {
         var services = new ServiceCollection();
-        services.AddStreamBus((_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret")));
+        services.AddStreamBus((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("app", "secret")));
         var sp = services.BuildServiceProvider();
         var store = sp.GetRequiredService<StreamBusConfigStore>();
         var ex = Assert.Throws<StreamBusConfigurationException>(() => store.ForVhost("missing-vh"));
@@ -244,13 +244,11 @@ public sealed class HostingTests
     public void AddStreamBus_null_arguments_throw()
     {
         var services = new ServiceCollection();
-        Action<IStreamRegistrationContext, IStreamBusConfigurator> configure = (_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials("a", "b"));
+        Action<IStreamRegistrationContext, IStreamBusConfigurator> configure = (_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("a", "b"));
         Assert.Throws<ArgumentNullException>(() => services.AddStreamBus(null!));
         Assert.Throws<ArgumentNullException>(() => services.AddStreamBus<OrdersBus>(null!));
         Assert.Throws<ArgumentNullException>(() => ((IServiceCollection)null!).AddStreamBus(configure));
         Assert.Throws<ArgumentNullException>(() => ((IServiceCollection)null!).AddStreamBus<OrdersBus>(configure));
-        Assert.Throws<ArgumentNullException>(() => services.AddStreamBus((Microsoft.Extensions.Configuration.IConfigurationSection)null!));
-        Assert.Throws<ArgumentNullException>(() => services.AddStreamBus<OrdersBus>((Microsoft.Extensions.Configuration.IConfigurationSection)null!));
     }
 
     [Fact]
@@ -304,7 +302,7 @@ public sealed class HostingTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddStreamBus((_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret")));
+        services.AddStreamBus((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("app", "secret")));
         services.AddStreamBusHosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(5)));
         services.AddSingleton<IStreamSystemConnector>(new SuccessConnector());
         await using var sp = services.BuildServiceProvider();
@@ -327,7 +325,7 @@ public sealed class HostingTests
         var timeout = TimeSpan.FromMilliseconds(200);
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddStreamBus((_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret")));
+        services.AddStreamBus((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("app", "secret")));
         services.AddStreamBusHosting(h => h.BlockStartupUntilReady(timeout));
         services.AddSingleton<IStreamSystemConnector>(new NeverReadyConnector());
         await using var sp = services.BuildServiceProvider();
@@ -349,7 +347,7 @@ public sealed class HostingTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddStreamBus((_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret")));
+        services.AddStreamBus((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("app", "secret")));
         services.AddSingleton<IStreamSystemConnector>(new NeverReadyConnector());
         await using var sp = services.BuildServiceProvider();
         var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
@@ -373,7 +371,7 @@ public sealed class HostingTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddStreamBus((_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret")));
+        services.AddStreamBus((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("app", "secret")));
         services.AddStreamBusHosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(30)));
         services.AddSingleton<IStreamSystemConnector>(new NeverReadyConnector());
         await using var sp = services.BuildServiceProvider();
@@ -394,8 +392,8 @@ public sealed class HostingTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddStreamBus((_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret")));
-        services.AddStreamBus<OrdersBus>((_, cfg) => cfg.Host("127.0.0.1", "orders-vh", h => h.Credentials("app", "secret")));
+        services.AddStreamBus((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("app", "secret")));
+        services.AddStreamBus<OrdersBus>((_, cfg) => cfg.Host("localhost", "orders-vh", h => h.Credentials("app", "secret")));
         services.AddSingleton<IStreamSystemConnector>(new NeverReadyConnector());
         await using var sp = services.BuildServiceProvider();
         Assert.NotNull(sp.GetRequiredService<StreamBusHealthCheck>());
@@ -425,7 +423,7 @@ public sealed class HostingTests
         var handle = new CountingHandle();
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddStreamBus((_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret")));
+        services.AddStreamBus((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("app", "secret")));
         services.AddSingleton<IStreamSystemConnector>(new SuccessConnector(handle));
         await using var sp = services.BuildServiceProvider();
         var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
@@ -444,13 +442,13 @@ public sealed class HostingTests
         services.AddLogging();
         services.AddStreamBus((_, cfg) =>
         {
-            cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret"));
-            cfg.DeclareStream("stream-a");
+            cfg.Host("localhost", "/", h => h.Credentials("app", "secret"));
+            cfg.Publish<DerivedEvent>("stream-a");
         });
         services.AddStreamBus<OrdersBus>((_, cfg) =>
         {
-            cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret"));
-            cfg.DeclareStream("stream-b");
+            cfg.Host("localhost", "/", h => h.Credentials("app", "secret"));
+            cfg.Publish<DerivedEvent>("stream-b");
         });
         services.AddSingleton<IStreamSystemConnector>(new SuccessConnector(handle));
         await using var sp = services.BuildServiceProvider();
@@ -479,21 +477,11 @@ public sealed class HostingTests
     }
 
     [Fact]
-    public void Guest_at_registration_fails_with_actionable_message()
-    {
-        var services = new ServiceCollection();
-        services.AddLogging();
-        var ex = Assert.Throws<StreamBusConfigurationException>(() =>
-            services.AddStreamBus((_, cfg) => cfg.Host("127.0.0.1", "/", h => h.Credentials("guest", "guest"))));
-        Assert.Contains("guest", ex.Message, StringComparison.OrdinalIgnoreCase);
-    }
-
-    [Fact]
-    public void Same_vhost_union_declarations_allowed()
+    public void Same_vhost_union_registrations_allowed()
     {
         var store = new StreamBusConfigStore();
-        var a = new StreamBusOptions { Vhost = "/", UserName = "u", Password = "p", Topology = new StreamTopologyDeclarations { Streams = new[] { new StreamDeclaration { Name = "a" } } } };
-        var b = new StreamBusOptions { Vhost = "/", UserName = "u", Password = "p", Topology = new StreamTopologyDeclarations { SuperStreams = new[] { new SuperStreamDeclaration { Name = "b", Partitions = 2 } } } };
+        var a = new StreamBusOptions { Vhost = "/", UserName = "u", Password = "p" };
+        var b = new StreamBusOptions { Vhost = "/", UserName = "u", Password = "p" };
         store.Add(typeof(DefaultBus), a);
         store.Add(typeof(OrdersBus), b);
         Assert.Equal(2, store.Registrations.Count);
@@ -509,8 +497,8 @@ public sealed class HostingTests
         services.AddLogging();
         services.AddStreamBus((_, cfg) =>
         {
-            cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret"));
-            cfg.DeclareStream("hung-stream");
+            cfg.Host("localhost", "/", h => h.Credentials("app", "secret"));
+            cfg.Publish<DerivedEvent>("hung-stream");
         });
         services.AddStreamBusHosting(h => h.BlockStartupUntilReady(TimeSpan.FromMilliseconds(200)));
         services.AddSingleton<IStreamSystemConnector>(new SuccessConnector(handle));
@@ -540,13 +528,9 @@ public sealed class HostingTests
     }
 
     private static IReadOnlyList<DeclaredStream> DeclareSet(
-        IEnumerable<StreamDeclaration>? streams = null,
-        IEnumerable<SuperStreamDeclaration>? supers = null,
         IEnumerable<ReceiveEndpointDescriptor>? endpoints = null,
         IEnumerable<PublishRegistration>? publishes = null)
         => DeclareSetBuilder.Build(
-            streams ?? Array.Empty<StreamDeclaration>(),
-            supers ?? Array.Empty<SuperStreamDeclaration>(),
             endpoints ?? Array.Empty<ReceiveEndpointDescriptor>(),
             publishes ?? Array.Empty<PublishRegistration>(),
             "TestBus");
@@ -567,37 +551,43 @@ public sealed class HostingTests
     }
 
     [Fact]
-    public void Declare_set_is_consumer_publish_explicit_union()
+    public void Declare_set_is_consumer_publish_deadletter_union()
     {
         var set = DeclareSet(
-            streams: new[] { new StreamDeclaration { Name = "explicit-plain" } },
-            supers: new[] { new SuperStreamDeclaration { Name = "explicit-super", Partitions = 2 } },
             endpoints: new[] { EndpointDescriptor("endpoint-plain"), EndpointDescriptor("endpoint-super", super: true, partitions: 3) },
             publishes: new[] { new PublishRegistration { BusMarker = typeof(DefaultBus), MessageType = typeof(DerivedEvent), Stream = "publish-plain", IsSuper = false } });
-        Assert.Equal(5, set.Count);
-        Assert.Contains(set, d => d.Name == "explicit-plain" && !d.IsSuper && d.Source == "explicit");
-        Assert.Contains(set, d => d is { Name: "explicit-super", IsSuper: true, Partitions: 2 } && d.Source == "explicit");
+        Assert.Equal(3, set.Count);
         Assert.Contains(set, d => d.Name == "endpoint-plain" && !d.IsSuper && d.Source == "endpoint");
         Assert.Contains(set, d => d is { Name: "endpoint-super", IsSuper: true, Partitions: 3 } && d.Source == "endpoint");
         Assert.Contains(set, d => d.Name == "publish-plain" && !d.IsSuper && d.Source == "publish");
     }
 
     [Fact]
-    public void Explicit_declaration_wins_over_derived()
+    public void Stream_deadletter_destinations_join_the_declare_set()
     {
-        var set = DeclareSet(
-            streams: new[] { new StreamDeclaration { Name = "orders" } },
-            endpoints: new[] { EndpointDescriptor("orders") });
-        var match = Assert.Single(set);
-        Assert.Equal("explicit", match.Source);
+        var errorEndpoint = new ReceiveEndpointDescriptor
+        {
+            Stream = "orders",
+            MessageType = typeof(DerivedEvent),
+            ConsumerType = typeof(DerivedConsumer),
+            Reference = "grp",
+            DeadLetter = new DeadLetterOptions { Name = "orders-errors", Spec = new StreamOptions() },
+        };
+        var set = DeclareSet(endpoints: new[] { errorEndpoint });
+        Assert.Equal(2, set.Count);
+        Assert.Contains(set, d => d.Name == "orders-errors" && !d.IsSuper && d.Source == "dead-letter");
+        Assert.Contains(set, d => d.Name == "orders" && !d.IsSuper && d.Source == "endpoint");
     }
 
     [Fact]
-    public void Derived_super_plain_mismatch_against_explicit_throws_naming_sources()
+    public void Endpoint_kind_conflict_throws_naming_stream()
     {
         var ex = Assert.Throws<StreamConfigurationConflictException>(() => DeclareSet(
-            streams: new[] { new StreamDeclaration { Name = "orders" } },
-            endpoints: new[] { EndpointDescriptor("orders", super: true, partitions: 3) }));
+            endpoints: new[]
+            {
+                EndpointDescriptor("orders"),
+                EndpointDescriptor("orders", super: true, partitions: 3),
+            }));
         Assert.Contains("orders", ex.Message, StringComparison.Ordinal);
         Assert.Contains("endpoint", ex.Expected, StringComparison.OrdinalIgnoreCase);
     }
@@ -606,25 +596,26 @@ public sealed class HostingTests
     public void Publish_kind_mismatch_throws_naming_type_and_stream()
     {
         var plainSuper = Assert.Throws<StreamBusConfigurationException>(() => DeclareSet(
-            supers: new[] { new SuperStreamDeclaration { Name = "orders-super", Partitions = 3 } },
+            endpoints: new[] { EndpointDescriptor("orders-super", super: true, partitions: 3) },
             publishes: new[] { new PublishRegistration { BusMarker = typeof(DefaultBus), MessageType = typeof(DerivedEvent), Stream = "orders-super", IsSuper = false } }));
         Assert.Contains(typeof(DerivedEvent).FullName!, plainSuper.Message, StringComparison.Ordinal);
         Assert.Contains("orders-super", plainSuper.Message, StringComparison.Ordinal);
         Assert.Contains("PublishSuper", plainSuper.Message, StringComparison.Ordinal);
 
         var superPlain = Assert.Throws<StreamBusConfigurationException>(() => DeclareSet(
-            streams: new[] { new StreamDeclaration { Name = "orders" } },
+            endpoints: new[] { EndpointDescriptor("orders") },
             publishes: new[] { new PublishRegistration { BusMarker = typeof(DefaultBus), MessageType = typeof(DerivedEvent), Stream = "orders", IsSuper = true } }));
         Assert.Contains(typeof(DerivedEvent).FullName!, superPlain.Message, StringComparison.Ordinal);
         Assert.Contains("PublishAsync", superPlain.Message, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void Super_publish_without_declaration_throws_naming_stream()
+    public void Super_publish_without_partitions_throws_naming_stream()
     {
         var ex = Assert.Throws<StreamBusConfigurationException>(() => DeclareSet(
             publishes: new[] { new PublishRegistration { BusMarker = typeof(DefaultBus), MessageType = typeof(DerivedEvent), Stream = "orders-super", IsSuper = true } }));
         Assert.Contains("orders-super", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("Partitions", ex.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -660,7 +651,7 @@ public sealed class HostingTests
         services.AddLogging();
         services.AddStreamBus((_, cfg) =>
         {
-            cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret"));
+            cfg.Host("localhost", "/", h => h.Credentials("app", "secret"));
             cfg.ReceiveEndpoint("derived-plain", e => e.Consumer<DerivedConsumer>("grp"));
         });
         services.AddSingleton<IStreamSystemConnector>(new SuccessConnector(handle));
@@ -698,7 +689,7 @@ public sealed class HostingTests
         services.AddLogging();
         services.AddStreamBus((_, cfg) =>
         {
-            cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret"));
+            cfg.Host("localhost", "/", h => h.Credentials("app", "secret"));
             cfg.ReceiveEndpoint("adopted-super", e =>
             {
                 e.Consumer<DerivedConsumer>("grp");
@@ -732,11 +723,11 @@ public sealed class HostingTests
         services.AddLogging();
         services.AddStreamBus((_, cfg) =>
         {
-            cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret"));
+            cfg.Host("localhost", "/", h => h.Credentials("app", "secret"));
             cfg.ReceiveEndpoint("clashing", e =>
             {
                 e.Consumer<DerivedConsumer>("grp");
-                e.SetSuperStream(3);
+                e.Partitions(3);
             });
         });
         services.AddStreamBusHosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(30)));
@@ -763,7 +754,7 @@ public sealed class HostingTests
         services.AddLogging();
         services.AddStreamBus((_, cfg) =>
         {
-            cfg.Host("127.0.0.1", "/", h => h.Credentials("app", "secret"));
+            cfg.Host("localhost", "/", h => h.Credentials("app", "secret"));
             cfg.ReceiveEndpoint("partitionless-super", e =>
             {
                 e.Consumer<DerivedConsumer>("grp");
