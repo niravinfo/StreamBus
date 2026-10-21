@@ -17,7 +17,7 @@ public sealed class StreamBusPublishStore
 {
     private readonly List<PublishRegistration> _registrations = new();
 
-    public void Add(Type busMarker, Type messageType, string stream, bool isSuper, StreamOptions? spec = null)
+    internal void Add(Type busMarker, Type messageType, string stream, bool isSuper, StreamOptions? spec = null)
     {
         ArgumentNullException.ThrowIfNull(busMarker);
         ArgumentNullException.ThrowIfNull(messageType);

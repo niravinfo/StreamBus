@@ -491,7 +491,7 @@ internal sealed class StreamConsumerRegistry
         var replayed = 0;
         var skipped = 0;
         long lastTicks = DateTimeOffset.UtcNow.UtcTicks; // cross-thread via Interlocked below.
-        var producers = new Dictionary<string, IStreamProducerHandle>();
+        var producers = new Dictionary<string, IStreamPlainProducerHandle>();
         void DisposeProducers()
         {
             foreach (var (_, producer) in producers)
@@ -536,7 +536,11 @@ internal sealed class StreamConsumerRegistry
                             partitionStream, ReplayNaming.ProducerName(partitionStream), ct).ConfigureAwait(false);
                         producers[partitionStream] = producer;
                     }
-                    await producer.PublishReplayAsync(envelope.Body, ReplayNaming.PublishingId(envelope.SourceOffset), ct).ConfigureAwait(false);
+                    await producer.PublishReplayAsync(
+                        envelope.Body,
+                        ReplayNaming.PublishingId(envelope.SourceOffset),
+                        new PublishOptions(),
+                        ct).ConfigureAwait(false);
                     Interlocked.Increment(ref replayed);
                     Interlocked.Exchange(ref lastTicks, DateTimeOffset.UtcNow.UtcTicks);
                 },

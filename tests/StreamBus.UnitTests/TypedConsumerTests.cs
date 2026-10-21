@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace StreamBus.UnitTests;
 
@@ -151,7 +152,7 @@ public sealed class TypedConsumerTests
     }
 
     [Fact]
-    public async Task Missing_scope_factory_fails_fast()
+    public void Missing_scope_factory_fails_fast()
     {
         var store = new StreamBusConfigStore();
         store.Add(typeof(DefaultBus), new StreamBusOptions { Vhost = "/", UserName = "a", Password = "b" });
@@ -161,9 +162,16 @@ public sealed class TypedConsumerTests
             _ => throw new InvalidOperationException("no resolve"),
             _ => throw new InvalidOperationException("no supervisor"),
             null);
-        var hosted = new StreamBusHostedService(store, registry, null, null, consumers);
-        var ex = await Assert.ThrowsAsync<StreamBusConfigurationException>(() => hosted.StartAsync(TestContext.Current.CancellationToken));
-        Assert.Contains("IServiceScopeFactory", ex.Message);
+        var ex = Assert.Throws<ArgumentNullException>(() => new StreamBusHostedService(
+            store,
+            registry,
+            NullLogger<StreamBusHostedService>.Instance,
+            null!,
+            consumers,
+            new StreamBusEndpointStore(),
+            new StreamBusPublishStore(),
+            new StreamBusHostingStore(new StreamBusHostingOptions())));
+        Assert.Equal("scopeFactory", ex.ParamName);
     }
 
     [Fact]

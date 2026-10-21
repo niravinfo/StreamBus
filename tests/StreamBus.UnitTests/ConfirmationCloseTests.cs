@@ -27,21 +27,18 @@ file sealed class SilentProducer : IProducer
     public ProducerInfo Info => throw new NotSupportedException("ConfirmationCloseTests never inspect the producer info.");
 }
 
-file sealed class NeverConfirmedEnvelopeHandle : IStreamProducerHandle
+file sealed class NeverConfirmedEnvelopeHandle : IStreamPlainProducerHandle
 {
     public int Disposals;
 
-    public Task SendAsync(ReadOnlyMemory<byte> body, string? routingKey, CancellationToken ct)
+    public Task SendAsync(ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct)
         => throw new NotSupportedException("ConfirmationCloseTests only publish envelopes.");
 
-    public async Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, string? routingKey, IReadOnlyDictionary<string, object?> applicationProperties, string? messageId, string? correlationId, CancellationToken ct)
+    public async Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, PublishOptions options, IReadOnlyDictionary<string, object?> applicationProperties, string? messageId, string? correlationId, CancellationToken ct)
         => await Task.Delay(Timeout.InfiniteTimeSpan, ct).ConfigureAwait(false);
 
-    public Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, CancellationToken ct)
+    public Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, PublishOptions options, CancellationToken ct)
         => throw new NotSupportedException("ConfirmationCloseTests never replay.");
-
-    public Task PublishResultAsync(ReadOnlyMemory<byte> body, ulong publishingId, string? routingKey, CancellationToken ct)
-        => throw new NotSupportedException("ConfirmationCloseTests never publish results.");
 
     public ValueTask DisposeAsync()
     {
@@ -50,24 +47,21 @@ file sealed class NeverConfirmedEnvelopeHandle : IStreamProducerHandle
     }
 }
 
-file sealed class RecordingEnvelopeHandle : IStreamProducerHandle
+file sealed class RecordingEnvelopeHandle : IStreamPlainProducerHandle
 {
     public int Sends;
 
-    public Task SendAsync(ReadOnlyMemory<byte> body, string? routingKey, CancellationToken ct)
+    public Task SendAsync(ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct)
         => throw new NotSupportedException("ConfirmationCloseTests only publish envelopes.");
 
-    public Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, string? routingKey, IReadOnlyDictionary<string, object?> applicationProperties, string? messageId, string? correlationId, CancellationToken ct)
+    public Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, PublishOptions options, IReadOnlyDictionary<string, object?> applicationProperties, string? messageId, string? correlationId, CancellationToken ct)
     {
         Sends++;
         return Task.CompletedTask;
     }
 
-    public Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, CancellationToken ct)
+    public Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, PublishOptions options, CancellationToken ct)
         => throw new NotSupportedException("ConfirmationCloseTests never replay.");
-
-    public Task PublishResultAsync(ReadOnlyMemory<byte> body, ulong publishingId, string? routingKey, CancellationToken ct)
-        => throw new NotSupportedException("ConfirmationCloseTests never publish results.");
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }
@@ -113,7 +107,7 @@ public sealed class ConfirmationCloseTests
     {
         var system = new StubSystemHandle();
         var stalled = new NeverConfirmedEnvelopeHandle();
-        system.OnCreatePlain = (_, _) => Task.FromResult<IStreamProducerHandle>(stalled);
+        system.OnCreatePlain = (_, _) => Task.FromResult<IStreamPlainProducerHandle>(stalled);
         var (registry, _) = CreateRegistry(system);
 
         var ex = await Assert.ThrowsAsync<StreamBusTransientException>(() =>
@@ -131,7 +125,7 @@ public sealed class ConfirmationCloseTests
         Assert.Equal(1, stalled.Disposals);
 
         var replay = new RecordingEnvelopeHandle();
-        system.OnCreatePlain = (_, _) => Task.FromResult<IStreamProducerHandle>(replay);
+        system.OnCreatePlain = (_, _) => Task.FromResult<IStreamPlainProducerHandle>(replay);
         await registry.PublishEnvelopeAsync(
             "errors",
             new byte[] { 4 },

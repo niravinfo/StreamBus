@@ -22,21 +22,23 @@ file sealed class BlockingDisposeProducer : IProducer
     public ProducerInfo Info => throw new NotSupportedException("BlockingDisposeProducer never inspects the producer info.");
 }
 
-sealed class StubProducerHandle : IStreamProducerHandle
+sealed class StubProducerHandle : IStreamSuperProducerHandle
 {
     private readonly Func<ReadOnlyMemory<byte>, string?, CancellationToken, Task> _send;
     public int SendCount;
     public StubProducerHandle(Func<ReadOnlyMemory<byte>, string?, CancellationToken, Task>? send = null)
         => _send = send ?? ((_, _, _) => Task.CompletedTask);
-    public Task SendAsync(ReadOnlyMemory<byte> body, string? routingKey, CancellationToken ct)
+    public Task SendAsync(ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct)
     {
         SendCount++;
-        return _send(body, routingKey, ct);
+        return _send(body, options.RoutingKey, ct);
     }
-    public Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, string? routingKey, IReadOnlyDictionary<string, object?> applicationProperties, string? messageId, string? correlationId, CancellationToken ct)
+    public Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, PublishOptions options, IReadOnlyDictionary<string, object?> applicationProperties, string? messageId, string? correlationId, CancellationToken ct)
         => throw new NotImplementedException("PublishTests never sends envelopes.");
-    public Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, CancellationToken ct)
+    public Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, PublishOptions options, CancellationToken ct)
         => throw new NotImplementedException("PublishTests never replays.");
+    public Task PublishWithIdAsync(ulong publishingId, ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct)
+        => throw new NotImplementedException("StubProducerHandle never publishes results.");
     public Task PublishResultAsync(ReadOnlyMemory<byte> body, ulong publishingId, string? routingKey, CancellationToken ct)
         => throw new NotImplementedException("StubProducerHandle never publishes results.");
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
@@ -46,22 +48,22 @@ sealed class StubSystemHandle : IStreamSystemHandle
 {
     public int PlainCreations;
     public int SuperCreations;
-    public Func<string, CancellationToken, Task<IStreamProducerHandle>>? OnCreatePlain;
-    public Func<string, CancellationToken, Task<IStreamProducerHandle>>? OnCreateSuper = (_, _) => Task.FromResult<IStreamProducerHandle>(new StubProducerHandle());
+    public Func<string, CancellationToken, Task<IStreamPlainProducerHandle>>? OnCreatePlain;
+    public Func<string, CancellationToken, Task<IStreamSuperProducerHandle>>? OnCreateSuper = (_, _) => Task.FromResult<IStreamSuperProducerHandle>(new StubProducerHandle());
     public bool IsClosed => false;
-    public Task<IStreamProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct)
+    public Task<IStreamPlainProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct)
     {
         PlainCreations++;
-        return OnCreatePlain is not null ? OnCreatePlain(stream, ct) : Task.FromResult<IStreamProducerHandle>(new StubProducerHandle());
+        return OnCreatePlain is not null ? OnCreatePlain(stream, ct) : Task.FromResult<IStreamPlainProducerHandle>(new StubProducerHandle());
     }
-    public Task<IStreamProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
+    public Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
         => throw new NotImplementedException("PublishTests never replays.");
-    public Task<IStreamProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
+    public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
     {
         SuperCreations++;
-        return OnCreateSuper is not null ? OnCreateSuper(stream, ct) : Task.FromResult<IStreamProducerHandle>(new StubProducerHandle());
+        return OnCreateSuper is not null ? OnCreateSuper(stream, ct) : Task.FromResult<IStreamSuperProducerHandle>(new StubProducerHandle());
     }
-    public Task<IStreamProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
+    public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
         => throw new NotImplementedException("StubSystemHandle never creates stable super producers.");
     public Task<ulong> QuerySequenceAsync(string reference, string stream, CancellationToken ct)
         => throw new NotImplementedException("StubSystemHandle never queries publishing sequences.");
@@ -127,7 +129,7 @@ public sealed class PublishTests
             release.Wait(TimeSpan.FromSeconds(10));
             var handle = new StubProducerHandle();
             lock (created) created.Add(handle);
-            return Task.FromResult<IStreamProducerHandle>(handle);
+            return Task.FromResult<IStreamPlainProducerHandle>(handle);
         };
 
         var ct = TestContext.Current.CancellationToken;
@@ -150,7 +152,7 @@ public sealed class PublishTests
         using var safety = new Timer(_ => release.Set(), null, TimeSpan.FromSeconds(8), Timeout.InfiniteTimeSpan);
         var log = new ListLogger();
         var producer = new BlockingDisposeProducer(release);
-        system.OnCreatePlain = (_, _) => Task.FromResult<IStreamProducerHandle>(
+        system.OnCreatePlain = (_, _) => Task.FromResult<IStreamPlainProducerHandle>(
             new StreamProducerHandle(producer, "orders", new ConfirmationTracker(), log));
 
         var elapsed = Stopwatch.StartNew();
@@ -167,7 +169,7 @@ public sealed class PublishTests
     public async Task Failed_confirm_raises_with_stream_and_status()
     {
         var (registry, system) = CreateRegistry();
-        system.OnCreatePlain = (_, _) => Task.FromResult<IStreamProducerHandle>(
+        system.OnCreatePlain = (_, _) => Task.FromResult<IStreamPlainProducerHandle>(
             new StubProducerHandle((_, _, _) => throw new StreamBusPublishException("Publish to stream 'orders' was not confirmed (status InternalError).")));
         var ex = await Assert.ThrowsAsync<StreamBusPublishException>(() =>
             registry.PublishAsync("orders", new byte[] { 1 }, new PublishOptions(), TestContext.Current.CancellationToken));
@@ -179,7 +181,7 @@ public sealed class PublishTests
     {
         var system = new StubSystemHandle
         {
-            OnCreatePlain = (_, _) => Task.FromException<IStreamProducerHandle>(
+            OnCreatePlain = (_, _) => Task.FromException<IStreamPlainProducerHandle>(
                 new CreateProducerException("producer could not be created code: StreamDoesNotExist", ResponseCode.StreamDoesNotExist)),
         };
         var options = new StreamBusOptions { Vhost = "/", UserName = "app", Password = "secret" };
@@ -196,7 +198,7 @@ public sealed class PublishTests
     {
         var slow = new StubSystemHandle
         {
-            OnCreatePlain = (_, _) => Task.FromResult<IStreamProducerHandle>(
+            OnCreatePlain = (_, _) => Task.FromResult<IStreamPlainProducerHandle>(
                 new StubProducerHandle(async (_, _, ct) => { await Task.Delay(60_000, ct); })),
         };
         var options = new StreamBusOptions { Vhost = "/", UserName = "app", Password = "secret" };
@@ -214,7 +216,7 @@ public sealed class PublishTests
     {
         var (registry, system) = CreateRegistry();
         var calls = 0;
-        system.OnCreatePlain = (_, _) => Task.FromResult<IStreamProducerHandle>(
+        system.OnCreatePlain = (_, _) => Task.FromResult<IStreamPlainProducerHandle>(
             new StubProducerHandle((_, _, _) => ++calls == 1
                 ? throw new System.IO.IOException("reset")
                 : Task.CompletedTask));
@@ -229,9 +231,9 @@ public sealed class PublishTests
     {
         var system = new StubSystemHandle();
         system.OnCreatePlain = (_, _) => system.PlainCreations == 1
-            ? Task.FromResult<IStreamProducerHandle>(
+            ? Task.FromResult<IStreamPlainProducerHandle>(
                 new StubProducerHandle(async (_, _, ct) => { await Task.Delay(60_000, ct); }))
-            : Task.FromResult<IStreamProducerHandle>(new StubProducerHandle());
+            : Task.FromResult<IStreamPlainProducerHandle>(new StubProducerHandle());
         var options = new StreamBusOptions { Vhost = "/", UserName = "app", Password = "secret" };
         var supervisor = new StreamBusConnectionSupervisor(options, new ReadyConnector(system));
         await supervisor.StartAsync(CancellationToken.None);
@@ -246,7 +248,7 @@ public sealed class PublishTests
     public async Task Failed_confirm_does_not_invalidate_producer()
     {
         var (registry, system) = CreateRegistry();
-        system.OnCreatePlain = (_, _) => Task.FromResult<IStreamProducerHandle>(
+        system.OnCreatePlain = (_, _) => Task.FromResult<IStreamPlainProducerHandle>(
             new StubProducerHandle((_, _, _) => throw new StreamBusPublishException("Publish to stream 'orders' was not confirmed (status InternalError).")));
         await Assert.ThrowsAsync<StreamBusPublishException>(() =>
             registry.PublishAsync("orders", new byte[] { 1 }, new PublishOptions(), TestContext.Current.CancellationToken));
@@ -260,7 +262,7 @@ public sealed class PublishTests
     {
         var system = new StubSystemHandle
         {
-            OnCreatePlain = (_, _) => Task.FromResult<IStreamProducerHandle>(
+            OnCreatePlain = (_, _) => Task.FromResult<IStreamPlainProducerHandle>(
                 new StubProducerHandle((_, _, ct) =>
                 {
                     ct.ThrowIfCancellationRequested();

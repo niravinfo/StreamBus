@@ -41,7 +41,7 @@ internal sealed class StreamProducerRegistry
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
         try
         {
-            await handle.SendAsync(body, options.RoutingKey, linked.Token).ConfigureAwait(false);
+            await handle.SendAsync(body, options, linked.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !ct.IsCancellationRequested)
         {
@@ -75,11 +75,19 @@ internal sealed class StreamProducerRegistry
         if (readiness != BusReadiness.Ready)
             throw new StreamBusNotReadyException($"StreamBus for vhost '{_vhost}' is not ready ({readiness}); publish to '{stream}' refused.");
         var (entry, handle) = await GetOrCreateAsync(stream, super: false, ct).ConfigureAwait(false);
+        var plain = handle as IStreamPlainProducerHandle
+            ?? throw new StreamBusConfigurationException($"Error hand-off target '{stream}' is not a plain stream (internal error).");
         using var attemptCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         attemptCts.CancelAfter(confirmTimeout);
         try
         {
-            await handle.SendEnvelopeAsync(body, routingKey, applicationProperties, messageId, correlationId, attemptCts.Token).ConfigureAwait(false);
+            await plain.SendEnvelopeAsync(
+                body,
+                new PublishOptions { IsSuperStream = false, RoutingKey = routingKey },
+                applicationProperties,
+                messageId,
+                correlationId,
+                attemptCts.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested && attemptCts.IsCancellationRequested)
         {
@@ -200,9 +208,10 @@ internal sealed class StreamProducerRegistry
             ?? throw new StreamBusNotReadyException($"StreamBus for vhost '{_vhost}' is not ready; publish to '{stream}' refused.");
         try
         {
-            return super
+            IStreamProducerHandle created = super
                 ? await handle.CreateSuperStreamProducerAsync(stream, ct).ConfigureAwait(false)
                 : await handle.CreatePlainProducerAsync(stream, ct).ConfigureAwait(false);
+            return created;
         }
         catch (CreateProducerException ex) when (ex.ResponseCode == ResponseCode.StreamDoesNotExist)
         {

@@ -36,7 +36,19 @@ internal sealed class ResultProducerRegistry
         var key = Key(targetStream, targetSuper, producerName);
         try
         {
-            await handle.PublishResultAsync(body, ResultNaming.PublishingId(sourceOffset), routingKey, ct).ConfigureAwait(false);
+            var publishingId = ResultNaming.PublishingId(sourceOffset);
+            if (targetSuper)
+            {
+                var super = handle as IStreamSuperProducerHandle
+                    ?? throw new StreamBusConfigurationException($"Result target '{targetStream}' is not a super stream (internal error).");
+                await super.PublishResultAsync(body, publishingId, routingKey, ct).ConfigureAwait(false);
+            }
+            else
+            {
+                var plain = handle as IStreamPlainProducerHandle
+                    ?? throw new StreamBusConfigurationException($"Result target '{targetStream}' is not a plain stream (internal error).");
+                await plain.PublishReplayAsync(body, publishingId, new PublishOptions(), ct).ConfigureAwait(false);
+            }
         }
         catch (OperationCanceledException)
         {
@@ -198,9 +210,10 @@ internal sealed class ResultProducerRegistry
             ?? throw new StreamBusNotReadyException($"StreamBus for vhost '{_vhost}' is not ready; result publish to '{targetStream}' refused.");
         try
         {
-            return targetSuper
+            IStreamProducerHandle created = targetSuper
                 ? await handle.CreateSuperStreamProducerWithReferenceAsync(targetStream, producerName, ct).ConfigureAwait(false)
                 : await handle.CreatePlainProducerWithReferenceAsync(targetStream, producerName, ct).ConfigureAwait(false);
+            return created;
         }
         catch (CreateProducerException ex) when (ex.ResponseCode == ResponseCode.StreamDoesNotExist)
         {

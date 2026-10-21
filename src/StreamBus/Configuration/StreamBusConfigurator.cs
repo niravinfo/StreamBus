@@ -98,7 +98,7 @@ public sealed class StreamBusEndpointStore
 {
     private readonly List<(Type BusMarker, ReceiveEndpointDescriptor Descriptor)> _endpoints = new();
 
-    public void Add(Type busMarker, ReceiveEndpointDescriptor descriptor)
+    internal void Add(Type busMarker, ReceiveEndpointDescriptor descriptor)
     {
         ArgumentNullException.ThrowIfNull(busMarker);
         ArgumentNullException.ThrowIfNull(descriptor);

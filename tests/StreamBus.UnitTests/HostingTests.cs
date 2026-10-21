@@ -20,13 +20,13 @@ public sealed class HostingTests
         public Func<string, CancellationToken, Task<bool>> SuperExistsFunc = (_, _) => Task.FromResult(false);
         public bool IsClosed => false;
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-        public Task<IStreamProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct)
+        public Task<IStreamPlainProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct)
             => throw new NotImplementedException("HostingTests never publishes.");
-        public Task<IStreamProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
+        public Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
             => throw new NotImplementedException("HostingTests never publishes.");
-        public Task<IStreamProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
+        public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
             => throw new NotImplementedException("HostingTests never publishes.");
-        public Task<IStreamProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
+        public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
             => throw new NotImplementedException("StubHandle never creates stable super producers.");
         public Task<ulong> QuerySequenceAsync(string reference, string stream, CancellationToken ct)
             => throw new NotImplementedException("StubHandle never queries publishing sequences.");
@@ -65,13 +65,13 @@ public sealed class HostingTests
             if (ThrowOnDispose) throw new InvalidOperationException("scripted supervisor dispose failure");
             return ValueTask.CompletedTask;
         }
-        public Task<IStreamProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct)
+        public Task<IStreamPlainProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct)
             => throw new NotImplementedException("HostingTests never publishes.");
-        public Task<IStreamProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
+        public Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
             => throw new NotImplementedException("HostingTests never publishes.");
-        public Task<IStreamProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
+        public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
             => throw new NotImplementedException("HostingTests never publishes.");
-        public Task<IStreamProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
+        public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
             => throw new NotImplementedException("CountingHandle never creates stable super producers.");
         public Task<ulong> QuerySequenceAsync(string reference, string stream, CancellationToken ct)
             => throw new NotImplementedException("CountingHandle never queries publishing sequences.");
@@ -556,6 +556,32 @@ public sealed class HostingTests
         store.Add(typeof(DefaultBus), a);
         store.Add(typeof(OrdersBus), b);
         Assert.Equal(2, store.Registrations.Count);
+    }
+
+    [Fact]
+    public void Registration_view_exposes_connection_metadata_without_credentials()
+    {
+        var store = new StreamBusConfigStore();
+        store.Add(typeof(DefaultBus), new StreamBusOptions
+        {
+            Vhost = "/",
+            Host = "broker.internal",
+            UserName = "app",
+            Password = "secret",
+            StreamPort = 5553,
+            AmqpPort = 5673,
+            Heartbeat = TimeSpan.FromSeconds(30),
+        });
+
+        var view = Assert.Single(store.Registrations);
+        Assert.Equal("/", view.Vhost);
+        Assert.Equal("broker.internal", view.Host);
+        Assert.Equal(5553, view.StreamPort);
+        Assert.Equal(5673, view.AmqpPort);
+        Assert.Equal(30, view.HeartbeatSeconds);
+        Assert.DoesNotContain(
+            typeof(StreamBusRegistrationView).GetProperties(),
+            p => p.Name.Contains("Password", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]

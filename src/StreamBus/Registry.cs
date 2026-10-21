@@ -15,6 +15,7 @@ public interface IStreamBusRegistry
     internal void RemoveSupervisor(string vhost);
     internal StreamTopologyRegistry TopologyFor(string vhost);
     internal StreamBusHealthAggregator HealthFor(string vhost);
+    internal ErrorQueueTransport ErrorQueuesFor(string vhost);
     internal IReadOnlyCollection<StreamBusHealthAggregator> HealthAggregators { get; }
     internal IReadOnlyCollection<IStreamConsumer> ActiveConsumers { get; }
 }
@@ -79,6 +80,8 @@ public sealed class StreamBusRegistry : IStreamBusRegistry
             _resolveOptions(vhost),
             null,
             _loggerFactory.CreateLogger<ErrorQueueTransport>()));
+
+    ErrorQueueTransport IStreamBusRegistry.ErrorQueuesFor(string vhost) => ErrorQueuesFor(vhost);
 
     internal StreamProducerRegistry ProducersFor(string vhost)
         => _producers.GetOrAdd(vhost, _ => new StreamProducerRegistry(SupervisorForCore(vhost), vhost));

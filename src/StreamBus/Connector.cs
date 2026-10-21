@@ -9,10 +9,10 @@ namespace StreamBus;
 public interface IStreamSystemHandle : IAsyncDisposable
 {
     bool IsClosed { get; }
-    Task<IStreamProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct);
-    Task<IStreamProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct);
-    Task<IStreamProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct);
-    Task<IStreamProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct);
+    Task<IStreamPlainProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct);
+    Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct);
+    Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct);
+    Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct);
     Task<ulong> QuerySequenceAsync(string reference, string stream, CancellationToken ct);
     Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct);
     Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken ct);
@@ -46,10 +46,10 @@ public sealed class StreamSystemHandle : IStreamSystemHandle
     }
     public bool IsClosed => _system.IsClosed;
 
-    public async Task<IStreamProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct)
+    public async Task<IStreamPlainProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct)
         => await CreatePlainProducerCoreAsync(stream, ProducerReference(stream), ct).ConfigureAwait(false);
 
-    public async Task<IStreamProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
+    public async Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(reference);
         if (Encoding.UTF8.GetByteCount(reference) > StreamBusNaming.MaxName)
@@ -57,7 +57,7 @@ public sealed class StreamSystemHandle : IStreamSystemHandle
         return await CreatePlainProducerCoreAsync(stream, reference, ct).ConfigureAwait(false);
     }
 
-    private async Task<IStreamProducerHandle> CreatePlainProducerCoreAsync(string stream, string reference, CancellationToken ct)
+    private async Task<IStreamPlainProducerHandle> CreatePlainProducerCoreAsync(string stream, string reference, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         var confirmations = new ConfirmationTracker();
@@ -82,16 +82,17 @@ public sealed class StreamSystemHandle : IStreamSystemHandle
         return new StreamProducerHandle(producer, stream, confirmations, _factory.CreateLogger<StreamProducerHandle>());
     }
 
-    public async Task<IStreamProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
+    public async Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         var confirmations = new ConfirmationTracker();
+        var routing = new SuperStreamRouting();
         // Same dedup rationale as the plain-producer call above.
         var producer = await _system.CreateRawSuperStreamProducer(new RawSuperStreamProducerConfig(stream)
         {
             MessagesBufferSize = 100,
             Reference = ProducerReference(stream),
-            Routing = SuperStreamProducerHandle.RoutingFor,
+            Routing = routing.Route,
             ConfirmHandler = confirmation => confirmations.Complete(confirmation.Item2),
             ConnectionClosedHandler = (_, _) =>
             {
@@ -99,24 +100,26 @@ public sealed class StreamSystemHandle : IStreamSystemHandle
                 return Task.CompletedTask;
             },
         }, _factory.CreateLogger<RawProducer>()).ConfigureAwait(false);
-        return new SuperStreamProducerHandle(producer, stream, confirmations, _factory.CreateLogger<SuperStreamProducerHandle>());
+        return new SuperStreamProducerHandle(producer, stream, confirmations, routing, _factory.CreateLogger<SuperStreamProducerHandle>());
     }
 
-    public async Task<IStreamProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
+    public async Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(reference);
         if (Encoding.UTF8.GetByteCount(reference) > StreamBusNaming.MaxName)
             throw new StreamBusConfigurationException($"Producer reference exceeds the broker's 255-byte limit.");
         ct.ThrowIfCancellationRequested();
         var confirmations = new ConfirmationTracker();
+        var routing = new SuperStreamRouting();
         // Stable name (not the unique-name path): recreating under the same name is
         // safe — dedup is broker-side per (name, id) and the fresh tracker holds no
-        // stale in-flight ids. The same routing table as the unique-name path applies.
+        // stale in-flight ids. The same per-handle routing table as the unique-name
+        // path applies.
         var producer = await _system.CreateRawSuperStreamProducer(new RawSuperStreamProducerConfig(stream)
         {
             MessagesBufferSize = 100,
             Reference = reference,
-            Routing = SuperStreamProducerHandle.RoutingFor,
+            Routing = routing.Route,
             ConfirmHandler = confirmation => confirmations.Complete(confirmation.Item2),
             ConnectionClosedHandler = (_, _) =>
             {
@@ -124,7 +127,7 @@ public sealed class StreamSystemHandle : IStreamSystemHandle
                 return Task.CompletedTask;
             },
         }, _factory.CreateLogger<RawProducer>()).ConfigureAwait(false);
-        return new SuperStreamProducerHandle(producer, stream, confirmations, _factory.CreateLogger<SuperStreamProducerHandle>());
+        return new SuperStreamProducerHandle(producer, stream, confirmations, routing, _factory.CreateLogger<SuperStreamProducerHandle>());
     }
 
     public async Task CreateStreamAsync(RabbitMQ.Stream.Client.StreamSpec spec, CancellationToken ct)

@@ -6,13 +6,13 @@ file sealed class StubHandle : IStreamSystemHandle
 {
     public bool IsClosed { get; set; }
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-    public Task<IStreamProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct)
+    public Task<IStreamPlainProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct)
         => throw new NotImplementedException("ConnectionSupervisorTests never publishes.");
-    public Task<IStreamProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
+    public Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
         => throw new NotImplementedException("ConnectionSupervisorTests never publishes.");
-    public Task<IStreamProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
+    public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
         => throw new NotImplementedException("ConnectionSupervisorTests never publishes.");
-    public Task<IStreamProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
+    public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
         => throw new NotImplementedException("StubHandle never creates stable super producers.");
     public Task<ulong> QuerySequenceAsync(string reference, string stream, CancellationToken ct)
         => throw new NotImplementedException("StubHandle never queries publishing sequences.");

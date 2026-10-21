@@ -1,17 +1,53 @@
 using System.Collections.Concurrent;
-using System.Runtime.CompilerServices;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using RabbitMQ.Stream.Client;
 
 namespace StreamBus;
 
+/// <summary>
+/// Common producer surface: every transport can send a message and await its
+/// broker confirmation. The plain/super split below keeps transport-specific
+/// members off the wrong surface instead of silently ignoring or throwing.
+/// </summary>
 public interface IStreamProducerHandle : IAsyncDisposable
 {
-    Task SendAsync(ReadOnlyMemory<byte> body, string? routingKey, CancellationToken ct);
-    Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, string? routingKey, IReadOnlyDictionary<string, object?> applicationProperties, string? messageId, string? correlationId, CancellationToken ct);
-    Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, CancellationToken ct);
+    Task SendAsync(ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct);
+}
+
+public interface IStreamPlainProducerHandle : IStreamProducerHandle
+{
+    Task SendEnvelopeAsync(
+        ReadOnlyMemory<byte> body,
+        PublishOptions options,
+        IReadOnlyDictionary<string, object?> applicationProperties,
+        string? messageId,
+        string? correlationId,
+        CancellationToken ct);
+
+    Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, PublishOptions options, CancellationToken ct);
+}
+
+public interface IStreamSuperProducerHandle : IStreamPlainProducerHandle
+{
+    Task PublishWithIdAsync(ulong publishingId, ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct);
     Task PublishResultAsync(ReadOnlyMemory<byte> body, ulong publishingId, string? routingKey, CancellationToken ct);
+}
+
+/// <summary>
+/// Per-handle routing table for the client's static <c>Routing</c> callback.
+/// The callback receives only the outgoing <see cref="Message"/>, so the handle
+/// stamps the routing value immediately before send and removes it afterwards.
+/// </summary>
+internal sealed class SuperStreamRouting
+{
+    private readonly ConcurrentDictionary<Message, string> _table = new();
+
+    public string Route(Message message) => _table[message];
+
+    public void Stamp(Message message, string routing) => _table[message] = routing;
+
+    public void Remove(Message message) => _table.TryRemove(message, out _);
 }
 
 // Bridges the client's callback-based confirms (RawProducerConfig.ConfirmHandler)
@@ -143,7 +179,7 @@ internal static class ProducerClose
     }
 }
 
-internal sealed class StreamProducerHandle : IStreamProducerHandle
+internal sealed class StreamProducerHandle : IStreamPlainProducerHandle
 {
     private readonly IProducer _producer;
     private readonly string _stream;
@@ -161,14 +197,16 @@ internal sealed class StreamProducerHandle : IStreamProducerHandle
         _logger = logger ?? NullLogger.Instance;
     }
 
-    public async Task SendAsync(ReadOnlyMemory<byte> body, string? routingKey, CancellationToken ct)
+    public async Task SendAsync(ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct)
     {
+        ArgumentNullException.ThrowIfNull(options);
         ct.ThrowIfCancellationRequested();
         await _confirmations.PublishAsync(_producer, _stream, new Message(body.ToArray()), ct).ConfigureAwait(false);
     }
 
-    public async Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, string? routingKey, IReadOnlyDictionary<string, object?> applicationProperties, string? messageId, string? correlationId, CancellationToken ct)
+    public async Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, PublishOptions options, IReadOnlyDictionary<string, object?> applicationProperties, string? messageId, string? correlationId, CancellationToken ct)
     {
+        ArgumentNullException.ThrowIfNull(options);
         ct.ThrowIfCancellationRequested();
         ArgumentNullException.ThrowIfNull(applicationProperties);
         var message = new Message(body.ToArray());
@@ -185,16 +223,10 @@ internal sealed class StreamProducerHandle : IStreamProducerHandle
         await _confirmations.PublishAsync(_producer, _stream, message, ct).ConfigureAwait(false);
     }
 
-    public async Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, CancellationToken ct)
+    public async Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, PublishOptions options, CancellationToken ct)
     {
+        ArgumentNullException.ThrowIfNull(options);
         ct.ThrowIfCancellationRequested();
-        await _confirmations.PublishWithIdAsync(_producer, _stream, publishingId, new Message(body.ToArray()), ct).ConfigureAwait(false);
-    }
-
-    public async Task PublishResultAsync(ReadOnlyMemory<byte> body, ulong publishingId, string? routingKey, CancellationToken ct)
-    {
-        ct.ThrowIfCancellationRequested();
-        // Plain targets have no routing; a super source feeding a plain target drops its routing value here.
         await _confirmations.PublishWithIdAsync(_producer, _stream, publishingId, new Message(body.ToArray()), ct).ConfigureAwait(false);
     }
 
@@ -205,65 +237,98 @@ internal sealed class StreamProducerHandle : IStreamProducerHandle
     }
 }
 
-internal sealed class SuperStreamProducerHandle : IStreamProducerHandle
+internal sealed class SuperStreamProducerHandle : IStreamSuperProducerHandle
 {
-    private static readonly ConditionalWeakTable<Message, string> RoutingTable = new();
     private readonly ISuperStreamProducer _producer;
     private readonly string _stream;
     private readonly ConfirmationTracker _confirmations;
+    private readonly SuperStreamRouting _routing;
     private readonly ILogger _logger;
 
-    public SuperStreamProducerHandle(ISuperStreamProducer producer, string stream, ConfirmationTracker confirmations, ILogger? logger = null)
+    public SuperStreamProducerHandle(ISuperStreamProducer producer, string stream, ConfirmationTracker confirmations, SuperStreamRouting routing, ILogger? logger = null)
     {
         ArgumentNullException.ThrowIfNull(producer);
         ArgumentNullException.ThrowIfNull(stream);
         ArgumentNullException.ThrowIfNull(confirmations);
+        ArgumentNullException.ThrowIfNull(routing);
         _producer = producer;
         _stream = stream;
         _confirmations = confirmations;
+        _routing = routing;
         _logger = logger ?? NullLogger.Instance;
     }
 
-    public static string RoutingFor(Message message)
-        => RoutingTable.TryGetValue(message, out var routing)
-            ? routing
-            : throw new InvalidOperationException($"No routing value was stamped for the outgoing message to '{typeof(SuperStreamProducerHandle)}' (internal error).");
+    public Task SendAsync(ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct)
+        => SendMessageAsync(
+            new Message(body.ToArray()),
+            options,
+            (message, token) => _confirmations.PublishAsync(_producer, _stream, message, token),
+            ct);
 
-    public async Task SendAsync(ReadOnlyMemory<byte> body, string? routingKey, CancellationToken ct)
+    public Task SendEnvelopeAsync(
+        ReadOnlyMemory<byte> body,
+        PublishOptions options,
+        IReadOnlyDictionary<string, object?> applicationProperties,
+        string? messageId,
+        string? correlationId,
+        CancellationToken ct)
     {
-        ct.ThrowIfCancellationRequested();
+        ArgumentNullException.ThrowIfNull(applicationProperties);
         var message = new Message(body.ToArray());
-        RoutingTable.Add(message, routingKey!);
-        try
+        if (messageId is not null || correlationId is not null)
         {
-            await _confirmations.PublishAsync(_producer, _stream, message, ct).ConfigureAwait(false);
+            message.Properties = new RabbitMQ.Stream.Client.AMQP.Properties { MessageId = messageId, CorrelationId = correlationId };
         }
-        finally
-        {
-            RoutingTable.Remove(message);
-        }
+        var app = new RabbitMQ.Stream.Client.AMQP.ApplicationProperties();
+        foreach (var kv in applicationProperties)
+            app[kv.Key] = kv.Value;
+        message.ApplicationProperties = app;
+        return SendMessageAsync(
+            message,
+            options,
+            (outgoing, token) => _confirmations.PublishAsync(_producer, _stream, outgoing, token),
+            ct);
     }
 
-    public Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, string? routingKey, IReadOnlyDictionary<string, object?> applicationProperties, string? messageId, string? correlationId, CancellationToken ct)
-        => throw new StreamBusConfigurationException("Error streams and replay targets are plain streams; this path is not supported.");
+    public Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, PublishOptions options, CancellationToken ct)
+        => SendMessageAsync(
+            new Message(body.ToArray()),
+            options,
+            (message, token) => _confirmations.PublishWithIdAsync(_producer, _stream, publishingId, message, token),
+            ct);
 
-    public Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, CancellationToken ct)
-        => throw new StreamBusConfigurationException("Error streams and replay targets are plain streams; this path is not supported.");
+    public Task PublishWithIdAsync(ulong publishingId, ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct)
+        => SendMessageAsync(
+            new Message(body.ToArray()),
+            options,
+            (message, token) => _confirmations.PublishWithIdAsync(_producer, _stream, publishingId, message, token),
+            ct);
 
-    public async Task PublishResultAsync(ReadOnlyMemory<byte> body, ulong publishingId, string? routingKey, CancellationToken ct)
+    public Task PublishResultAsync(ReadOnlyMemory<byte> body, ulong publishingId, string? routingKey, CancellationToken ct)
+        => PublishWithIdAsync(
+            publishingId,
+            body,
+            new PublishOptions { IsSuperStream = true, RoutingKey = routingKey },
+            ct);
+
+    private async Task SendMessageAsync(
+        Message message,
+        PublishOptions options,
+        Func<Message, CancellationToken, Task> send,
+        CancellationToken ct)
     {
+        ArgumentNullException.ThrowIfNull(options);
+        if (string.IsNullOrWhiteSpace(options.RoutingKey))
+            throw new StreamBusConfigurationException($"Super-stream publish to '{_stream}' requires a routing key.");
         ct.ThrowIfCancellationRequested();
-        if (string.IsNullOrWhiteSpace(routingKey))
-            throw new StreamBusConfigurationException($"Result publish to super stream '{_stream}' requires a routing key (internal error).");
-        var message = new Message(body.ToArray());
-        RoutingTable.Add(message, routingKey);
+        _routing.Stamp(message, options.RoutingKey);
         try
         {
-            await _confirmations.PublishWithIdAsync(_producer, _stream, publishingId, message, ct).ConfigureAwait(false);
+            await send(message, ct).ConfigureAwait(false);
         }
         finally
         {
-            RoutingTable.Remove(message);
+            _routing.Remove(message);
         }
     }
 
