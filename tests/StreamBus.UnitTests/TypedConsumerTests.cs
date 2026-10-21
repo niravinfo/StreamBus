@@ -34,20 +34,14 @@ public sealed class TypedConsumerTests
     }
 
     [Fact]
-    public void Builder_defaults_match_record_defaults()
-    {
-        Assert.Equal(new ConsumeOptions(), new ConsumeOptionsBuilder().Build());
-    }
-
-    [Fact]
     public void Store_rejects_duplicates_but_allows_variants()
     {
         var store = new StreamBusConsumerStore();
-        var options = new ConsumeOptionsBuilder().Reference("grp").Build();
+        var options = new ConsumeOptions { Reference = "grp" };
         store.Add(typeof(DefaultBus), typeof(OrderEvent), typeof(OrderConsumer), "orders", options);
         Assert.Throws<StreamBusConfigurationException>(() =>
             store.Add(typeof(DefaultBus), typeof(OrderEvent), typeof(OrderConsumer), "orders", options));
-        store.Add(typeof(DefaultBus), typeof(OrderEvent), typeof(OrderConsumer), "orders", new ConsumeOptionsBuilder().Reference("other-grp").Build());
+        store.Add(typeof(DefaultBus), typeof(OrderEvent), typeof(OrderConsumer), "orders", new ConsumeOptions { Reference = "other-grp" });
         store.Add(typeof(DefaultBus), typeof(OrderEvent), typeof(OrderConsumer), "other-stream", options);
         store.Add(typeof(DefaultBus), typeof(OrderEvent), typeof(OrderConsumerTests_Other), "orders", options);
         Assert.Equal(4, store.Registrations.Count);
@@ -63,7 +57,7 @@ public sealed class TypedConsumerTests
     {
         var store = new StreamBusConsumerStore();
         Assert.Throws<StreamBusConfigurationException>(() =>
-            store.Add(typeof(DefaultBus), typeof(OrderEvent), typeof(OrderConsumer), "orders", new ConsumeOptionsBuilder().Build()));
+            store.Add(typeof(DefaultBus), typeof(OrderEvent), typeof(OrderConsumer), "orders", new ConsumeOptions()));
     }
 
     [Fact]
@@ -157,7 +151,7 @@ public sealed class TypedConsumerTests
         var store = new StreamBusConfigStore();
         store.Add(typeof(DefaultBus), new StreamBusOptions { Vhost = "/", UserName = "a", Password = "b" });
         var consumers = new StreamBusConsumerStore();
-        consumers.Add(typeof(DefaultBus), typeof(OrderEvent), typeof(OrderConsumer), "orders", new ConsumeOptionsBuilder().Reference("test-group").Build());
+        consumers.Add(typeof(DefaultBus), typeof(OrderEvent), typeof(OrderConsumer), "orders", new ConsumeOptions { Reference = "test-group" });
         var registry = new StreamBusRegistry(
             _ => throw new InvalidOperationException("no resolve"),
             _ => throw new InvalidOperationException("no supervisor"),

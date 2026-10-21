@@ -22,15 +22,22 @@ internal static class StreamBusNaming
     }
 
     /// <summary>
-    /// Stable publisher reference for explicit-dedup producers (replay).
-    /// Task 8 preserves the pre-consolidation recipe byte-for-byte; the source
-    /// stream becomes part of the name when replay naming is scoped per source.
+    /// Stable publisher reference for explicit-dedup producers (replay). The
+    /// source stream and the concrete partition stream both participate so two
+    /// sources replayed from one shared error stream never share a dedup space.
     /// </summary>
     public static string ReplayProducerName(string sourceStream, string sourcePartitionStream)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sourceStream);
         ArgumentException.ThrowIfNullOrWhiteSpace(sourcePartitionStream);
-        return $"streambus-replay-{Sha32(sourcePartitionStream)}";
+        var key = string.Concat(
+            sourceStream.Length.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ":",
+            sourceStream,
+            sourcePartitionStream.Length.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ":",
+            sourcePartitionStream);
+        return $"streambus-replay-{Sha32(key)}";
     }
 
     /// <summary>Stable consumer reference for a replay run over one error stream.</summary>

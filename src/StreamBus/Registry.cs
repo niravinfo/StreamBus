@@ -28,7 +28,7 @@ internal sealed class BusEntry
 
 public sealed class StreamBusRegistry : IStreamBusRegistry
 {
-    private readonly ConcurrentDictionary<string, BusEntry> _entries = new();
+    private readonly ConcurrentDictionary<(Type BusType, string Vhost), BusEntry> _entries = new();
     private readonly Func<string, StreamBusOptions> _resolveOptions;
     private readonly Func<StreamBusOptions, StreamBusConnectionSupervisor> _createSupervisor;
     private readonly ILoggerFactory _loggerFactory;
@@ -62,7 +62,7 @@ public sealed class StreamBusRegistry : IStreamBusRegistry
         => (IStreamBus<TBus>)GetOrCreateCore(typeof(TBus), vhost).Bus;
 
     public IEnumerable<(string Vhost, string BusType, BusConnectionState State)> DescribeStates()
-        => _entries.Select(kv => ParseKey(kv.Key, kv.Value.Bus.State));
+        => _entries.Select(kv => (kv.Key.Vhost, kv.Key.BusType.FullName ?? kv.Key.BusType.Name, kv.Value.Bus.State));
 
     BusEntry IStreamBusRegistry.GetOrCreateEntry(Type busType, string vhost)
         => GetOrCreateCore(busType, vhost);
@@ -140,7 +140,7 @@ public sealed class StreamBusRegistry : IStreamBusRegistry
 
     internal BusEntry GetOrCreateCore(Type busType, string vhost)
     {
-        var key = $"{busType.FullName}@{vhost}";
+        var key = (busType, vhost);
         var entry = _entries.GetOrAdd(key, _ =>
         {
             var supervisor = SupervisorForCore(vhost);
@@ -154,11 +154,5 @@ public sealed class StreamBusRegistry : IStreamBusRegistry
             return created;
         });
         return entry;
-    }
-
-    private static (string, string, BusConnectionState) ParseKey(string key, BusConnectionState state)
-    {
-        var at = key.LastIndexOf('@');
-        return (key[(at + 1)..], key[..at], state);
     }
 }

@@ -170,15 +170,6 @@ public static class ServiceCollectionExtensions
     }
 }
 
-public sealed class StreamBusConnectionOptionsBuilder
-{
-    private int _producers = 1;
-    private int _consumers = 1;
-    public StreamBusConnectionOptionsBuilder ProducersPerConnection(int n) { _producers = n; return this; }
-    public StreamBusConnectionOptionsBuilder ConsumersPerConnection(int n) { _consumers = n; return this; }
-    public StreamBusConnectionOptions Build() => new() { ProducersPerConnection = _producers, ConsumersPerConnection = _consumers };
-}
-
 public sealed record StreamBusHostingOptions
 {
     public bool BlockStartupUntilReady { get; init; } = false;
@@ -219,45 +210,6 @@ public sealed class StreamBusHostingOptionsBuilder
         BlockStartupUntilReady = _block,
         BlockUntilConsumersAttached = _blockConsumers,
         StartupTimeout = _timeout,
-    };
-}
-
-public sealed class ConsumeOptionsBuilder
-{
-    private bool _super;
-    private string? _reference;
-    private bool _sac = true;
-    private ConsumeOrdering _ordering = ConsumeOrdering.Strict;
-    private ConsumeOffset _offset = ConsumeOffset.ResumeOrFirst;
-    private OffsetStoreOptions _store = new();
-    private RetryPolicy _retry = new();
-    private ErrorStreamOptions? _error;
-    private Func<ErrorHandoff, Task>? _hook;
-    private ReadinessPolicy _readiness = ReadinessPolicy.FailFastPolicy;
-
-    public ConsumeOptionsBuilder SuperStream(bool enabled = true) { _super = enabled; return this; }
-    public ConsumeOptionsBuilder Reference(string? reference) { _reference = reference; return this; }
-    public ConsumeOptionsBuilder SingleActiveConsumer(bool enabled = true) { _sac = enabled; return this; }
-    public ConsumeOptionsBuilder Ordering(ConsumeOrdering ordering) { _ordering = ordering; return this; }
-    public ConsumeOptionsBuilder Offset(ConsumeOffset offset) { _offset = offset; return this; }
-    public ConsumeOptionsBuilder OffsetStore(OffsetStoreOptions options) { _store = options ?? throw new ArgumentNullException(nameof(options)); return this; }
-    public ConsumeOptionsBuilder Retry(RetryPolicy policy) { _retry = policy ?? throw new ArgumentNullException(nameof(policy)); return this; }
-    public ConsumeOptionsBuilder ErrorStream(ErrorStreamOptions? options) { _error = options; return this; }
-    public ConsumeOptionsBuilder OnRetryExhausted(Func<ErrorHandoff, Task>? hook) { _hook = hook; return this; }
-    public ConsumeOptionsBuilder Readiness(ReadinessPolicy policy) { _readiness = policy ?? throw new ArgumentNullException(nameof(policy)); return this; }
-
-    public ConsumeOptions Build() => new()
-    {
-        IsSuperStream = _super,
-        Reference = _reference,
-        SingleActiveConsumer = _sac,
-        Ordering = _ordering,
-        Offset = _offset,
-        OffsetStore = _store,
-        Retry = _retry,
-        ErrorStream = _error,
-        OnRetryExhausted = _hook,
-        ReadinessPolicy = _readiness,
     };
 }
 

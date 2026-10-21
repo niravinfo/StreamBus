@@ -109,8 +109,8 @@ public sealed record ErrorEnvelope
 
 internal static class ReplayNaming
 {
-    public static string ProducerName(string partitionStream, string? sourceStream = null)
-        => StreamBusNaming.ReplayProducerName(sourceStream ?? partitionStream, partitionStream);
+    public static string ProducerName(string sourceStream, string partitionStream)
+        => StreamBusNaming.ReplayProducerName(sourceStream, partitionStream);
 
     public static string Reference(string errorStream)
         => StreamBusNaming.ReplayReference(errorStream);

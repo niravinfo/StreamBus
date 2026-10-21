@@ -55,9 +55,9 @@ public sealed class ErrorEnvelopeTests
     [Fact]
     public void Replay_naming_is_stable_bounded_and_id_is_the_offset()
     {
-        var a = ReplayNaming.ProducerName("orders-2");
-        Assert.Equal(a, ReplayNaming.ProducerName("orders-2"));
-        Assert.NotEqual(a, ReplayNaming.ProducerName("orders-3"));
+        var a = ReplayNaming.ProducerName("orders", "orders-2");
+        Assert.Equal(a, ReplayNaming.ProducerName("orders", "orders-2"));
+        Assert.NotEqual(a, ReplayNaming.ProducerName("orders", "orders-3"));
         Assert.True(System.Text.Encoding.UTF8.GetByteCount(a) <= 255);
         Assert.Equal(41UL, ReplayNaming.PublishingId(41));
         var r = ReplayNaming.Reference("orders.error");

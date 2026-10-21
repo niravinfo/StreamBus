@@ -533,7 +533,7 @@ internal sealed class StreamConsumerRegistry
                     if (!producers.TryGetValue(partitionStream, out var producer))
                     {
                         producer = await handle.CreatePlainProducerWithReferenceAsync(
-                            partitionStream, ReplayNaming.ProducerName(partitionStream), ct).ConfigureAwait(false);
+                            partitionStream, ReplayNaming.ProducerName(envelope.SourceStream, partitionStream), ct).ConfigureAwait(false);
                         producers[partitionStream] = producer;
                     }
                     await producer.PublishReplayAsync(

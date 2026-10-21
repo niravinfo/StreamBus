@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Breaking
+
+- Removed the unwired `StreamBusConnectionOptionsBuilder`,
+  `ConsumeOptionsBuilder`, `ConsumeOrdering`, and `ConsumeOptions.Ordering`
+  surface. Configure consumers through `ConsumeOptions` and endpoints through
+  `IReceiveEndpointConfigurator`.
+- Registration-store `Add` methods are internal; use the public
+  `AddStreamBus` / `ReceiveEndpoint` configurators.
+- `StreamBusHostedService` is internal; host it through dependency injection.
+
 ### Added
 
 - A6 health aggregation: health checks now report per-registration consumer and
