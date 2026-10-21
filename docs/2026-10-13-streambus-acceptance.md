@@ -57,7 +57,7 @@ v1 verdict for the exact lines.
 | FR-7.1 | Ensure* idempotent and cached | `Repeat_same_spec_makes_no_further_broker_calls` (unit: cached, probe count frozen) + `Repeat_and_concurrent_declares_converge` (integration: repeat no-op, streams usable) | ✅ |
 | FR-7.2 | Concurrent declaration serialized; race tolerated, genuine conflict throws | Unit `Four_concurrent_same_spec_issue_single_create` + integration 4-way in `Repeat_and_concurrent_…` + conflict tests (`Partition_mismatch_…`, `Super_partition_conflict_…`, `Kind_mismatch_…`) + `Restart_with_identical_spec_succeeds` | ✅ |
 | FR-7.3 | Leader locator defaults to `least-leaders` | Unit `Locator_defaults_to_least_leaders` + `Locator_maps_all_values` (declared-spec side; on-broker placement is G-3, open) | ✅ |
-| FR-7.4 | Post-declaration tuning via policy, not queue args | Spec side pinned (`Default_spec_emits_no_retention_args`: default spec carries no tuning args). Operator path test exists (`Policy_applied_tuning_is_effective`) but is skip-guarded — runs only where the management API is reachable | ⚠️ partial — environment-gated, not a test gap (no Task 2 action; G-3-adjacent) |
+| FR-7.4 | Post-declaration tuning via policy, not queue args | Spec side pinned (`Default_spec_emits_no_retention_args`: default spec carries no tuning args). Operator path test exists (`Policy_with_stream_retention_is_accepted_and_registered`, renamed 2026-10-21 from `Policy_applied_tuning_is_effective`) but is skip-guarded — runs only where the management API is reachable, and fails instead of skipping when `CI=true` | ⚠️ partial — environment-gated, not a test gap (no Task 2 action; G-3-adjacent). The test now proves the broker accepts and registers a stream retention policy (`"max-age":"1h"`); RabbitMQ 4.x does not expose a stream's retention in the classic queue view, so retention *application* is still unproven |
 | FR-7.5 | Specs are startup configuration, not per-publish | `Startup_declares_union_of_registrations` + `Nonblocking_startup_declares_in_background` + `Blocking_startup_declares_before_return` + `Missing_stream_fails_and_stays_absent` (publish never declares) | ✅ |
 | FR-8.1 | One vhost per bus; no per-call override; duplicate registration fails; shared `StreamSystem` | `Duplicate_default_registration_fails`, `Duplicate_marker_registration_fails_but_distinct_markers_coexist`, `Default_and_marker_resolve_distinct_buses`, `Same_vhost_different_password_throws_naming_vhost`, `Buses_on_one_vhost_share_one_supervisor`, `Different_vhosts_get_different_supervisors` (no-override: API inspection — single `Vhost` on options, no per-call vhost) | ✅ |
 | FR-8.2 | One bus serves many streams | `One_bus_serves_two_streams` (Task 2, integration: one bus publishes to two streams, both confirmed and delivered with bodies uncrossed — `a:0` on s1, `b:0` on s2) | ✅ |
@@ -246,8 +246,10 @@ Final green evidence (Release, broker localhost:5552, 2026-10-13):
 - `dotnet test tests/StreamBus.IntegrationTests/StreamBus.IntegrationTests.csproj -c Release --nologo -v q`
   `Passed!  - Failed: 0, Passed: 54, Skipped: 2, Total: 56, Duration: 23 s - StreamBus.IntegrationTests.dll (net10.0)`
   The 2 skips are exactly the known env-skips (verified by name):
-  `TopologyIntegrationTests.Policy_applied_tuning_is_effective` (management-API
-  gated) and `TopologyIntegrationTests.Leader_placement_gate_G3` (single node).
+  `TopologyIntegrationTests.Policy_applied_tuning_is_effective` (renamed
+  2026-10-21 to `Policy_with_stream_retention_is_accepted_and_registered`;
+  management-API gated) and `TopologyIntegrationTests.Leader_placement_gate_G3`
+  (single node).
   No other failure or skip.
 
 Directed verdicts applied (controller rulings): FR-3.2 → ✅ (R8, rationale in
@@ -292,8 +294,10 @@ Final green evidence (Release, broker localhost:5552 + AMQP localhost:5672,
 - `dotnet test tests/StreamBus.IntegrationTests -c Release --nologo -v q`
   `Passed!  - Failed: 0, Passed: 56, Skipped: 2, Total: 58, Duration: 23 s - StreamBus.IntegrationTests.dll (net10.0)`
   The 2 skips are exactly the known v1 env-skips (verified by name):
-  `TopologyIntegrationTests.Policy_applied_tuning_is_effective` (management-API
-  gated) and `TopologyIntegrationTests.Leader_placement_gate_G3` (single node).
+  `TopologyIntegrationTests.Policy_applied_tuning_is_effective` (renamed
+  2026-10-21 to `Policy_with_stream_retention_is_accepted_and_registered`;
+  management-API gated) and `TopologyIntegrationTests.Leader_placement_gate_G3`
+  (single node).
   No other failure or skip.
 - Flake note (not a gap): one Debug full-suite run showed
   `TopologyIntegrationTests.Nonblocking_startup_declares_in_background`

@@ -1,0 +1,259 @@
+name: Release
+
+# Publishing is deliberately not wired to pushes: a green build on `main` must never
+# publish. The intended flow is to create a GitHub Release (tag vX.Y.Z) -> this
+# workflow builds that version, publishes it to nuget.org over OIDC Trusted Publishing,
+# and attaches the .nupkg files to the same GitHub Release.
+on:
+  release:
+    types: [published]
+  # Manual escape hatch for re-runs. The `version` input is required: dispatching
+  # without it fails rather than guessing a version from the branch name.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish (e.g. 1.2.3). Required for manual dispatch."
+        required: true
+        type: string
+
+# Permissions required:
+# - id-token: write -> request the OIDC token for NuGet Trusted Publishing
+# - contents: write -> upload .nupkg assets to the GitHub Release
+permissions:
+  id-token: write
+  contents: write
+
+# Two releases of the same version must not push at the same time.
+concurrency:
+  group: release-${{ github.event.release.tag_name || inputs.version || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Pack and publish to NuGet
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    # Same broker as the build workflow: the integration suite runs before anything
+    # is published. rabbitmq_stream is bundled but not enabled by default, and the
+    # stream client connects to the host the broker advertises - a container
+    # advertises its own hostname, which the runner cannot resolve, hence
+    # advertised_host=localhost. `guest` is rejected by the stream client.
+    # The image is pinned to the 4.2 minor line to match the build workflow.
+    services:
+      rabbitmq:
+        image: rabbitmq:4.2-management
+        ports:
+          - 5552:5552
+          - 5672:5672
+          - 15672:15672
+        env:
+          RABBITMQ_DEFAULT_USER: app
+          RABBITMQ_DEFAULT_PASS: password
+          RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: "-rabbitmq_stream advertised_host localhost"
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 12
+
+    env:
+      STREAMBUS_USER: app
+      STREAMBUS_PASSWORD: password
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Determine package version
+        id: version
+        env:
+          # Read the untrusted values through env, never interpolated into the script:
+          # a git ref may legally contain $(...), backticks or quotes.
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          RAW_VERSION=""
+
+          if [ "$EVENT_NAME" = "release" ]; then
+            RAW_VERSION="$RELEASE_TAG"
+            echo "Triggered by release with tag: $RAW_VERSION"
+          elif [ -n "$INPUT_VERSION" ]; then
+            RAW_VERSION="$INPUT_VERSION"
+            echo "Triggered by workflow_dispatch with input version: $RAW_VERSION"
+          else
+            echo "::error::workflow_dispatch requires the 'version' input (for example 1.2.3)."
+            exit 1
+          fi
+
+          if [ -z "$RAW_VERSION" ]; then
+            echo "::error::Could not determine version (empty tag/input)."
+            exit 1
+          fi
+
+          # Strip a refs/tags/ prefix first, then a leading v/V.
+          VERSION="${RAW_VERSION#refs/tags/}"
+          VERSION="${VERSION#v}"
+          VERSION="${VERSION#V}"
+
+          if [ -z "$VERSION" ]; then
+            echo "::error::Version is empty after stripping prefix."
+            exit 1
+          fi
+
+          # Strict SemVer: major.minor.patch with an optional prerelease label.
+          # Build metadata (+...) is rejected on purpose - NuGet drops it, so the
+          # published version would differ from the tag. Versions are immutable,
+          # so a wrong version cannot be taken back.
+          if ! echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::Version '$VERSION' is not a valid SemVer version (major.minor.patch[-prerelease]). Refusing to publish."
+            exit 1
+          fi
+
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "Resolved package version: $VERSION"
+
+      - name: Check the release commit is on main
+        run: |
+          git fetch --no-tags origin main || true
+          if git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "release commit $GITHUB_SHA is on origin/main"
+          else
+            echo "::warning::the release commit $GITHUB_SHA is not on origin/main - releasing from an unmerged commit"
+          fi
+
+      - name: Restore
+        run: dotnet restore StreamBus.slnx
+
+      # RabbitMQ 3.7+ ignores "-<plugin> enable" in RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS,
+      # so the stream plugin is enabled on the running node instead.
+      - name: Enable RabbitMQ stream plugin
+        run: docker exec ${{ job.services.rabbitmq.id }} rabbitmq-plugins enable rabbitmq_stream
+
+      - name: Wait for the stream listener
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 30); do
+            if docker exec ${{ job.services.rabbitmq.id }} rabbitmq-diagnostics -q listeners 2>/dev/null | grep -q '5552'; then
+              echo "stream listener is up"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::the RabbitMQ stream listener did not come up on port 5552"
+          exit 1
+
+      # The management-API test fails instead of skipping when CI is set, so the
+      # listener has to be up before the suite starts.
+      - name: Wait for the management API
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 30); do
+            if curl -fsS -u app:password http://127.0.0.1:15672/api/overview > /dev/null; then
+              echo "management API is up"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::the RabbitMQ management API did not come up on port 15672"
+          exit 1
+
+      - name: Build (Release)
+        run: >
+          dotnet build StreamBus.slnx --no-restore --configuration Release
+          -p:ContinuousIntegrationBuild=true
+          -p:Version=${{ env.VERSION }}
+          -p:PackageVersion=${{ env.VERSION }}
+
+      - name: Test (unit + integration)
+        # Both suites run against the service-container broker above, so nothing is
+        # published that has not been verified against a real RabbitMQ.
+        run: >
+          dotnet test StreamBus.slnx --no-build --configuration Release -p:Version=${{ env.VERSION }}
+          --logger trx --results-directory ./artifacts/test-results
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-test-results-${{ env.VERSION }}
+          path: ./artifacts/test-results/*.trx
+          if-no-files-found: warn
+
+      - name: Pack
+        run: |
+          # The tag is the single source of truth for the published version.
+          dotnet pack StreamBus.slnx --no-build --configuration Release --output ./artifacts \
+            -p:ContinuousIntegrationBuild=true \
+            -p:PackageVersion=${{ env.VERSION }} \
+            -p:Version=${{ env.VERSION }}
+          echo "Packages produced:"
+          ls -lh ./artifacts/
+
+      # Guard against version drift: the package file name must carry exactly the
+      # version that was resolved from the tag.
+      - name: Verify the packaged version
+        run: |
+          set -euo pipefail
+          expected="StreamBus.${VERSION}.nupkg"
+          if [ ! -f "./artifacts/$expected" ]; then
+            echo "::error::expected $expected in ./artifacts, found:"
+            ls -lh ./artifacts/
+            exit 1
+          fi
+          echo "packaged $expected"
+
+      # Docs: https://learn.microsoft.com/en-us/nuget/nuget-org/trusted-publishing
+      - name: NuGet login (OIDC -> temporary API key)
+        uses: NuGet/login@v1
+        id: login
+        with:
+          user: ${{ secrets.NUGET_USER }}
+
+      - name: Push to NuGet
+        run: |
+          # The temporary API key from NuGet/login is short-lived and single-use.
+          # --skip-duplicate makes the step idempotent if the version was already pushed.
+          dotnet nuget push ./artifacts/*.nupkg \
+            --api-key ${{ steps.login.outputs.NUGET_API_KEY }} \
+            --source https://api.nuget.org/v3/index.json \
+            --skip-duplicate
+
+      # The package is already published at this point; a symbol server that is
+      # still indexing it must not turn a successful release into a failed one.
+      - name: Push symbols to NuGet
+        continue-on-error: true
+        run: |
+          dotnet nuget push ./artifacts/*.snupkg \
+            --api-key ${{ steps.login.outputs.NUGET_API_KEY }} \
+            --source https://api.nuget.org/v3/index.json \
+            --skip-duplicate
+
+      # Attach every package to the GitHub Release that triggered this workflow.
+      - name: Attach packages to GitHub Release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            ./artifacts/*.nupkg
+            ./artifacts/*.snupkg
+          fail_on_unmatched_files: false
+
+      - name: Upload packages artifact (for workflow_dispatch runs)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v7
+        with:
+          # The commit is in the name so a hand-triggered publish stays traceable
+          # to the source it was built from.
+          name: nuget-packages-${{ env.VERSION }}-${{ github.sha }}
+          path: |
+            ./artifacts/*.nupkg
+            ./artifacts/*.snupkg
+          if-no-files-found: error
