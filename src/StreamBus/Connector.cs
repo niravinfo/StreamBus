@@ -88,7 +88,7 @@ public sealed class StreamSystemHandle : IStreamSystemHandle
                 return Task.CompletedTask;
             },
         }, _factory.CreateLogger<RawProducer>()).ConfigureAwait(false);
-        return new StreamProducerHandle(producer, stream, confirmations);
+        return new StreamProducerHandle(producer, stream, confirmations, _factory.CreateLogger<StreamProducerHandle>());
     }
 
     public async Task<IStreamProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
@@ -108,7 +108,7 @@ public sealed class StreamSystemHandle : IStreamSystemHandle
                 return Task.CompletedTask;
             },
         }, _factory.CreateLogger<RawProducer>()).ConfigureAwait(false);
-        return new SuperStreamProducerHandle(producer, stream, confirmations);
+        return new SuperStreamProducerHandle(producer, stream, confirmations, _factory.CreateLogger<SuperStreamProducerHandle>());
     }
 
     public async Task<IStreamProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
@@ -133,7 +133,7 @@ public sealed class StreamSystemHandle : IStreamSystemHandle
                 return Task.CompletedTask;
             },
         }, _factory.CreateLogger<RawProducer>()).ConfigureAwait(false);
-        return new SuperStreamProducerHandle(producer, stream, confirmations);
+        return new SuperStreamProducerHandle(producer, stream, confirmations, _factory.CreateLogger<SuperStreamProducerHandle>());
     }
 
     public async Task CreateStreamAsync(RabbitMQ.Stream.Client.StreamSpec spec, CancellationToken ct)

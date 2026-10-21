@@ -1,6 +1,26 @@
+using System.Diagnostics;
 using RabbitMQ.Stream.Client;
 
 namespace StreamBus.UnitTests;
+
+file sealed class BlockingDisposeProducer : IProducer
+{
+    private readonly ManualResetEventSlim _release;
+    public BlockingDisposeProducer(ManualResetEventSlim release) => _release = release;
+    public ValueTask Send(ulong publishingId, Message message) => ValueTask.CompletedTask;
+    public ValueTask Send(List<(ulong, Message)> messages) => throw new NotSupportedException("BlockingDisposeProducer sends one message at a time.");
+    public ValueTask Send(ulong publishingId, List<Message> subEntryMessages, CompressionType compressionType) => throw new NotSupportedException("BlockingDisposeProducer never sends sub-entry batches.");
+    public Task<ulong> GetLastPublishingId() => throw new NotSupportedException("BlockingDisposeProducer never queries the last publishing id.");
+    public Task<ResponseCode> Close() => Task.FromResult(ResponseCode.Ok);
+    public bool IsOpen() => true;
+    public void Dispose() => _release.Wait(TimeSpan.FromSeconds(10));
+    public int MessagesSent => 0;
+    public int ConfirmFrames => 0;
+    public int IncomingFrames => 0;
+    public int PublishCommandsSent => 0;
+    public int PendingCount => 0;
+    public ProducerInfo Info => throw new NotSupportedException("BlockingDisposeProducer never inspects the producer info.");
+}
 
 sealed class StubProducerHandle : IStreamProducerHandle
 {
@@ -92,6 +112,55 @@ public sealed class PublishTests
         for (var i = 0; i < 5; i++)
             await registry.PublishAsync("orders", new byte[] { (byte)i }, new PublishOptions(), TestContext.Current.CancellationToken);
         Assert.Equal(1, system.PlainCreations);
+    }
+
+    [Fact]
+    public async Task Concurrent_first_publish_creates_exactly_one_producer()
+    {
+        var (registry, system) = CreateRegistry();
+        using var release = new ManualResetEventSlim(false);
+        var creations = 0;
+        var created = new List<StubProducerHandle>();
+        system.OnCreatePlain = (_, _) =>
+        {
+            Interlocked.Increment(ref creations);
+            release.Wait(TimeSpan.FromSeconds(10));
+            var handle = new StubProducerHandle();
+            lock (created) created.Add(handle);
+            return Task.FromResult<IStreamProducerHandle>(handle);
+        };
+
+        var ct = TestContext.Current.CancellationToken;
+        var first = Task.Run(() => registry.PublishAsync("orders", new byte[] { 1 }, new PublishOptions(), ct), ct);
+        var second = Task.Run(() => registry.PublishAsync("orders", new byte[] { 2 }, new PublishOptions(), ct), ct);
+        await Task.Delay(100, ct);
+        release.Set();
+        await Task.WhenAll(first, second);
+
+        Assert.Equal(1, creations);
+        Assert.Single(created);
+        Assert.Equal(2, created[0].SendCount);
+    }
+
+    [Fact]
+    public async Task Dispose_never_blocks_caller_more_than_3s()
+    {
+        var (registry, system) = CreateRegistry();
+        using var release = new ManualResetEventSlim(false);
+        using var safety = new Timer(_ => release.Set(), null, TimeSpan.FromSeconds(8), Timeout.InfiniteTimeSpan);
+        var log = new ListLogger();
+        var producer = new BlockingDisposeProducer(release);
+        system.OnCreatePlain = (_, _) => Task.FromResult<IStreamProducerHandle>(
+            new StreamProducerHandle(producer, "orders", new ConfirmationTracker(), log));
+
+        var elapsed = Stopwatch.StartNew();
+        await Assert.ThrowsAsync<StreamBusTimeoutException>(() =>
+            registry.PublishAsync("orders", new byte[] { 1 }, new PublishOptions { Timeout = TimeSpan.FromMilliseconds(200) }, TestContext.Current.CancellationToken));
+        elapsed.Stop();
+        release.Set();
+
+        Assert.InRange(elapsed.Elapsed, TimeSpan.FromSeconds(2.5), TimeSpan.FromSeconds(6));
+        Assert.Contains(log.Lines, line => line.Contains("did not complete within 3s", StringComparison.Ordinal));
     }
 
     [Fact]

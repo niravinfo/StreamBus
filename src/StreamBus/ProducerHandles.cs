@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using RabbitMQ.Stream.Client;
 
 namespace StreamBus;
@@ -121,13 +123,34 @@ internal sealed class ConfirmationTracker
     }
 }
 
+internal static class ProducerClose
+{
+    private static readonly TimeSpan Cap = TimeSpan.FromSeconds(3);
+
+    // RawProducer.Dispose() closes the client's mid-wait synchronously. Keep that
+    // block off the caller's thread and cap it: an unresponsive broker must not
+    // wedge dispatch or shutdown (the broker reaps the idle publisher anyway).
+    public static async ValueTask DisposeOffThreadAsync(IProducer producer, string stream, ILogger logger)
+    {
+        try
+        {
+            await Task.Run(producer.Dispose).WaitAsync(Cap).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Raw producer close for stream '{Stream}' did not complete within 3s; abandoning (the broker will reap the idle publisher).", stream);
+        }
+    }
+}
+
 internal sealed class StreamProducerHandle : IStreamProducerHandle
 {
     private readonly IProducer _producer;
     private readonly string _stream;
     private readonly ConfirmationTracker _confirmations;
+    private readonly ILogger _logger;
 
-    public StreamProducerHandle(IProducer producer, string stream, ConfirmationTracker confirmations)
+    public StreamProducerHandle(IProducer producer, string stream, ConfirmationTracker confirmations, ILogger? logger = null)
     {
         ArgumentNullException.ThrowIfNull(producer);
         ArgumentNullException.ThrowIfNull(stream);
@@ -135,6 +158,7 @@ internal sealed class StreamProducerHandle : IStreamProducerHandle
         _producer = producer;
         _stream = stream;
         _confirmations = confirmations;
+        _logger = logger ?? NullLogger.Instance;
     }
 
     public async Task SendAsync(ReadOnlyMemory<byte> body, string? routingKey, CancellationToken ct)
@@ -174,11 +198,10 @@ internal sealed class StreamProducerHandle : IStreamProducerHandle
         await _confirmations.PublishWithIdAsync(_producer, _stream, publishingId, new Message(body.ToArray()), ct).ConfigureAwait(false);
     }
 
-    public ValueTask DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
         _confirmations.CancelAll();
-        _producer.Dispose();
-        return ValueTask.CompletedTask;
+        await ProducerClose.DisposeOffThreadAsync(_producer, _stream, _logger).ConfigureAwait(false);
     }
 }
 
@@ -188,8 +211,9 @@ internal sealed class SuperStreamProducerHandle : IStreamProducerHandle
     private readonly ISuperStreamProducer _producer;
     private readonly string _stream;
     private readonly ConfirmationTracker _confirmations;
+    private readonly ILogger _logger;
 
-    public SuperStreamProducerHandle(ISuperStreamProducer producer, string stream, ConfirmationTracker confirmations)
+    public SuperStreamProducerHandle(ISuperStreamProducer producer, string stream, ConfirmationTracker confirmations, ILogger? logger = null)
     {
         ArgumentNullException.ThrowIfNull(producer);
         ArgumentNullException.ThrowIfNull(stream);
@@ -197,6 +221,7 @@ internal sealed class SuperStreamProducerHandle : IStreamProducerHandle
         _producer = producer;
         _stream = stream;
         _confirmations = confirmations;
+        _logger = logger ?? NullLogger.Instance;
     }
 
     public static string RoutingFor(Message message)
@@ -242,10 +267,9 @@ internal sealed class SuperStreamProducerHandle : IStreamProducerHandle
         }
     }
 
-    public ValueTask DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
         _confirmations.CancelAll();
-        _producer.Dispose();
-        return ValueTask.CompletedTask;
+        await ProducerClose.DisposeOffThreadAsync(_producer, _stream, _logger).ConfigureAwait(false);
     }
 }
