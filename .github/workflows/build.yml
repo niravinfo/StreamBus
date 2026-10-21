@@ -47,24 +47,42 @@ jobs:
 
       - name: Upload unit test results
         if: always()
+        # Artifact upload is diagnostics, not a gate: a storage quota problem must
+        # never fail the build (and with it skip the integration job).
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: unit-test-results
           path: ./artifacts/test-results/*.trx
           if-no-files-found: warn
+          retention-days: 3
 
       - name: Pack (verify packaging)
-        run: dotnet pack StreamBus.slnx --no-build --configuration Release --output ./artifacts
+        run: |
+          set -euo pipefail
+          dotnet pack StreamBus.slnx --no-build --configuration Release --output ./artifacts
+          ls -lh ./artifacts/
+          # The packages are verified here rather than through the artifact upload,
+          # which is not allowed to fail the job.
+          shopt -s nullglob
+          packages=(./artifacts/*.nupkg)
+          symbols=(./artifacts/*.snupkg)
+          if [ "${#packages[@]}" -ne 1 ] || [ "${#symbols[@]}" -ne 1 ]; then
+            echo "::error::expected exactly one .nupkg and one .snupkg, found ${#packages[@]} and ${#symbols[@]}"
+            exit 1
+          fi
 
       - name: List packages
         run: ls -lh ./artifacts/
 
       - name: Upload packages artifact (for inspection)
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: nuget-packages
           path: ./artifacts/*.nupkg
           if-no-files-found: error
+          retention-days: 3
 
   integration-tests:
     name: Integration tests
