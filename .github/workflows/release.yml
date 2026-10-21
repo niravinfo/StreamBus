@@ -7,12 +7,13 @@ name: Release
 on:
   release:
     types: [published]
-  # Manual escape hatch for re-runs. The version is taken from the `version` input.
+  # Manual escape hatch for re-runs. The `version` input is required: dispatching
+  # without it fails rather than guessing a version from the branch name.
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to publish (e.g. 1.2.3). Only used for manual dispatch."
-        required: false
+        description: "Version to publish (e.g. 1.2.3). Required for manual dispatch."
+        required: true
         type: string
 
 # Permissions required:
@@ -21,6 +22,11 @@ on:
 permissions:
   id-token: write
   contents: write
+
+# Two releases of the same version must not push at the same time.
+concurrency:
+  group: release-${{ github.event.release.tag_name || inputs.version || github.ref }}
+  cancel-in-progress: false
 
 jobs:
   publish:
@@ -66,19 +72,25 @@ jobs:
 
       - name: Determine package version
         id: version
+        env:
+          # Read the untrusted values through env, never interpolated into the script:
+          # a git ref may legally contain $(...), backticks or quotes.
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
           RAW_VERSION=""
 
-          if [ "${{ github.event_name }}" = "release" ]; then
-            RAW_VERSION="${{ github.event.release.tag_name }}"
+          if [ "$EVENT_NAME" = "release" ]; then
+            RAW_VERSION="$RELEASE_TAG"
             echo "Triggered by release with tag: $RAW_VERSION"
-          elif [ -n "${{ inputs.version }}" ]; then
-            RAW_VERSION="${{ inputs.version }}"
+          elif [ -n "$INPUT_VERSION" ]; then
+            RAW_VERSION="$INPUT_VERSION"
             echo "Triggered by workflow_dispatch with input version: $RAW_VERSION"
           else
-            RAW_VERSION="${GITHUB_REF_NAME:-}"
-            echo "Fallback ref name: $RAW_VERSION"
+            echo "::error::workflow_dispatch requires the 'version' input (for example 1.2.3)."
+            exit 1
           fi
 
           if [ -z "$RAW_VERSION" ]; then
@@ -86,23 +98,36 @@ jobs:
             exit 1
           fi
 
-          # Strip a leading 'v' (v1.2.3 -> 1.2.3) and a refs/tags/ prefix.
-          VERSION="${RAW_VERSION#v}"
-          VERSION="${VERSION#refs/tags/}"
+          # Strip a refs/tags/ prefix first, then a leading v/V.
+          VERSION="${RAW_VERSION#refs/tags/}"
+          VERSION="${VERSION#v}"
+          VERSION="${VERSION#V}"
 
           if [ -z "$VERSION" ]; then
             echo "::error::Version is empty after stripping prefix."
             exit 1
           fi
 
-          # Basic semver validation (prerelease/build metadata allowed).
-          if ! echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'; then
-            echo "::warning::Version '$VERSION' does not look like SemVer. Proceeding anyway."
+          # Strict SemVer: major.minor.patch with an optional prerelease label.
+          # Build metadata (+...) is rejected on purpose - NuGet drops it, so the
+          # published version would differ from the tag. Versions are immutable,
+          # so a wrong version cannot be taken back.
+          if ! echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::Version '$VERSION' is not a valid SemVer version (major.minor.patch[-prerelease]). Refusing to publish."
+            exit 1
           fi
 
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Resolved package version: $VERSION"
+
+      - name: Check the release commit is on main
+        run: |
+          git fetch --no-tags origin main || true
+          if git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "release commit $GITHUB_SHA is on origin/main"
+          else
+            echo "::warning::the release commit $GITHUB_SHA is not on origin/main - releasing from an unmerged commit"
+          fi
 
       - name: Restore
         run: dotnet restore StreamBus.slnx
@@ -125,6 +150,21 @@ jobs:
           echo "::error::the RabbitMQ stream listener did not come up on port 5552"
           exit 1
 
+      # The management-API test fails instead of skipping when CI is set, so the
+      # listener has to be up before the suite starts.
+      - name: Wait for the management API
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 30); do
+            if curl -fsS -u app:password http://127.0.0.1:15672/api/overview > /dev/null; then
+              echo "management API is up"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::the RabbitMQ management API did not come up on port 15672"
+          exit 1
+
       - name: Build (Release)
         run: >
           dotnet build StreamBus.slnx --no-restore --configuration Release
@@ -135,7 +175,17 @@ jobs:
       - name: Test (unit + integration)
         # Both suites run against the service-container broker above, so nothing is
         # published that has not been verified against a real RabbitMQ.
-        run: dotnet test StreamBus.slnx --no-build --configuration Release -p:Version=${{ env.VERSION }}
+        run: >
+          dotnet test StreamBus.slnx --no-build --configuration Release -p:Version=${{ env.VERSION }}
+          --logger trx --results-directory ./artifacts/test-results
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-test-results-${{ env.VERSION }}
+          path: ./artifacts/test-results/*.trx
+          if-no-files-found: warn
 
       - name: Pack
         run: |
@@ -146,6 +196,19 @@ jobs:
             -p:Version=${{ env.VERSION }}
           echo "Packages produced:"
           ls -lh ./artifacts/
+
+      # Guard against version drift: the package file name must carry exactly the
+      # version that was resolved from the tag.
+      - name: Verify the packaged version
+        run: |
+          set -euo pipefail
+          expected="StreamBus.${VERSION}.nupkg"
+          if [ ! -f "./artifacts/$expected" ]; then
+            echo "::error::expected $expected in ./artifacts, found:"
+            ls -lh ./artifacts/
+            exit 1
+          fi
+          echo "packaged $expected"
 
       # Docs: https://learn.microsoft.com/en-us/nuget/nuget-org/trusted-publishing
       - name: NuGet login (OIDC -> temporary API key)
@@ -163,7 +226,10 @@ jobs:
             --source https://api.nuget.org/v3/index.json \
             --skip-duplicate
 
+      # The package is already published at this point; a symbol server that is
+      # still indexing it must not turn a successful release into a failed one.
       - name: Push symbols to NuGet
+        continue-on-error: true
         run: |
           dotnet nuget push ./artifacts/*.snupkg \
             --api-key ${{ steps.login.outputs.NUGET_API_KEY }} \
@@ -184,7 +250,9 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v7
         with:
-          name: nuget-packages-${{ env.VERSION }}
+          # The commit is in the name so a hand-triggered publish stays traceable
+          # to the source it was built from.
+          name: nuget-packages-${{ env.VERSION }}-${{ github.sha }}
           path: |
             ./artifacts/*.nupkg
             ./artifacts/*.snupkg
