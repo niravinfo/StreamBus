@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -475,6 +476,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
     private async Task DispatchAsync(IStreamConsumerHandle consumer, MessageContext context, Message message, AttachState attach)
     {
         await _dispatchGate.WaitAsync().ConfigureAwait(false);
+        Activity? activity = null;
         try
         {
             // Post-failure deliveries racing the loop's close are skipped; they are
@@ -485,6 +487,11 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
             }
             var offset = context.Offset;
             Interlocked.Exchange(ref _state.LastDelivered, (long)offset);
+            activity = StreamBusActivity.StartConsume(
+                _stream,
+                _partitionIndex,
+                offset,
+                message.Properties?.CorrelationId?.ToString());
 
             using var messageScope = _pipeline.Count > 0 && _scopes is not null ? _scopes.CreateScope() : null;
             var services = messageScope?.ServiceProvider;
@@ -495,6 +502,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
             }
             catch (Exception ex)
             {
+                StreamBusActivity.RecordException(activity, ex);
                 FailAttach(attach, offset, ex, "Failed to build consume context");
                 return;
             }
@@ -505,7 +513,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
             {
                 if (_eo is not null)
                 {
-                    await DispatchEffectivelyOnceAsync(offset, consumeContext, attach).ConfigureAwait(false);
+                    await DispatchEffectivelyOnceAsync(offset, consumeContext, attach, activity).ConfigureAwait(false);
                     return;
                 }
                 // In-handler retry (FR-4.1): the attempt loop runs under the already-held
@@ -537,6 +545,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                     }
                     catch (Exception ex)
                     {
+                        StreamBusActivity.RecordException(activity, ex);
                         var strict = _options.Retry.FailureMode == FailureMode.Strict;
                         var exhausted = !strict && attempts >= (_options.Retry.MaxAttempts ?? int.MaxValue);
                         if (RetryDelays.ShouldLogRetryWarning(attempts))
@@ -590,10 +599,12 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
         {
             // Safety net: dispatch must never throw into the client callback.
             // Unwind via the attach loop instead (close + backoff + recreate).
+            StreamBusActivity.RecordException(activity, ex);
             FailAttach(attach, context.Offset, ex, "Consume dispatch faulted");
         }
         finally
         {
+            activity?.Dispose();
             _dispatchGate.Release();
         }
     }
@@ -786,11 +797,12 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
     // point). Runs under the dispatch gate, so one partition publishes under one
     // stable name sequentially (FR-6.3). A single finally owns the inflight
     // decrement + retry_blocked reset for every exit path below.
-    private async Task DispatchEffectivelyOnceAsync(ulong offset, ConsumeContext consumeContext, AttachState attach)
+    private async Task DispatchEffectivelyOnceAsync(ulong offset, ConsumeContext consumeContext, AttachState attach, Activity? activity)
     {
         try
         {
             ReadOnlyMemory<byte> result;
+            IReadOnlyDictionary<string, object?>? outputHeaders = null;
             var attempts = 0;
             while (true)
             {
@@ -803,10 +815,11 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                     }
                     else
                     {
+                        var headers = new HeaderWriter();
                         var pipelineContext = new StreamConsumeFilterContext
                         {
                             Message = consumeContext,
-                            OutputHeaders = new HeaderWriter(),
+                            OutputHeaders = headers,
                             Services = consumeContext.Services ?? EmptyServiceProvider.Instance,
                         };
                         ReadOnlyMemory<byte> pipelineResult = default;
@@ -819,6 +832,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                             attach.LoopToken,
                             allowSkip: false).ConfigureAwait(false);
                         result = pipelineResult;
+                        outputHeaders = headers.Snapshot();
                     }
                     break;
                 }
@@ -828,6 +842,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                 }
                 catch (Exception ex)
                 {
+                    StreamBusActivity.RecordException(activity, ex);
                     if (RetryDelays.ShouldLogRetryWarning(attempts))
                         _logger.LogWarning(ex,
                             "Effectively-once handler failed for stream {Stream} partition {Partition} offset {Offset} (attempt {Attempt}); retrying in-handler.",
@@ -868,7 +883,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                 publishAttempts++;
                 try
                 {
-                    await _results!.PublishResultAsync(_eo.TargetStream, _eo.TargetIsSuperStream, result, offset, routing, producerName, attach.LoopToken).ConfigureAwait(false);
+                    await _results!.PublishResultAsync(_eo.TargetStream, _eo.TargetIsSuperStream, result, offset, routing, producerName, attach.LoopToken, outputHeaders).ConfigureAwait(false);
                     return;
                 }
                 catch (OperationCanceledException) when (attach.LoopToken.IsCancellationRequested)
@@ -877,6 +892,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                 }
                 catch (Exception ex)
                 {
+                    StreamBusActivity.RecordException(activity, ex);
                     if (RetryDelays.ShouldLogRetryWarning(publishAttempts))
                         _logger.LogWarning(ex,
                             "Effectively-once publish failed for target {Target} source offset {Offset} (attempt {Attempt}); retrying without advancing.",

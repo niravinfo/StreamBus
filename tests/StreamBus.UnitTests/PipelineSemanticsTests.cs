@@ -688,7 +688,7 @@ public sealed class PipelineSemanticsTests
         }
     }
 
-    private sealed class ScriptedConsumer : IStreamConsumerHandle
+    internal sealed class ScriptedConsumer : IStreamConsumerHandle
     {
         private int _open = 1;
 
@@ -709,7 +709,7 @@ public sealed class PipelineSemanticsTests
         }
     }
 
-    private sealed class ScriptedConsumerFactory
+    internal sealed class ScriptedConsumerFactory
     {
         private readonly object _gate = new();
         private readonly List<RawConsumerConfig> _configs = new();
@@ -730,13 +730,13 @@ public sealed class PipelineSemanticsTests
         }
     }
 
-    private sealed class ReadyConnector(CapturingSystem system) : IStreamSystemConnector
+    internal sealed class ReadyConnector(CapturingSystem system) : IStreamSystemConnector
     {
         public Task<IStreamSystemHandle> ConnectAsync(StreamBusOptions options, CancellationToken ct)
             => Task.FromResult<IStreamSystemHandle>(system);
     }
 
-    private sealed class CapturingSystem : IStreamSystemHandle
+    internal sealed class CapturingSystem : IStreamSystemHandle
     {
         public readonly List<CapturedEnvelope> Envelopes = new();
 
@@ -781,9 +781,9 @@ public sealed class PipelineSemanticsTests
         }
     }
 
-    private sealed record CapturedEnvelope(string Stream, IReadOnlyDictionary<string, object?> Properties);
+    internal sealed record CapturedEnvelope(string Stream, IReadOnlyDictionary<string, object?> Properties);
 
-    private sealed class CapturingPlainProducer(string stream, CapturingSystem system) : IStreamPlainProducerHandle
+    internal sealed class CapturingPlainProducer(string stream, CapturingSystem system) : IStreamPlainProducerHandle
     {
         public Task SendAsync(ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct)
             => throw new NotSupportedException("PipelineSemanticsTests publish error envelopes only.");
@@ -806,7 +806,7 @@ public sealed class PipelineSemanticsTests
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
-    private sealed class Harness : IAsyncDisposable
+    internal sealed class Harness : IAsyncDisposable
     {
         public required StreamBusConnectionSupervisor Supervisor { get; init; }
         public required StreamConsumerRegistry Registry { get; init; }
@@ -865,16 +865,20 @@ public sealed class PipelineSemanticsTests
         public void AddBusFilter(IStreamConsumeFilter filter)
             => Filters.AddFilter(typeof(DefaultBus), ConsumeFilterRegistration.ForInstance(filter));
 
-        public Task DeliverAsync(ulong offset, string body, string? tenant = null)
-            => DeliverAsync(offset, Encoding.UTF8.GetBytes(body), tenant);
+        public Task DeliverAsync(ulong offset, string body, string? tenant = null, string? correlationId = null)
+            => DeliverAsync(offset, Encoding.UTF8.GetBytes(body), tenant, correlationId);
 
-        public Task DeliverAsync(ulong offset, ReadOnlyMemory<byte> body, string? tenant = null)
+        public Task DeliverAsync(ulong offset, ReadOnlyMemory<byte> body, string? tenant = null, string? correlationId = null)
         {
             var message = new Message(body.ToArray());
             if (tenant is not null)
             {
                 message.ApplicationProperties ??= new ApplicationProperties();
                 message.ApplicationProperties["tenant"] = tenant;
+            }
+            if (correlationId is not null)
+            {
+                message.Properties = new RabbitMQ.Stream.Client.AMQP.Properties { CorrelationId = correlationId };
             }
             return Factory.FirstConfig.MessageHandler(
                 null!,

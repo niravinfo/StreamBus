@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace StreamBus;
@@ -150,9 +151,10 @@ internal abstract class StreamBusCore<TBus> : IStreamBus
         PublishOptions effective,
         CancellationToken ct)
     {
+        using var activity = StreamBusActivity.StartPublish(stream, routingKey);
         if (_publishPipeline.Count == 0)
         {
-            await SendTypedAsync(stream, message, effective, ct).ConfigureAwait(false);
+            await SendTypedAsync(stream, message, effective, ct, activity).ConfigureAwait(false);
             return;
         }
 
@@ -179,15 +181,18 @@ internal abstract class StreamBusCore<TBus> : IStreamBus
                     stream,
                     message,
                     effective with { Properties = headerWriter.Materialize(effective.Properties) },
-                    ct),
+                    ct,
+                    activity),
                 ct).ConfigureAwait(false);
         }
-        catch (StreamBusException)
+        catch (StreamBusException ex)
         {
+            StreamBusActivity.RecordException(activity, ex);
             throw;
         }
         catch (Exception ex) when (StreamBusErrorClassification.IsFatal(ex))
         {
+            StreamBusActivity.RecordException(activity, ex);
             throw;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -196,6 +201,7 @@ internal abstract class StreamBusCore<TBus> : IStreamBus
         }
         catch (Exception ex)
         {
+            StreamBusActivity.RecordException(activity, ex);
             throw new StreamBusPublishTransientException(
                 $"Publish to stream '{stream}' failed transiently in the publish pipeline.",
                 ex);
@@ -206,14 +212,20 @@ internal abstract class StreamBusCore<TBus> : IStreamBus
         string stream,
         T message,
         PublishOptions effective,
-        CancellationToken ct)
+        CancellationToken ct,
+        Activity? activity = null)
     {
         var body = _serializer.Serialize(message);
+        StreamBusActivity.SetSize(activity, body.Length);
         await _producers.PublishAsync(stream, body, effective, ct).ConfigureAwait(false);
     }
 
-    public Task PublishRawAsync(string stream, ReadOnlyMemory<byte> body, PublishOptions? options = null, CancellationToken ct = default)
-        => _producers.PublishAsync(stream, body, options ?? new PublishOptions(), ct);
+    public async Task PublishRawAsync(string stream, ReadOnlyMemory<byte> body, PublishOptions? options = null, CancellationToken ct = default)
+    {
+        using var activity = StreamBusActivity.StartPublish(stream, options?.RoutingKey);
+        StreamBusActivity.SetSize(activity, body.Length);
+        await _producers.PublishAsync(stream, body, options ?? new PublishOptions(), ct).ConfigureAwait(false);
+    }
     public Task<int> RequeueErrorsAsync(string stream, string errorQueue, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(stream);

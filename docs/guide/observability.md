@@ -35,10 +35,31 @@ listener (for example OpenTelemetry):
 | `streambus_offset_store_rejected_total` | counter | vhost, bus, stream, partition, reference |
 | `streambus_offset_regressed_total` | counter | vhost, bus, stream, partition, reference |
 | `streambus_offset_fallback_total` | counter | vhost, bus, stream, partition, reference |
+| `streambus_pipeline_duration` | histogram (seconds) | kind = publish \| consume |
 
 The lag gauge compares the last delivered offset against the last stored
 offset per partition. It is not meaningful on effectively-once
 references (the source never stores offsets).
+
+The pipeline duration covers the whole chain, including filters and the
+terminal handler. It is recorded only when a pipeline actually runs
+(i.e. at least one filter is configured).
+
+## Activities
+
+`ActivitySource` name: `StreamBus` (version `2.0.0`). It is always
+available and costs nothing when no listener samples it.
+
+| Span | Kind | Tags |
+|---|---|---|
+| `streambus.publish` | Producer | `streambus.stream`, `streambus.size`, `streambus.routing_key` (super only) |
+| `streambus.consume` | Consumer | `streambus.stream`, `streambus.partition`, `streambus.offset` |
+
+Consume spans add an `exception` event with `exception.type` and
+`exception.message` when a delivery fails. If
+`MessageMetadata.CorrelationId` is a valid W3C `traceparent`, the consume
+span carries it as an `ActivityLink`; malformed values are ignored rather
+than thrown.
 
 ## Logs
 

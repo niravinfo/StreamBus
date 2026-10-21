@@ -73,6 +73,45 @@ await using var pipe = await bus.ConsumeEffectivelyOnceAsync("orders", "invoices
     new EffectivelyOnceOptions(), async (ctx, ct) => resultBytes, ct);
 ```
 
+## Pipelines
+
+Consume middleware is ordered, additive, and scope-aware. Bus-wide
+filters run first, then endpoint filters; the first filter is the
+outermost wrapper:
+
+```csharp
+services.AddScoped<TenantScope>();
+cfg.UseConsumeFilter<TenantFilter>();             // bus-wide
+cfg.ReceiveEndpoint("orders", e =>
+{
+    e.Consumer<OrderConsumer>("order-processors");
+    e.UseConsumeFilter<MetricsFilter>();          // appended after bus-wide
+});
+
+public sealed class TenantFilter : IStreamConsumeFilter
+{
+    public Task OnConsume(StreamConsumeFilterContext context, ConsumeDelegate next, CancellationToken ct)
+    {
+        var scope = (TenantScope)context.Services.GetRequiredService(typeof(TenantScope));
+        scope.Tenant = context.Message.Metadata.GetString("x-tenant");
+        context.SetPayload(scope.Tenant);
+        return next(context);
+    }
+}
+```
+
+One DI scope is created per delivered message and shared by the pipeline
+and the typed consumer, so scoped services and `SetPayload<T>` bridge the
+two. Filters are singletons per bus. A filter must call `next` exactly
+once; zero without `SkipHandler`, or more than once, is retried and then
+exhausted rather than silently advancing the offset. Skipping requires
+`CanSkip => true`; raw endpoints skip freely, typed endpoints must opt in
+with `e.AllowPipelineSkip()`, and effectively-once pipelines reject
+skippable filters at attach. Headers written through
+`context.OutputHeaders` are carried on the exhaustion envelope and on
+effectively-once result publishes. Complete sample:
+`examples/StreamBus.Examples.Consumer/TenantFilter.cs`.
+
 ## Full example
 
 ```csharp

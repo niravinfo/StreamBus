@@ -40,11 +40,18 @@ internal sealed class StreamBusMetrics
         StoreRejected = _meter.CreateCounter<long>("streambus_offset_store_rejected_total");
         Regressed = _meter.CreateCounter<long>("streambus_offset_regressed_total");
         Fallback = _meter.CreateCounter<long>("streambus_offset_fallback_total");
+        _pipelineDuration = _meter.CreateHistogram<double>("streambus_pipeline_duration", unit: "s",
+            description: "End-to-end duration of a publish or consume filter pipeline, including the terminal handler.");
     }
 
     public Counter<long> StoreRejected { get; }
     public Counter<long> Regressed { get; }
     public Counter<long> Fallback { get; }
+
+    private readonly Histogram<double> _pipelineDuration;
+
+    public void RecordPipelineDuration(string kind, double seconds)
+        => _pipelineDuration.Record(seconds, new KeyValuePair<string, object?>("kind", kind));
 
     public IDisposable TrackPartition(string vhost, string bus, string stream, int partition, string reference, PartitionState state)
     {

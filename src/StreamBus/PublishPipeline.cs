@@ -1,3 +1,5 @@
+using System.Diagnostics;
+
 namespace StreamBus;
 
 public interface IStreamPublishFilter
@@ -90,7 +92,23 @@ internal sealed class PublishPipeline
     {
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(terminal);
-        return InvokeAsync(0, context, terminal, ct);
+        return RunMeasuredAsync(context, terminal, ct);
+    }
+
+    private async Task RunMeasuredAsync(
+        StreamPublishFilterContext context,
+        PublishDelegate terminal,
+        CancellationToken ct)
+    {
+        var started = Stopwatch.GetTimestamp();
+        try
+        {
+            await InvokeAsync(0, context, terminal, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            StreamBusMetrics.Shared.RecordPipelineDuration("publish", Stopwatch.GetElapsedTime(started).TotalSeconds);
+        }
     }
 
     private async Task InvokeAsync(

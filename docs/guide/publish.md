@@ -62,6 +62,36 @@ Explicit-stream targets keep the method-implied kind (plain vs super). An
 undeclared target surfaces `StreamBusStreamNotFoundException` — the call
 site never auto-creates. `PublishRawAsync` sends pre-serialized bytes.
 
+## Pipelines
+
+Cross-cutting publish logic is an ordered, additive filter pipeline.
+Filters run first-registered-first-in / last-out and can enrich the legal
+headers (`string`, `bool`, `int`, `long`, `null`) without touching the
+payload or routing:
+
+```csharp
+cfg.UsePublishFilter<TenantFilter>();      // bus-wide, applied to every publish
+cfg.UsePublishFilter<CorrelationIdFilter>();
+
+public sealed class TenantFilter(TenantScope ambient) : IStreamPublishFilter
+{
+    public Task OnPublish(StreamPublishFilterContext context, PublishDelegate next, CancellationToken ct)
+    {
+        context.Headers.Set("x-tenant", ambient.Tenant);
+        return next(context);
+    }
+}
+```
+
+Filters are singletons per bus and must be thread-safe; each publish gets
+its own DI scope through `context.Services`. A filter must call `next`
+exactly once — zero or double continuations throw
+`StreamBusConfigurationException` before anything is sent. Call-level
+`PublishOptions.Properties` win over filter headers on key conflicts.
+`PublishRawAsync` bypasses the pipeline. Complete samples:
+`examples/StreamBus.Examples.Producer/TenantFilter.cs` and
+`CorrelationIdFilter.cs`.
+
 ## Serializer
 
 ```csharp

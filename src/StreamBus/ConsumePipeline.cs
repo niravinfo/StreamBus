@@ -1,3 +1,5 @@
+using System.Diagnostics;
+
 namespace StreamBus;
 
 public interface IStreamConsumeFilter
@@ -108,7 +110,24 @@ internal sealed class ConsumePipeline
     {
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(terminal);
-        return InvokeAsync(0, context, terminal, ct, allowSkip);
+        return RunMeasuredAsync(context, terminal, ct, allowSkip);
+    }
+
+    private async Task RunMeasuredAsync(
+        StreamConsumeFilterContext context,
+        ConsumeDelegate terminal,
+        CancellationToken ct,
+        bool allowSkip)
+    {
+        var started = Stopwatch.GetTimestamp();
+        try
+        {
+            await InvokeAsync(0, context, terminal, ct, allowSkip).ConfigureAwait(false);
+        }
+        finally
+        {
+            StreamBusMetrics.Shared.RecordPipelineDuration("consume", Stopwatch.GetElapsedTime(started).TotalSeconds);
+        }
     }
 
     private async Task InvokeAsync(
