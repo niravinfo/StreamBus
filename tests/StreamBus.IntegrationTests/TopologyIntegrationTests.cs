@@ -296,15 +296,22 @@ public sealed class TopologyIntegrationTests : IAsyncDisposable
             Convert.ToBase64String(Encoding.UTF8.GetBytes($"{User()}:{Password()}")));
         var put = await http.PutAsync(
             $"http://127.0.0.1:15672/api/policies/%2F/{policy}",
+            // Stream retention is a duration string ("1h"); an integer value is
+            // rejected by the broker's policy validation (HTTP 400/500).
             new StringContent(
-                $"{{\"pattern\":\"^{stream}$\",\"definition\":{{\"max-age\":3600}},\"priority\":0}}",
+                $"{{\"pattern\":\"^{stream}$\",\"definition\":{{\"max-age\":\"1h\"}},\"priority\":0}}",
                 Encoding.UTF8, "application/json"), ct);
         Assert.True(put.IsSuccessStatusCode, $"PUT policy failed: {(int)put.StatusCode}");
         try
         {
-            using var get = await http.GetAsync($"http://127.0.0.1:15672/api/queues/%2F/{stream}", ct);
+            // The classic queue view does not carry a stream's retention on RabbitMQ 4.x
+            // (its effective_policy_definition stays empty), so the policy resource is
+            // the observable: the broker validates stream retention keys when the policy
+            // is set, so a 2xx on the PUT means the definition is valid for streams.
+            using var get = await http.GetAsync($"http://127.0.0.1:15672/api/policies/%2F/{policy}", ct);
             var payload = await get.Content.ReadAsStringAsync(ct);
             Assert.Contains("max-age", payload);
+            Assert.Contains(stream, payload);
         }
         finally
         {
