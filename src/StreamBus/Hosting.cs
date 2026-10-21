@@ -578,12 +578,10 @@ public sealed class StreamBusHostedService : IHostedService
             foreach (var entry in declareSet)
                 health.UpsertRegistration(vhost, $"declare:{entry.Name}", "declare", BusRegistrationState.FailedRetrying, ex.Message);
         }
-        var attempt = 0;
-        while (true)
-        {
-            ct.ThrowIfCancellationRequested();
-            try
+        await StreamRuntimeLoop.RetryUntilAsync(
+            async attemptCt =>
             {
+                attemptCt.ThrowIfCancellationRequested();
                 foreach (var entry in declareSet)
                 {
                     if (!entry.IsSuper && entry.Source is "publish" or "dead-letter")
@@ -595,10 +593,10 @@ public sealed class StreamBusHostedService : IHostedService
                             MaxLengthBytes = entry.MaxLengthBytes,
                             MaxSegmentSizeBytes = entry.MaxSegmentSizeBytes,
                             LeaderLocator = entry.LeaderLocator ?? StreamLeaderLocator.LeastLeaders,
-                        }, ct).ConfigureAwait(false);
+                        }, attemptCt).ConfigureAwait(false);
                         continue;
                     }
-                    var probe = await topology.ProbeStreamAsync(entry.Name, ct).ConfigureAwait(false);
+                    var probe = await topology.ProbeStreamAsync(entry.Name, attemptCt).ConfigureAwait(false);
                     var who = entry.Source == "endpoint" ? $"endpoint '{entry.Name}'" : $"publish registration for '{entry.Name}'";
                     if (entry.IsSuper)
                     {
@@ -620,7 +618,7 @@ public sealed class StreamBusHostedService : IHostedService
                             MaxLengthBytes = entry.MaxLengthBytes,
                             MaxSegmentSizeBytes = entry.MaxSegmentSizeBytes,
                             LeaderLocator = entry.LeaderLocator ?? StreamLeaderLocator.LeastLeaders,
-                        }, ct).ConfigureAwait(false);
+                        }, attemptCt).ConfigureAwait(false);
                     }
                     else
                     {
@@ -636,39 +634,28 @@ public sealed class StreamBusHostedService : IHostedService
                             MaxLengthBytes = entry.MaxLengthBytes,
                             MaxSegmentSizeBytes = entry.MaxSegmentSizeBytes,
                             LeaderLocator = entry.LeaderLocator ?? StreamLeaderLocator.LeastLeaders,
-                        }, ct).ConfigureAwait(false);
+                        }, attemptCt).ConfigureAwait(false);
                     }
                 }
                 foreach (var entry in declareSet)
                     health.RemoveRegistration(vhost, $"declare:{entry.Name}");
-                return;
-            }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                return true;
+            },
+            ex =>
             {
-                throw;
-            }
-            catch (StreamConfigurationConflictException ex)
-            {
-                MarkDeclareFailed(ex);
-                throw;
-            }
-            catch (StreamBusConfigurationException ex)
-            {
-                MarkDeclareFailed(ex);
-                throw;
-            }
-            catch (StreamBusFatalException ex)
-            {
-                MarkDeclareFailed(ex);
-                throw;
-            }
-            catch (Exception ex)
-            {
-                attempt++;
-                _logger.LogWarning(ex, "Derived topology for vhost '{Vhost}' failed (attempt {Attempt}); retrying.", vhost, attempt);
-                await Task.Delay(StreamBusDelays.ExponentialCapped(attempt, TimeSpan.FromMilliseconds(200), TimeSpan.FromSeconds(30), 2.0, TimeSpan.FromSeconds(1)), ct).ConfigureAwait(false);
-            }
-        }
+                if (ex is StreamConfigurationConflictException or StreamBusConfigurationException or StreamBusFatalException)
+                {
+                    MarkDeclareFailed(ex);
+                    return StreamBusRetryKind.Fatal;
+                }
+                return StreamBusRetryKind.Transient;
+            },
+            TimeSpan.FromMilliseconds(200),
+            TimeSpan.FromSeconds(30),
+            int.MaxValue,
+            _logger,
+            $"Derived topology for vhost '{vhost}'",
+            ct).ConfigureAwait(false);
     }
 
     private async Task DeclareQueuesUntilReadyAsync(string vhost, List<DeadLetterOptions> queues, CancellationToken ct)
@@ -683,38 +670,30 @@ public sealed class StreamBusHostedService : IHostedService
             foreach (var queue in queues)
                 health.UpsertRegistration(vhost, $"declare:{queue.Name}", "declare", BusRegistrationState.FailedRetrying, ex.Message);
         }
-        var attempt = 0;
-        while (true)
-        {
-            ct.ThrowIfCancellationRequested();
-            try
+        await StreamRuntimeLoop.RetryUntilAsync(
+            async attemptCt =>
             {
-                await concrete.ErrorQueuesFor(vhost).DeclareAsync(queues, ct).ConfigureAwait(false);
+                attemptCt.ThrowIfCancellationRequested();
+                await concrete.ErrorQueuesFor(vhost).DeclareAsync(queues, attemptCt).ConfigureAwait(false);
                 foreach (var queue in queues)
                     health.RemoveRegistration(vhost, $"declare:{queue.Name}");
-                return;
-            }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                return true;
+            },
+            ex =>
             {
-                throw;
-            }
-            catch (StreamConfigurationConflictException ex)
-            {
-                MarkDeclareFailed(ex);
-                throw;
-            }
-            catch (StreamBusFatalException ex)
-            {
-                MarkDeclareFailed(ex);
-                throw;
-            }
-            catch (Exception ex)
-            {
-                attempt++;
-                _logger.LogWarning(ex, "Error-queue declaration for vhost '{Vhost}' failed (attempt {Attempt}); retrying.", vhost, attempt);
-                await Task.Delay(StreamBusDelays.ExponentialCapped(attempt, TimeSpan.FromMilliseconds(200), TimeSpan.FromSeconds(30), 2.0, TimeSpan.FromSeconds(1)), ct).ConfigureAwait(false);
-            }
-        }
+                if (ex is StreamConfigurationConflictException or StreamBusFatalException)
+                {
+                    MarkDeclareFailed(ex);
+                    return StreamBusRetryKind.Fatal;
+                }
+                return StreamBusRetryKind.Transient;
+            },
+            TimeSpan.FromMilliseconds(200),
+            TimeSpan.FromSeconds(30),
+            int.MaxValue,
+            _logger,
+            $"Error-queue declaration for vhost '{vhost}'",
+            ct).ConfigureAwait(false);
     }
 
     private async Task StartConsumerUntilReadyAsync(TypedConsumerRegistration reg, string vhost, IStreamSerializer serializer, CancellationToken ct)
@@ -728,29 +707,23 @@ public sealed class StreamBusHostedService : IHostedService
                 reg.Stream, shadowed.Name);
         var handler = TypedConsumerHandler.Create(reg.MessageType, reg.ConsumerType, _scopes!, serializer);
         var consumers = _registry is StreamBusRegistry concrete ? concrete.ConsumersFor(vhost) : null;
-        var attempt = 0;
-        while (true)
-        {
-            ct.ThrowIfCancellationRequested();
-            try
+        await StreamRuntimeLoop.RetryUntilAsync(
+            async attemptCt =>
             {
+                attemptCt.ThrowIfCancellationRequested();
                 if (consumers is not null)
-                    await consumers.ConsumeAsync(reg.BusMarker, reg.Stream, options, handler, ct, registrationName: reg.Stream).ConfigureAwait(false);
+                    await consumers.ConsumeAsync(reg.BusMarker, reg.Stream, options, handler, attemptCt, registrationName: reg.Stream).ConfigureAwait(false);
                 else
-                    await entry.Bus.ConsumeAsync(reg.Stream, options, handler, ct).ConfigureAwait(false);
-                return;
-            }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception ex) when (IsStartupTransient(ex))
-            {
-                attempt++;
-                _logger.LogWarning(ex, "Typed consumer {Consumer} on stream '{Stream}' not started (attempt {Attempt}); retrying.", reg.ConsumerType.FullName, reg.Stream, attempt);
-                await Task.Delay(StreamBusDelays.ExponentialCapped(attempt, TimeSpan.FromMilliseconds(200), TimeSpan.FromSeconds(30), 2.0, TimeSpan.FromSeconds(1)), ct).ConfigureAwait(false);
-            }
-        }
+                    await entry.Bus.ConsumeAsync(reg.Stream, options, handler, attemptCt).ConfigureAwait(false);
+                return true;
+            },
+            ex => IsStartupTransient(ex) ? StreamBusRetryKind.Transient : StreamBusRetryKind.Fatal,
+            TimeSpan.FromMilliseconds(200),
+            TimeSpan.FromSeconds(30),
+            int.MaxValue,
+            _logger,
+            $"Typed consumer {reg.ConsumerType.FullName} on stream '{reg.Stream}'",
+            ct).ConfigureAwait(false);
     }
 
     public async Task StopAsync(CancellationToken ct)

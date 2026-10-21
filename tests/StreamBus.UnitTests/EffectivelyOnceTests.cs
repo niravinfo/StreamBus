@@ -31,6 +31,16 @@ public sealed class EffectivelyOnceTests
     }
 
     [Fact]
+    public void Replay_producer_name_is_stable_bounded_and_partition_scoped()
+    {
+        var name = StreamBusNaming.ReplayProducerName("orders", "orders-2");
+        Assert.StartsWith("streambus-replay-", name);
+        Assert.Equal(name, StreamBusNaming.ReplayProducerName("orders", "orders-2"));
+        Assert.NotEqual(name, StreamBusNaming.ReplayProducerName("orders", "orders-3"));
+        Assert.True(System.Text.Encoding.UTF8.GetByteCount(name) <= StreamBusNaming.MaxName);
+    }
+
+    [Fact]
     public void Consumer_reference_is_stable_per_group()
     {
         var a = ResultNaming.ConsumerReference(typeof(DefaultBus), "src", "dst");

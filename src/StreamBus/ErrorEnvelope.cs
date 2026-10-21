@@ -109,21 +109,11 @@ public sealed record ErrorEnvelope
 
 internal static class ReplayNaming
 {
-    public static string ProducerName(string partitionStream)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(partitionStream);
-        var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
-            System.Text.Encoding.UTF8.GetBytes(partitionStream)))[..32];
-        return $"streambus-replay-{hash}";
-    }
+    public static string ProducerName(string partitionStream, string? sourceStream = null)
+        => StreamBusNaming.ReplayProducerName(sourceStream ?? partitionStream, partitionStream);
 
     public static string Reference(string errorStream)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(errorStream);
-        var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
-            System.Text.Encoding.UTF8.GetBytes(errorStream)))[..32];
-        return $"streambus-replay-{hash}";
-    }
+        => StreamBusNaming.ReplayReference(errorStream);
 
     public static ulong PublishingId(ulong sourceOffset) => sourceOffset;
 }

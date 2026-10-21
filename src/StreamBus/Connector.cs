@@ -1,5 +1,4 @@
 using System.Net;
-using System.Security.Cryptography;
 using System.Text;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -39,15 +38,7 @@ public sealed class StreamSystemHandle : IStreamSystemHandle
     private static long _producerSeq;
 
     private static string ProducerReference(string stream)
-    {
-        var full = $"streambus-pub-{stream}-{Interlocked.Increment(ref _producerSeq)}";
-        if (Encoding.UTF8.GetByteCount(full) <= StreamBusLimits.MaxReferenceBytes)
-            return full;
-        // Mirror the consumer-reference fallback: hash-suffix stays under the cap.
-        // (Phase 7 replaces naming with stable per-(partition,target) names.)
-        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(full)))[..32];
-        return $"streambus-pub-{hash}";
-    }
+        => StreamBusNaming.PublishReference(stream, Interlocked.Increment(ref _producerSeq));
     public StreamSystemHandle(StreamSystem system, ILoggerFactory? loggerFactory = null)
     {
         _system = system;
@@ -61,7 +52,7 @@ public sealed class StreamSystemHandle : IStreamSystemHandle
     public async Task<IStreamProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(reference);
-        if (Encoding.UTF8.GetByteCount(reference) > StreamBusLimits.MaxReferenceBytes)
+        if (Encoding.UTF8.GetByteCount(reference) > StreamBusNaming.MaxName)
             throw new StreamBusConfigurationException($"Producer reference exceeds the broker's 255-byte limit.");
         return await CreatePlainProducerCoreAsync(stream, reference, ct).ConfigureAwait(false);
     }
@@ -114,7 +105,7 @@ public sealed class StreamSystemHandle : IStreamSystemHandle
     public async Task<IStreamProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(reference);
-        if (Encoding.UTF8.GetByteCount(reference) > StreamBusLimits.MaxReferenceBytes)
+        if (Encoding.UTF8.GetByteCount(reference) > StreamBusNaming.MaxName)
             throw new StreamBusConfigurationException($"Producer reference exceeds the broker's 255-byte limit.");
         ct.ThrowIfCancellationRequested();
         var confirmations = new ConfirmationTracker();
@@ -212,12 +203,8 @@ public sealed class StreamSystemConnector : IStreamSystemConnector
     public async Task<IStreamSystemHandle> ConnectAsync(StreamBusOptions options, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(options);
-        if (options.Connection.ProducersPerConnection > byte.MaxValue)
-            throw new StreamBusConfigurationException(
-                $"ProducersPerConnection must be <= {byte.MaxValue} (client pool limit).");
-        if (options.Connection.ConsumersPerConnection > byte.MaxValue)
-            throw new StreamBusConfigurationException(
-                $"ConsumersPerConnection must be <= {byte.MaxValue} (client pool limit).");
+        foreach (var error in options.Validate())
+            throw new StreamBusConfigurationException(error);
         EndPoint endpoint = IPAddress.TryParse(options.Host, out var address)
             ? new IPEndPoint(address, options.StreamPort)
             : new DnsEndPoint(options.Host, options.StreamPort);

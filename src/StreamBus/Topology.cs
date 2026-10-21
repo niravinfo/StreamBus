@@ -72,28 +72,35 @@ internal static class TopologyValidation
     {
         ArgumentNullException.ThrowIfNull(declaration);
         ArgumentException.ThrowIfNullOrWhiteSpace(declaration.Name);
-        ValidateKnobs(declaration.LeaderLocator, declaration.MaxAge, declaration.MaxLengthBytes, declaration.MaxSegmentSizeBytes, $"StreamDeclaration '{declaration.Name}'");
+        StreamOptionsValidation.Validate(
+            new StreamOptions
+            {
+                MaxAge = declaration.MaxAge,
+                MaxLengthBytes = declaration.MaxLengthBytes,
+                MaxSegmentSizeBytes = declaration.MaxSegmentSizeBytes,
+                LeaderLocator = declaration.LeaderLocator,
+            },
+            $"StreamDeclaration '{declaration.Name}'",
+            allowPartitions: false,
+            separator: " ");
     }
 
     public static void ValidateSuper(SuperStreamDeclaration declaration)
     {
         ArgumentNullException.ThrowIfNull(declaration);
         ArgumentException.ThrowIfNullOrWhiteSpace(declaration.Name);
-        if (declaration.Partitions < 1)
-            throw new StreamBusConfigurationException($"SuperStreamDeclaration '{declaration.Name}' Partitions must be >= 1.");
-        ValidateKnobs(declaration.LeaderLocator, declaration.MaxAge, declaration.MaxLengthBytes, declaration.MaxSegmentSizeBytes, $"SuperStreamDeclaration '{declaration.Name}'");
-    }
-
-    private static void ValidateKnobs(StreamLeaderLocator locator, TimeSpan? maxAge, ulong? maxLengthBytes, int? maxSegmentSizeBytes, string what)
-    {
-        if (!Enum.IsDefined(locator))
-            throw new StreamBusConfigurationException($"{what} LeaderLocator has an undefined value.");
-        if (maxAge is { } age && age <= TimeSpan.Zero)
-            throw new StreamBusConfigurationException($"{what} MaxAge must be positive when set.");
-        if (maxLengthBytes is { } length && length < 1)
-            throw new StreamBusConfigurationException($"{what} MaxLengthBytes must be >= 1 when set.");
-        if (maxSegmentSizeBytes is { } segment && segment < 1)
-            throw new StreamBusConfigurationException($"{what} MaxSegmentSizeBytes must be >= 1 when set.");
+        StreamOptionsValidation.Validate(
+            new StreamOptions
+            {
+                Partitions = declaration.Partitions,
+                MaxAge = declaration.MaxAge,
+                MaxLengthBytes = declaration.MaxLengthBytes,
+                MaxSegmentSizeBytes = declaration.MaxSegmentSizeBytes,
+                LeaderLocator = declaration.LeaderLocator,
+            },
+            $"SuperStreamDeclaration '{declaration.Name}'",
+            allowPartitions: true,
+            separator: " ");
     }
 }
 

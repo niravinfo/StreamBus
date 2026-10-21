@@ -1,4 +1,3 @@
-using System.Security.Cryptography;
 using System.Text;
 
 namespace StreamBus;
@@ -49,27 +48,10 @@ internal sealed record EffectivelyOnceConfig
 internal static class ResultNaming
 {
     public static string ProducerName(string sourcePartitionStream, string targetStream)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(sourcePartitionStream);
-        ArgumentException.ThrowIfNullOrWhiteSpace(targetStream);
-        var full = $"streambus-eo-{sourcePartitionStream}-to-{targetStream}";
-        if (Encoding.UTF8.GetByteCount(full) <= StreamBusLimits.MaxReferenceBytes)
-            return full;
-        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(full)))[..32];
-        return $"streambus-eo-{hash}";
-    }
+        => StreamBusNaming.EffectivelyOnceProducerName(sourcePartitionStream, targetStream);
 
     public static string ConsumerReference(Type busType, string sourceStream, string targetStream)
-    {
-        ArgumentNullException.ThrowIfNull(busType);
-        ArgumentException.ThrowIfNullOrWhiteSpace(sourceStream);
-        ArgumentException.ThrowIfNullOrWhiteSpace(targetStream);
-        var full = $"streambus-eo:{busType.FullName}:{sourceStream}->{targetStream}";
-        if (Encoding.UTF8.GetByteCount(full) <= StreamBusLimits.MaxReferenceBytes)
-            return full;
-        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(full)))[..32];
-        return $"streambus-eo-{hash}";
-    }
+        => StreamBusNaming.EffectivelyOnceConsumerReference(busType, sourceStream, targetStream);
 
     public static ulong PublishingId(ulong sourceOffset) => sourceOffset;
 }

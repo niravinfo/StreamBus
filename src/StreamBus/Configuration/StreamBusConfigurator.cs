@@ -78,6 +78,20 @@ public sealed record ReceiveEndpointDescriptor
     public TimeSpan HandoffConfirmTimeout { get; init; } = TimeSpan.FromSeconds(10);
     public Func<ExhaustedContext, CancellationToken, Task>? OnExhausted { get; init; }
     public ReadinessPolicy Readiness { get; init; } = ReadinessPolicy.FailFastPolicy;
+
+    internal void Validate()
+        => StreamOptionsValidation.Validate(
+            new StreamOptions
+            {
+                Partitions = IsSuperStream ? SuperPartitions : null,
+                MaxAge = MaxAge,
+                MaxLengthBytes = MaxLengthBytes,
+                MaxSegmentSizeBytes = MaxSegmentSizeBytes,
+                LeaderLocator = LeaderLocator,
+            },
+            $"ReceiveEndpoint '{Stream}'",
+            allowPartitions: IsSuperStream,
+            partitionsError: "super-stream partitions must be >= 1.");
 }
 
 public sealed class StreamBusEndpointStore
@@ -228,27 +242,13 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
             throw new StreamBusConfigurationException($"Internal error: configurator for {_busType.FullName} built as {busType.FullName}.");
         if (!_hostCalled)
             throw new StreamBusConfigurationException($"Bus {busType.FullName}: Host must be configured exactly once.");
-        if (string.IsNullOrWhiteSpace(_host))
-            throw new StreamBusConfigurationException($"Bus {busType.FullName}: Host host must be supplied.");
-        if (string.IsNullOrWhiteSpace(_vhost))
-            throw new StreamBusConfigurationException($"Bus {busType.FullName}: Host vhost must be supplied.");
-        if (_streamPort is < 1 or > 65535)
-            throw new StreamBusConfigurationException($"Bus {busType.FullName}: StreamPort must be in 1..65535.");
-        if (_amqpPort is < 1 or > 65535)
-            throw new StreamBusConfigurationException($"Bus {busType.FullName}: AmqpPort must be in 1..65535.");
-        if (_heartbeat <= TimeSpan.Zero)
-            throw new StreamBusConfigurationException($"Bus {busType.FullName}: Heartbeat must be positive.");
-        if (_producers < 1 || _producers > byte.MaxValue)
-            throw new StreamBusConfigurationException($"Bus {busType.FullName}: ProducersPerConnection must be in 1..{byte.MaxValue}.");
-        if (_consumers < 1 || _consumers > byte.MaxValue)
-            throw new StreamBusConfigurationException($"Bus {busType.FullName}: ConsumersPerConnection must be in 1..{byte.MaxValue}.");
 
         var options = new StreamBusOptions
         {
-            Vhost = _vhost.Trim(),
+            Vhost = _vhost!.Trim(),
             UserName = _user,
             Password = _password,
-            Host = _host.Trim(),
+            Host = _host!.Trim(),
             StreamPort = _streamPort,
             AmqpPort = _amqpPort,
             Heartbeat = _heartbeat,
@@ -260,7 +260,8 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
             },
             Serializer = _serializer,
         };
-        StreamBusCredentialValidator.Validate(options);
+        foreach (var error in options.Validate())
+            throw new StreamBusConfigurationException(error);
         return options;
     }
 
@@ -277,49 +278,17 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
             _owner._password = password;
         }
 
-        public void StreamPort(int port = 5552)
-        {
-            if (port is < 1 or > 65535)
-                throw new StreamBusConfigurationException("StreamPort must be in 1..65535.");
-            _owner._streamPort = port;
-        }
+        public void StreamPort(int port = 5552) => _owner._streamPort = port;
 
-        public void AmqpPort(int port = 5672)
-        {
-            if (port is < 1 or > 65535)
-                throw new StreamBusConfigurationException("AmqpPort must be in 1..65535.");
-            _owner._amqpPort = port;
-        }
+        public void AmqpPort(int port = 5672) => _owner._amqpPort = port;
 
-        public void Heartbeat(TimeSpan heartbeat)
-        {
-            if (heartbeat <= TimeSpan.Zero)
-                throw new StreamBusConfigurationException("Heartbeat must be positive.");
-            _owner._heartbeat = heartbeat;
-        }
+        public void Heartbeat(TimeSpan heartbeat) => _owner._heartbeat = heartbeat;
 
-        public void MonitorInterval(TimeSpan interval)
-        {
-            if (interval <= TimeSpan.Zero)
-                throw new StreamBusConfigurationException("MonitorInterval must be positive.");
-            if (interval > TimeSpan.FromSeconds(60))
-                throw new StreamBusConfigurationException("MonitorInterval must be <= 60s.");
-            _owner._monitorInterval = interval;
-        }
+        public void MonitorInterval(TimeSpan interval) => _owner._monitorInterval = interval;
 
-        public void ProducersPerConnection(int count = 1)
-        {
-            if (count < 1 || count > byte.MaxValue)
-                throw new StreamBusConfigurationException($"ProducersPerConnection must be in 1..{byte.MaxValue}.");
-            _owner._producers = count;
-        }
+        public void ProducersPerConnection(int count = 1) => _owner._producers = count;
 
-        public void ConsumersPerConnection(int count = 1)
-        {
-            if (count < 1 || count > byte.MaxValue)
-                throw new StreamBusConfigurationException($"ConsumersPerConnection must be in 1..{byte.MaxValue}.");
-            _owner._consumers = count;
-        }
+        public void ConsumersPerConnection(int count = 1) => _owner._consumers = count;
     }
 
     internal static Type ResolveConsumerMessageType(Type consumerType)
@@ -461,41 +430,19 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
                 : $"stream '{destination.Name}'";
         public void Partitions(int partitions)
         {
-            if (partitions < 1)
-                throw new StreamBusConfigurationException($"ReceiveEndpoint '{_stream}': super-stream partitions must be >= 1.");
             _super = true;
             _superPartitions = partitions;
         }
-        public void MaxAge(TimeSpan maxAge)
-        {
-            if (maxAge <= TimeSpan.Zero)
-                throw new StreamBusConfigurationException($"ReceiveEndpoint '{_stream}': MaxAge must be positive when set.");
-            _maxAge = maxAge;
-        }
-        public void MaxLengthBytes(ulong maxLengthBytes)
-        {
-            if (maxLengthBytes < 1)
-                throw new StreamBusConfigurationException($"ReceiveEndpoint '{_stream}': MaxLengthBytes must be >= 1 when set.");
-            _maxLengthBytes = maxLengthBytes;
-        }
-        public void MaxSegmentSizeBytes(int maxSegmentSizeBytes)
-        {
-            if (maxSegmentSizeBytes < 1)
-                throw new StreamBusConfigurationException($"ReceiveEndpoint '{_stream}': MaxSegmentSizeBytes must be >= 1 when set.");
-            _maxSegmentSizeBytes = maxSegmentSizeBytes;
-        }
-        public void LeaderLocator(StreamLeaderLocator locator)
-        {
-            if (!Enum.IsDefined(locator))
-                throw new StreamBusConfigurationException($"ReceiveEndpoint '{_stream}': LeaderLocator has an undefined value.");
-            _locator = locator;
-        }
+        public void MaxAge(TimeSpan maxAge) => _maxAge = maxAge;
+        public void MaxLengthBytes(ulong maxLengthBytes) => _maxLengthBytes = maxLengthBytes;
+        public void MaxSegmentSizeBytes(int maxSegmentSizeBytes) => _maxSegmentSizeBytes = maxSegmentSizeBytes;
+        public void LeaderLocator(StreamLeaderLocator locator) => _locator = locator;
 
         public ReceiveEndpointDescriptor Build()
         {
             if (_consumerType is null || _messageType is null || _reference is null)
                 throw new StreamBusConfigurationException($"ReceiveEndpoint '{_stream}': Consumer<T>(\"group\") must be called exactly once per endpoint.");
-            return new ReceiveEndpointDescriptor
+            var descriptor = new ReceiveEndpointDescriptor
             {
                 Stream = _stream,
                 MessageType = _messageType,
@@ -516,6 +463,8 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
                 OnExhausted = _onExhausted,
                 Readiness = _readiness,
             };
+            descriptor.Validate();
+            return descriptor;
         }
     }
 }
