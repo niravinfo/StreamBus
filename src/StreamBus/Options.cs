@@ -4,6 +4,7 @@ public sealed record StreamBusConnectionOptions
 {
     public int ProducersPerConnection { get; init; } = 1;
     public int ConsumersPerConnection { get; init; } = 1;
+    public TimeSpan MonitorInterval { get; init; } = TimeSpan.FromSeconds(5);
 
     public IEnumerable<string> Validate()
     {
@@ -15,6 +16,10 @@ public sealed record StreamBusConnectionOptions
             yield return "ConsumersPerConnection must be >= 1.";
         if (ConsumersPerConnection > byte.MaxValue)
             yield return $"ConsumersPerConnection must be <= {byte.MaxValue} (client pool limit).";
+        if (MonitorInterval <= TimeSpan.Zero)
+            yield return "MonitorInterval must be positive.";
+        if (MonitorInterval > TimeSpan.FromSeconds(60))
+            yield return "MonitorInterval must be <= 60s.";
     }
 }
 

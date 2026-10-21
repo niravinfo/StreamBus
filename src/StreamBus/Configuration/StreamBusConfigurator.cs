@@ -16,6 +16,7 @@ public interface IHostConfigurator
     void StreamPort(int port = 5552);
     void AmqpPort(int port = 5672);
     void Heartbeat(TimeSpan heartbeat);
+    void MonitorInterval(TimeSpan interval);
     void ProducersPerConnection(int count = 1);
     void ConsumersPerConnection(int count = 1);
 }
@@ -110,6 +111,7 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
     private int _streamPort = 5552;
     private int _amqpPort = 5672;
     private TimeSpan _heartbeat = TimeSpan.FromSeconds(60);
+    private TimeSpan _monitorInterval = TimeSpan.FromSeconds(5);
     private int _producers = 1;
     private int _consumers = 1;
     private IStreamSerializer _serializer = SystemTextJsonStreamSerializer.Default;
@@ -253,6 +255,7 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
             {
                 ProducersPerConnection = _producers,
                 ConsumersPerConnection = _consumers,
+                MonitorInterval = _monitorInterval,
             },
             Serializer = _serializer,
         };
@@ -292,6 +295,15 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
             if (heartbeat <= TimeSpan.Zero)
                 throw new StreamBusConfigurationException("Heartbeat must be positive.");
             _owner._heartbeat = heartbeat;
+        }
+
+        public void MonitorInterval(TimeSpan interval)
+        {
+            if (interval <= TimeSpan.Zero)
+                throw new StreamBusConfigurationException("MonitorInterval must be positive.");
+            if (interval > TimeSpan.FromSeconds(60))
+                throw new StreamBusConfigurationException("MonitorInterval must be <= 60s.");
+            _owner._monitorInterval = interval;
         }
 
         public void ProducersPerConnection(int count = 1)
