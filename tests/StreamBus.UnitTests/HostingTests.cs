@@ -654,9 +654,11 @@ public sealed class HostingTests
             endpoints: new[] { EndpointDescriptor("endpoint-plain"), EndpointDescriptor("endpoint-super", super: true, partitions: 3) },
             publishes: new[] { new PublishRegistration { BusMarker = typeof(DefaultBus), MessageType = typeof(DerivedEvent), Stream = "publish-plain", IsSuper = false } });
         Assert.Equal(3, set.Count);
-        Assert.Contains(set, d => d.Name == "endpoint-plain" && !d.IsSuper && d.Source == "endpoint");
-        Assert.Contains(set, d => d is { Name: "endpoint-super", IsSuper: true, Partitions: 3 } && d.Source == "endpoint");
-        Assert.Contains(set, d => d.Name == "publish-plain" && !d.IsSuper && d.Source == "publish");
+        Assert.Contains(set, d => d.Name == "endpoint-plain" && !d.IsSuper && d.Source == DeclaredStreamSource.Endpoint);
+        Assert.Contains(set, d => d is { Name: "endpoint-super", IsSuper: true, Partitions: 3 } && d.Source == DeclaredStreamSource.Endpoint);
+        Assert.Contains(set, d => d.Name == "publish-plain" && !d.IsSuper && d.Source == DeclaredStreamSource.Publish);
+        Assert.Contains(set, d => d.Name == "endpoint-plain" && d.Description == "endpoint 'endpoint-plain'");
+        Assert.Contains(set, d => d.Name == "publish-plain" && d.Description.StartsWith("publish ", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -672,8 +674,8 @@ public sealed class HostingTests
         };
         var set = DeclareSet(endpoints: new[] { errorEndpoint });
         Assert.Equal(2, set.Count);
-        Assert.Contains(set, d => d.Name == "orders-errors" && !d.IsSuper && d.Source == "dead-letter");
-        Assert.Contains(set, d => d.Name == "orders" && !d.IsSuper && d.Source == "endpoint");
+        Assert.Contains(set, d => d.Name == "orders-errors" && !d.IsSuper && d.Source == DeclaredStreamSource.DeadLetter);
+        Assert.Contains(set, d => d.Name == "orders" && !d.IsSuper && d.Source == DeclaredStreamSource.Endpoint);
     }
 
     [Fact]
@@ -735,7 +737,7 @@ public sealed class HostingTests
         var set = DeclareSet(
             endpoints: new[] { EndpointDescriptor("orders-super", super: true, partitions: 3) },
             publishes: new[] { new PublishRegistration { BusMarker = typeof(DefaultBus), MessageType = typeof(DerivedEvent), Stream = "orders-super", IsSuper = true } });
-        Assert.DoesNotContain(set, d => d.Source == "publish");
+        Assert.DoesNotContain(set, d => d.Source == DeclaredStreamSource.Publish);
         Assert.Contains(set, d => d is { Name: "orders-super", IsSuper: true, Partitions: 3 });
     }
 

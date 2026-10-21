@@ -39,70 +39,65 @@ internal sealed class StreamTopologyRegistry : IStreamTopology
     {
         ArgumentNullException.ThrowIfNull(declaration);
         TopologyValidation.ValidateStream(declaration);
-        var handle = await ReadyHandleAsync(declaration.Name, ct).ConfigureAwait(false);
-        var gate = _gates.GetOrAdd(declaration.Name, static _ => new SemaphoreSlim(1, 1));
-        await gate.WaitAsync(ct).ConfigureAwait(false);
-        try
-        {
-            var fingerprint = Fingerprint.Plain(declaration);
-            if (_declared.TryGetValue(declaration.Name, out var known) && known == fingerprint)
-                return;
-            // Kind occupancy is decided in ComparePlainAsync (single compare path covers
-            // pre-existing and raced occupancy identically). The create gate checks
-            // BOTH kinds: the broker allows plain-over-super coexistence (Ruling R6),
-            // so attempting the create on a super-occupied name would silently enter
-            // ambiguous broker state instead of throwing the kind conflict.
-            Exception? createError = null;
-            if (!await handle.StreamExistsAsync(declaration.Name, ct).ConfigureAwait(false)
-                && !await handle.SuperStreamExistsAsync(declaration.Name, ct).ConfigureAwait(false))
-            {
-                try
-                {
-                    await handle.CreateStreamAsync(TopologyMapping.ToStreamSpec(declaration), ct).ConfigureAwait(false);
-                    _declared[declaration.Name] = fingerprint;
-                    return;
-                }
-                catch (OperationCanceledException) when (ct.IsCancellationRequested)
-                {
-                    throw;
-                }
-                catch (Exception ex)
-                {
-                    createError = ex;
-                }
-            }
-            var terminal = await ComparePlainAsync(handle, declaration, createError, ct).ConfigureAwait(false);
-            if (terminal is not null) ExceptionDispatchInfo.Capture(terminal).Throw();
-            if (createError is not null)
-                _logger.LogInformation(createError, "Stream '{Stream}' was declared concurrently with an identical-enough spec; treating as success.", declaration.Name);
-            _declared[declaration.Name] = fingerprint;
-        }
-        finally
-        {
-            gate.Release();
-        }
+        await EnsureAsync(
+            declaration,
+            declaration.Name,
+            Fingerprint.Plain(declaration),
+            static (handle, name, token) => handle.StreamExistsAsync(name, token),
+            static (handle, name, token) => handle.SuperStreamExistsAsync(name, token),
+            static (handle, spec, token) => handle.CreateStreamAsync(TopologyMapping.ToStreamSpec(spec), token),
+            ComparePlainAsync,
+            "Stream",
+            ct).ConfigureAwait(false);
     }
 
     public async Task EnsureSuperStreamAsync(SuperStreamDeclaration declaration, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(declaration);
         TopologyValidation.ValidateSuper(declaration);
-        var handle = await ReadyHandleAsync(declaration.Name, ct).ConfigureAwait(false);
-        var gate = _gates.GetOrAdd(declaration.Name, static _ => new SemaphoreSlim(1, 1));
+        await EnsureAsync(
+            declaration,
+            declaration.Name,
+            Fingerprint.Super(declaration),
+            static (handle, name, token) => handle.SuperStreamExistsAsync(name, token),
+            static (handle, name, token) => handle.StreamExistsAsync(name, token),
+            static (handle, spec, token) => handle.CreateSuperStreamAsync(TopologyMapping.ToSuperStreamSpec(spec), token),
+            CompareSuperAsync,
+            "Super stream",
+            ct).ConfigureAwait(false);
+    }
+
+    private async Task EnsureAsync<TSpec>(
+        TSpec declaration,
+        string name,
+        string fingerprint,
+        Func<IStreamSystemHandle, string, CancellationToken, Task<bool>> firstExists,
+        Func<IStreamSystemHandle, string, CancellationToken, Task<bool>> secondExists,
+        Func<IStreamSystemHandle, TSpec, CancellationToken, Task> create,
+        Func<IStreamSystemHandle, TSpec, Exception?, CancellationToken, Task<Exception?>> compare,
+        string label,
+        CancellationToken ct)
+    {
+        var handle = await ReadyHandleAsync(name, ct).ConfigureAwait(false);
+        var gate = _gates.GetOrAdd(name, static _ => new SemaphoreSlim(1, 1));
         await gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            var fingerprint = Fingerprint.Super(declaration);
-            if (_declared.TryGetValue(declaration.Name, out var known) && known == fingerprint)
+            if (_declared.TryGetValue(name, out var known) && known == fingerprint)
                 return;
+            // Kind occupancy is decided in the compare path (single path covers
+            // pre-existing and raced occupancy identically). The create gate checks
+            // BOTH kinds: the broker allows plain-over-super coexistence (Ruling R6),
+            // so attempting the create on a super-occupied name would silently enter
+            // ambiguous broker state instead of throwing the kind conflict.
             Exception? createError = null;
-            if (!await handle.SuperStreamExistsAsync(declaration.Name, ct).ConfigureAwait(false)
-                && !await handle.StreamExistsAsync(declaration.Name, ct).ConfigureAwait(false))
+            if (!await firstExists(handle, name, ct).ConfigureAwait(false)
+                && !await secondExists(handle, name, ct).ConfigureAwait(false))
             {
                 try
                 {
-                    await handle.CreateSuperStreamAsync(TopologyMapping.ToSuperStreamSpec(declaration), ct).ConfigureAwait(false);
-                    _declared[declaration.Name] = fingerprint;
+                    await create(handle, declaration, ct).ConfigureAwait(false);
+                    _declared[name] = fingerprint;
                     return;
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -114,11 +109,11 @@ internal sealed class StreamTopologyRegistry : IStreamTopology
                     createError = ex;
                 }
             }
-            var terminal = await CompareSuperAsync(handle, declaration, createError, ct).ConfigureAwait(false);
+            var terminal = await compare(handle, declaration, createError, ct).ConfigureAwait(false);
             if (terminal is not null) ExceptionDispatchInfo.Capture(terminal).Throw();
             if (createError is not null)
-                _logger.LogInformation(createError, "Super stream '{Stream}' was declared concurrently with an identical-enough spec; treating as success.", declaration.Name);
-            _declared[declaration.Name] = fingerprint;
+                _logger.LogInformation(createError, "{Label} '{Stream}' was declared concurrently with an identical-enough spec; treating as success.", label, name);
+            _declared[name] = fingerprint;
         }
         finally
         {

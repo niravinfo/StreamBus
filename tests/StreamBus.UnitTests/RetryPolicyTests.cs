@@ -34,7 +34,22 @@ public sealed class RetryPolicyTests
     {
         var ex = await Assert.ThrowsAsync<StreamBusConfigurationException>(() =>
             Consume(new ConsumeOptions { ErrorStream = new ErrorStreamOptions { Stream = "e" } }));
-        Assert.Contains("Strict", ex.Message);
+        Assert.Equal(
+            "Retry policy Strict never exhausts; a hand-off destination (ErrorStream/DeadLetter) cannot fire. Remove the destination or use a bounded retry schedule.",
+            ex.Message);
+    }
+
+    [Fact]
+    public async Task Strict_with_dead_letter_throws()
+    {
+        var ex = await Assert.ThrowsAsync<StreamBusConfigurationException>(() =>
+            Consume(new ConsumeOptions
+            {
+                DeadLetter = new DeadLetterOptions { Name = "e", QueueType = DeadLetterQueueType.ClassicQueue },
+            }));
+        Assert.Equal(
+            "Retry policy Strict never exhausts; a hand-off destination (ErrorStream/DeadLetter) cannot fire. Remove the destination or use a bounded retry schedule.",
+            ex.Message);
     }
 
     [Fact]

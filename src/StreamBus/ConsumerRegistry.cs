@@ -161,9 +161,9 @@ internal sealed class StreamConsumerRegistry
         {
             throw new StreamBusConfigurationException("ConsumeOptions.Retry.MaxJitter must be non-negative.");
         }
-        if (retry.FailureMode == FailureMode.Strict && options.ErrorStream is not null)
+        if (retry.FailureMode == FailureMode.Strict && (options.ErrorStream is not null || options.DeadLetter is not null))
         {
-            throw new StreamBusConfigurationException("ConsumeOptions.ErrorStream must not be configured with FailureMode.Strict.");
+            throw new StreamBusConfigurationException("Retry policy Strict never exhausts; a hand-off destination (ErrorStream/DeadLetter) cannot fire. Remove the destination or use a bounded retry schedule.");
         }
         if (retry.FailureMode == FailureMode.SkipAfterDeadline && options.ErrorStream is null && options.DeadLetter is null && options.ExhaustionCallback is null)
         {

@@ -364,13 +364,18 @@ internal sealed class StreamBusHostedService : IHostedService
         var supervisors = new List<(string Vhost, TimeSpan? Timeout, StreamBusConnectionSupervisor Supervisor)>();
         foreach (var (busType, options) in _store.Entries)
             _registry.GetOrCreateEntry(busType, options.Vhost);
+        var startTasks = new List<Task<Exception?>>();
         foreach (var vhost in _store.Entries.Select(r => r.Options.Vhost).Distinct())
         {
             var supervisor = _registry.SupervisorFor(vhost);
-            await supervisor.StartAsync(ct).ConfigureAwait(false);
-            lock (_gate) _started.Add((vhost, supervisor));
             supervisors.Add((vhost, _hosting.StartupTimeout, supervisor));
+            startTasks.Add(StartSupervisorAsync(vhost, supervisor, ct));
         }
+        var startErrors = await Task.WhenAll(startTasks).ConfigureAwait(false);
+        var fatal = startErrors.FirstOrDefault(e => e is not null && IsFatalStartFailure(e));
+        if (fatal is not null) ExceptionDispatchInfo.Capture(fatal).Throw();
+        foreach (var transient in startErrors.OfType<Exception>())
+            _logger.LogWarning(transient, "Supervisor for a StreamBus vhost failed to start; its connection loop will retry.");
         CancellationTokenSource startupCts;
         lock (_gate)
         {
@@ -579,7 +584,7 @@ internal sealed class StreamBusHostedService : IHostedService
                 attemptCt.ThrowIfCancellationRequested();
                 foreach (var entry in declareSet)
                 {
-                    if (!entry.IsSuper && entry.Source is "publish" or "dead-letter")
+                    if (!entry.IsSuper && entry.Source is DeclaredStreamSource.Publish or DeclaredStreamSource.DeadLetter)
                     {
                         await topology.EnsureStreamAsync(new StreamDeclaration
                         {
@@ -592,7 +597,7 @@ internal sealed class StreamBusHostedService : IHostedService
                         continue;
                     }
                     var probe = await topology.ProbeStreamAsync(entry.Name, attemptCt).ConfigureAwait(false);
-                    var who = entry.Source == "endpoint" ? $"endpoint '{entry.Name}'" : $"publish registration for '{entry.Name}'";
+                    var who = entry.Source == DeclaredStreamSource.Endpoint ? $"endpoint '{entry.Name}'" : $"publish registration for '{entry.Name}'";
                     if (entry.IsSuper)
                     {
                         if (probe.PlainExists)
@@ -717,6 +722,29 @@ internal sealed class StreamBusHostedService : IHostedService
             _logger,
             $"Typed consumer {reg.ConsumerType.FullName} on stream '{reg.Stream}'",
             ct).ConfigureAwait(false);
+    }
+
+    private static bool IsFatalStartFailure(Exception ex)
+        => ex is StreamBusFatalException or StreamBusConfigurationException or StreamConfigurationConflictException
+            || StreamBusErrorClassification.IsFatal(ex);
+
+    private async Task<Exception?> StartSupervisorAsync(
+        string vhost, StreamBusConnectionSupervisor supervisor, CancellationToken ct)
+    {
+        try
+        {
+            await supervisor.StartAsync(ct).ConfigureAwait(false);
+            lock (_gate) _started.Add((vhost, supervisor));
+            return null;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            return ex;
+        }
     }
 
     public async Task StopAsync(CancellationToken ct)

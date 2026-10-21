@@ -1,3 +1,4 @@
+using System.Reflection;
 using RabbitMQ.Stream.Client;
 
 namespace StreamBus.UnitTests;
@@ -17,6 +18,17 @@ public sealed class TopologyTests
     {
         Assert.Equal(LeaderLocator.ClientLocal, TopologyMapping.Map(StreamLeaderLocator.ClientLocal));
         Assert.Equal(LeaderLocator.Random, TopologyMapping.Map(StreamLeaderLocator.Random));
+    }
+
+    [Fact]
+    public void Declared_stream_source_is_a_typed_projection()
+    {
+        var source = typeof(DeclaredStream).GetProperty(
+            "Source", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+        Assert.NotNull(source);
+        Assert.Equal("DeclaredStreamSource", source!.PropertyType.Name);
+        Assert.Equal(new[] { "Endpoint", "Publish", "DeadLetter" }, Enum.GetNames(source.PropertyType));
+        Assert.NotNull(typeof(DeclaredStream).GetProperty("Description"));
     }
 
     [Fact]

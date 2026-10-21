@@ -24,6 +24,7 @@ internal sealed class BusEntry
 {
     public required StreamBusConnectionSupervisor Supervisor { get; init; }
     public required IStreamBus Bus { get; init; }
+    public required IReadOnlyDictionary<string, DeclaredStream> Declarations { get; init; }
 }
 
 public sealed class StreamBusRegistry : IStreamBusRegistry
@@ -145,11 +146,19 @@ public sealed class StreamBusRegistry : IStreamBusRegistry
         {
             var supervisor = SupervisorForCore(vhost);
             var serializer = _serializerResolver(busType) ?? SystemTextJsonStreamSerializer.Default;
-            Func<string, DeclaredStream?> findDeclaration = stream => _declarationResolver(busType).FirstOrDefault(d => d.Name == stream);
+            // Configuration is immutable after AddStreamBus, so build the
+            // declaration map once instead of rebuilding the merge set on every
+            // explicit-stream publish. First declaration wins, matching the old
+            // FirstOrDefault lookup for duplicate names.
+            var declarations = new Dictionary<string, DeclaredStream>(StringComparer.Ordinal);
+            foreach (var declaration in _declarationResolver(busType))
+                declarations.TryAdd(declaration.Name, declaration);
+            Func<string, DeclaredStream?> findDeclaration = stream
+                => declarations.TryGetValue(stream, out var declaration) ? declaration : null;
             IStreamBus bus = busType == typeof(DefaultBus)
                 ? new StreamBus(vhost, supervisor, ProducersFor(vhost), ConsumersFor(vhost), TopologyFor(vhost), serializer, _publishRouter, ErrorQueuesFor(vhost), findDeclaration)
                 : (IStreamBus)Activator.CreateInstance(typeof(StreamBus<>).MakeGenericType(busType), vhost, supervisor, ProducersFor(vhost), ConsumersFor(vhost), TopologyFor(vhost), serializer, _publishRouter, ErrorQueuesFor(vhost), findDeclaration)!;
-            var created = new BusEntry { Supervisor = supervisor, Bus = bus };
+            var created = new BusEntry { Supervisor = supervisor, Bus = bus, Declarations = declarations };
             StreamBusMetrics.Shared.TrackConnection(vhost, busType.FullName ?? busType.Name, () => created.Supervisor.State);
             return created;
         });
