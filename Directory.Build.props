@@ -7,6 +7,8 @@
     <LangVersion>latest</LangVersion>
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
     <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
+    <!-- Only src/StreamBus opts back in; examples and tests must never produce a package. -->
+    <IsPackable>false</IsPackable>
     <!-- xunit.v3 4.x sets IsTestingPlatformApplication transitively via xunit.v3.mtp-v2, whose MSBuild
          targets hard-error the VSTest target on .NET 10 SDK. False restores classic `dotnet test`
          (verified by isolated probe); inert for non-test projects. -->

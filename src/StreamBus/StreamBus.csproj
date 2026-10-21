@@ -2,6 +2,20 @@
   <PropertyGroup>
     <RootNamespace>StreamBus</RootNamespace>
     <AssemblyName>StreamBus</AssemblyName>
+    <IsPackable>true</IsPackable>
+    <PackageId>StreamBus</PackageId>
+    <Version>0.2.0</Version>
+    <Authors>Nirav Patel</Authors>
+    <Description>MassTransit-style client for RabbitMQ streams on .NET 10.</Description>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageTags>rabbitmq;rabbitmq-streams;streams;messaging;message-bus;dotnet</PackageTags>
+    <RepositoryUrl>https://github.com/niravinfo/StreamBus</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageProjectUrl>https://github.com/niravinfo/StreamBus</PackageProjectUrl>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="RabbitMQ.Stream.Client" />
@@ -9,5 +23,8 @@
     <PackageReference Include="Microsoft.Extensions.Hosting" />
     <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
   </ItemGroup>
 </Project>
