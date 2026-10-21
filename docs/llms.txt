@@ -1,58 +1,101 @@
-# StreamBus ground truths (v2 user-centric API)
+# StreamBus ground truths (v2, 0.2.0)
 
 - Registration: `services.AddStreamBus((context, cfg) => ...)` for the
   default bus, `services.AddStreamBus<TBus>((context, cfg) => ...)` per
-  extra bus. `IConfigurationSection` overload binds primitives; the code
-  lambda adds types, routes, endpoints, retry.
+  extra bus. Configuration is explicit and fluent only: there is no
+  `IConfiguration` overload, no `appsettings.json` binding, and no automatic
+  discovery. Every option is a configurator method call and is validated
+  once at registration.
 - `cfg.Host(host, vhost, h => h.Credentials(user, password))` exactly
-  once per bus. `guest` is always rejected. Defaults: StreamPort 5552,
-  AmqpPort 5672 (queue dead letters only, else no AMQP connection),
-  Heartbeat 60s always mapped, pools 1/1.
+  once per bus. Empty credentials are rejected; `guest`/`guest` is
+  accepted for a local broker, and remote deployments should use a
+  dedicated non-`guest` user. Defaults: StreamPort 5552, AmqpPort 5672
+  (queue dead letters only, else no AMQP connection), Heartbeat 60s,
+  MonitorInterval 5s (must be >0 and <=60s), pools 1/1.
 - Typed publish: `cfg.Publish<T>(stream)` for plain streams,
-  `cfg.PublishSuper<T>(stream)` for super streams.
+  `cfg.PublishSuper<T>(stream, s => s.Partitions(n))` for super streams.
   `bus.PublishAsync(msg)` / `bus.PublishAsync(stream, msg)` are plain;
   `bus.PublishSuperAsync(msg, key)` /
   `bus.PublishSuperAsync(stream, msg, key)` are super with a required
   routing key. Wrong method for the registration is a config error.
   Same message type on two streams of one bus is an ambiguity error.
   Explicit-stream targets on undeclared streams raise
-  `StreamBusStreamNotFoundException` and never auto-create.
-  Raw bytes go through `bus.PublishRawAsync`.
+  `StreamBusStreamNotFoundException` and never auto-create. Raw bytes go
+  through `bus.PublishRawAsync`, which does not run publish filters.
 - Consumer identity: `cfg.ReceiveEndpoint(stream, e =>
   e.Consumer<TConsumer>("group"))`. The group is required, verbatim,
   max 255 bytes, exactly one `Consumer` call per endpoint. Same group
   scales out via a shared cursor; different groups are independent
   cursors. Raw `ConsumeAsync` also requires `Reference`. The library
   never derives group names.
+- Cross-process caveat: same reference, `SingleActiveConsumer = false`,
+  two processes: both receive deliveries (at-least-once doubles, never
+  skips). Stores interleave; a stale process may regress the broker-side
+  offset - never run two writers on one reference outside SAC.
 - Startup topology derives from explicit declarations plus endpoint and
   publish registrations. Endpoints without an explicit declaration adopt
   broker reality (matching kind consumed read-only, mismatch conflicts,
   missing declarable streams are declared, otherwise config error).
-  Publish/endpoint kinds must agree with declarations.
+  Publish/endpoint kinds must agree with declarations. Single-partition
+  reads are plain consumes of `{super}-{N}` with no declaration.
 - Retry: `cfg.UseMessageRetry(...)` global default, per-endpoint
   override, `UseRetry` escape hatches. Schedules: Immediate, Interval,
-  Intervals, Exponential, None. Unbounded default retries forever.
-- Exhaustion: bounded + `DeadLetterTo(name, type)` hands off; bounded +
-  `OnExhausted` callback owns the outcome (return advances, throw
-  recycles; declared destinations shadowed with a warning); bounded +
-  neither hands off to the derived classic queue `{stream}_error`;
+  Intervals, Exponential, None. Unbounded default retries forever
+  (`Strict`); `Strict` plus any hand-off destination or callback is a
+  configuration error.
+- Exhaustion: bounded + `DeadLetterToStream` / `DeadLetterToQueue` hands
+  off; bounded + `OnExhausted` callback owns the outcome (return advances,
+  throw recycles; declared destinations shadowed with a warning); bounded
+  + neither hands off to the derived classic queue `{stream}_error`;
   unbounded + either is a config error.
-- Error destinations: `DeadLetterType.Stream` (envelope + advance-once +
-  `ReplayErrorStreamAsync`), `ClassicQueue` / `QuorumQueue` (durable,
-  persistent, confirmed, `streambus.error.*` headers +
-  `RequeueErrorsAsync`). Stream destinations must be explicitly
-  declared; queue destinations are transport-declared.
+- Error destinations: `DeadLetterToStream(name, spec?)` uses a declared
+  error stream with envelope semantics, advance-once, and
+  `ReplayErrorStreamAsync`; `DeadLetterToQueue(name, DeadLetterQueueType)`
+  uses a durable classic or quorum AMQP queue with `streambus.error.*`
+  headers and `RequeueErrorsAsync`. Queue destinations are declared by
+  the AMQP transport, never by topology.
+- Hand-off timeouts: stream hand-offs use
+  `e.ErrorHandoffTimeout(timeout)` (default 10s, values below 1s are
+  raised to 1s); queue hand-offs use
+  `DeadLetterToQueue(name, type, q => q.ConfirmTimeout(timeout))`
+  (default 10s). A lost confirmation surfaces as a timeout/transient
+  failure with an unknown outcome; the envelope stays replayable.
 - Startup blocking is service-level:
   `services.AddStreamBusHosting(h =>
   h.BlockStartupUntilReady(timeout?))`, at most once; default is
-  non-blocking.
-- Effectively-once (`ConsumeEffectivelyOnceAsync`) is unchanged.
-- Startup topology derives from explicit declarations plus endpoint and
-  publish registrations; endpoints without an explicit declaration adopt
-  broker reality (match consumed read-only, mismatch conflicts, missing
-  declarable declared, else config error). Single-partition reads are
-  plain consumes of `{super}-{N}` with no declaration.
-- Observability: `streambus` health check keyed `{vhost}|{busType}`;
-  meter `StreamBus` (`streambus_partition_lag/_inflight/_retry_blocked`,
+  non-blocking. Blocking startup waits for connections, topology, and
+  typed consumer attaches by default; `h.BlockUntilConsumersAttached(false)`
+  opts out of the consumer wait. A consumer that cannot attach raises
+  `StreamBusStartupBlockedException`; a budget expiry raises
+  `StreamBusTimeoutException`.
+- Health: the `streambus` check reports connection state under
+  `{vhost}|{busType}` and per-registration rows under
+  `{vhost}|{registration}` (`consumer:<state>` / `declare:<state>`,
+  including reason and since). No buses registered is degraded. Healthy
+  means every registration attached and every connection ready; degraded
+  means starting/retrying or some consumers retrying; unhealthy means a
+  fatal connection, an exhausted declaration, or all typed consumers
+  failed.
+- Pipelines: `UsePublishFilter` and `UseConsumeFilter` are additive and
+  repeatable, with no cap; execution is exactly registration order and
+  the first registered filter is outermost (first in, last out). Consume
+  filters registered on the bus run before endpoint filters. Duplicate
+  filter types within one scope are configuration errors. Publish filters
+  must call `next` exactly once and cannot short-circuit; consume filters
+  may skip only when `CanSkip` is true and the endpoint calls
+  `AllowPipelineSkip()` (never in effectively-once pipelines).
+- Effectively-once (`ConsumeEffectivelyOnceAsync`) stores no source
+  offsets and publishes results with `publishing-id = source offset`.
+  Resume is recomputed from the target; one pipeline per (source, target)
+  pair.
+- Observability: meter `StreamBus` (`streambus_partition_lag/_inflight/_retry_blocked`,
   `streambus_connection_state`, `streambus_offset_store_rejected_total`,
   `streambus_offset_regressed_total`, `streambus_offset_fallback_total`).
+- Exceptions: every StreamBus exception derives from
+  `StreamBusException`. Configuration and topology-conflict failures are
+  permanent; `StreamBusNotReadyException` and
+  `StreamBusStreamNotFoundException` are transient; timeouts have an
+  unknown outcome and may be retried when the operation is safe;
+  `StreamBusPublishTransientException` is retryable while
+  `StreamBusPublishException` is not; `StreamBusFatalException` requires
+  reconnection/operator action.

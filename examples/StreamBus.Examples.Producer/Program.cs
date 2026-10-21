@@ -63,15 +63,15 @@ public sealed class SeedWorker(
     IHostApplicationLifetime lifetime,
     ILogger<SeedWorker> log) : BackgroundService
 {
-    protected override async Task ExecuteAsync(CancellationToken ct)
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        await bus.WaitUntilReadyAsync(ReadinessPolicy.UpTo(TimeSpan.FromSeconds(30)), ct);
+        await bus.WaitUntilReadyAsync(ReadinessPolicy.UpTo(TimeSpan.FromSeconds(30)), stoppingToken);
 
         // Plain stream: PublishAsync resolves the stream from the registration.
         for (var i = 0; i < 5; i++)
         {
             var order = new OrderEvent($"order-{i}", i);
-            await bus.PublishAsync(order, ct);
+            await bus.PublishAsync(order, stoppingToken);
             log.LogInformation("orders <- {OrderId}", order.OrderId);
         }
 
@@ -82,7 +82,7 @@ public sealed class SeedWorker(
             for (var i = 0; i < count; i++)
             {
                 var payment = new PaymentEvent($"pay-{accountId}-{i}", accountId, (i + 1) * 10m);
-                await bus.PublishSuperAsync(payment, accountId, ct);
+                await bus.PublishSuperAsync(payment, accountId, stoppingToken);
                 log.LogInformation("payments-super <- {PaymentId} (key {Key})", payment.PaymentId, accountId);
             }
         }

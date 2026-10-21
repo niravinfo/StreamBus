@@ -19,6 +19,13 @@ cfg.ReceiveEndpoint("orders", e =>
 - Two services sharing one consumer class must supply different groups.
   The same group across instances scales out through a shared cursor.
 
+### Cross-process caveat
+
+Same reference, `SingleActiveConsumer = false`, two processes: both receive
+deliveries (at-least-once doubles, never skips). Stores interleave; a stale
+process may regress the broker-side offset - never run two writers on one
+reference outside SAC.
+
 ## Knobs
 
 ```csharp

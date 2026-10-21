@@ -46,7 +46,7 @@ public sealed class BusCoreIntegrationTests
             var check = sp.GetServices<IHealthCheck>().OfType<StreamBusHealthCheck>().Single();
             var result = await check.CheckHealthAsync(new HealthCheckContext(), CancellationToken.None);
             Assert.Equal(HealthStatus.Healthy, result.Status);
-            Assert.Contains(result.Data.Keys, k => k.StartsWith("/|"));
+            Assert.Contains(result.Data.Keys, k => k.StartsWith("/|", StringComparison.Ordinal));
         }
         finally
         {

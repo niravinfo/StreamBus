@@ -14,7 +14,7 @@ public sealed class TopologyIntegrationTests : IAsyncDisposable
     private readonly List<string> _streams = new();
     private readonly List<string> _superStreams = new();
 
-    private async Task<StreamSystem> ConnectAdminAsync()
+    private static async Task<StreamSystem> ConnectAdminAsync()
         => await StreamSystem.Create(new StreamSystemConfig
         {
             UserName = User(),

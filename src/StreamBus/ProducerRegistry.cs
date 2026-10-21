@@ -120,7 +120,7 @@ internal sealed class StreamProducerRegistry
 
     private static string Key(string stream, bool super) => super ? $"super:{stream}" : $"plain:{stream}";
 
-    private async Task InvalidateAsync(ProducerSlot expected, IStreamProducerHandle handleToDispose)
+    private static async Task InvalidateAsync(ProducerSlot expected, IStreamProducerHandle handleToDispose)
     {
         bool shouldDispose;
         lock (expected.Gate)

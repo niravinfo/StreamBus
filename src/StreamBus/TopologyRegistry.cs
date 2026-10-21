@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Globalization;
 using System.Runtime.ExceptionServices;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -193,9 +194,18 @@ internal sealed class StreamTopologyRegistry : IStreamTopology
         // names cannot smuggle field boundaries through it.
         private const string Sep = "\u001F";
         public static string Plain(StreamDeclaration d)
-            => string.Join(Sep, "plain", d.Name, d.MaxAge?.Ticks.ToString() ?? "-", d.MaxLengthBytes?.ToString() ?? "-", d.MaxSegmentSizeBytes?.ToString() ?? "-", d.LeaderLocator.ToString());
+            => string.Join(Sep, "plain", d.Name,
+                d.MaxAge?.Ticks.ToString(CultureInfo.InvariantCulture) ?? "-",
+                d.MaxLengthBytes?.ToString(CultureInfo.InvariantCulture) ?? "-",
+                d.MaxSegmentSizeBytes?.ToString(CultureInfo.InvariantCulture) ?? "-",
+                d.LeaderLocator.ToString());
 
         public static string Super(SuperStreamDeclaration d)
-            => string.Join(Sep, "super", d.Name, d.Partitions.ToString(), d.MaxAge?.Ticks.ToString() ?? "-", d.MaxLengthBytes?.ToString() ?? "-", d.MaxSegmentSizeBytes?.ToString() ?? "-", d.LeaderLocator.ToString());
+            => string.Join(Sep, "super", d.Name,
+                d.Partitions.ToString(CultureInfo.InvariantCulture),
+                d.MaxAge?.Ticks.ToString(CultureInfo.InvariantCulture) ?? "-",
+                d.MaxLengthBytes?.ToString(CultureInfo.InvariantCulture) ?? "-",
+                d.MaxSegmentSizeBytes?.ToString(CultureInfo.InvariantCulture) ?? "-",
+                d.LeaderLocator.ToString());
     }
 }

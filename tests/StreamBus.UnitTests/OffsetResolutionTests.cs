@@ -56,7 +56,7 @@ public sealed class OffsetResolutionTests
         var (log, branches) = NewSink();
         var result = OffsetResolution.ResolveOffset(ConsumeOffset.ResumeOrFirst, 5, 9, "r", "p", log, branches.Add);
         Assert.Equal(new OffsetTypeOffset(6), result);
-        Assert.Contains(log.Lines, l => l.Contains("9") && l.Contains("5"));
+        Assert.Contains(log.Lines, l => l.Contains('9') && l.Contains('5'));
         Assert.Empty(branches);
     }
 
@@ -215,7 +215,7 @@ public sealed class ConsumeValidationTests
         var factory = new ListLoggerFactory();
         var registry = RegistryWithLogging(factory, new StubSystemHandle());
         await registry.SetOffsetAsync("s", "grp", 0, 7, TestContext.Current.CancellationToken);
-        Assert.Contains(factory.Logger.Lines, l => l.Contains("grp") && l.Contains("7"));
+        Assert.Contains(factory.Logger.Lines, l => l.Contains("grp") && l.Contains('7'));
     }
 
     [Fact]

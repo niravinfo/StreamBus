@@ -5,6 +5,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <LangVersion>latest</LangVersion>
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
     <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
     <!-- Only src/StreamBus opts back in; examples and tests must never produce a package. -->
@@ -12,6 +13,13 @@
     <!-- NuGet audit findings (new advisories, deprecations) are reported as warnings but
          must not fail an unrelated build; they are still visible in the CI log. -->
     <WarningsNotAsErrors>$(WarningsNotAsErrors);NU1901;NU1902;NU1903;NU1904</WarningsNotAsErrors>
+    <!-- CA1848/CA1873: the existing ILogger calls are guarded and cheap; converting
+         every call site to LoggerMessage is a separate performance refactor.
+         CA1001: StreamBusMetrics owns a process-lifetime static Meter by design.
+         CA1068: the internal optional registrationName follows ct for positional
+         call-site compatibility. CA1711: DeclaredStream is public API and models
+         a declaration, not System.IO.Stream. -->
+    <NoWarn>$(NoWarn);CA1001;CA1068;CA1711;CA1848;CA1873</NoWarn>
     <!-- xunit.v3 4.x sets IsTestingPlatformApplication transitively via xunit.v3.mtp-v2, whose MSBuild
          targets hard-error the VSTest target on .NET 10 SDK. False restores classic `dotnet test`
          (verified by isolated probe); inert for non-test projects. -->

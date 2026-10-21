@@ -126,7 +126,7 @@ public sealed class PublishTests
         system.OnCreatePlain = (_, _) =>
         {
             Interlocked.Increment(ref creations);
-            release.Wait(TimeSpan.FromSeconds(10));
+            release.Wait(TimeSpan.FromSeconds(10), CancellationToken.None);
             var handle = new StubProducerHandle();
             lock (created) created.Add(handle);
             return Task.FromResult<IStreamPlainProducerHandle>(handle);

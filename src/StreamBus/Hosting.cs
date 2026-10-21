@@ -172,8 +172,8 @@ public static class ServiceCollectionExtensions
 
 public sealed record StreamBusHostingOptions
 {
-    public bool BlockStartupUntilReady { get; init; } = false;
-    public bool BlockUntilConsumersAttached { get; init; } = false;
+    public bool BlockStartupUntilReady { get; init; }
+    public bool BlockUntilConsumersAttached { get; init; } = true;
     public TimeSpan? StartupTimeout { get; init; }
 }
 
@@ -191,7 +191,7 @@ public sealed class StreamBusHostingStore
 public sealed class StreamBusHostingOptionsBuilder
 {
     private bool _block;
-    private bool _blockConsumers;
+    private bool _blockConsumers = true;
     private TimeSpan? _timeout;
     public StreamBusHostingOptionsBuilder BlockStartupUntilReady(TimeSpan? timeout = null)
     {
@@ -785,7 +785,7 @@ public sealed class StreamBusHealthCheck : IHealthCheck
     private readonly IStreamBusRegistry _registry;
     public StreamBusHealthCheck(IStreamBusRegistry registry) => _registry = registry;
 
-    public Task<HealthCheckResult> CheckHealthAsync(HealthCheckContext context, CancellationToken ct = default)
+    public Task<HealthCheckResult> CheckHealthAsync(HealthCheckContext context, CancellationToken cancellationToken = default)
     {
         var states = _registry.DescribeStates().ToList();
         var aggregators = _registry.HealthAggregators.ToList();

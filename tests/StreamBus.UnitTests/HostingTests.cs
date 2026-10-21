@@ -296,15 +296,22 @@ public sealed class HostingTests
     }
 
     [Fact]
-    public void BlockUntilConsumersAttached_defaults_false_and_enables_startup_block()
+    public void BlockUntilConsumersAttached_defaults_true_and_can_be_disabled()
     {
         var defaults = new StreamBusHostingOptionsBuilder().Build();
-        Assert.False(defaults.BlockUntilConsumersAttached);
+        Assert.True(defaults.BlockUntilConsumersAttached);
         Assert.False(defaults.BlockStartupUntilReady);
 
         var enabled = new StreamBusHostingOptionsBuilder().BlockUntilConsumersAttached().Build();
         Assert.True(enabled.BlockUntilConsumersAttached);
         Assert.True(enabled.BlockStartupUntilReady);
+
+        var disabled = new StreamBusHostingOptionsBuilder()
+            .BlockStartupUntilReady()
+            .BlockUntilConsumersAttached(false)
+            .Build();
+        Assert.False(disabled.BlockUntilConsumersAttached);
+        Assert.True(disabled.BlockStartupUntilReady);
     }
 
     [Fact]

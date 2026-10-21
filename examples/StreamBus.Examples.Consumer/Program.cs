@@ -65,20 +65,20 @@ public sealed record PaymentEvent(string PaymentId, string AccountId, decimal Am
 
 public sealed class OrderConsumer(ILogger<OrderConsumer> log) : IConsumer<OrderEvent>
 {
-    public Task Consume(ConsumeContext<OrderEvent> ctx, CancellationToken ct)
+    public Task Consume(ConsumeContext<OrderEvent> context, CancellationToken cancellationToken)
     {
         log.LogInformation("orders [{Partition}] offset {Offset}: {OrderId}",
-            ctx.Partition, ctx.Offset, ctx.Message.OrderId);
+            context.Partition, context.Offset, context.Message.OrderId);
         return Task.CompletedTask;
     }
 }
 
 public sealed class PaymentConsumer(ILogger<PaymentConsumer> log) : IConsumer<PaymentEvent>
 {
-    public Task Consume(ConsumeContext<PaymentEvent> ctx, CancellationToken ct)
+    public Task Consume(ConsumeContext<PaymentEvent> context, CancellationToken cancellationToken)
     {
         log.LogInformation("payments-super [{Partition}] offset {Offset}: {PaymentId} key {AccountId}",
-            ctx.Partition, ctx.Offset, ctx.Message.PaymentId, ctx.Message.AccountId);
+            context.Partition, context.Offset, context.Message.PaymentId, context.Message.AccountId);
         return Task.CompletedTask;
     }
 }

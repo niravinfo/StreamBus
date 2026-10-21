@@ -498,7 +498,7 @@ internal sealed class StreamConsumerRegistry
             {
                 try
                 {
-                    producer.DisposeAsync().GetAwaiter().GetResult();
+                    producer.DisposeAsync().AsTask().GetAwaiter().GetResult();
                 }
                 catch (Exception ex)
                 {

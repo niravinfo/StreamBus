@@ -1,6 +1,9 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <RootNamespace>StreamBus.UnitTests</RootNamespace>
+    <!-- Test names intentionally use Given_When_Then underscores, inline arrays are
+         short-lived test data, and helpers accept the production interface shape. -->
+    <NoWarn>$(NoWarn);CA1707;CA1859;CA1861</NoWarn>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="xunit.v3" />

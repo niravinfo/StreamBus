@@ -1,3 +1,5 @@
+using System.Globalization;
+
 namespace StreamBus;
 
 public enum StreamLeaderLocator
@@ -113,5 +115,5 @@ internal static class TopologyDescribe
         => $"plain stream '{declaration.Name}' ({Knobs(declaration.MaxAge, declaration.MaxLengthBytes, declaration.MaxSegmentSizeBytes, declaration.LeaderLocator)})";
 
     private static string Knobs(TimeSpan? maxAge, ulong? maxLengthBytes, int? maxSegmentSizeBytes, StreamLeaderLocator locator)
-        => $"max-age={maxAge?.ToString() ?? "unset"}, max-length-bytes={maxLengthBytes?.ToString() ?? "unset"}, max-segment-size-bytes={maxSegmentSizeBytes?.ToString() ?? "unset"}, leader-locator={locator}";
+        => $"max-age={maxAge?.ToString("c", CultureInfo.InvariantCulture) ?? "unset"}, max-length-bytes={maxLengthBytes?.ToString(CultureInfo.InvariantCulture) ?? "unset"}, max-segment-size-bytes={maxSegmentSizeBytes?.ToString(CultureInfo.InvariantCulture) ?? "unset"}, leader-locator={locator}";
 }

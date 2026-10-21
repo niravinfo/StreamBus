@@ -23,7 +23,7 @@ public sealed class AcceptanceTests : IDisposable
 
     private void Record<T>(Instrument instrument, T measurement, ReadOnlySpan<KeyValuePair<string, object?>> tags, object? state)
     {
-        lock (_measurements) _measurements.Add((instrument.Name, Convert.ToDouble(measurement), tags.ToArray()));
+        lock (_measurements) _measurements.Add((instrument.Name, Convert.ToDouble(measurement, System.Globalization.CultureInfo.InvariantCulture), tags.ToArray()));
     }
 
     public void Dispose() => _listener.Dispose();

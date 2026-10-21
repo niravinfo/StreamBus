@@ -4,8 +4,8 @@ namespace StreamBus;
 
 public sealed record EffectivelyOnceOptions
 {
-    public bool SourceIsSuperStream { get; init; } = false;
-    public bool TargetIsSuperStream { get; init; } = false;
+    public bool SourceIsSuperStream { get; init; }
+    public bool TargetIsSuperStream { get; init; }
     public string? Reference { get; init; }
     public Func<ConsumeContext, string?>? TargetRouting { get; init; }
     public RetryPolicy Retry { get; init; } = new();
@@ -15,7 +15,7 @@ public sealed record EffectivelyOnceOptions
 public sealed record PublishResultOptions
 {
     public required string ProducerName { get; init; }
-    public bool IsSuperStream { get; init; } = false;
+    public bool IsSuperStream { get; init; }
     public string? RoutingKey { get; init; }
     public TimeSpan BaseDelay { get; init; } = TimeSpan.FromMilliseconds(200);
     public double Multiplier { get; init; } = 2.0;

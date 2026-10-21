@@ -12,7 +12,7 @@ public sealed class ErrorQueueIntegrationTests : IAsyncDisposable
     private readonly List<string> _streams = new();
     private readonly List<string> _errorQueues = new();
 
-    private async Task<StreamSystem> ConnectAdminAsync()
+    private static async Task<StreamSystem> ConnectAdminAsync()
         => await StreamSystem.Create(new StreamSystemConfig
         {
             UserName = User(),

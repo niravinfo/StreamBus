@@ -2,10 +2,24 @@
 
 ## Health
 
-The `streambus` health check reports per-bus connection state under data
-keys `{vhost}|{busType}` (for example `/|StreamBus.DefaultBus`). No
-buses registered reports degraded; any non-ready bus degrades the check
-and a fatal connection marks it unhealthy.
+The `streambus` health check reports both connection and registration
+state:
+
+- `{vhost}|{busType}` - connection state for that bus (for example
+  `/|StreamBus.DefaultBus`).
+- `{vhost}|{registration}` - one row per typed consumer or declaration,
+  formatted as `consumer:<state>` or `declare:<state>`, with the reason
+  and `since` timestamp when present.
+
+No buses registered reports degraded with a hint. The check is healthy
+only when every registration is attached and every connection is ready.
+It is degraded while a bus is starting or retrying, or while some
+consumers are retrying. It is unhealthy when a connection is fatal, a
+declaration has exhausted its retry budget, or every typed consumer has
+failed.
+
+The connection monitor runs at `h.MonitorInterval(...)` (default 5
+seconds), so a broker that disappears is detected on that cadence.
 
 ## Metrics
 

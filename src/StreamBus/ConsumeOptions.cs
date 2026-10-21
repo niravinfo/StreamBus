@@ -17,7 +17,7 @@ public sealed record OffsetStoreOptions
 
 public sealed record ConsumeOptions
 {
-    public bool IsSuperStream { get; init; } = false;
+    public bool IsSuperStream { get; init; }
     public string? Reference { get; init; }
     public bool SingleActiveConsumer { get; init; } = true;
     public ConsumeOffset Offset { get; init; } = ConsumeOffset.ResumeOrFirst;

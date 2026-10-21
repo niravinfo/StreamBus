@@ -12,7 +12,7 @@ public sealed class ConsumerIntegrationTests : IAsyncDisposable
     private readonly List<string> _streams = new();
     private readonly List<string> _superStreams = new();
 
-    private async Task<StreamSystem> ConnectAdminAsync()
+    private static async Task<StreamSystem> ConnectAdminAsync()
         => await StreamSystem.Create(new StreamSystemConfig
         {
             UserName = User(),
@@ -64,7 +64,7 @@ public sealed class ConsumerIntegrationTests : IAsyncDisposable
     private static (string Key, int Seq) Parse(ReadOnlyMemory<byte> body)
     {
         var parts = System.Text.Encoding.UTF8.GetString(body.Span).Split(':');
-        return (parts[0], int.Parse(parts[1]));
+        return (parts[0], int.Parse(parts[1], System.Globalization.CultureInfo.InvariantCulture));
     }
 
     private static int Count<T>(List<T> list) { lock (list) return list.Count; }
