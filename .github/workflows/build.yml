@@ -1,12 +1,8 @@
 name: Build
 
-# Deliberately narrow triggers:
-# - `opened` and `ready_for_review` build the PR when it first appears and when it
-#   leaves draft. Later commits to the PR branch do NOT trigger a run.
-# - `workflow_dispatch` is the manual path for re-running the gate (for example
-#   after new commits, or on demand for any ref).
-# There is no `push` trigger: nothing runs automatically on a merge to main.
 on:
+  push:
+    branches: [main]
   pull_request:
     types: [opened, ready_for_review]
   workflow_dispatch:
