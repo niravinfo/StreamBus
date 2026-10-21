@@ -124,6 +124,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
     // lets them see the instance without resurrecting races on the current field.
     private readonly ConsumerHolder _consumerHandle = new();
     private readonly Func<RawConsumerConfig, CancellationToken, Task<IStreamConsumerHandle>> _createConsumer;
+    private readonly Action<int, BusRegistrationState, string?>? _health;
 
     private readonly SemaphoreSlim _dispatchGate = new(1, 1);
     private readonly SemaphoreSlim _storeGate = new(1, 1);
@@ -152,7 +153,8 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
         EffectivelyOnceConfig? effectivelyOnce = null,
         ResultProducerRegistry? results = null,
         IServiceScopeFactory? scopeFactory = null,
-        Func<RawConsumerConfig, CancellationToken, Task<IStreamConsumerHandle>>? consumerFactory = null)
+        Func<RawConsumerConfig, CancellationToken, Task<IStreamConsumerHandle>>? consumerFactory = null,
+        Action<int, BusRegistrationState, string?>? health = null)
     {
         ArgumentNullException.ThrowIfNull(system);
         ArgumentNullException.ThrowIfNull(stream);
@@ -190,6 +192,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
         _createConsumer = consumerFactory
             ?? (async (config, ct) => new RawConsumerHandle(
                 await _system.CreateRawConsumerAsync(config, ct).ConfigureAwait(false)));
+        _health = health;
         // Same key format Task 4's SetOffsetAsync overwrites on the shared guard.
         _waterKey = $"{reference}@{partitionStream}";
         _storer = new OffsetStorer(
@@ -291,6 +294,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                 consumer = await _createConsumer(config, loopCt).ConfigureAwait(false);
                 _firstAttach.TrySetResult();
                 _consumerHandle.Set(consumer);
+                _health?.Invoke(_partitionIndex, BusRegistrationState.Attached, null);
                 failures = 0; // A successful attach resets the backoff streak.
                 Interlocked.Exchange(ref _state.RetryBlocked, 0); // A recreated attach never inherits a stuck 1 from a failed attach that died mid-retry.
                 _logger.LogInformation(
@@ -1101,6 +1105,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
             message, _stream, _partitionIndex, offset);
         Interlocked.Exchange(ref attach.Drained, 1);
         attach.Failure.TrySetException(ex);
+        _health?.Invoke(_partitionIndex, BusRegistrationState.FailedRetrying, message);
     }
 
     // Death callbacks have no offset to report; the attach loop redelivers from
@@ -1113,6 +1118,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
             message, _stream, _partitionIndex);
         Interlocked.Exchange(ref attach.Drained, 1);
         attach.Failure.TrySetException(ex);
+        _health?.Invoke(_partitionIndex, BusRegistrationState.FailedRetrying, message);
     }
 
     private async Task AwaitTrackedAsync(Task dispatch)

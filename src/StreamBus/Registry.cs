@@ -13,6 +13,8 @@ public interface IStreamBusRegistry
     internal BusEntry GetOrCreateEntry(Type busType, string vhost);
     internal StreamBusConnectionSupervisor SupervisorFor(string vhost);
     internal StreamTopologyRegistry TopologyFor(string vhost);
+    internal StreamBusHealthAggregator HealthFor(string vhost);
+    internal IReadOnlyCollection<StreamBusHealthAggregator> HealthAggregators { get; }
     internal IReadOnlyCollection<IStreamConsumer> ActiveConsumers { get; }
 }
 
@@ -68,6 +70,8 @@ public sealed class StreamBusRegistry : IStreamBusRegistry
     private readonly ConcurrentDictionary<string, StreamConsumerRegistry> _consumers = new();
     private readonly ConcurrentDictionary<string, StreamTopologyRegistry> _topologies = new();
     private readonly ConcurrentDictionary<string, ErrorQueueTransport> _errorQueues = new();
+    private readonly ConcurrentDictionary<string, StreamBusHealthAggregator> _health = new();
+    private readonly ConcurrentDictionary<string, bool> _healthWired = new();
 
     internal ErrorQueueTransport ErrorQueuesFor(string vhost)
         => _errorQueues.GetOrAdd(vhost, _ => new ErrorQueueTransport(
@@ -84,7 +88,16 @@ public sealed class StreamBusRegistry : IStreamBusRegistry
         => _results.GetOrAdd(vhost, _ => new ResultProducerRegistry(SupervisorForCore(vhost), vhost));
 
     internal StreamConsumerRegistry ConsumersFor(string vhost)
-        => _consumers.GetOrAdd(vhost, _ => new StreamConsumerRegistry(SupervisorForCore(vhost), vhost, ProducersFor(vhost), _loggerFactory, ResultProducersFor(vhost), _scopes, ErrorQueuesFor(vhost)));
+        => _consumers.GetOrAdd(vhost, _ => new StreamConsumerRegistry(SupervisorForCore(vhost), vhost, ProducersFor(vhost), _loggerFactory, ResultProducersFor(vhost), _scopes, ErrorQueuesFor(vhost), HealthFor(vhost)));
+
+    internal StreamBusHealthAggregator HealthFor(string vhost)
+        => _health.GetOrAdd(vhost, static _ => new StreamBusHealthAggregator());
+
+    internal IReadOnlyCollection<StreamBusHealthAggregator> HealthAggregators => _health.Values.ToList();
+
+    StreamBusHealthAggregator IStreamBusRegistry.HealthFor(string vhost) => HealthFor(vhost);
+
+    IReadOnlyCollection<StreamBusHealthAggregator> IStreamBusRegistry.HealthAggregators => HealthAggregators;
 
     internal IReadOnlyCollection<IStreamConsumer> ActiveConsumers
         => _consumers.Values.SelectMany(r => r.ActiveConsumers).ToList();
@@ -100,7 +113,16 @@ public sealed class StreamBusRegistry : IStreamBusRegistry
     StreamTopologyRegistry IStreamBusRegistry.TopologyFor(string vhost) => TopologyFor(vhost);
 
     internal StreamBusConnectionSupervisor SupervisorForCore(string vhost)
-        => _supervisors.GetOrAdd(vhost, _ => _createSupervisor(_resolveOptions(vhost)));
+    {
+        var supervisor = _supervisors.GetOrAdd(vhost, _ => _createSupervisor(_resolveOptions(vhost)));
+        if (_healthWired.TryAdd(vhost, true))
+        {
+            var health = HealthFor(vhost);
+            health.SetConnection(supervisor.State);
+            supervisor.StateChanged += health.SetConnection;
+        }
+        return supervisor;
+    }
 
     internal BusEntry GetOrCreateCore(Type busType, string vhost)
     {

@@ -164,6 +164,7 @@ public sealed class StreamBusConnectionOptionsBuilder
 public sealed record StreamBusHostingOptions
 {
     public bool BlockStartupUntilReady { get; init; } = false;
+    public bool BlockUntilConsumersAttached { get; init; } = false;
     public TimeSpan? StartupTimeout { get; init; }
 }
 
@@ -181,6 +182,7 @@ public sealed class StreamBusHostingStore
 public sealed class StreamBusHostingOptionsBuilder
 {
     private bool _block;
+    private bool _blockConsumers;
     private TimeSpan? _timeout;
     public StreamBusHostingOptionsBuilder BlockStartupUntilReady(TimeSpan? timeout = null)
     {
@@ -188,7 +190,18 @@ public sealed class StreamBusHostingOptionsBuilder
             throw new StreamBusConfigurationException("StartupTimeout must be positive when set.");
         _block = true; _timeout = timeout; return this;
     }
-    public StreamBusHostingOptions Build() => new() { BlockStartupUntilReady = _block, StartupTimeout = _timeout };
+    public StreamBusHostingOptionsBuilder BlockUntilConsumersAttached(bool enabled = true)
+    {
+        _blockConsumers = enabled;
+        if (enabled) _block = true;
+        return this;
+    }
+    public StreamBusHostingOptions Build() => new()
+    {
+        BlockStartupUntilReady = _block,
+        BlockUntilConsumersAttached = _blockConsumers,
+        StartupTimeout = _timeout,
+    };
 }
 
 public sealed class ConsumeOptionsBuilder
@@ -507,6 +520,31 @@ public sealed class StreamBusHostedService : IHostedService
                 throw new StreamBusTimeoutException($"Timed out declaring topology and starting typed consumers within the startup timeout.");
             }
         }
+        if (_hosting.BlockUntilConsumersAttached)
+        {
+            var consumerVhosts = starters.Select(s => s.Vhost).Distinct().ToList();
+            while (true)
+            {
+                var rows = consumerVhosts
+                    .SelectMany(v => _registry.HealthFor(v).Snapshot().Registrations)
+                    .Where(r => r.Kind == "consumer")
+                    .ToList();
+                var failed = rows.FirstOrDefault(r => r.State is BusRegistrationState.FailedRetrying or BusRegistrationState.Stopped);
+                if (failed is not null)
+                    throw new StreamBusStartupBlockedException(
+                        $"Typed consumer '{failed.Registration}' on vhost '{failed.Vhost}' is {failed.State}: {failed.Reason ?? "no reason recorded"}.");
+                if (rows.Count == 0 || rows.All(r => r.State == BusRegistrationState.Attached))
+                    break;
+                try
+                {
+                    await Task.Delay(TimeSpan.FromMilliseconds(25), cts.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                {
+                    throw new StreamBusTimeoutException("Timed out waiting for typed consumers to attach during startup.");
+                }
+            }
+        }
     }
 
     internal static bool IsStartupTransient(Exception ex)
@@ -522,6 +560,14 @@ public sealed class StreamBusHostedService : IHostedService
         var busName = busType.FullName ?? busType.Name;
         var declareSet = DeclareSetBuilder.Build(endpoints, publishes, busName);
         var topology = _registry.TopologyFor(vhost);
+        var health = _registry.HealthFor(vhost);
+        foreach (var entry in declareSet)
+            health.UpsertRegistration(vhost, $"declare:{entry.Name}", "declare", BusRegistrationState.Attaching);
+        void MarkDeclareFailed(Exception ex)
+        {
+            foreach (var entry in declareSet)
+                health.UpsertRegistration(vhost, $"declare:{entry.Name}", "declare", BusRegistrationState.FailedRetrying, ex.Message);
+        }
         var attempt = 0;
         while (true)
         {
@@ -583,22 +629,27 @@ public sealed class StreamBusHostedService : IHostedService
                         }, ct).ConfigureAwait(false);
                     }
                 }
+                foreach (var entry in declareSet)
+                    health.RemoveRegistration(vhost, $"declare:{entry.Name}");
                 return;
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
                 throw;
             }
-            catch (StreamConfigurationConflictException)
+            catch (StreamConfigurationConflictException ex)
             {
+                MarkDeclareFailed(ex);
                 throw;
             }
-            catch (StreamBusConfigurationException)
+            catch (StreamBusConfigurationException ex)
             {
+                MarkDeclareFailed(ex);
                 throw;
             }
-            catch (StreamBusFatalException)
+            catch (StreamBusFatalException ex)
             {
+                MarkDeclareFailed(ex);
                 throw;
             }
             catch (Exception ex)
@@ -614,6 +665,14 @@ public sealed class StreamBusHostedService : IHostedService
     {
         if (_registry is not StreamBusRegistry concrete)
             throw new StreamBusConfigurationException("Error-queue declaration requires the built-in registry (internal error).");
+        var health = _registry.HealthFor(vhost);
+        foreach (var queue in queues)
+            health.UpsertRegistration(vhost, $"declare:{queue.Name}", "declare", BusRegistrationState.Attaching);
+        void MarkDeclareFailed(Exception ex)
+        {
+            foreach (var queue in queues)
+                health.UpsertRegistration(vhost, $"declare:{queue.Name}", "declare", BusRegistrationState.FailedRetrying, ex.Message);
+        }
         var attempt = 0;
         while (true)
         {
@@ -621,18 +680,22 @@ public sealed class StreamBusHostedService : IHostedService
             try
             {
                 await concrete.ErrorQueuesFor(vhost).DeclareAsync(queues, ct).ConfigureAwait(false);
+                foreach (var queue in queues)
+                    health.RemoveRegistration(vhost, $"declare:{queue.Name}");
                 return;
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
                 throw;
             }
-            catch (StreamConfigurationConflictException)
+            catch (StreamConfigurationConflictException ex)
             {
+                MarkDeclareFailed(ex);
                 throw;
             }
-            catch (StreamBusFatalException)
+            catch (StreamBusFatalException ex)
             {
+                MarkDeclareFailed(ex);
                 throw;
             }
             catch (Exception ex)
@@ -654,13 +717,17 @@ public sealed class StreamBusHostedService : IHostedService
                 "ReceiveEndpoint '{Stream}' sets both OnExhausted and a dead-letter destination '{Destination}'; the callback owns exhaustion and the destination is shadowed.",
                 reg.Stream, shadowed.Name);
         var handler = TypedConsumerHandler.Create(reg.MessageType, reg.ConsumerType, _scopes!, serializer);
+        var consumers = _registry is StreamBusRegistry concrete ? concrete.ConsumersFor(vhost) : null;
         var attempt = 0;
         while (true)
         {
             ct.ThrowIfCancellationRequested();
             try
             {
-                await entry.Bus.ConsumeAsync(reg.Stream, options, handler, ct).ConfigureAwait(false);
+                if (consumers is not null)
+                    await consumers.ConsumeAsync(reg.BusMarker, reg.Stream, options, handler, ct, registrationName: reg.Stream).ConfigureAwait(false);
+                else
+                    await entry.Bus.ConsumeAsync(reg.Stream, options, handler, ct).ConfigureAwait(false);
                 return;
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -712,20 +779,44 @@ public sealed class StreamBusHealthCheck : IHealthCheck
 
     public Task<HealthCheckResult> CheckHealthAsync(HealthCheckContext context, CancellationToken ct = default)
     {
-        var rows = _registry.DescribeStates().ToList();
-        var data = rows.ToDictionary(
+        var states = _registry.DescribeStates().ToList();
+        var aggregators = _registry.HealthAggregators.ToList();
+        if (aggregators.Count == 0)
+        {
+            var emptyData = states.ToDictionary(
+                r => $"{r.Vhost}|{r.BusType}",
+                r => (object)r.State.ToString());
+            return Task.FromResult(HealthCheckResult.Degraded("no buses registered.", data: emptyData));
+        }
+
+        var snapshots = aggregators
+            .Select(a => (Snapshot: a.Snapshot(), Status: a.Compute()))
+            .ToList();
+        var rows = snapshots.SelectMany(s => s.Snapshot.Registrations).ToList();
+        var data = states.ToDictionary(
             r => $"{r.Vhost}|{r.BusType}",
             r => (object)r.State.ToString());
-        if (rows.Count == 0)
-            return Task.FromResult(HealthCheckResult.Degraded("no buses registered.", data: data));
-        var worst = rows.Any(r => r.State == BusConnectionState.Fatal) ? BusConnectionState.Fatal
-            : rows.Any(r => r.State != BusConnectionState.Ready) ? BusConnectionState.TransientFailure
-            : BusConnectionState.Ready;
+        foreach (var row in rows)
+            data[$"{row.Vhost}|{row.Registration}"] = $"{row.Kind}:{row.State}{(row.Reason is null ? "" : $" ({row.Reason})")}";
+
+        var details = rows
+            .Where(r => r.State != BusRegistrationState.Attached)
+            .Select(r => $"{r.Vhost}|{r.Registration}={r.State}{(r.Reason is null ? "" : $": {r.Reason}")} since {r.Since:O}")
+            .ToList();
+        var suffix = details.Count == 0 ? "" : " " + string.Join("; ", details);
+
+        var worst = snapshots.Any(s => s.Status == StreamBusHealthAggregator.HealthStatus.Unhealthy)
+            ? StreamBusHealthAggregator.HealthStatus.Unhealthy
+            : snapshots.Any(s => s.Status == StreamBusHealthAggregator.HealthStatus.Degraded)
+                ? StreamBusHealthAggregator.HealthStatus.Degraded
+                : StreamBusHealthAggregator.HealthStatus.Healthy;
         return Task.FromResult(worst switch
         {
-            BusConnectionState.Ready => HealthCheckResult.Healthy("All StreamBus connections ready.", data),
-            BusConnectionState.Fatal => HealthCheckResult.Unhealthy("At least one StreamBus connection is fatal.", data: data),
-            _ => HealthCheckResult.Degraded("StreamBus is starting or retrying.", data: data),
+            StreamBusHealthAggregator.HealthStatus.Healthy =>
+                HealthCheckResult.Healthy("All StreamBus registrations attached and connections ready.", data),
+            StreamBusHealthAggregator.HealthStatus.Unhealthy =>
+                HealthCheckResult.Unhealthy("StreamBus is unhealthy (fatal connection, exhausted declaration, or all typed consumers failed)." + suffix, data: data),
+            _ => HealthCheckResult.Degraded("StreamBus is starting or retrying." + suffix, data: data),
         });
     }
 }

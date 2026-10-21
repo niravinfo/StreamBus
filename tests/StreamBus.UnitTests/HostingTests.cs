@@ -286,6 +286,18 @@ public sealed class HostingTests
     }
 
     [Fact]
+    public void BlockUntilConsumersAttached_defaults_false_and_enables_startup_block()
+    {
+        var defaults = new StreamBusHostingOptionsBuilder().Build();
+        Assert.False(defaults.BlockUntilConsumersAttached);
+        Assert.False(defaults.BlockStartupUntilReady);
+
+        var enabled = new StreamBusHostingOptionsBuilder().BlockUntilConsumersAttached().Build();
+        Assert.True(enabled.BlockUntilConsumersAttached);
+        Assert.True(enabled.BlockStartupUntilReady);
+    }
+
+    [Fact]
     public async Task Empty_registry_reports_degraded_with_hint()
     {
         var registry = new StreamBusRegistry(

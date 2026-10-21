@@ -41,3 +41,11 @@ public sealed class StreamConfigurationConflictException : Exception
     public string Expected { get; }
     public string Actual { get; }
 }
+
+// A startup block that waited on a consumer registration which cannot attach.
+// Task 11 of the v2 plan re-bases this onto the shared StreamBusStartupException.
+public sealed class StreamBusStartupBlockedException : Exception
+{
+    public StreamBusStartupBlockedException(string message, Exception? inner = null)
+        : base(message, inner) { }
+}
