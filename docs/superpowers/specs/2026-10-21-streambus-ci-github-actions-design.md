@@ -167,7 +167,24 @@ integration suite was run against it:
   (HTTP 400). Stream retention is a duration string, so the payload is now
   `"max-age": "1h"`. The test had never run before: it skips wherever the
   management plugin is unreachable, which is the case on the development
-  machine.
+  machine. It is now named
+  `Policy_with_stream_retention_is_accepted_and_registered`, because RabbitMQ 4.x
+  does not expose a stream's retention in the classic queue view
+  (`effective_policy_definition` stays empty) - the observable is the policy
+  resource, so the test proves the broker accepted and registered the policy,
+  not that the retention was applied to the stream.
+- The suite was flaky against the container: the stream client throws
+  `StreamNotAvailable` instead of returning false while a stream is still being
+  created, so the readiness poll in
+  `TopologyIntegrationTests.Nonblocking_startup_declares_in_background` aborted
+  on its first try (about one failure in three full runs). The poll now treats
+  that response as "not yet" and also waits for the partition count the
+  assertion checks. After the fix: six consecutive green runs against the
+  containerized broker with `CI=true`.
+- The management-API test must not skip in CI: with `CI=true` it now fails
+  instead of skipping, so a missing management API cannot hide behind a green
+  run. Both workflows wait for the management listener on `15672` before the
+  suite starts.
 
 ### One-time nuget.org setup (human action, not code)
 
