@@ -48,6 +48,7 @@ public interface IReceiveEndpointConfigurator
     void DeadLetterToStream(string name, Action<IStreamOptionsBuilder>? configure = null);
     void DeadLetterToStream(string name, StreamOptions spec);
     void DeadLetterToQueue(string name, DeadLetterQueueType type);
+    void DeadLetterToQueue(string name, DeadLetterQueueType type, Action<IErrorQueueOptionsBuilder> configure);
     void ErrorHandoffTimeout(TimeSpan timeout);
     void OnExhausted(Func<ExhaustedContext, CancellationToken, Task> handler);
     void Partitions(int partitions);
@@ -423,12 +424,23 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
             _deadLetter = new DeadLetterOptions { Name = name.Trim(), Spec = spec };
         }
         public void DeadLetterToQueue(string name, DeadLetterQueueType type)
+            => SetDeadLetterQueue(name, type, new ErrorQueueOptions());
+
+        public void DeadLetterToQueue(string name, DeadLetterQueueType type, Action<IErrorQueueOptionsBuilder> configure)
+        {
+            ArgumentNullException.ThrowIfNull(configure);
+            var builder = new ErrorQueueOptionsBuilder();
+            configure(builder);
+            SetDeadLetterQueue(name, type, builder.Build());
+        }
+
+        private void SetDeadLetterQueue(string name, DeadLetterQueueType type, ErrorQueueOptions options)
         {
             EnsureDeadLetterSlot("queue");
             ArgumentException.ThrowIfNullOrWhiteSpace(name);
             if (!Enum.IsDefined(type))
                 throw new StreamBusConfigurationException($"ReceiveEndpoint '{_stream}': DeadLetterQueueType has an undefined value.");
-            _deadLetter = new DeadLetterOptions { Name = name.Trim(), QueueType = type };
+            _deadLetter = new DeadLetterOptions { Name = name.Trim(), QueueType = type, QueueOptions = options };
         }
         public void ErrorHandoffTimeout(TimeSpan timeout)
         {
