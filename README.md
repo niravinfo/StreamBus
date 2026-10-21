@@ -92,6 +92,8 @@ Every capability links to its guide section:
 - Replay (streams) and requeue (queues) (`guide/errors.md`)
 - Topology derivation + broker adopt rule + conflicts (`guide/topology.md`)
 - Multi-bus markers + shared consumer classes (`guide/multi-bus.md`)
+- Message properties: message/correlation IDs and typed headers (`guide/publish.md`)
+- Middleware: ordered publish/consume filters, explicit consume skip, telemetry (`guide/publish.md`, `guide/consume.md`)
 - Observability: per-registration health, metrics, log events (`guide/observability.md`)
 
 ## Concepts

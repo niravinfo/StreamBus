@@ -1,6 +1,6 @@
 # StreamBus v2 — Architecture Remediation & Publish/Consume Middleware Design
 
-- Status: Draft — pending human approval
+- Status: Accepted — implemented 2026-10-21 (landed markers in §10.1)
 - Date: 2026-10-18
 - Source of findings: architecture review 2026-10-18 (four-track: publish path, config/hosting, consumer core, tests/docs). Verdict: sound invariants, unfinished liveness, drift-marked surface. Not AI slop; production-grade in the steady state, incomplete at failure boundaries.
 - Scope: StreamBus library (`src/StreamBus`), its tests, examples, docs. .NET 10, `RabbitMQ.Stream.Client` 1.12.1, `RabbitMQ.Client` 7.2.2.
@@ -23,7 +23,7 @@ Three findings make v2 necessary rather than optional:
 - G3 — One source of truth per concern: one bus core class, one retry-loop skeleton, one validation boundary, one naming utility.
 - G4 — Minimum safe public surface: no public mutable registration stores, no credential leakage, no orphaned builders/enums, no "internal error" escapes.
 - G5 — Publish/consume middleware with header carriers (tenant, user, correlation, telemetry context), MassTransit-familiar shape, stream-native semantics.
-- G6 — IConfiguration-section binding as documented in the README; validation at one boundary.
+- G6 — Explicit, code-first configuration: no ambient configuration binding; validation at one boundary.
 - G7 — CI: unit job always-green, integration job with a real RabbitMQ 4 broker (streams), docs that compile, analyzers on.
 - G8 — Preserve exactly the current hard invariants (see §4) while changing everything else.
 
@@ -280,7 +280,7 @@ Semantics (pinned):
 
 - D1 — CI (platform pending answer: GitHub Actions / Azure DevOps / none): unit + analyzers per-push; integration per-push with RabbitMQ 4 service (streams enabled, 5552 + management 15672, dedicated user); skip-lane env var for broker-free local runs; retention of existing gate discipline.
 - D2 — Broker chaos integration: broker restart mid-test (supervisor/monitoring/health assertions), forced subscription close (A1), metadata-event close (A1) — the three production failure modes now have repro harnesses.
-- D3 — Docs: README rewrite (snippets compile; 90% case: IConfiguration section B8 + blocking hosting); `llms.txt` regenerated from code-ground truths (guest rule correction, removed/dead API removals, new pipeline sections); guides updated per feature; CHANGELOG.md with break list; version → 0.2.0.
+- D3 — Docs: README rewrite (snippets compile; 90% case: explicit fluent configuration + blocking hosting); `llms.txt` regenerated from code-ground truths (guest rule correction, removed/dead API removals, new pipeline sections); guides updated per feature; CHANGELOG.md with break list; version → 0.2.0.
 - D4 — Acceptance traceability matrix: every review finding → design item → acceptance ID → test file.
 
 ## 10. Milestones & PR sequence (gated like v1: G-11…)
@@ -297,19 +297,54 @@ Semantics (pinned):
 
 Note: M1 before M3 deliberately — liveness first, then refactor on a correctly-behaving base; middleware (M5–6) rides the consolidated seams.
 
+### 10.1 Landed markers (2026-10-21)
+
+Every row below is implemented on `nirav/feature/StreamBusV2`; the `Landed`
+column names the task commit (short SHA) and the tests that pin the behavior.
+
+| Review finding | Spec item | Acceptance ID | Owning task | Test evidence | Landed |
+|---|---|---|---|---|---|
+| One-shot supervisor / stale Ready | A2 | V2-A2 | Task 3 | `ConnectionSupervisorTests.Supervisor_reconnects_after_system_handle_closes` + `BrokerRestartTests` | `cf6999d` |
+| Unwired consumer death callbacks | A1 | V2-A1 | Task 2 | `ConsumerDeathTests` (unit) + `ConsumerDeathTests.Connection_closed_while_idle_reattaches_within_bounds` (int) | `7de52ef` |
+| Unbounded hand-off confirm (wedge) | A3/A4 | V2-A3 | Task 1 | `ConfirmationCloseTests.Handoff_returns_transient_after_timeout_and_message_stays_replayable` + hang-regression unit | `b8a36e0` |
+| Health blind to consumer/declare state | A6 | V2-A6 | Task 5 | `HealthAggregatorTests` matrix + `BrokerRestartTests` degraded/unhealthy window | `e328107` |
+| Registry factory race / blocking dispose | A5 | V2-A5 | Task 4 | `PublishTests` new tests + existing eviction tests green | `f77b43a` |
+| Shutdown misclassified as timeout | A7 | V2-A7 | Task 6 | `HostingTests.Stop_during_blocking_startup_rethrows_OCE_not_timeout` | `1870893` |
+| Channel-per-message dead-letter burst | A8 | V2-A8 | Task 7 | `ErrorQueueTransportTests` burst + mid-burst-shutdown | `222cce8` |
+| Bus twins / drift debt | B1–B4 | V2-G3 | Task 8 | full suites green unchanged; LOC delta negative at the refactor range | `b0819dd` |
+| Two-transport handle / public stores / password leak | B5–B6 | V2-B5/B6 | Task 9 | compile probes + grep gates | `7b81569` |
+| Dead knobs, `@`-keys, replay dedup loss | B7+B9+B14 | V2-B7.1 | Task 10 | `ReplayNamingTests` + greps | `0a28cb8` |
+| Exception hierarchy, per-publish declare rebuild, topology dupes, serial starts, raw Strict | B10–B15 | V2-B10.1 | Task 11 | suite + `grep` gates | `e5d0486` |
+| README does not compile / `llms.txt` lies | D3 | V2-G4 | Task 13 | DocsSnippets compile + llms grep gates | `44e070d` |
+| Configuration binding (proposed, **dropped** — explicit config only) | B8 (dropped) | — | Task 12 (removed) | `grep -rn "IConfiguration" src/StreamBus` = 0 hits | dropped; no commit |
+| No header carrier / no pipelines | C1–C3 | V2-C1..C3 | Tasks 14–16 | `HeaderCarrierTests`, `PublishPipelineTests`, `PipelineSemanticsTests` | `ae2ad17`, `aa24e3c`, `f543bb1` |
+| Pipeline registration is additive + ordered | C2/C3 | V2-C2.1/C3.1 | Tasks 15–16 | 3-filter ordering tests, duplicate-type rejection, zero/double-`next` guards, bus+endpoint scope ordering | `aa24e3c`, `f543bb1` |
+| EO + filter composition / telemetry silent | C4–C6 | V2-C4..C6 | Task 17 | Activity/Meter tests + EO integration | `d0d11a0` |
+| Analyzers off / lint debt | B16 | V2-B16 | Task 13 | build gate: 0 diagnostics at latest-recommended | `44e070d` |
+| Cross-process reference caveat undocumented | B17 | V2-B17 | Task 13 | guide consume section text (quoted rule) | `44e070d` |
+| No CI / green requires memory | D1 | V2-G7 | Task 18 | `.github/workflows/build.yml` unit + brokered integration lane | `c2dc7e2` |
+| Chaos modes untested | D2 | V2-D2 | Task 19 | the three chaos tests + supervisor-handle fix | `97183e8`, `90404a4` |
+
+The M3 LOC gate is measured on the Task 8 refactor range (net −60 lines in
+`src/StreamBus`, −50 including the accompanying test change; `222cce8..b0819dd`).
+The final branch is net positive because M5–M6 add the
+properties and pipeline product surface by design; the ≤ 0 clause is not a
+whole-branch gate. The detailed rulings for each landing are recorded in the
+plan ledger.
+
 ## 11. ADR summary (full text in `docs/adr/` landed per milestone)
 
 - **ADR-1 Liveness closed loop**: per-entity callbacks + supervisor IsClosed polling; supervisor does not own per-producer/per-consumer recovery (they own theirs). Alternatives: client-agnostic watchdog process (too coarse), Reliable* wrappers (defeated the design).
 - **ADR-2 Middleware shape**: decoration-only publish / decorate+explicit-skip consume; no publish substitution; familiar naming but stream-native semantics. Alternatives: full MassTransit IPipe (invites publish short-circuit and delegated verification against compile-time routing guarantees); lean-observe-only (cannot skip — blocks a legit drop policy).
-- **ADR-3 Health aggregation**: new internal HealthAggregator per bus; health check delegates wholly to it. Alternative: extending `DescribeStates` (conflates connection-state with consumer-attach severity).
-- **ADR-4 Config precedence**: code wins; config provides connection-level values; code owns everything else; loud doc + tests pin it. Alternative: config-wins (silent lambdas would break users' reasoning).
+- **ADR-3 Health aggregation**: new internal HealthAggregator per vhost, shared by every bus on that host; health check delegates wholly to it. Alternative: extending `DescribeStates` (conflates connection-state with consumer-attach severity).
+- **ADR-4 Config precedence**: code wins and is the only source; connection-level values come from the explicit host configurator, and code owns everything else; loud doc + tests pin it. Alternative: config-wins (silent lambdas would break users' reasoning).
 - **ADR-5 Exception hierarchy**: common base added, leaf types unchanged. Alternative: interface marker (`IStreamBusError`) — no pattern-matching benefit, semantically worse.
 - **ADR-6 Versioning**: 0.2.0; breaks listed in CHANGELOG; no compat shims. Alternative: 1.0.0 GA already (breaks worse there).
 
 ## 12. Open items (need human answers before final plan)
 
 1. **Pipeline shape — adopted**: decoration-only publish (no short-circuit/veto) + consume-with-skip (capability-gated). ADR-2 stands. Reopening trigger: if a tenant-gating/outbox-suppression use case appears, reopen ADR-2 with veto semantics.
-2. **CI platform — adopted**: GitHub Actions with a `rabbitmq:4-management` service container (streams plugin enabled via mounted config); targeted at port 5552 + management 15672. The workflow is written to be swappable to Azure DevOps if the repo host changes.
+2. **CI platform — adopted**: GitHub Actions with a pinned `rabbitmq:4.2-management` service container; the stream plugin is enabled on the running node and `advertised_host` is set to localhost, with the broker on port 5552 and management on 15672. The workflow is written to be swappable to Azure DevOps if the repo host changes.
 3. **Breaking-change tolerance — adopted**: 0.2.0 with a complete break list in CHANGELOG.md; no compat shims; no known internal consumers pin the current surface.
 4. **Defaults — adopted**: ActivitySource ("StreamBus") always-on-if-listened; supervisor `MonitorInterval` 5s; in-box helpers limited to correlation/tenant reference samples in `examples/` (no product-assembly filters in v2).
 
