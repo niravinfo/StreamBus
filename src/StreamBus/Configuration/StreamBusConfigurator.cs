@@ -33,6 +33,10 @@ public interface IStreamBusConfigurator
     void ReceiveEndpoint(string stream, Action<IReceiveEndpointConfigurator> configure);
     void UseMessageRetry(Action<IRetryConfigurator> configure);
     void UseRetry(RetryPolicy policy);
+    void UsePublishFilter<TFilter>() where TFilter : class, IStreamPublishFilter;
+    void UsePublishFilter(Type filterType);
+    void UsePublishFilter(Func<IServiceProvider, IStreamPublishFilter> factory);
+    void UsePublishFilter(IStreamPublishFilter instance);
 }
 
 public interface IReceiveEndpointConfigurator
@@ -131,6 +135,7 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
     private int _consumers = 1;
     private IStreamSerializer _serializer = SystemTextJsonStreamSerializer.Default;
     private readonly List<(Type MessageType, string Stream, bool IsSuper, StreamOptions Spec)> _publishes = new();
+    private readonly List<PublishFilterRegistration> _publishFilters = new();
     private readonly List<ReceiveEndpointDescriptor> _endpoints = new();
     private RetryPolicy? _globalRetry;
     private bool _hostCalled;
@@ -142,6 +147,8 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
     }
 
     internal IReadOnlyList<(Type MessageType, string Stream, bool IsSuper, StreamOptions Spec)> Publishes => _publishes;
+
+    internal IReadOnlyList<PublishFilterRegistration> PublishFilters => _publishFilters;
 
     internal IReadOnlyList<ReceiveEndpointDescriptor> Endpoints => _endpoints;
 
@@ -233,6 +240,53 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
     {
         ArgumentNullException.ThrowIfNull(policy);
         _globalRetry = policy;
+    }
+
+    public void UsePublishFilter<TFilter>() where TFilter : class, IStreamPublishFilter
+    {
+        ValidateFilterType(typeof(TFilter));
+        AddPublishFilter(PublishFilterRegistration.ForType(typeof(TFilter)));
+    }
+
+    public void UsePublishFilter(Type filterType)
+    {
+        ArgumentNullException.ThrowIfNull(filterType);
+        ValidateFilterType(filterType);
+        AddPublishFilter(PublishFilterRegistration.ForType(filterType));
+    }
+
+    public void UsePublishFilter(Func<IServiceProvider, IStreamPublishFilter> factory)
+    {
+        ArgumentNullException.ThrowIfNull(factory);
+        AddPublishFilter(PublishFilterRegistration.ForFactory(factory));
+    }
+
+    public void UsePublishFilter(IStreamPublishFilter instance)
+    {
+        ArgumentNullException.ThrowIfNull(instance);
+        AddPublishFilter(PublishFilterRegistration.ForInstance(instance));
+    }
+
+    private void AddPublishFilter(PublishFilterRegistration filter)
+    {
+        if (filter.FilterType is { } type && _publishFilters.Any(existing => existing.FilterType == type))
+        {
+            throw new StreamBusConfigurationException(
+                $"Publish filter '{type}' is already registered on this bus; duplicate registration would run it twice.");
+        }
+        _publishFilters.Add(filter);
+    }
+
+    private static void ValidateFilterType(Type filterType)
+    {
+        if (!typeof(IStreamPublishFilter).IsAssignableFrom(filterType)
+            || !filterType.IsClass
+            || filterType.IsAbstract
+            || filterType.ContainsGenericParameters)
+        {
+            throw new StreamBusConfigurationException(
+                $"Publish filter type '{filterType}' must be a concrete IStreamPublishFilter implementation.");
+        }
     }
 
     internal StreamBusOptions Build(Type busType)
@@ -501,6 +555,13 @@ public static class StreamBusConfiguratorExtensions
         var publishStore = ServiceCollectionExtensions.GetOrCreatePublishStore(services);
         foreach (var p in configurator.Publishes)
             publishStore.Add(busType, p.MessageType, p.Stream, p.IsSuper, p.Spec);
+        foreach (var filter in configurator.PublishFilters)
+        {
+            publishStore.AddFilter(busType, filter);
+            if (filter.FilterType is { } filterType && filter.Instance is null)
+                services.TryAddTransient(filterType, filterType);
+        }
+        publishStore.Seal(busType);
         var endpointStore = ServiceCollectionExtensions.GetOrCreateEndpointStore(services);
         var consumerStore = ServiceCollectionExtensions.GetOrCreateConsumerStore(services);
         foreach (var descriptor in configurator.Endpoints)

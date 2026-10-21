@@ -13,9 +13,67 @@ public sealed record PublishRegistration
     public StreamLeaderLocator? LeaderLocator { get; init; }
 }
 
+internal sealed class PublishFilterRegistration
+{
+    public Type? FilterType { get; init; }
+    public Func<IServiceProvider, IStreamPublishFilter>? Factory { get; init; }
+    public IStreamPublishFilter? Instance { get; init; }
+
+    public static PublishFilterRegistration ForType(Type filterType) => new()
+    {
+        FilterType = filterType,
+        Factory = provider => provider.GetService(filterType) as IStreamPublishFilter
+            ?? throw new StreamBusConfigurationException(
+                $"Publish filter '{filterType.FullName}' could not be resolved from the root service provider."),
+    };
+
+    public static PublishFilterRegistration ForFactory(Func<IServiceProvider, IStreamPublishFilter> factory)
+        => new() { Factory = factory };
+
+    public static PublishFilterRegistration ForInstance(IStreamPublishFilter instance)
+        => new() { FilterType = instance.GetType(), Instance = instance };
+
+    public IStreamPublishFilter Create(IServiceProvider provider)
+    {
+        var filter = Instance ?? Factory!(provider);
+        return filter ?? throw new StreamBusConfigurationException("Publish filter factory returned null.");
+    }
+}
+
 public sealed class StreamBusPublishStore
 {
     private readonly List<PublishRegistration> _registrations = new();
+    private readonly Dictionary<Type, List<PublishFilterRegistration>> _filters = new();
+    private readonly HashSet<Type> _sealedBusTypes = new();
+
+    internal void AddFilter(Type busMarker, PublishFilterRegistration filter)
+    {
+        ArgumentNullException.ThrowIfNull(busMarker);
+        ArgumentNullException.ThrowIfNull(filter);
+        if (_sealedBusTypes.Contains(busMarker))
+        {
+            throw new StreamBusConfigurationException(
+                $"Publish filters cannot be registered after bus {busMarker.FullName} is built.");
+        }
+        if (!_filters.TryGetValue(busMarker, out var filters))
+        {
+            filters = new List<PublishFilterRegistration>();
+            _filters[busMarker] = filters;
+        }
+        if (filter.FilterType is { } type && filters.Any(existing => existing.FilterType == type))
+        {
+            throw new StreamBusConfigurationException(
+                $"Publish filter '{type}' is already registered on this bus; duplicate registration would run it twice.");
+        }
+        filters.Add(filter);
+    }
+
+    internal IReadOnlyList<PublishFilterRegistration> FiltersFor(Type busMarker)
+        => _filters.TryGetValue(busMarker, out var filters)
+            ? filters
+            : Array.Empty<PublishFilterRegistration>();
+
+    internal void Seal(Type busMarker) => _sealedBusTypes.Add(busMarker);
 
     internal void Add(Type busMarker, Type messageType, string stream, bool isSuper, StreamOptions? spec = null)
     {

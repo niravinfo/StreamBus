@@ -101,7 +101,9 @@ public static class ServiceCollectionExtensions
                 router,
                 marker => store.Entries.Where(r => r.BusType == marker).Select(r => r.Options.Serializer).FirstOrDefault() ?? SystemTextJsonStreamSerializer.Default,
                 sp.GetService<IServiceScopeFactory>(),
-                DeclarationsFor));
+                DeclarationsFor,
+                publishStore,
+                sp));
         services.TryAddSingleton<IHostedService>(sp => StreamBusHostedService.Create(sp));
         services.TryAddSingleton<StreamBusHealthCheck>();
         services.TryAddSingleton<IHealthCheck>(sp => sp.GetRequiredService<StreamBusHealthCheck>());

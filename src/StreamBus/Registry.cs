@@ -37,6 +37,9 @@ public sealed class StreamBusRegistry : IStreamBusRegistry
     private readonly Func<Type, IStreamSerializer> _serializerResolver;
     private readonly IServiceScopeFactory? _scopes;
     private readonly Func<Type, IReadOnlyList<DeclaredStream>> _declarationResolver;
+    private readonly StreamBusPublishStore? _publishStore;
+    private readonly IServiceProvider? _rootProvider;
+    private readonly object _entryGate = new();
 
     public StreamBusRegistry(
         Func<string, StreamBusOptions> resolveOptions,
@@ -45,7 +48,9 @@ public sealed class StreamBusRegistry : IStreamBusRegistry
         StreamPublishRouter? publishRouter = null,
         Func<Type, IStreamSerializer>? serializerResolver = null,
         IServiceScopeFactory? scopeFactory = null,
-        Func<Type, IReadOnlyList<DeclaredStream>>? declarationResolver = null)
+        Func<Type, IReadOnlyList<DeclaredStream>>? declarationResolver = null,
+        StreamBusPublishStore? publishStore = null,
+        IServiceProvider? rootProvider = null)
     {
         _resolveOptions = resolveOptions;
         _createSupervisor = createSupervisor;
@@ -54,6 +59,8 @@ public sealed class StreamBusRegistry : IStreamBusRegistry
         _serializerResolver = serializerResolver ?? (_ => SystemTextJsonStreamSerializer.Default);
         _scopes = scopeFactory;
         _declarationResolver = declarationResolver ?? (_ => Array.Empty<DeclaredStream>());
+        _publishStore = publishStore;
+        _rootProvider = rootProvider;
     }
 
     public IStreamBus GetOrCreateBus(string vhost)
@@ -142,26 +149,73 @@ public sealed class StreamBusRegistry : IStreamBusRegistry
     internal BusEntry GetOrCreateCore(Type busType, string vhost)
     {
         var key = (busType, vhost);
-        var entry = _entries.GetOrAdd(key, _ =>
+        if (_entries.TryGetValue(key, out var existing))
+            return existing;
+        lock (_entryGate)
         {
-            var supervisor = SupervisorForCore(vhost);
-            var serializer = _serializerResolver(busType) ?? SystemTextJsonStreamSerializer.Default;
-            // Configuration is immutable after AddStreamBus, so build the
-            // declaration map once instead of rebuilding the merge set on every
-            // explicit-stream publish. First declaration wins, matching the old
-            // FirstOrDefault lookup for duplicate names.
-            var declarations = new Dictionary<string, DeclaredStream>(StringComparer.Ordinal);
-            foreach (var declaration in _declarationResolver(busType))
-                declarations.TryAdd(declaration.Name, declaration);
-            Func<string, DeclaredStream?> findDeclaration = stream
-                => declarations.TryGetValue(stream, out var declaration) ? declaration : null;
-            IStreamBus bus = busType == typeof(DefaultBus)
-                ? new StreamBus(vhost, supervisor, ProducersFor(vhost), ConsumersFor(vhost), TopologyFor(vhost), serializer, _publishRouter, ErrorQueuesFor(vhost), findDeclaration)
-                : (IStreamBus)Activator.CreateInstance(typeof(StreamBus<>).MakeGenericType(busType), vhost, supervisor, ProducersFor(vhost), ConsumersFor(vhost), TopologyFor(vhost), serializer, _publishRouter, ErrorQueuesFor(vhost), findDeclaration)!;
-            var created = new BusEntry { Supervisor = supervisor, Bus = bus, Declarations = declarations };
-            StreamBusMetrics.Shared.TrackConnection(vhost, busType.FullName ?? busType.Name, () => created.Supervisor.State);
+            if (_entries.TryGetValue(key, out existing))
+                return existing;
+            var created = CreateEntry(busType, vhost);
+            _entries[key] = created;
             return created;
-        });
-        return entry;
+        }
+    }
+
+    private BusEntry CreateEntry(Type busType, string vhost)
+    {
+        var supervisor = SupervisorForCore(vhost);
+        var serializer = _serializerResolver(busType) ?? SystemTextJsonStreamSerializer.Default;
+        // Configuration is immutable after AddStreamBus, so build the
+        // declaration map once instead of rebuilding the merge set on every
+        // explicit-stream publish. First declaration wins, matching the old
+        // FirstOrDefault lookup for duplicate names.
+        var declarations = new Dictionary<string, DeclaredStream>(StringComparer.Ordinal);
+        foreach (var declaration in _declarationResolver(busType))
+            declarations.TryAdd(declaration.Name, declaration);
+        Func<string, DeclaredStream?> findDeclaration = stream
+            => declarations.TryGetValue(stream, out var declaration) ? declaration : null;
+
+        var registrations = _publishStore?.FiltersFor(busType) ?? Array.Empty<PublishFilterRegistration>();
+        var filters = new List<IStreamPublishFilter>(registrations.Count);
+        if (registrations.Count > 0)
+        {
+            if (_rootProvider is null)
+            {
+                throw new StreamBusConfigurationException(
+                    $"Publish filters are configured for {busType.FullName}, but no root service provider is available.");
+            }
+            var seen = new HashSet<Type>();
+            foreach (var registration in registrations)
+            {
+                var filter = registration.Create(_rootProvider);
+                var filterType = filter.GetType();
+                if (!seen.Add(filterType))
+                {
+                    throw new StreamBusConfigurationException(
+                        $"Publish filter '{filterType}' is already registered on this bus; duplicate registration would run it twice.");
+                }
+                filters.Add(filter);
+            }
+        }
+        var pipeline = new PublishPipeline(filters);
+        var options = _resolveOptions(vhost);
+        var busView = new StreamBusRegistrationView
+        {
+            Vhost = options.Vhost,
+            Host = options.Host,
+            StreamPort = options.StreamPort,
+            AmqpPort = options.AmqpPort,
+            HeartbeatSeconds = options.Heartbeat.TotalSeconds,
+        };
+
+        IStreamBus bus = busType == typeof(DefaultBus)
+            ? new StreamBus(vhost, supervisor, ProducersFor(vhost), ConsumersFor(vhost), TopologyFor(vhost), serializer, _publishRouter, ErrorQueuesFor(vhost), findDeclaration, pipeline, _scopes, busView)
+            : (IStreamBus)Activator.CreateInstance(
+                typeof(StreamBus<>).MakeGenericType(busType),
+                vhost, supervisor, ProducersFor(vhost), ConsumersFor(vhost), TopologyFor(vhost), serializer,
+                _publishRouter, ErrorQueuesFor(vhost), findDeclaration, pipeline, _scopes, busView)!;
+        var created = new BusEntry { Supervisor = supervisor, Bus = bus, Declarations = declarations };
+        StreamBusMetrics.Shared.TrackConnection(vhost, busType.FullName ?? busType.Name, () => created.Supervisor.State);
+        return created;
     }
 }

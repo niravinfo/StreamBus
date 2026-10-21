@@ -1,3 +1,5 @@
+using Microsoft.Extensions.DependencyInjection;
+
 namespace StreamBus;
 
 public interface IStreamBus
@@ -67,7 +69,10 @@ internal abstract class StreamBusCore<TBus> : IStreamBus
     private readonly StreamPublishRouter _router;
     private readonly ErrorQueueTransport _errorQueues;
     private readonly Func<string, DeclaredStream?> _findDeclaration;
-    protected StreamBusCore(string vhost, StreamBusConnectionSupervisor supervisor, StreamProducerRegistry producers, StreamConsumerRegistry consumers, IStreamTopology topology, IStreamSerializer serializer, StreamPublishRouter router, ErrorQueueTransport errorQueues, Func<string, DeclaredStream?>? findDeclaration = null)
+    private readonly PublishPipeline _publishPipeline;
+    private readonly IServiceScopeFactory? _publishScopeFactory;
+    private readonly StreamBusRegistrationView _busView;
+    protected StreamBusCore(string vhost, StreamBusConnectionSupervisor supervisor, StreamProducerRegistry producers, StreamConsumerRegistry consumers, IStreamTopology topology, IStreamSerializer serializer, StreamPublishRouter router, ErrorQueueTransport errorQueues, Func<string, DeclaredStream?>? findDeclaration = null, PublishPipeline? publishPipeline = null, IServiceScopeFactory? publishScopeFactory = null, StreamBusRegistrationView? busView = null)
     {
         Vhost = vhost;
         _supervisor = supervisor;
@@ -78,6 +83,16 @@ internal abstract class StreamBusCore<TBus> : IStreamBus
         _router = router ?? throw new ArgumentNullException(nameof(router));
         _errorQueues = errorQueues ?? throw new ArgumentNullException(nameof(errorQueues));
         _findDeclaration = findDeclaration ?? (_ => null);
+        _publishPipeline = publishPipeline ?? new PublishPipeline(Array.Empty<IStreamPublishFilter>());
+        _publishScopeFactory = publishScopeFactory;
+        _busView = busView ?? new StreamBusRegistrationView
+        {
+            Vhost = vhost,
+            Host = "",
+            StreamPort = 0,
+            AmqpPort = 0,
+            HeartbeatSeconds = 0,
+        };
     }
     public string Vhost { get; }
     public IStreamTopology Topology => _topology;
@@ -90,9 +105,8 @@ internal abstract class StreamBusCore<TBus> : IStreamBus
         var reg = _router.Resolve(typeof(TBus), typeof(T));
         if (reg.IsSuper)
             throw new StreamBusConfigurationException($"Message {typeof(T).FullName} is registered with PublishSuper for stream '{reg.Stream}'. Use PublishSuperAsync (routing key required).");
-        var body = _serializer.Serialize(message);
         var effective = (options ?? new PublishOptions()) with { IsSuperStream = false, RoutingKey = null };
-        return _producers.PublishAsync(reg.Stream, body, effective, ct);
+        return PublishThroughPipelineAsync(reg.Stream, routingKey: null, message, effective, ct);
     }
     public Task PublishAsync<T>(T message, CancellationToken ct)
         => PublishAsync(message, null, ct);
@@ -101,9 +115,8 @@ internal abstract class StreamBusCore<TBus> : IStreamBus
         ArgumentException.ThrowIfNullOrWhiteSpace(stream);
         ArgumentNullException.ThrowIfNull(message);
         DeclareSetBuilder.ValidateCallTarget(_findDeclaration(stream), stream, wantSuper: false);
-        var body = _serializer.Serialize(message);
         var effective = (options ?? new PublishOptions()) with { IsSuperStream = false, RoutingKey = null };
-        return _producers.PublishAsync(stream, body, effective, ct);
+        return PublishThroughPipelineAsync(stream, routingKey: null, message, effective, ct);
     }
     public Task PublishAsync<T>(string stream, T message, CancellationToken ct)
         => PublishAsync(stream, message, null, ct);
@@ -114,9 +127,8 @@ internal abstract class StreamBusCore<TBus> : IStreamBus
         var reg = _router.Resolve(typeof(TBus), typeof(T));
         if (!reg.IsSuper)
             throw new StreamBusConfigurationException($"Message {typeof(T).FullName} is registered with Publish for stream '{reg.Stream}'. Use PublishAsync (no routing key).");
-        var body = _serializer.Serialize(message);
         var effective = (options ?? new PublishOptions()) with { IsSuperStream = true, RoutingKey = routingKey };
-        return _producers.PublishAsync(reg.Stream, body, effective, ct);
+        return PublishThroughPipelineAsync(reg.Stream, routingKey, message, effective, ct);
     }
     public Task PublishSuperAsync<T>(T message, string routingKey, CancellationToken ct)
         => PublishSuperAsync(message, routingKey, null, ct);
@@ -126,12 +138,80 @@ internal abstract class StreamBusCore<TBus> : IStreamBus
         ArgumentNullException.ThrowIfNull(message);
         ArgumentException.ThrowIfNullOrWhiteSpace(routingKey);
         DeclareSetBuilder.ValidateCallTarget(_findDeclaration(stream), stream, wantSuper: true);
-        var body = _serializer.Serialize(message);
         var effective = (options ?? new PublishOptions()) with { IsSuperStream = true, RoutingKey = routingKey };
-        return _producers.PublishAsync(stream, body, effective, ct);
+        return PublishThroughPipelineAsync(stream, routingKey, message, effective, ct);
     }
     public Task PublishSuperAsync<T>(string stream, T message, string routingKey, CancellationToken ct)
         => PublishSuperAsync(stream, message, routingKey, null, ct);
+    private async Task PublishThroughPipelineAsync<T>(
+        string stream,
+        string? routingKey,
+        T message,
+        PublishOptions effective,
+        CancellationToken ct)
+    {
+        if (_publishPipeline.Count == 0)
+        {
+            await SendTypedAsync(stream, message, effective, ct).ConfigureAwait(false);
+            return;
+        }
+
+        var scopeFactory = _publishScopeFactory
+            ?? throw new StreamBusConfigurationException(
+                "Publish filters are configured, but no IServiceScopeFactory is available (internal error).");
+        await using var publishScope = scopeFactory.CreateAsyncScope();
+        var headerWriter = new HeaderWriter(effective.Properties?.Headers);
+        var context = new StreamPublishFilterContext
+        {
+            Stream = stream,
+            RoutingKey = routingKey,
+            Message = message!,
+            Headers = headerWriter,
+            Bus = _busView,
+            Services = publishScope.ServiceProvider,
+        };
+
+        try
+        {
+            await _publishPipeline.RunAsync(
+                context,
+                _ => SendTypedAsync(
+                    stream,
+                    message,
+                    effective with { Properties = headerWriter.Materialize(effective.Properties) },
+                    ct),
+                ct).ConfigureAwait(false);
+        }
+        catch (StreamBusException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (StreamBusErrorClassification.IsFatal(ex))
+        {
+            throw;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            throw new StreamBusPublishTransientException(
+                $"Publish to stream '{stream}' failed transiently in the publish pipeline.",
+                ex);
+        }
+    }
+
+    private async Task SendTypedAsync<T>(
+        string stream,
+        T message,
+        PublishOptions effective,
+        CancellationToken ct)
+    {
+        var body = _serializer.Serialize(message);
+        await _producers.PublishAsync(stream, body, effective, ct).ConfigureAwait(false);
+    }
+
     public Task PublishRawAsync(string stream, ReadOnlyMemory<byte> body, PublishOptions? options = null, CancellationToken ct = default)
         => _producers.PublishAsync(stream, body, options ?? new PublishOptions(), ct);
     public Task<int> RequeueErrorsAsync(string stream, string errorQueue, CancellationToken ct = default)
@@ -160,14 +240,18 @@ internal sealed class StreamBus : StreamBusCore<DefaultBus>, IStreamBus
 {
     public StreamBus(string vhost, StreamBusConnectionSupervisor supervisor, StreamProducerRegistry producers,
         StreamConsumerRegistry consumers, IStreamTopology topology, IStreamSerializer serializer,
-        StreamPublishRouter router, ErrorQueueTransport errorQueues, Func<string, DeclaredStream?>? findDeclaration = null)
-        : base(vhost, supervisor, producers, consumers, topology, serializer, router, errorQueues, findDeclaration) { }
+        StreamPublishRouter router, ErrorQueueTransport errorQueues, Func<string, DeclaredStream?>? findDeclaration = null,
+        PublishPipeline? publishPipeline = null, IServiceScopeFactory? publishScopeFactory = null,
+        StreamBusRegistrationView? busView = null)
+        : base(vhost, supervisor, producers, consumers, topology, serializer, router, errorQueues, findDeclaration, publishPipeline, publishScopeFactory, busView) { }
 }
 
 internal sealed class StreamBus<TBus> : StreamBusCore<TBus>, IStreamBus<TBus>
 {
     public StreamBus(string vhost, StreamBusConnectionSupervisor supervisor, StreamProducerRegistry producers,
         StreamConsumerRegistry consumers, IStreamTopology topology, IStreamSerializer serializer,
-        StreamPublishRouter router, ErrorQueueTransport errorQueues, Func<string, DeclaredStream?>? findDeclaration = null)
-        : base(vhost, supervisor, producers, consumers, topology, serializer, router, errorQueues, findDeclaration) { }
+        StreamPublishRouter router, ErrorQueueTransport errorQueues, Func<string, DeclaredStream?>? findDeclaration = null,
+        PublishPipeline? publishPipeline = null, IServiceScopeFactory? publishScopeFactory = null,
+        StreamBusRegistrationView? busView = null)
+        : base(vhost, supervisor, producers, consumers, topology, serializer, router, errorQueues, findDeclaration, publishPipeline, publishScopeFactory, busView) { }
 }
