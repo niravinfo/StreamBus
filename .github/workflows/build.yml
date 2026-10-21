@@ -1,0 +1,137 @@
+name: Build
+
+# Gate for every change: build, unit tests, broker-backed integration tests, packaging.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# The build workflow never needs to write to the repository.
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build / Unit test / Pack
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore
+        run: dotnet restore StreamBus.slnx
+
+      - name: Build (Release)
+        run: dotnet build StreamBus.slnx --no-restore --configuration Release
+
+      - name: Unit tests
+        # Classic VSTest mode (Directory.Build.props sets IsTestingPlatformApplication=false),
+        # so `dotnet test <project>` is the supported invocation.
+        run: dotnet test tests/StreamBus.UnitTests/StreamBus.UnitTests.csproj --no-build --configuration Release
+
+      - name: Pack (verify packaging)
+        run: dotnet pack StreamBus.slnx --no-build --configuration Release --output ./artifacts
+
+      - name: List packages
+        run: ls -lh ./artifacts/
+
+      - name: Upload packages artifact (for inspection)
+        uses: actions/upload-artifact@v7
+        with:
+          name: nuget-packages
+          path: ./artifacts/*.nupkg
+          if-no-files-found: error
+
+  integration-test:
+    name: Integration tests
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    # Docker is available on ubuntu-latest, so the broker runs as a service container.
+    # rabbitmq_stream is bundled but not enabled by default, and the stream client
+    # connects to the host the broker advertises - a container advertises its own
+    # hostname, which the runner cannot resolve, hence advertised_host=localhost.
+    # `guest` is rejected by the stream client, so a dedicated user is mandatory.
+    # The image is pinned to the 4.2 minor line: it matches the broker the library
+    # is developed against, and an unpinned `4` tag pulls whatever 4.x is newest.
+    services:
+      rabbitmq:
+        image: rabbitmq:4.2-management
+        ports:
+          - 5552:5552
+          - 5672:5672
+          - 15672:15672
+        env:
+          RABBITMQ_DEFAULT_USER: app
+          RABBITMQ_DEFAULT_PASS: password
+          RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: "-rabbitmq_stream advertised_host localhost"
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 12
+
+    env:
+      STREAMBUS_USER: app
+      STREAMBUS_PASSWORD: password
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+
+      # RabbitMQ 3.7+ ignores "-<plugin> enable" in RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS,
+      # so the stream plugin is enabled on the running node instead.
+      - name: Enable RabbitMQ stream plugin
+        run: docker exec ${{ job.services.rabbitmq.id }} rabbitmq-plugins enable rabbitmq_stream
+
+      - name: Wait for the stream listener
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 30); do
+            if docker exec ${{ job.services.rabbitmq.id }} rabbitmq-diagnostics -q listeners 2>/dev/null | grep -q '5552'; then
+              echo "stream listener is up"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::the RabbitMQ stream listener did not come up on port 5552"
+          exit 1
+
+      - name: Restore
+        run: dotnet restore StreamBus.slnx
+
+      - name: Build (Release)
+        run: dotnet build StreamBus.slnx --no-restore --configuration Release
+
+      - name: Integration tests
+        run: >
+          dotnet test tests/StreamBus.IntegrationTests/StreamBus.IntegrationTests.csproj
+          --no-build --configuration Release
+          --logger "trx;LogFileName=integration.trx"
+          --results-directory ./artifacts/test-results
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: integration-test-results
+          path: ./artifacts/test-results/*.trx
+          if-no-files-found: warn
