@@ -72,6 +72,26 @@ public sealed class TopologyIntegrationTests : IAsyncDisposable
         }
     }
 
+    // The stream client throws StreamNotAvailable instead of returning false while a
+    // stream is still being created, so a readiness poll has to read that as "not yet".
+    private static bool StreamExists(StreamSystem admin, string stream)
+    {
+        try { return admin.StreamExists(stream).GetAwaiter().GetResult(); }
+        catch (GenericProtocolException) { return false; }
+    }
+
+    private static bool SuperStreamExists(StreamSystem admin, string superStream)
+    {
+        try { return admin.SuperStreamExists(superStream).GetAwaiter().GetResult(); }
+        catch (GenericProtocolException) { return false; }
+    }
+
+    private static int PartitionCount(StreamSystem admin, string superStream)
+    {
+        try { return admin.QueryPartition(superStream).GetAwaiter().GetResult().Length; }
+        catch (GenericProtocolException) { return 0; }
+    }
+
     [Fact]
     public async Task Repeat_and_concurrent_declares_converge()
     {
@@ -182,8 +202,13 @@ public sealed class TopologyIntegrationTests : IAsyncDisposable
         });
         var admin = await ConnectAdminAsync();
         await using var _ = admin;
-        await WaitForAsync(() => admin.StreamExists(plain).GetAwaiter().GetResult()
-            && admin.SuperStreamExists(super).GetAwaiter().GetResult(), TimeSpan.FromSeconds(30), "startup declaration");
+        // The super stream exists before its partitions are all queryable, and the
+        // client throws while a stream is still being created, so the wait covers
+        // the count the assertion checks.
+        await WaitForAsync(() => StreamExists(admin, plain)
+            && SuperStreamExists(admin, super)
+            && PartitionCount(admin, super) == 2,
+            TimeSpan.FromSeconds(30), "startup declaration");
         Assert.Equal(2, (await admin.QueryPartition(super)).Length);
     }
 
@@ -280,11 +305,18 @@ public sealed class TopologyIntegrationTests : IAsyncDisposable
     }
 
     [Fact]
-    public async Task Policy_applied_tuning_is_effective()
+    public async Task Policy_with_stream_retention_is_accepted_and_registered()
     {
         // FR-7.4 operator path: production tuning belongs in policies, not queue
         // arguments. Runs only where the management plugin is reachable.
-        if (!await ManagementReachableAsync()) Assert.Skip("management API not usable with stream credentials (unreachable or unauthorized); FR-7.4 operator path not exercised here.");
+        if (!await ManagementReachableAsync())
+        {
+            // In CI the management API must be reachable: a silent skip would hide
+            // the operator path this test covers.
+            if (Environment.GetEnvironmentVariable("CI") is "true")
+                Assert.Fail("management API unreachable in CI - the FR-7.4 operator path must be exercised.");
+            Assert.Skip("management API not usable with stream credentials (unreachable or unauthorized); FR-7.4 operator path not exercised here.");
+        }
         var ct = TestContext.Current.CancellationToken;
         var stream = Unique("topo-pol");
         _streams.Add(stream);
@@ -309,8 +341,9 @@ public sealed class TopologyIntegrationTests : IAsyncDisposable
             // the observable: the broker validates stream retention keys when the policy
             // is set, so a 2xx on the PUT means the definition is valid for streams.
             using var get = await http.GetAsync($"http://127.0.0.1:15672/api/policies/%2F/{policy}", ct);
+            Assert.True(get.IsSuccessStatusCode, $"GET policy failed: {(int)get.StatusCode}");
             var payload = await get.Content.ReadAsStringAsync(ct);
-            Assert.Contains("max-age", payload);
+            Assert.Contains("\"max-age\":\"1h\"", payload);
             Assert.Contains(stream, payload);
         }
         finally
