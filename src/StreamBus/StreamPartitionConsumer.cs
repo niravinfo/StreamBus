@@ -125,6 +125,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
     private readonly ConsumerHolder _consumerHandle = new();
     private readonly Func<RawConsumerConfig, CancellationToken, Task<IStreamConsumerHandle>> _createConsumer;
     private readonly Action<int, BusRegistrationState, string?>? _health;
+    private readonly IStreamSerializer _serializer;
 
     private readonly SemaphoreSlim _dispatchGate = new(1, 1);
     private readonly SemaphoreSlim _storeGate = new(1, 1);
@@ -154,7 +155,8 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
         ResultProducerRegistry? results = null,
         IServiceScopeFactory? scopeFactory = null,
         Func<RawConsumerConfig, CancellationToken, Task<IStreamConsumerHandle>>? consumerFactory = null,
-        Action<int, BusRegistrationState, string?>? health = null)
+        Action<int, BusRegistrationState, string?>? health = null,
+        IStreamSerializer? serializer = null)
     {
         ArgumentNullException.ThrowIfNull(system);
         ArgumentNullException.ThrowIfNull(stream);
@@ -193,6 +195,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
             ?? (async (config, ct) => new RawConsumerHandle(
                 await _system.CreateRawConsumerAsync(config, ct).ConfigureAwait(false)));
         _health = health;
+        _serializer = serializer ?? SystemTextJsonStreamSerializer.Default;
         // Same key format Task 4's SetOffsetAsync overwrites on the shared guard.
         _waterKey = $"{reference}@{partitionStream}";
         _storer = new OffsetStorer(
@@ -835,7 +838,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
     {
         var body = message.Data.Contents.ToArray();
         IDictionary<string, object>? appProps = message.ApplicationProperties;
-        var metadata = MapMetadata(message.Properties, appProps);
+        var metadata = MapMetadata(message.Properties, appProps, _serializer);
         metadata.ApplicationProperties.TryGetValue(RoutingKeyProperty, out var routingObj);
         return new ConsumeContext
         {
@@ -849,7 +852,10 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
         };
     }
 
-    private static MessageMetadata MapMetadata(RabbitMQ.Stream.Client.AMQP.Properties? properties, IDictionary<string, object>? applicationProperties)
+    private static MessageMetadata MapMetadata(
+        RabbitMQ.Stream.Client.AMQP.Properties? properties,
+        IDictionary<string, object>? applicationProperties,
+        IStreamSerializer serializer)
     {
         var app = applicationProperties is null
             ? new Dictionary<string, object?>()
@@ -863,6 +869,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
             Timestamp = properties?.CreationTime is { } ct
                 ? new DateTimeOffset(DateTime.SpecifyKind(ct, DateTimeKind.Utc))
                 : null,
+            Serializer = serializer,
         };
     }
 

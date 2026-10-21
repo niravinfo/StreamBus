@@ -201,7 +201,9 @@ internal sealed class StreamProducerHandle : IStreamPlainProducerHandle
     {
         ArgumentNullException.ThrowIfNull(options);
         ct.ThrowIfCancellationRequested();
-        await _confirmations.PublishAsync(_producer, _stream, new Message(body.ToArray()), ct).ConfigureAwait(false);
+        var message = new Message(body.ToArray());
+        StreamMessageProperties.ApplyTo(message, options.Properties);
+        await _confirmations.PublishAsync(_producer, _stream, message, ct).ConfigureAwait(false);
     }
 
     public async Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, PublishOptions options, IReadOnlyDictionary<string, object?> applicationProperties, string? messageId, string? correlationId, CancellationToken ct)
@@ -227,7 +229,9 @@ internal sealed class StreamProducerHandle : IStreamPlainProducerHandle
     {
         ArgumentNullException.ThrowIfNull(options);
         ct.ThrowIfCancellationRequested();
-        await _confirmations.PublishWithIdAsync(_producer, _stream, publishingId, new Message(body.ToArray()), ct).ConfigureAwait(false);
+        var message = new Message(body.ToArray());
+        StreamMessageProperties.ApplyTo(message, options.Properties);
+        await _confirmations.PublishWithIdAsync(_producer, _stream, publishingId, message, ct).ConfigureAwait(false);
     }
 
     public async ValueTask DisposeAsync()
@@ -321,6 +325,7 @@ internal sealed class SuperStreamProducerHandle : IStreamSuperProducerHandle
         if (string.IsNullOrWhiteSpace(options.RoutingKey))
             throw new StreamBusConfigurationException($"Super-stream publish to '{_stream}' requires a routing key.");
         ct.ThrowIfCancellationRequested();
+        StreamMessageProperties.ApplyTo(message, options.Properties);
         _routing.Stamp(message, options.RoutingKey);
         try
         {

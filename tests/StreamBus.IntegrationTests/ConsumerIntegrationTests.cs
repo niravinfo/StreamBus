@@ -5,6 +5,8 @@ using RabbitMQ.Stream.Client;
 
 namespace StreamBus.IntegrationTests;
 
+public sealed record PropertyHeaderPayload(int Id);
+
 public sealed class ConsumerIntegrationTests : IAsyncDisposable
 {
     private static string User() => Environment.GetEnvironmentVariable("STREAMBUS_USER") ?? "app";
@@ -440,5 +442,83 @@ public sealed class ConsumerIntegrationTests : IAsyncDisposable
             lock (observed) return observed.Any(m => m.Value == 0);
         }, TimeSpan.FromSeconds(30), "inflight back to 0");
         await c.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task Properties_survive_to_consume_side_on_plain_and_super_streams()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var stream = Unique("props-plain");
+        var super = Unique("props-super");
+        var admin = await ConnectAdminAsync();
+        await using var _ = admin;
+        await admin.CreateStream(new StreamSpec(stream));
+        await admin.CreateSuperStream(new PartitionsSuperStreamSpec(super, 2));
+        _streams.Add(stream);
+        _superStreams.Add(super);
+
+        var properties = new StreamMessageProperties
+        {
+            MessageId = "m-props",
+            CorrelationId = "c-props",
+            Headers = new Dictionary<string, object?>
+            {
+                ["tenant"] = "acme",
+                ["attempt"] = 3,
+                ["sequence"] = 9_000_000_000L,
+                ["flag"] = true,
+                ["payload"] = "{\"Id\":7}",
+            },
+        };
+
+        var pub = await BusInstance.StartAsync("props-pub");
+        try
+        {
+            await pub.Bus.PublishRawAsync(stream, Body("plain"), new PublishOptions { Properties = properties }, ct);
+            await pub.Bus.PublishRawAsync(super, Body("super"),
+                new PublishOptions { IsSuperStream = true, RoutingKey = "key-a", Properties = properties }, ct);
+        }
+        finally { await pub.DisposeAsync(); }
+
+        var seen = new List<(string Kind, ConsumeContext Context)>();
+        var consumer = await BusInstance.StartAsync("props-con");
+        try
+        {
+            await using var plain = await consumer.Bus.ConsumeAsync(
+                stream,
+                new ConsumeOptions { Reference = "props-plain-grp", Offset = ConsumeOffset.AlwaysFirst },
+                ctx =>
+                {
+                    lock (seen) seen.Add(("plain", ctx));
+                    return Task.CompletedTask;
+                },
+                ct);
+            await using var superSub = await consumer.Bus.ConsumeAsync(
+                super,
+                new ConsumeOptions { IsSuperStream = true, Reference = "props-super-grp", Offset = ConsumeOffset.AlwaysFirst },
+                ctx =>
+                {
+                    lock (seen) seen.Add(("super", ctx));
+                    return Task.CompletedTask;
+                },
+                ct);
+            await WaitForAsync(() => Count(seen) >= 2, TimeSpan.FromSeconds(30), "plain and super property messages");
+        }
+        finally { await consumer.DisposeAsync(); }
+
+        Assert.Contains(seen, x => x.Kind == "plain");
+        Assert.Contains(seen, x => x.Kind == "super");
+        foreach (var (_, context) in seen)
+        {
+            Assert.Equal("m-props", context.Metadata.MessageId);
+            Assert.Equal("c-props", context.Metadata.CorrelationId);
+            Assert.Equal("acme", context.Metadata.GetString("tenant"));
+            Assert.Equal(3, context.Metadata.GetInt("attempt"));
+            Assert.Equal(9_000_000_000L, context.Metadata.GetLong("sequence"));
+            Assert.True(context.Metadata.GetBool("flag"));
+            var payload = context.Metadata.GetJson<PropertyHeaderPayload>("payload");
+            Assert.NotNull(payload);
+            Assert.Equal(7, payload.Id);
+        }
     }
 }

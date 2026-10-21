@@ -142,7 +142,7 @@ internal abstract class StreamBusCore<TBus> : IStreamBus
             _producers.PublishAsync(stream, envelope.Body, new PublishOptions(), ct2), ct);
     }
     public Task<IStreamConsumer> ConsumeAsync(string stream, ConsumeOptions options, Func<ConsumeContext, Task> handler, CancellationToken ct = default)
-        => _consumers.ConsumeAsync(typeof(TBus), stream, options, handler, ct);
+        => _consumers.ConsumeAsync(typeof(TBus), stream, options, handler, ct, serializer: _serializer);
     public Task<ulong?> GetConsumerOffsetAsync(string stream, string reference, int partition, CancellationToken ct = default)
         => _consumers.GetOffsetAsync(stream, reference, partition, ct);
     public Task SetConsumerOffsetAsync(string stream, string reference, int partition, ulong offset, CancellationToken ct = default)
@@ -152,7 +152,7 @@ internal abstract class StreamBusCore<TBus> : IStreamBus
     public Task PublishResultAsync(string targetStream, ReadOnlyMemory<byte> result, ulong sourceOffset, PublishResultOptions options, CancellationToken ct = default)
         => _consumers.PublishResultAsync(targetStream, result, sourceOffset, options, ct);
     public Task<IStreamConsumer> ConsumeEffectivelyOnceAsync(string sourceStream, string targetStream, EffectivelyOnceOptions options, Func<ConsumeContext, Task<ReadOnlyMemory<byte>>> handler, CancellationToken ct = default)
-        => _consumers.ConsumeEffectivelyOnceAsync(typeof(TBus), sourceStream, targetStream, options, handler, ct);
+        => _consumers.ConsumeEffectivelyOnceAsync(typeof(TBus), sourceStream, targetStream, options, handler, ct, _serializer);
     internal Task StartAsync(CancellationToken ct) => _supervisor.StartAsync(ct);
 }
 

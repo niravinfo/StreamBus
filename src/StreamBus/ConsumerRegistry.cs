@@ -115,7 +115,8 @@ internal sealed class StreamConsumerRegistry
 
     public async Task<IStreamConsumer> ConsumeAsync(
         Type busType, string stream, ConsumeOptions options,
-        Func<ConsumeContext, Task> handler, CancellationToken ct = default, string? registrationName = null)
+        Func<ConsumeContext, Task> handler, CancellationToken ct = default, string? registrationName = null,
+        IStreamSerializer? serializer = null)
     {
         ArgumentNullException.ThrowIfNull(busType);
         ArgumentException.ThrowIfNullOrWhiteSpace(stream);
@@ -254,7 +255,7 @@ internal sealed class StreamConsumerRegistry
                     handle, stream, partitionStream, index, reference, options, handler,
                     _guard, state, StreamBusMetrics.Shared, _vhost, busName, errors,
                     _loggerFactory.CreateLogger<StreamPartitionConsumer>(), null, null, _scopes,
-                    _consumerFactory, healthCallback);
+                    _consumerFactory, healthCallback, serializer);
                 loops.Add((loop, loop.RunAsync(family.Token)));
             }
             // The attach point is fixed before ConsumeAsync returns: wait for every
@@ -298,7 +299,8 @@ internal sealed class StreamConsumerRegistry
 
     public async Task<IStreamConsumer> ConsumeEffectivelyOnceAsync(
         Type busType, string sourceStream, string targetStream, EffectivelyOnceOptions options,
-        Func<ConsumeContext, Task<ReadOnlyMemory<byte>>> handler, CancellationToken ct = default)
+        Func<ConsumeContext, Task<ReadOnlyMemory<byte>>> handler, CancellationToken ct = default,
+        IStreamSerializer? serializer = null)
     {
         ArgumentNullException.ThrowIfNull(busType);
         ArgumentException.ThrowIfNullOrWhiteSpace(sourceStream);
@@ -390,7 +392,7 @@ internal sealed class StreamConsumerRegistry
                     static _ => Task.CompletedTask, // unreached in EO mode (the branch above calls ResultHandler)
                     _guard, state, StreamBusMetrics.Shared, _vhost, busName, errors,
                     _loggerFactory.CreateLogger<StreamPartitionConsumer>(), consumeOptions.EffectivelyOnce, _results, _scopes,
-                    _consumerFactory, healthCallback);
+                    _consumerFactory, healthCallback, serializer);
                 loops.Add((loop, loop.RunAsync(family.Token)));
             }
             // Same attach contract as ConsumeAsync: every partition's first broker

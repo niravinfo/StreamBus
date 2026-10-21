@@ -710,7 +710,7 @@ internal sealed class StreamBusHostedService : IHostedService
             {
                 attemptCt.ThrowIfCancellationRequested();
                 if (consumers is not null)
-                    await consumers.ConsumeAsync(reg.BusMarker, reg.Stream, options, handler, attemptCt, registrationName: reg.Stream).ConfigureAwait(false);
+                    await consumers.ConsumeAsync(reg.BusMarker, reg.Stream, options, handler, attemptCt, registrationName: reg.Stream, serializer: serializer).ConfigureAwait(false);
                 else
                     await entry.Bus.ConsumeAsync(reg.Stream, options, handler, attemptCt).ConfigureAwait(false);
                 return true;
