@@ -2,6 +2,7 @@ using System.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using RabbitMQ.Stream.Client;
 
 namespace StreamBus.UnitTests;
@@ -56,10 +57,12 @@ public sealed class HostingTests
     private sealed class CountingHandle : IStreamSystemHandle
     {
         public int DisposedCount;
+        public bool ThrowOnDispose;
         public bool IsClosed => DisposedCount > 0;
         public ValueTask DisposeAsync()
         {
             Interlocked.Increment(ref DisposedCount);
+            if (ThrowOnDispose) throw new InvalidOperationException("scripted supervisor dispose failure");
             return ValueTask.CompletedTask;
         }
         public Task<IStreamProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct)
@@ -104,6 +107,13 @@ public sealed class HostingTests
             await Task.Delay(Timeout.InfiniteTimeSpan, ct).ConfigureAwait(false);
             throw new OperationCanceledException(ct);
         }
+    }
+
+    private sealed class CapturingLoggerProvider : ILoggerProvider
+    {
+        public readonly ListLogger Logger = new();
+        public ILogger CreateLogger(string categoryName) => Logger;
+        public void Dispose() { }
     }
 
     private sealed class FatalConnector : IStreamSystemConnector
@@ -397,6 +407,55 @@ public sealed class HostingTests
         {
             await hosted.StopAsync(CancellationToken.None);
         }
+    }
+
+    [Fact]
+    public async Task Stop_during_blocking_startup_rethrows_OCE_not_timeout()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddStreamBus((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("app", "secret")));
+        services.AddStreamBusHosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(30)));
+        services.AddSingleton<IStreamSystemConnector>(new NeverReadyConnector());
+        await using var sp = services.BuildServiceProvider();
+        var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
+        try
+        {
+            using var stop = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
+            var ex = await Record.ExceptionAsync(() => hosted.StartAsync(stop.Token));
+            Assert.IsAssignableFrom<OperationCanceledException>(ex);
+            Assert.IsNotType<StreamBusTimeoutException>(ex);
+        }
+        finally
+        {
+            await hosted.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task Stop_logs_dispose_failures_instead_of_swallowing()
+    {
+        var provider = new CapturingLoggerProvider();
+        var services = new ServiceCollection();
+        services.AddLogging(b => b.AddProvider(provider));
+        services.AddStreamBus((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("app", "secret")));
+        services.AddSingleton<IStreamSystemConnector>(new SuccessConnector(new CountingHandle { ThrowOnDispose = true }));
+        await using var sp = services.BuildServiceProvider();
+        var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
+        await hosted.StartAsync(TestContext.Current.CancellationToken);
+
+        var registry = sp.GetRequiredService<IStreamBusRegistry>();
+        var before = registry.SupervisorFor("/");
+        await before.WaitUntilReadyAsync(ReadinessPolicy.Indefinitely, TestContext.Current.CancellationToken);
+
+        await hosted.StopAsync(CancellationToken.None);
+
+        Assert.Contains(provider.Logger.Lines, line =>
+            line.Contains("Supervisor dispose did not complete cleanly", StringComparison.Ordinal));
+
+        var after = registry.SupervisorFor("/");
+        Assert.NotSame(before, after);
+        await after.DisposeAsync();
     }
 
     [Fact]

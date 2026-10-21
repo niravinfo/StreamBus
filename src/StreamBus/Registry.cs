@@ -12,6 +12,7 @@ public interface IStreamBusRegistry
     IEnumerable<(string Vhost, string BusType, BusConnectionState State)> DescribeStates();
     internal BusEntry GetOrCreateEntry(Type busType, string vhost);
     internal StreamBusConnectionSupervisor SupervisorFor(string vhost);
+    internal void RemoveSupervisor(string vhost);
     internal StreamTopologyRegistry TopologyFor(string vhost);
     internal StreamBusHealthAggregator HealthFor(string vhost);
     internal IReadOnlyCollection<StreamBusHealthAggregator> HealthAggregators { get; }
@@ -106,6 +107,16 @@ public sealed class StreamBusRegistry : IStreamBusRegistry
 
     StreamBusConnectionSupervisor IStreamBusRegistry.SupervisorFor(string vhost)
         => SupervisorForCore(vhost);
+
+    internal void RemoveSupervisor(string vhost)
+    {
+        _supervisors.TryRemove(vhost, out _);
+        // A replacement supervisor must re-subscribe its connection state, or
+        // health would keep reporting the disposed supervisor's last state.
+        _healthWired.TryRemove(vhost, out _);
+    }
+
+    void IStreamBusRegistry.RemoveSupervisor(string vhost) => RemoveSupervisor(vhost);
 
     internal StreamTopologyRegistry TopologyFor(string vhost)
         => _topologies.GetOrAdd(vhost, _ => new StreamTopologyRegistry(SupervisorForCore(vhost), vhost, _loggerFactory.CreateLogger<StreamTopologyRegistry>()));

@@ -329,7 +329,7 @@ public sealed class StreamBusHostedService : IHostedService
 {
     private readonly StreamBusConfigStore _store;
     private readonly IStreamBusRegistry _registry;
-    private readonly List<StreamBusConnectionSupervisor> _started = new();
+    private readonly List<(string Vhost, StreamBusConnectionSupervisor Supervisor)> _started = new();
     private readonly object _gate = new();
     private readonly ILogger<StreamBusHostedService> _logger;
     private readonly IServiceScopeFactory? _scopes;
@@ -373,7 +373,7 @@ public sealed class StreamBusHostedService : IHostedService
         {
             var supervisor = _registry.SupervisorFor(vhost);
             await supervisor.StartAsync(ct).ConfigureAwait(false);
-            lock (_gate) _started.Add(supervisor);
+            lock (_gate) _started.Add((vhost, supervisor));
             supervisors.Add((vhost, _hosting.StartupTimeout, supervisor));
         }
         CancellationTokenSource startupCts;
@@ -475,6 +475,11 @@ public sealed class StreamBusHostedService : IHostedService
                 if (readiness == BusReadiness.Fatal)
                     throw new StreamBusFatalException("A StreamBus connection reported Fatal during startup.");
             }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                // Host is stopping: cancelling the STARTUP wait is NOT a "Timed out" event.
+                throw;
+            }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested)
             {
                 var effective = timeout ?? (timeouts.Count > 0 ? timeouts.Max() : (TimeSpan?)null);
@@ -502,6 +507,11 @@ public sealed class StreamBusHostedService : IHostedService
             try
             {
                 await Task.WhenAll(startupTasks).WaitAsync(cts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                // Host is stopping: this is a shutdown, not a startup budget expiry.
+                throw;
             }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested)
             {
@@ -748,7 +758,7 @@ public sealed class StreamBusHostedService : IHostedService
         foreach (var consumer in _registry.ActiveConsumers)
         {
             try { await consumer.DisposeAsync().ConfigureAwait(false); }
-            catch (Exception) { /* shutdown best-effort; supervisor disposal below still runs */ }
+            catch (Exception ex) { _logger.LogWarning(ex, "Consumer dispose did not complete cleanly during StopAsync."); }
         }
         CancellationTokenSource? startupCts;
         lock (_gate)
@@ -761,14 +771,18 @@ public sealed class StreamBusHostedService : IHostedService
             try { startupCts.Cancel(); }
             finally { startupCts.Dispose(); }
         }
-        List<StreamBusConnectionSupervisor> copy;
+        List<(string Vhost, StreamBusConnectionSupervisor Supervisor)> copy;
         lock (_gate)
         {
-            copy = new List<StreamBusConnectionSupervisor>(_started);
+            copy = new List<(string, StreamBusConnectionSupervisor)>(_started);
             _started.Clear();
         }
-        foreach (var supervisor in copy)
-            await supervisor.DisposeAsync().ConfigureAwait(false);
+        foreach (var (vhost, supervisor) in copy)
+        {
+            try { await supervisor.DisposeAsync().ConfigureAwait(false); }
+            catch (Exception ex) { _logger.LogWarning(ex, "Supervisor dispose did not complete cleanly during StopAsync for vhost '{Vhost}'.", vhost); }
+            finally { _registry.RemoveSupervisor(vhost); }
+        }
     }
 }
 
