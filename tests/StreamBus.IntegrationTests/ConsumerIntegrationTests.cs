@@ -9,6 +9,8 @@ public sealed record PropertyHeaderPayload(int Id);
 
 public sealed class ConsumerIntegrationTests : IAsyncDisposable
 {
+    public ConsumerIntegrationTests() => IntegrationLane.RequireBroker();
+
     private static string User() => Environment.GetEnvironmentVariable("STREAMBUS_USER") ?? "app";
     private static string Password() => Environment.GetEnvironmentVariable("STREAMBUS_PASSWORD") ?? "password";
     private readonly List<string> _streams = new();

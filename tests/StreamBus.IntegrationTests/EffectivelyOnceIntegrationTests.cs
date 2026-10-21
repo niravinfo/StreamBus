@@ -16,6 +16,8 @@ internal sealed class EoAnnotatingFilter : IStreamConsumeFilter
 
 public sealed class EffectivelyOnceIntegrationTests : IAsyncDisposable
 {
+    public EffectivelyOnceIntegrationTests() => IntegrationLane.RequireBroker();
+
     private static string User() => Environment.GetEnvironmentVariable("STREAMBUS_USER") ?? "app";
     private static string Password() => Environment.GetEnvironmentVariable("STREAMBUS_PASSWORD") ?? "password";
     private readonly List<string> _streams = new();
