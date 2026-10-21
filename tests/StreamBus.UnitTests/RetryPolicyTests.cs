@@ -124,6 +124,21 @@ public sealed class RetryPolicyTests
     }
 
     [Fact]
+    public void Unit_multiplier_is_allowed_and_yields_a_constant_delay()
+    {
+        var log = new ListLogger();
+        var policy = new RetryPolicy
+        {
+            BaseDelay = TimeSpan.FromMilliseconds(25),
+            Multiplier = 1.0,
+            MaxDelay = TimeSpan.FromSeconds(30),
+            MaxJitter = TimeSpan.Zero,
+        };
+        Assert.Equal(TimeSpan.FromMilliseconds(25), RetryDelays.ResolveDelay(policy, 1, new InvalidOperationException(), log));
+        Assert.Equal(TimeSpan.FromMilliseconds(25), RetryDelays.ResolveDelay(policy, 5, new InvalidOperationException(), log));
+    }
+
+    [Fact]
     public void Astronomical_base_delay_clamps_to_max_without_throwing()
     {
         var log = new ListLogger();

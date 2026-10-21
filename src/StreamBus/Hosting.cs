@@ -81,6 +81,7 @@ public static class ServiceCollectionExtensions
         var store = GetOrCreateStore(services);
         store.Add(busType, options);
         var publishStore = GetOrCreatePublishStore(services);
+        var consumeFilterStore = GetOrCreateConsumeFilterStore(services);
         var router = new StreamPublishRouter(publishStore);
         var endpointStore = GetOrCreateEndpointStore(services);
         IReadOnlyList<DeclaredStream> DeclarationsFor(Type marker)
@@ -103,7 +104,8 @@ public static class ServiceCollectionExtensions
                 sp.GetService<IServiceScopeFactory>(),
                 DeclarationsFor,
                 publishStore,
-                sp));
+                sp,
+                consumeFilterStore));
         services.TryAddSingleton<IHostedService>(sp => StreamBusHostedService.Create(sp));
         services.TryAddSingleton<StreamBusHealthCheck>();
         services.TryAddSingleton<IHealthCheck>(sp => sp.GetRequiredService<StreamBusHealthCheck>());
@@ -156,6 +158,16 @@ public static class ServiceCollectionExtensions
         if (existing?.ImplementationInstance is StreamBusPublishStore store) return store;
         var created = new StreamBusPublishStore();
         services.AddSingleton<StreamBusPublishStore>(created);
+        return created;
+    }
+
+    internal static StreamBusConsumeFilterStore GetOrCreateConsumeFilterStore(IServiceCollection services)
+    {
+        var existing = services.FirstOrDefault(d =>
+            d.ServiceType == typeof(StreamBusConsumeFilterStore) && d.ImplementationInstance is StreamBusConsumeFilterStore);
+        if (existing?.ImplementationInstance is StreamBusConsumeFilterStore store) return store;
+        var created = new StreamBusConsumeFilterStore();
+        services.AddSingleton<StreamBusConsumeFilterStore>(created);
         return created;
     }
 
@@ -281,19 +293,27 @@ internal static class TypedConsumerHandler
             }
             if (ReferenceEquals(message, null))
                 throw new StreamBusDeserializationException(raw.Stream, raw.Partition, raw.Offset, typeof(T), null);
-            using var scope = scopes.CreateScope();
-            var consumer = scope.ServiceProvider.GetRequiredService<TConsumer>();
-            await consumer.Consume(new ConsumeContext<T>
+            var ownedScope = raw.Services is null ? scopes.CreateScope() : null;
+            try
             {
-                Message = message,
-                Stream = raw.Stream,
-                Partition = raw.Partition,
-                Offset = raw.Offset,
-                RoutingValue = raw.RoutingValue,
-                Body = raw.Body,
-                Metadata = raw.Metadata,
-                CancellationToken = raw.CancellationToken,
-            }, raw.CancellationToken).ConfigureAwait(false);
+                var provider = raw.Services ?? ownedScope!.ServiceProvider;
+                var consumer = provider.GetRequiredService<TConsumer>();
+                await consumer.Consume(new ConsumeContext<T>
+                {
+                    Message = message,
+                    Stream = raw.Stream,
+                    Partition = raw.Partition,
+                    Offset = raw.Offset,
+                    RoutingValue = raw.RoutingValue,
+                    Body = raw.Body,
+                    Metadata = raw.Metadata,
+                    CancellationToken = raw.CancellationToken,
+                }, raw.CancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                ownedScope?.Dispose();
+            }
         };
 }
 

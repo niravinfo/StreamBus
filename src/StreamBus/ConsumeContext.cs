@@ -84,4 +84,5 @@ public sealed record ConsumeContext
     public required ReadOnlyMemory<byte> Body { get; init; }
     public required MessageMetadata Metadata { get; init; }
     public required CancellationToken CancellationToken { get; init; }
+    internal IServiceProvider? Services { get; init; }
 }

@@ -34,4 +34,7 @@ public sealed record ConsumeOptions
     internal Func<ExhaustedContext, CancellationToken, Task>? ExhaustionCallback { get; init; }
     internal DeadLetterOptions? DeadLetter { get; init; }
     internal DeadLetterOptions? ShadowedDeadLetter { get; init; }
+    internal IReadOnlyList<ConsumeFilterRegistration> ConsumeFilters { get; init; } = Array.Empty<ConsumeFilterRegistration>();
+    internal bool AllowPipelineSkip { get; init; }
+    internal bool IsTypedEndpoint { get; init; }
 }

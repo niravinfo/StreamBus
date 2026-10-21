@@ -20,9 +20,14 @@ public sealed record ErrorEnvelope
     public required string? RoutingValue { get; init; }
     public required string ErrorRoutingValue { get; init; }
 
+    /// <summary>Headers added by the consume pipeline for the failed delivery.
+    /// They are forwarded on top of the envelope's own fields; envelope fields
+    /// win when a key collides.</summary>
+    public IReadOnlyDictionary<string, object?>? OutputHeaders { get; init; }
+
     private const string P = "streambus.error.";
 
-    public Dictionary<string, object?> ToApplicationProperties() => new()
+    internal Dictionary<string, object?> EnvelopeApplicationProperties() => new()
     {
         [P + "source-stream"] = SourceStream,
         [P + "source-partition"] = SourcePartition.ToString(CultureInfo.InvariantCulture),
@@ -38,6 +43,20 @@ public sealed record ErrorEnvelope
         [P + "routing-value"] = RoutingValue,
         [P + "error-routing-value"] = ErrorRoutingValue,
     };
+
+    public Dictionary<string, object?> ToApplicationProperties()
+    {
+        var properties = EnvelopeApplicationProperties();
+        if (OutputHeaders is not null)
+        {
+            foreach (var (key, value) in OutputHeaders)
+            {
+                if (!properties.ContainsKey(key))
+                    properties[key] = value;
+            }
+        }
+        return properties;
+    }
 
     public Dictionary<string, object?> ToHeaders()
     {

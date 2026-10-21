@@ -126,6 +126,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
     private readonly Func<RawConsumerConfig, CancellationToken, Task<IStreamConsumerHandle>> _createConsumer;
     private readonly Action<int, BusRegistrationState, string?>? _health;
     private readonly IStreamSerializer _serializer;
+    private readonly ConsumePipeline _pipeline;
 
     private readonly SemaphoreSlim _dispatchGate = new(1, 1);
     private readonly SemaphoreSlim _storeGate = new(1, 1);
@@ -156,7 +157,8 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
         IServiceScopeFactory? scopeFactory = null,
         Func<RawConsumerConfig, CancellationToken, Task<IStreamConsumerHandle>>? consumerFactory = null,
         Action<int, BusRegistrationState, string?>? health = null,
-        IStreamSerializer? serializer = null)
+        IStreamSerializer? serializer = null,
+        ConsumePipeline? pipeline = null)
     {
         ArgumentNullException.ThrowIfNull(system);
         ArgumentNullException.ThrowIfNull(stream);
@@ -196,6 +198,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                 await _system.CreateRawConsumerAsync(config, ct).ConfigureAwait(false)));
         _health = health;
         _serializer = serializer ?? SystemTextJsonStreamSerializer.Default;
+        _pipeline = pipeline ?? new ConsumePipeline(Array.Empty<IStreamConsumeFilter>());
         // Same key format Task 4's SetOffsetAsync overwrites on the shared guard.
         _waterKey = $"{reference}@{partitionStream}";
         _storer = new OffsetStorer(
@@ -483,10 +486,12 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
             var offset = context.Offset;
             Interlocked.Exchange(ref _state.LastDelivered, (long)offset);
 
+            using var messageScope = _pipeline.Count > 0 && _scopes is not null ? _scopes.CreateScope() : null;
+            var services = messageScope?.ServiceProvider;
             ConsumeContext consumeContext;
             try
             {
-                consumeContext = BuildContext(offset, message, attach.LoopToken);
+                consumeContext = BuildContext(offset, message, attach.LoopToken, services);
             }
             catch (Exception ex)
             {
@@ -494,6 +499,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                 return;
             }
 
+            HeaderWriter? lastHeaders = null;
             Interlocked.Increment(ref _state.Inflight);
             try
             {
@@ -506,13 +512,21 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                 // dispatch gate, so a retry sleep stalls exactly this partition and order
                 // is preserved by construction. `attempts` counts completed handler
                 // attempts (initial = 1), matching MaxAttempts semantics.
+                var allowSkip = !_options.IsTypedEndpoint || _options.AllowPipelineSkip;
                 var attempts = 0;
                 while (true)
                 {
                     attempts++;
                     try
                     {
-                        await _handler(consumeContext).ConfigureAwait(false);
+                        var headers = _pipeline.Count > 0 ? new HeaderWriter() : null;
+                        lastHeaders = headers;
+                        await InvokeHandlerPipelineAsync(
+                            consumeContext,
+                            headers,
+                            services,
+                            allowSkip,
+                            attach.LoopToken).ConfigureAwait(false);
                         break;
                     }
                     catch (OperationCanceledException) when (attach.LoopToken.IsCancellationRequested)
@@ -537,7 +551,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                         {
                             Interlocked.Decrement(ref _state.Inflight);
                             Interlocked.Exchange(ref _state.RetryBlocked, 0);
-                            await ExhaustAsync(consumer, offset, consumeContext, attempts, ex, attach).ConfigureAwait(false);
+                            await ExhaustAsync(consumer, offset, consumeContext, attempts, ex, attach, lastHeaders?.Snapshot()).ConfigureAwait(false);
                             return;
                         }
                         Interlocked.Exchange(ref _state.RetryBlocked, 1);
@@ -584,11 +598,43 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
         }
     }
 
+    // The pipeline wraps the whole outer delegate. Filters run per retry attempt
+    // (so their exceptions use the existing retry/exhaustion machinery), while
+    // the per-message DI scope is created once in DispatchAsync and shared with
+    // the typed consumer.
+    private async Task InvokeHandlerPipelineAsync(
+        ConsumeContext consumeContext,
+        HeaderWriter? headers,
+        IServiceProvider? services,
+        bool allowSkip,
+        CancellationToken ct)
+    {
+        if (_pipeline.Count == 0)
+        {
+            await _handler(consumeContext).ConfigureAwait(false);
+            return;
+        }
+
+        var pipelineContext = new StreamConsumeFilterContext
+        {
+            Message = consumeContext,
+            OutputHeaders = headers ?? new HeaderWriter(),
+            Services = services ?? EmptyServiceProvider.Instance,
+        };
+        await _pipeline.RunAsync(
+            pipelineContext,
+            context => allowSkip && context.SkipHandler
+                ? Task.CompletedTask
+                : _handler(consumeContext),
+            ct,
+            allowSkip).ConfigureAwait(false);
+    }
+
     // SkipAfterDeadline exhaustion: confirmed error-stream handoff first, single
     // advance-store second, observe-only hook third. Never throws into dispatch:
     // HandOffAsync's commit failure propagates to the dispatch safety net (attach
     // recycle + redeliver), never to a silent skip.
-    private async Task ExhaustAsync(IStreamConsumerHandle consumer, ulong offset, ConsumeContext consumeContext, int attempts, Exception lastError, AttachState attach)
+    private async Task ExhaustAsync(IStreamConsumerHandle consumer, ulong offset, ConsumeContext consumeContext, int attempts, Exception lastError, AttachState attach, IReadOnlyDictionary<string, object?>? outputHeaders = null)
     {
         if (_options.ExhaustionCallback is { } owned)
         {
@@ -643,6 +689,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                 CorrelationId = consumeContext.Metadata.CorrelationId,
                 RoutingValue = consumeContext.RoutingValue,
                 ErrorRoutingValue = _stream,
+                OutputHeaders = outputHeaders,
             };
             _logger.LogWarning(lastError,
                 "Retry budget exhausted for stream {Stream} partition {Partition} offset {Offset} after {Attempts} attempts; handing off to error queue {ErrorQueue}.",
@@ -674,6 +721,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
             CorrelationId = consumeContext.Metadata.CorrelationId,
             RoutingValue = consumeContext.RoutingValue,
             ErrorRoutingValue = _options.ErrorStream.RoutingValue ?? _stream,
+            OutputHeaders = outputHeaders,
         };
         _logger.LogWarning(lastError,
             "Retry budget exhausted for stream {Stream} partition {Partition} offset {Offset} after {Attempts} attempts; handing off to error stream {ErrorStream}.",
@@ -749,7 +797,29 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                 attempts++;
                 try
                 {
-                    result = await _eo!.ResultHandler(consumeContext).ConfigureAwait(false);
+                    if (_pipeline.Count == 0)
+                    {
+                        result = await _eo!.ResultHandler(consumeContext).ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        var pipelineContext = new StreamConsumeFilterContext
+                        {
+                            Message = consumeContext,
+                            OutputHeaders = new HeaderWriter(),
+                            Services = consumeContext.Services ?? EmptyServiceProvider.Instance,
+                        };
+                        ReadOnlyMemory<byte> pipelineResult = default;
+                        await _pipeline.RunAsync(
+                            pipelineContext,
+                            async _ =>
+                            {
+                                pipelineResult = await _eo!.ResultHandler(consumeContext).ConfigureAwait(false);
+                            },
+                            attach.LoopToken,
+                            allowSkip: false).ConfigureAwait(false);
+                        result = pipelineResult;
+                    }
                     break;
                 }
                 catch (OperationCanceledException) when (attach.LoopToken.IsCancellationRequested)
@@ -834,7 +904,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
         }
     }
 
-    private ConsumeContext BuildContext(ulong offset, Message message, CancellationToken ct)
+    private ConsumeContext BuildContext(ulong offset, Message message, CancellationToken ct, IServiceProvider? services = null)
     {
         var body = message.Data.Contents.ToArray();
         IDictionary<string, object>? appProps = message.ApplicationProperties;
@@ -849,6 +919,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
             Body = body,
             Metadata = metadata,
             CancellationToken = ct,
+            Services = services,
         };
     }
 

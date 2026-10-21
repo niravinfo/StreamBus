@@ -66,6 +66,9 @@ internal sealed class HeaderWriter : IStreamHeaderWriter
 
         return (callLevel ?? new StreamMessageProperties()) with { Headers = headers };
     }
+
+    internal IReadOnlyDictionary<string, object?> Snapshot()
+        => new Dictionary<string, object?>(_headers, StringComparer.Ordinal);
 }
 
 internal sealed class PublishPipeline

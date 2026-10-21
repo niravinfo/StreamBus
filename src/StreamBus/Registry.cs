@@ -39,6 +39,7 @@ public sealed class StreamBusRegistry : IStreamBusRegistry
     private readonly Func<Type, IReadOnlyList<DeclaredStream>> _declarationResolver;
     private readonly StreamBusPublishStore? _publishStore;
     private readonly IServiceProvider? _rootProvider;
+    private readonly StreamBusConsumeFilterStore? _consumeFilterStore;
     private readonly object _entryGate = new();
 
     public StreamBusRegistry(
@@ -50,7 +51,8 @@ public sealed class StreamBusRegistry : IStreamBusRegistry
         IServiceScopeFactory? scopeFactory = null,
         Func<Type, IReadOnlyList<DeclaredStream>>? declarationResolver = null,
         StreamBusPublishStore? publishStore = null,
-        IServiceProvider? rootProvider = null)
+        IServiceProvider? rootProvider = null,
+        StreamBusConsumeFilterStore? consumeFilterStore = null)
     {
         _resolveOptions = resolveOptions;
         _createSupervisor = createSupervisor;
@@ -61,6 +63,7 @@ public sealed class StreamBusRegistry : IStreamBusRegistry
         _declarationResolver = declarationResolver ?? (_ => Array.Empty<DeclaredStream>());
         _publishStore = publishStore;
         _rootProvider = rootProvider;
+        _consumeFilterStore = consumeFilterStore;
     }
 
     public IStreamBus GetOrCreateBus(string vhost)
@@ -100,7 +103,7 @@ public sealed class StreamBusRegistry : IStreamBusRegistry
         => _results.GetOrAdd(vhost, _ => new ResultProducerRegistry(SupervisorForCore(vhost), vhost));
 
     internal StreamConsumerRegistry ConsumersFor(string vhost)
-        => _consumers.GetOrAdd(vhost, _ => new StreamConsumerRegistry(SupervisorForCore(vhost), vhost, ProducersFor(vhost), _loggerFactory, ResultProducersFor(vhost), _scopes, ErrorQueuesFor(vhost), HealthFor(vhost)));
+        => _consumers.GetOrAdd(vhost, _ => new StreamConsumerRegistry(SupervisorForCore(vhost), vhost, ProducersFor(vhost), _loggerFactory, ResultProducersFor(vhost), _scopes, ErrorQueuesFor(vhost), HealthFor(vhost), consumeFilters: _consumeFilterStore, rootProvider: _rootProvider));
 
     internal StreamBusHealthAggregator HealthFor(string vhost)
         => _health.GetOrAdd(vhost, static _ => new StreamBusHealthAggregator());

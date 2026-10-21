@@ -37,6 +37,10 @@ public interface IStreamBusConfigurator
     void UsePublishFilter(Type filterType);
     void UsePublishFilter(Func<IServiceProvider, IStreamPublishFilter> factory);
     void UsePublishFilter(IStreamPublishFilter instance);
+    void UseConsumeFilter<TFilter>() where TFilter : class, IStreamConsumeFilter;
+    void UseConsumeFilter(Type filterType);
+    void UseConsumeFilter(Func<IServiceProvider, IStreamConsumeFilter> factory);
+    void UseConsumeFilter(IStreamConsumeFilter instance);
 }
 
 public interface IReceiveEndpointConfigurator
@@ -49,6 +53,11 @@ public interface IReceiveEndpointConfigurator
     void Readiness(ReadinessPolicy policy);
     void UseMessageRetry(Action<IRetryConfigurator> configure);
     void UseRetry(RetryPolicy policy);
+    void UseConsumeFilter<TFilter>() where TFilter : class, IStreamConsumeFilter;
+    void UseConsumeFilter(Type filterType);
+    void UseConsumeFilter(Func<IServiceProvider, IStreamConsumeFilter> factory);
+    void UseConsumeFilter(IStreamConsumeFilter instance);
+    void AllowPipelineSkip(bool enabled = true);
     void DeadLetterToStream(string name, Action<IStreamOptionsBuilder>? configure = null);
     void DeadLetterToStream(string name, StreamOptions spec);
     void DeadLetterToQueue(string name, DeadLetterQueueType type);
@@ -82,6 +91,8 @@ public sealed record ReceiveEndpointDescriptor
     public TimeSpan HandoffConfirmTimeout { get; init; } = TimeSpan.FromSeconds(10);
     public Func<ExhaustedContext, CancellationToken, Task>? OnExhausted { get; init; }
     public ReadinessPolicy Readiness { get; init; } = ReadinessPolicy.FailFastPolicy;
+    internal IReadOnlyList<ConsumeFilterRegistration> ConsumeFilters { get; init; } = Array.Empty<ConsumeFilterRegistration>();
+    internal bool AllowPipelineSkip { get; init; }
 
     internal void Validate()
         => StreamOptionsValidation.Validate(
@@ -136,6 +147,7 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
     private IStreamSerializer _serializer = SystemTextJsonStreamSerializer.Default;
     private readonly List<(Type MessageType, string Stream, bool IsSuper, StreamOptions Spec)> _publishes = new();
     private readonly List<PublishFilterRegistration> _publishFilters = new();
+    private readonly List<ConsumeFilterRegistration> _consumeFilters = new();
     private readonly List<ReceiveEndpointDescriptor> _endpoints = new();
     private RetryPolicy? _globalRetry;
     private bool _hostCalled;
@@ -149,6 +161,8 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
     internal IReadOnlyList<(Type MessageType, string Stream, bool IsSuper, StreamOptions Spec)> Publishes => _publishes;
 
     internal IReadOnlyList<PublishFilterRegistration> PublishFilters => _publishFilters;
+
+    internal IReadOnlyList<ConsumeFilterRegistration> ConsumeFilters => _consumeFilters;
 
     internal IReadOnlyList<ReceiveEndpointDescriptor> Endpoints => _endpoints;
 
@@ -289,6 +303,53 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
         }
     }
 
+    public void UseConsumeFilter<TFilter>() where TFilter : class, IStreamConsumeFilter
+    {
+        ValidateConsumeFilterType(typeof(TFilter));
+        AddConsumeFilter(ConsumeFilterRegistration.ForType(typeof(TFilter)));
+    }
+
+    public void UseConsumeFilter(Type filterType)
+    {
+        ArgumentNullException.ThrowIfNull(filterType);
+        ValidateConsumeFilterType(filterType);
+        AddConsumeFilter(ConsumeFilterRegistration.ForType(filterType));
+    }
+
+    public void UseConsumeFilter(Func<IServiceProvider, IStreamConsumeFilter> factory)
+    {
+        ArgumentNullException.ThrowIfNull(factory);
+        AddConsumeFilter(ConsumeFilterRegistration.ForFactory(factory));
+    }
+
+    public void UseConsumeFilter(IStreamConsumeFilter instance)
+    {
+        ArgumentNullException.ThrowIfNull(instance);
+        AddConsumeFilter(ConsumeFilterRegistration.ForInstance(instance));
+    }
+
+    private void AddConsumeFilter(ConsumeFilterRegistration filter)
+    {
+        if (filter.FilterType is { } type && _consumeFilters.Any(existing => existing.FilterType == type))
+        {
+            throw new StreamBusConfigurationException(
+                $"Consume filter '{type}' is already registered on this bus; duplicate registration would run it twice.");
+        }
+        _consumeFilters.Add(filter);
+    }
+
+    private static void ValidateConsumeFilterType(Type filterType)
+    {
+        if (!typeof(IStreamConsumeFilter).IsAssignableFrom(filterType)
+            || !filterType.IsClass
+            || filterType.IsAbstract
+            || filterType.ContainsGenericParameters)
+        {
+            throw new StreamBusConfigurationException(
+                $"Consume filter type '{filterType}' must be a concrete IStreamConsumeFilter implementation.");
+        }
+    }
+
     internal StreamBusOptions Build(Type busType)
     {
         ArgumentNullException.ThrowIfNull(busType);
@@ -380,6 +441,8 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
         private TimeSpan _handoffConfirmTimeout = TimeSpan.FromSeconds(10);
         private Func<ExhaustedContext, CancellationToken, Task>? _onExhausted;
         private ReadinessPolicy _readiness = ReadinessPolicy.FailFastPolicy;
+        private readonly List<ConsumeFilterRegistration> _consumeFilters = new();
+        private bool _allowPipelineSkip;
 
         public ReceiveEndpointConfigurator(string stream) => _stream = stream;
 
@@ -427,6 +490,48 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
         {
             ArgumentNullException.ThrowIfNull(policy);
             _retryOverride = policy;
+        }
+        public void UseConsumeFilter<TFilter>() where TFilter : class, IStreamConsumeFilter
+        {
+            ValidateConsumeFilterType(typeof(TFilter));
+            AddConsumeFilter(ConsumeFilterRegistration.ForType(typeof(TFilter)));
+        }
+        public void UseConsumeFilter(Type filterType)
+        {
+            ArgumentNullException.ThrowIfNull(filterType);
+            ValidateConsumeFilterType(filterType);
+            AddConsumeFilter(ConsumeFilterRegistration.ForType(filterType));
+        }
+        public void UseConsumeFilter(Func<IServiceProvider, IStreamConsumeFilter> factory)
+        {
+            ArgumentNullException.ThrowIfNull(factory);
+            AddConsumeFilter(ConsumeFilterRegistration.ForFactory(factory));
+        }
+        public void UseConsumeFilter(IStreamConsumeFilter instance)
+        {
+            ArgumentNullException.ThrowIfNull(instance);
+            AddConsumeFilter(ConsumeFilterRegistration.ForInstance(instance));
+        }
+        public void AllowPipelineSkip(bool enabled = true) => _allowPipelineSkip = enabled;
+        private void AddConsumeFilter(ConsumeFilterRegistration filter)
+        {
+            if (filter.FilterType is { } type && _consumeFilters.Any(existing => existing.FilterType == type))
+            {
+                throw new StreamBusConfigurationException(
+                    $"Consume filter '{type}' is already registered on this endpoint; duplicate registration would run it twice.");
+            }
+            _consumeFilters.Add(filter);
+        }
+        private static void ValidateConsumeFilterType(Type filterType)
+        {
+            if (!typeof(IStreamConsumeFilter).IsAssignableFrom(filterType)
+                || !filterType.IsClass
+                || filterType.IsAbstract
+                || filterType.ContainsGenericParameters)
+            {
+                throw new StreamBusConfigurationException(
+                    $"Consume filter type '{filterType}' must be a concrete IStreamConsumeFilter implementation.");
+            }
         }
         public void DeadLetterToStream(string name, Action<IStreamOptionsBuilder>? configure = null)
         {
@@ -516,6 +621,8 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
                 HandoffConfirmTimeout = _handoffConfirmTimeout,
                 OnExhausted = _onExhausted,
                 Readiness = _readiness,
+                ConsumeFilters = _consumeFilters.ToArray(),
+                AllowPipelineSkip = _allowPipelineSkip,
             };
             descriptor.Validate();
             return descriptor;
@@ -562,12 +669,25 @@ public static class StreamBusConfiguratorExtensions
                 services.TryAddTransient(filterType, filterType);
         }
         publishStore.Seal(busType);
+        var consumeFilterStore = ServiceCollectionExtensions.GetOrCreateConsumeFilterStore(services);
+        foreach (var filter in configurator.ConsumeFilters)
+        {
+            consumeFilterStore.AddFilter(busType, filter);
+            if (filter.FilterType is { } filterType && filter.Instance is null)
+                services.TryAddTransient(filterType, filterType);
+        }
+        consumeFilterStore.Seal(busType);
         var endpointStore = ServiceCollectionExtensions.GetOrCreateEndpointStore(services);
         var consumerStore = ServiceCollectionExtensions.GetOrCreateConsumerStore(services);
         foreach (var descriptor in configurator.Endpoints)
         {
             endpointStore.Add(busType, descriptor);
             services.TryAddTransient(descriptor.ConsumerType, descriptor.ConsumerType);
+            foreach (var filter in descriptor.ConsumeFilters)
+            {
+                if (filter.FilterType is { } filterType && filter.Instance is null)
+                    services.TryAddTransient(filterType, filterType);
+            }
             var busName = busType.FullName ?? busType.Name;
             var derived = RetryDerivation.Derive(
                 configurator.GlobalRetry,
@@ -590,6 +710,9 @@ public static class StreamBusConfiguratorExtensions
                 ExhaustionCallback = derived.Kind == ExhaustionKind.Callback ? descriptor.OnExhausted : null,
                 DeadLetter = derived.Kind == ExhaustionKind.QueueHandoff ? derived.Queue : null,
                 ShadowedDeadLetter = derived.DestinationShadowed ? descriptor.DeadLetter : null,
+                ConsumeFilters = descriptor.ConsumeFilters,
+                AllowPipelineSkip = descriptor.AllowPipelineSkip,
+                IsTypedEndpoint = true,
             });
         }
         ServiceCollectionExtensions.AddShared(services, busType, options);
