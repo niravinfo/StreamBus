@@ -599,10 +599,11 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
         // MaxInterval timer then skips it via IsStored.
         await _errors.HandOffAsync(
             envelope,
-            (env, ct) => _errors.PublishHandoffAsync(errorStream, env, ct),
+            (env, ct) => _errors.PublishHandoffAsync(errorStream, env, _options.HandoffConfirmTimeout, ct),
             () => AdmitAndCommitStoreAsync(consumer, offset, attach, attach.LoopToken),
             (n, ex) => RetryDelays.ResolveDelay(_options.Retry, n, ex, _logger),
-            attach.LoopToken).ConfigureAwait(false);
+            attach.LoopToken,
+            _options.HandoffConfirmTimeout).ConfigureAwait(false);
         if (_options.OnRetryExhausted is { } hook)
         {
             var handoff = new ErrorHandoff

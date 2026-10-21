@@ -47,6 +47,7 @@ public interface IReceiveEndpointConfigurator
     void DeadLetterToStream(string name, Action<IStreamOptionsBuilder>? configure = null);
     void DeadLetterToStream(string name, StreamOptions spec);
     void DeadLetterToQueue(string name, DeadLetterQueueType type);
+    void ErrorHandoffTimeout(TimeSpan timeout);
     void OnExhausted(Func<ExhaustedContext, CancellationToken, Task> handler);
     void Partitions(int partitions);
     void MaxAge(TimeSpan maxAge);
@@ -72,6 +73,7 @@ public sealed record ReceiveEndpointDescriptor
     public OffsetStoreOptions OffsetStore { get; init; } = new();
     public RetryPolicy? RetryOverride { get; init; }
     public DeadLetterOptions? DeadLetter { get; init; }
+    public TimeSpan HandoffConfirmTimeout { get; init; } = TimeSpan.FromSeconds(10);
     public Func<ExhaustedContext, CancellationToken, Task>? OnExhausted { get; init; }
     public ReadinessPolicy Readiness { get; init; } = ReadinessPolicy.FailFastPolicy;
 }
@@ -339,6 +341,7 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
         private OffsetStoreOptions _store = new();
         private RetryPolicy? _retryOverride;
         private DeadLetterOptions? _deadLetter;
+        private TimeSpan _handoffConfirmTimeout = TimeSpan.FromSeconds(10);
         private Func<ExhaustedContext, CancellationToken, Task>? _onExhausted;
         private ReadinessPolicy _readiness = ReadinessPolicy.FailFastPolicy;
 
@@ -415,6 +418,12 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
                 throw new StreamBusConfigurationException($"ReceiveEndpoint '{_stream}': DeadLetterQueueType has an undefined value.");
             _deadLetter = new DeadLetterOptions { Name = name.Trim(), QueueType = type };
         }
+        public void ErrorHandoffTimeout(TimeSpan timeout)
+        {
+            if (timeout <= TimeSpan.Zero)
+                throw new StreamBusConfigurationException($"ReceiveEndpoint '{_stream}': ErrorHandoffTimeout must be positive.");
+            _handoffConfirmTimeout = timeout < TimeSpan.FromSeconds(1) ? TimeSpan.FromSeconds(1) : timeout;
+        }
         private void EnsureDeadLetterSlot(string attempted)
         {
             if (_deadLetter is not { } existing)
@@ -479,6 +488,7 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
                 OffsetStore = _store,
                 RetryOverride = _retryOverride,
                 DeadLetter = _deadLetter,
+                HandoffConfirmTimeout = _handoffConfirmTimeout,
                 OnExhausted = _onExhausted,
                 Readiness = _readiness,
             };
@@ -542,6 +552,7 @@ public static class StreamBusConfiguratorExtensions
                 Retry = derived.Policy,
                 ErrorStream = derived.Kind == ExhaustionKind.StreamHandoff ? derived.Stream : null,
                 ReadinessPolicy = descriptor.Readiness,
+                HandoffConfirmTimeout = descriptor.HandoffConfirmTimeout,
                 ExhaustionCallback = derived.Kind == ExhaustionKind.Callback ? descriptor.OnExhausted : null,
                 DeadLetter = derived.Kind == ExhaustionKind.QueueHandoff ? derived.Queue : null,
                 ShadowedDeadLetter = derived.DestinationShadowed ? descriptor.DeadLetter : null,

@@ -32,6 +32,10 @@ public sealed record ConsumeOptions
     public ErrorStreamOptions? ErrorStream { get; init; }
     public Func<ErrorHandoff, Task>? OnRetryExhausted { get; init; }
     public ReadinessPolicy ReadinessPolicy { get; init; } = ReadinessPolicy.FailFastPolicy;
+    /// <summary>Bound on the confirmed error-stream hand-off publish. A lost
+    /// confirmation surfaces as transient so the partition dispatch gate is
+    /// never wedged; the envelope stays replayable.</summary>
+    public TimeSpan HandoffConfirmTimeout { get; init; } = TimeSpan.FromSeconds(10);
     internal EffectivelyOnceConfig? EffectivelyOnce { get; init; }
     internal Func<ExhaustedContext, CancellationToken, Task>? ExhaustionCallback { get; init; }
     internal DeadLetterOptions? DeadLetter { get; init; }

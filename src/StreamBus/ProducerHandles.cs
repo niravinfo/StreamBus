@@ -64,10 +64,27 @@ internal sealed class ConfirmationTracker
 
     public void CancelAll()
     {
+        CancelAll(error: null);
+    }
+
+    // A connection drop never invokes ConfirmHandler for the lost publishing ids.
+    // Resolve every pending waiter with the supplied error so awaiters stop
+    // waiting and the registry invalidates the closed handle. Idempotent and
+    // safe from any thread; must not throw.
+    public void OnConnectionLost()
+        => CancelAll(new StreamBusTransientException(
+            "Producer connection closed before confirmation; publish outcome unknown."));
+
+    private void CancelAll(Exception? error)
+    {
         foreach (var publishingId in _pending.Keys)
         {
-            if (_pending.TryRemove(publishingId, out var tcs))
+            if (!_pending.TryRemove(publishingId, out var tcs))
+                continue;
+            if (error is null)
                 tcs.TrySetCanceled();
+            else
+                tcs.TrySetException(error);
         }
     }
 

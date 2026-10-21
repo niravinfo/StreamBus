@@ -82,6 +82,11 @@ public sealed class StreamSystemHandle : IStreamSystemHandle
             MessagesBufferSize = 100,
             Reference = reference,
             ConfirmHandler = confirmations.Complete,
+            ConnectionClosedHandler = _ =>
+            {
+                confirmations.OnConnectionLost();
+                return Task.CompletedTask;
+            },
         }, _factory.CreateLogger<RawProducer>()).ConfigureAwait(false);
         return new StreamProducerHandle(producer, stream, confirmations);
     }
@@ -97,6 +102,11 @@ public sealed class StreamSystemHandle : IStreamSystemHandle
             Reference = ProducerReference(stream),
             Routing = SuperStreamProducerHandle.RoutingFor,
             ConfirmHandler = confirmation => confirmations.Complete(confirmation.Item2),
+            ConnectionClosedHandler = (_, _) =>
+            {
+                confirmations.OnConnectionLost();
+                return Task.CompletedTask;
+            },
         }, _factory.CreateLogger<RawProducer>()).ConfigureAwait(false);
         return new SuperStreamProducerHandle(producer, stream, confirmations);
     }
@@ -117,6 +127,11 @@ public sealed class StreamSystemHandle : IStreamSystemHandle
             Reference = reference,
             Routing = SuperStreamProducerHandle.RoutingFor,
             ConfirmHandler = confirmation => confirmations.Complete(confirmation.Item2),
+            ConnectionClosedHandler = (_, _) =>
+            {
+                confirmations.OnConnectionLost();
+                return Task.CompletedTask;
+            },
         }, _factory.CreateLogger<RawProducer>()).ConfigureAwait(false);
         return new SuperStreamProducerHandle(producer, stream, confirmations);
     }

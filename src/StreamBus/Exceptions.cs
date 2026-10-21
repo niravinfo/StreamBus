@@ -1,5 +1,14 @@
 namespace StreamBus;
 
+// Internal transient signal used where the public surface already maps failures
+// to StreamBusPublishTransientException (producer registry) or treats every
+// non-cancellation attach exception as retryable (partition attach loop).
+internal sealed class StreamBusTransientException : Exception
+{
+    public StreamBusTransientException(string message, Exception? inner = null)
+        : base(message, inner) { }
+}
+
 public sealed class StreamBusFatalException : Exception
 {
     public StreamBusFatalException(string message, Exception? inner = null)

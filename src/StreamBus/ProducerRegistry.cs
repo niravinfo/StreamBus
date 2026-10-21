@@ -56,10 +56,12 @@ internal sealed class StreamProducerRegistry
         }
     }
 
-    public async Task PublishEnvelopeAsync(string stream, ReadOnlyMemory<byte> body, string? routingKey, IReadOnlyDictionary<string, object?> applicationProperties, string? messageId, string? correlationId, CancellationToken ct = default)
+    public async Task PublishEnvelopeAsync(string stream, ReadOnlyMemory<byte> body, string? routingKey, IReadOnlyDictionary<string, object?> applicationProperties, string? messageId, string? correlationId, TimeSpan confirmTimeout, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(stream);
         ArgumentNullException.ThrowIfNull(applicationProperties);
+        if (confirmTimeout <= TimeSpan.Zero)
+            throw new StreamBusConfigurationException("Error hand-off confirm timeout must be positive.");
         var readiness = await _supervisor.WaitUntilReadyAsync(ReadinessPolicy.FailFastPolicy, ct).ConfigureAwait(false);
         if (readiness == BusReadiness.Fatal)
             throw new StreamBusFatalException($"StreamBus for vhost '{_vhost}' is in Fatal state; publish to '{stream}' refused.");
@@ -67,9 +69,20 @@ internal sealed class StreamProducerRegistry
             throw new StreamBusNotReadyException($"StreamBus for vhost '{_vhost}' is not ready ({readiness}); publish to '{stream}' refused.");
         var (entry, handle) = await GetOrCreateAsync(stream, super: false, ct).ConfigureAwait(false);
         var key = Key(stream, super: false);
+        using var attemptCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        attemptCts.CancelAfter(confirmTimeout);
         try
         {
-            await handle.SendEnvelopeAsync(body, routingKey, applicationProperties, messageId, correlationId, ct).ConfigureAwait(false);
+            await handle.SendEnvelopeAsync(body, routingKey, applicationProperties, messageId, correlationId, attemptCts.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested && attemptCts.IsCancellationRequested)
+        {
+            // The hand-off must never wedge the partition dispatch gate. The
+            // handle's outcome is unknown, so discard it; the caller retries and
+            // re-publishes the same envelope (at-least-once, never a skip).
+            await InvalidateAsync(key, entry, handle).ConfigureAwait(false);
+            throw new StreamBusTransientException(
+                $"Error hand-off publish was not confirmed within {confirmTimeout}; outcome unknown. A retry will re-publish the envelope.");
         }
         catch (OperationCanceledException)
         {
