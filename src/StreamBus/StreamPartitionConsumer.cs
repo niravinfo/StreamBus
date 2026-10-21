@@ -103,6 +103,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
     private static readonly TimeSpan AttachMaxDelay = TimeSpan.FromSeconds(30);
 
     private readonly IStreamSystemHandle _system;
+    private readonly Func<IStreamSystemHandle?>? _systemProvider;
     private readonly string _stream;
     private readonly string _partitionStream;
     private readonly int _partitionIndex;
@@ -159,7 +160,8 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
         Func<RawConsumerConfig, CancellationToken, Task<IStreamConsumerHandle>>? consumerFactory = null,
         Action<int, BusRegistrationState, string?>? health = null,
         IStreamSerializer? serializer = null,
-        ConsumePipeline? pipeline = null)
+        ConsumePipeline? pipeline = null,
+        Func<IStreamSystemHandle?>? systemProvider = null)
     {
         ArgumentNullException.ThrowIfNull(system);
         ArgumentNullException.ThrowIfNull(stream);
@@ -181,6 +183,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
         _results = results;
         _scopes = scopeFactory;
         _system = system;
+        _systemProvider = systemProvider;
         _stream = stream;
         _partitionStream = partitionStream;
         _partitionIndex = partitionIndex;
@@ -196,7 +199,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
         _logger = logger ?? NullLogger<StreamPartitionConsumer>.Instance;
         _createConsumer = consumerFactory
             ?? (async (config, ct) => new RawConsumerHandle(
-                await _system.CreateRawConsumerAsync(config, ct).ConfigureAwait(false)));
+                await ResolveSystem().CreateRawConsumerAsync(config, ct).ConfigureAwait(false)));
         _health = health;
         _serializer = serializer ?? SystemTextJsonStreamSerializer.Default;
         _pipeline = pipeline ?? new ConsumePipeline(Array.Empty<IStreamConsumeFilter>());
@@ -1076,7 +1079,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
         ulong? brokerHeld;
         try
         {
-            brokerHeld = await _system.TryQueryOffsetAsync(_reference, _partitionStream, ct).ConfigureAwait(false);
+            brokerHeld = await ResolveSystem().TryQueryOffsetAsync(_reference, _partitionStream, ct).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -1153,12 +1156,26 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
         return OnPromotedCoreAsync(reference, stream, promotedAsActive);
     }
 
+    // The supervisor swaps and disposes its StreamSystem on reconnect. A
+    // partition loop that keeps its construction-time handle would then retry
+    // against a disposed system forever. Resolve through the supervisor on every
+    // attach/query; a null handle means the connection is between attempts and
+    // the attach loop should back off.
+    private IStreamSystemHandle ResolveSystem()
+    {
+        if (_systemProvider is null)
+            return _system;
+        return _systemProvider()
+            ?? throw new StreamBusTransientException(
+                "StreamBus connection is not ready; partition attach will retry.");
+    }
+
     // Effectively-once resume (FR-6.7/FR-10.14): the source stores nothing, so the
     // resume point is the target's last publishing id (the shared stored+1 rule
     // turns it into lastId+1) on every attach — create, promote, reconnect alike.
     private Task<ulong?> QueryStoredAsync(CancellationToken ct)
         => _eo is null
-            ? _system.TryQueryOffsetAsync(_reference, _partitionStream, ct)
+            ? ResolveSystem().TryQueryOffsetAsync(_reference, _partitionStream, ct)
             : _eo.ResumeQuery(_eo.TargetStream, _eo.TargetIsSuperStream, ResultNaming.ProducerName(_partitionStream, _eo.TargetStream), ct);
 
     private async Task<IOffsetType> OnPromotedCoreAsync(string reference, string stream, bool promotedAsActive)

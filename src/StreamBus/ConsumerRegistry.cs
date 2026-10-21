@@ -315,7 +315,8 @@ internal sealed class StreamConsumerRegistry
                     handle, stream, partitionStream, index, reference, options, handler,
                     _guard, state, StreamBusMetrics.Shared, _vhost, busName, errors,
                     _loggerFactory.CreateLogger<StreamPartitionConsumer>(), null, null, _scopes,
-                    _consumerFactory, healthCallback, serializer, pipeline);
+                    _consumerFactory, healthCallback, serializer, pipeline,
+                    () => _supervisor.CurrentHandle);
                 loops.Add((loop, loop.RunAsync(family.Token)));
             }
             // The attach point is fixed before ConsumeAsync returns: wait for every

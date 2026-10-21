@@ -39,8 +39,15 @@ sealed class ScriptedConsumerFactory
 
 file sealed class NeverReadySystem : IStreamSystemHandle
 {
+    private int _queryCount;
+
+    public int QueryCount => Volatile.Read(ref _queryCount);
     public bool IsClosed => false;
-    public Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken ct) => Task.FromResult<ulong?>(null);
+    public Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken ct)
+    {
+        Interlocked.Increment(ref _queryCount);
+        return Task.FromResult<ulong?>(null);
+    }
     public Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct)
         => throw new NotSupportedException("ConsumerDeathTests inject their own consumer factory.");
     public Task<IStreamPlainProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct) => throw new NotSupportedException();
@@ -132,6 +139,56 @@ public sealed class ConsumerDeathTests
 
         await WaitUntilAsync(() => harness.Factory.CreateCount >= 2, TimeSpan.FromSeconds(5));
         Assert.True(first.CloseCount >= 1);
+    }
+
+    [Fact]
+    public async Task Reattach_queries_through_current_system_after_supervisor_swap()
+    {
+        var oldSystem = new NeverReadySystem();
+        var newSystem = new NeverReadySystem();
+        IStreamSystemHandle current = oldSystem;
+        var options = new ConsumeOptions
+        {
+            Reference = "grp",
+            SingleActiveConsumer = false,
+            Offset = ConsumeOffset.AlwaysFirst,
+        };
+        var factory = new ScriptedConsumerFactory();
+        var consumer = new StreamPartitionConsumer(
+            oldSystem, "orders", "orders", 0, "grp", options,
+            _ => Task.CompletedTask,
+            new MonotonicOffsetGuard(),
+            new PartitionState(),
+            StreamBusMetrics.Shared,
+            "/", "bus", new ErrorPublisher(new StreamProducerRegistry(
+                new StreamBusConnectionSupervisor(
+                    new StreamBusOptions { Vhost = "/", UserName = "app", Password = "secret" },
+                    new NeverReadyConnector()),
+                "/")),
+            logger: null,
+            consumerFactory: factory.CreateAsync,
+            systemProvider: () => current);
+        using var cts = new CancellationTokenSource();
+        var run = consumer.RunAsync(cts.Token);
+        try
+        {
+            await consumer.FirstAttachAsync.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+            await WaitUntilAsync(() => oldSystem.QueryCount >= 1, TimeSpan.FromSeconds(5));
+            var oldQueries = oldSystem.QueryCount;
+
+            current = newSystem;
+            await factory.FirstConfig.ConnectionClosedHandler("supervisor swapped the handle");
+
+            await WaitUntilAsync(() => factory.CreateCount >= 2, TimeSpan.FromSeconds(5));
+            await WaitUntilAsync(() => newSystem.QueryCount >= 1, TimeSpan.FromSeconds(5));
+            Assert.Equal(oldQueries, oldSystem.QueryCount);
+        }
+        finally
+        {
+            await cts.CancelAsync();
+            try { await run; } catch (OperationCanceledException) { }
+            await consumer.DisposeAsync();
+        }
     }
 
     [Fact]
