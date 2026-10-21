@@ -122,51 +122,58 @@ git commit -m "build: add MIT license and NuGet package metadata"
 
 **Interfaces:**
 - Consumes: the container definition in the spec ("Broker container" section).
-- Produces: evidence that `rabbitmq:4-management` with the specified env/ports serves the stream protocol to a host process, and that the integration suite is green against it.
+- Produces: evidence that `rabbitmq:4.2-management` with the specified env/ports serves the stream protocol, and that the integration suite is green against it.
+
+> Execution note (2026-10-21): the plan originally said to stop the local
+> `RabbitMQ` Windows service to free ports `5552`/`5672`. The session has no
+> administrator rights, and the service's data directory belongs to
+> `LocalSystem`, so stopping it would have left the developer without a broker.
+> The validation instead runs the test suite in a container that shares the
+> broker container's network namespace
+> (`docker run --network container:<broker>`), which exercises the same broker
+> without touching the host ports.
 
 - [ ] **Step 1: Start Docker Desktop and confirm the daemon is up**
 
 Run: `Start-Process "C:\Program Files\Docker\Docker\Docker Desktop.exe"` then poll `docker version --format '{{.Server.Version}}'` until it prints a version.
 Expected: a version string within ~2 minutes.
 
-- [ ] **Step 2: Free the broker ports**
-
-The local development broker is the Windows service `RabbitMQ` and already holds `5552`/`5672`.
-Run: `Stop-Service RabbitMQ`
-Expected: `Get-Service RabbitMQ` reports `Stopped`. (Step 6 restores it.)
-
-- [ ] **Step 3: Start the container with exactly the CI configuration**
+- [ ] **Step 2: Start the container with exactly the CI configuration**
 
 ```bash
-docker run -d --name streambus-ci-rabbit \
-  -p 5552:5552 -p 5672:5672 -p 15672:15672 \
+docker run -d --name rb42 \
+  -p 15672:15672 \
   -e RABBITMQ_DEFAULT_USER=app \
   -e RABBITMQ_DEFAULT_PASS=password \
-  -e RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS="-rabbitmq_stream enable -rabbitmq_stream advertised_host localhost" \
-  rabbitmq:4-management
+  -e RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS="-rabbitmq_stream advertised_host localhost" \
+  rabbitmq:4.2-management
 ```
 
-Expected: a container id; `docker logs streambus-ci-rabbit` shows the node booting.
+Expected: a container id; `docker logs rb42` shows the node booting.
 
-- [ ] **Step 4: Wait for the broker and the stream plugin**
+- [ ] **Step 3: Enable the stream plugin and confirm the listener**
 
 ```bash
-docker exec streambus-ci-rabbit rabbitmq-plugins list -e
+docker exec rb42 rabbitmq-plugins enable rabbitmq_stream
+docker exec rb42 rabbitmq-diagnostics -q listeners | grep 5552
+docker exec rb42 rabbitmqctl eval 'application:get_env(rabbitmq_stream, advertised_host).'
 ```
-Expected: `rabbitmq_stream` is listed as enabled, and `docker exec streambus-ci-rabbit rabbitmq-diagnostics -q check_port_connectivity` reports the `5552` listener up.
+Expected: the `5552` stream listener is listed and the advertised host evaluates to `localhost`.
 
-- [ ] **Step 5: Run the integration suite against the container**
+Note: `-rabbitmq_stream enable` in `RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS` does **not** work on RabbitMQ 3.7+ (the flag reaches erl, the release handler ignores it), so the plugin is enabled on the running node.
 
-Run: `dotnet test tests/StreamBus.IntegrationTests/StreamBus.IntegrationTests.csproj -c Release`
-Expected: all integration tests pass, and `TopologyIntegrationTests.Policy_applied_tuning_is_effective` and `TopologyIntegrationTests.Leader_placement_gate_G3` **run** rather than skip (the management API is reachable at `15672` with `app`/`password`).
+- [ ] **Step 4: Run the integration suite against the container**
 
-- [ ] **Step 6: Tear down and restore the local environment**
+Run: `docker run --rm --network container:rb42 -v "<repo>:/src" -w /src mcr.microsoft.com/dotnet/sdk:10.0 bash -lc "dotnet test tests/StreamBus.IntegrationTests/StreamBus.IntegrationTests.csproj -c Release"`
+Expected: all integration tests pass, and `TopologyIntegrationTests.Policy_applied_tuning_is_effective` **runs** rather than skips (the management API is reachable at `15672` with `app`/`password`).
+
+- [ ] **Step 5: Tear down**
 
 ```bash
-docker rm -f streambus-ci-rabbit
-Start-Service RabbitMQ
+docker rm -f rb42
 ```
-Expected: `Get-Service RabbitMQ` reports `Running`, and `Test-NetConnection -ComputerName localhost -Port 5552` returns `True`.
+Expected: the container is gone; the developer's own broker was never touched.
+
 
 ---
 
@@ -187,7 +194,7 @@ The file must declare:
 - `permissions: contents: read`.
 - `concurrency: group: build-${{ github.ref }}`, `cancel-in-progress: true`.
 - Job `build` on `ubuntu-latest`, `timeout-minutes: 20`: checkout (`actions/checkout@v7`), setup .NET (`actions/setup-dotnet@v6`, `dotnet-version: 10.0.x`), `dotnet restore StreamBus.slnx`, `dotnet build StreamBus.slnx --no-restore -c Release`, `dotnet test tests/StreamBus.UnitTests/StreamBus.UnitTests.csproj --no-build -c Release`, `dotnet pack StreamBus.slnx --no-build -c Release --output ./artifacts`, `ls -lh ./artifacts`, `actions/upload-artifact@v7` with `name: nuget-packages`, `path: ./artifacts/*.nupkg`, `if-no-files-found: error`.
-- Job `integration-test` on `ubuntu-latest`, `timeout-minutes: 20`, `needs: build`, with the service container from Task 2 (`image: rabbitmq:4-management`, ports `5552:5552`, `5672:5672`, `15672:15672`, the three env vars, `options: --health-cmd "rabbitmq-diagnostics -q ping" --health-interval 10s --health-timeout 5s --health-retries 12`), then checkout, setup .NET, restore, build, a readiness step that waits for TCP `5552` and for `rabbitmq_stream` to be enabled, `dotnet test tests/StreamBus.IntegrationTests/StreamBus.IntegrationTests.csproj --no-build -c Release` with `STREAMBUS_USER: app` / `STREAMBUS_PASSWORD: password` in `env:`, and `actions/upload-artifact@v7` uploading the TRX report (`path: ./artifacts/test-results/*.trx`, `if-no-files-found: warn`).
+- Job `integration-test` on `ubuntu-latest`, `timeout-minutes: 20`, `needs: build`, with the service container from Task 2 (`image: rabbitmq:4.2-management`, ports `5552:5552`, `5672:5672`, `15672:15672`, the three env vars, `options: --health-cmd "rabbitmq-diagnostics -q ping" --health-interval 10s --health-timeout 5s --health-retries 12`), then checkout, setup .NET, restore, build, a step that enables the stream plugin on the running node (`docker exec ${{ job.services.rabbitmq.id }} rabbitmq-plugins enable rabbitmq_stream`) and a readiness step that waits for the `5552` listener, `dotnet test tests/StreamBus.IntegrationTests/StreamBus.IntegrationTests.csproj --no-build -c Release` with `STREAMBUS_USER: app` / `STREAMBUS_PASSWORD: password` in `env:`, and `actions/upload-artifact@v7` uploading the TRX report (`path: ./artifacts/test-results/*.trx`, `if-no-files-found: warn`).
 
 Use `--logger "trx;LogFileName=integration.trx"` on the integration `dotnet test` invocation and `--results-directory ./artifacts/test-results`.
 

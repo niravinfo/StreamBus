@@ -118,32 +118,56 @@ instead).
 ### Broker container
 
 ```yaml
-image: rabbitmq:4-management
+image: rabbitmq:4.2-management
 ports: 5552:5552, 5672:5672, 15672:15672
 env:
   RABBITMQ_DEFAULT_USER: app
   RABBITMQ_DEFAULT_PASS: password
-  RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: "-rabbitmq_stream enable -rabbitmq_stream advertised_host localhost"
+  RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: "-rabbitmq_stream advertised_host localhost"
 ```
 
-- `-rabbitmq_stream enable` turns on the stream plugin (it is bundled but not
-  enabled in the official image).
 - `-rabbitmq_stream advertised_host localhost` is mandatory: without it the
   broker advertises its container hostname and the stream client cannot
-  connect from the runner.
+  connect from the runner. The three-token ER form sets the application
+  environment (`application:get_env(rabbitmq_stream, advertised_host)` returns
+  `localhost`, verified on the running container).
+- The stream plugin is **not** enabled by the image and **cannot** be enabled
+  through `RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS`: RabbitMQ 3.7+ ignores the
+  `-rabbitmq_stream enable` form (the flag reaches erl but the release handler
+  no longer acts on it). The workflow therefore runs
+  `docker exec <container> rabbitmq-plugins enable rabbitmq_stream` on the
+  running node and then waits for the `5552` listener to appear.
 - `RABBITMQ_DEFAULT_USER` creates a non-`guest` administrator, which is also
   what unlocks the two management-API topology tests instead of letting them
   skip.
-- Health check: `rabbitmq-diagnostics -q ping`; a separate readiness step
-  waits for TCP `5552` and for the `rabbitmq_stream` plugin to be listed as
-  enabled before any test starts.
+- Health check: `rabbitmq-diagnostics -q ping`.
+- The image is pinned to the `4.2` minor line (resolving to 4.2.9) because
+  that is the broker line the library is developed against (4.2.6 locally).
+  An unpinned `4` tag floats to the newest 4.x.
 
 **Deviation from the V2 spec (§12.2), deliberate:** the spec says "streams
 enabled via mounted config". A committed `rabbitmq.conf` cannot be
 bind-mounted into a GitHub Actions service container, because service
 containers are created before `actions/checkout` runs, so the file does not
-exist at mount time. The ER_LAUNCH arguments above produce the same result
-without the ordering problem.
+exist at mount time. The ER_LAUNCH arguments plus a runtime plugin enable
+produce the same result without the ordering problem.
+
+### Findings from local validation (2026-10-21)
+
+The container was exercised locally with the exact environment above, and the
+integration suite was run against it:
+
+- The stream plugin is bundled in the image but disabled; enabling it at
+  runtime brings up the `5552` listener.
+- The `Policy_applied_tuning_is_effective` integration test failed against the
+  broker: it published a policy with `"max-age": 3600` (an integer), and
+  RabbitMQ 4.x rejects a numeric `max-age` for streams - an integer crashes
+  the broker's policy validation (`badarg` in `rabbit_amqqueue:check_max_age/1`,
+  HTTP 500), and a numeric string is rejected as an invalid duration
+  (HTTP 400). Stream retention is a duration string, so the payload is now
+  `"max-age": "1h"`. The test had never run before: it skips wherever the
+  management plugin is unreachable, which is the case on the development
+  machine.
 
 ### One-time nuget.org setup (human action, not code)
 
