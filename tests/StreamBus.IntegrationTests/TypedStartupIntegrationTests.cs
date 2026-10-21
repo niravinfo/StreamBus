@@ -128,7 +128,7 @@ public sealed class TypedStartupIntegrationTests : IAsyncDisposable
             // the stream must exist before the first publish (else NotFound).
             var admin = await ConnectAdminAsync();
             await using var _ = admin;
-            await WaitForAsync(() => admin.StreamExists(stream).GetAwaiter().GetResult(), TimeSpan.FromSeconds(30), "startup topology declaration");
+            await WaitForAsync(() => BrokerProbe.StreamExists(admin, stream), TimeSpan.FromSeconds(30), "startup topology declaration");
             await bus.PublishRawAsync(stream, Body(new OrderEvent("o", 0)), new PublishOptions(), ct);
             await WaitForAsync(() => { lock (got) return got.Count >= 1; }, TimeSpan.FromSeconds(30), "typed receipt after startup");
             lock (got) Assert.Single(got);

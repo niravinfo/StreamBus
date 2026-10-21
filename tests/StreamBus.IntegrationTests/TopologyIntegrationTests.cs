@@ -74,23 +74,11 @@ public sealed class TopologyIntegrationTests : IAsyncDisposable
 
     // The stream client throws StreamNotAvailable instead of returning false while a
     // stream is still being created, so a readiness poll has to read that as "not yet".
-    private static bool StreamExists(StreamSystem admin, string stream)
-    {
-        try { return admin.StreamExists(stream).GetAwaiter().GetResult(); }
-        catch (GenericProtocolException) { return false; }
-    }
+    private static bool StreamExists(StreamSystem admin, string stream) => BrokerProbe.StreamExists(admin, stream);
 
-    private static bool SuperStreamExists(StreamSystem admin, string superStream)
-    {
-        try { return admin.SuperStreamExists(superStream).GetAwaiter().GetResult(); }
-        catch (GenericProtocolException) { return false; }
-    }
+    private static bool SuperStreamExists(StreamSystem admin, string superStream) => BrokerProbe.SuperStreamExists(admin, superStream);
 
-    private static int PartitionCount(StreamSystem admin, string superStream)
-    {
-        try { return admin.QueryPartition(superStream).GetAwaiter().GetResult().Length; }
-        catch (GenericProtocolException) { return 0; }
-    }
+    private static int PartitionCount(StreamSystem admin, string superStream) => BrokerProbe.PartitionCount(admin, superStream);
 
     [Fact]
     public async Task Repeat_and_concurrent_declares_converge()
