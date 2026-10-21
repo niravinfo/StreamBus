@@ -65,12 +65,15 @@ idempotent).
 
 ## What the CI gate covers
 
-The `Build` workflow runs on every pull request and on every push to `main`:
+The `Build` workflow runs when a pull request is **opened** and when it is
+marked **ready for review**. Later commits to the PR branch do not start a
+run - use *Run workflow* on the `Build` workflow to re-run it on demand. There
+is no run on a merge to `main`.
 
 | Job | What it does |
 | --- | --- |
 | `build` | restore, Release build, unit tests, `dotnet pack`, uploads the `.nupkg` for inspection |
-| `integration-test` | starts a RabbitMQ 4.2 service container (streams plugin enabled, dedicated `app` user), runs the integration suite against it, uploads the TRX report |
+| `integration-tests` | starts a RabbitMQ 4.2 service container (streams plugin enabled, dedicated `app` user), runs the integration suite against it, uploads the TRX report |
 
 The broker is a GitHub Actions service container, so Docker is the only
 prerequisite on the runner. The integration tests need a broker with the
@@ -82,5 +85,11 @@ scenarios (the leader-placement test skips on a single-node broker by design).
 
 ## Branch protection
 
-Recommended on `main`: require the `build` and `integration-test` checks to
+Recommended on `main`: require the `build` and `integration-tests` checks to
 pass before merging, so nothing reaches `main` unverified.
+
+Because the workflow only runs on `opened` and `ready_for_review`, a PR that
+receives new commits after its first run keeps a stale check result. GitHub
+blocks a merge on a *missing* required check, not on an outdated one, so the
+merge stays possible - but the check no longer describes the latest commit.
+Re-run *Run workflow* on the PR branch before merging when that matters.

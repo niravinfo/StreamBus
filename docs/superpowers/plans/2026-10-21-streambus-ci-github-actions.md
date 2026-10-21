@@ -184,7 +184,7 @@ Expected: the container is gone; the developer's own broker was never touched.
 
 **Interfaces:**
 - Consumes: the solution path `StreamBus.slnx`; the test project paths; the container definition validated in Task 2.
-- Produces: a `Build` workflow named `build` running on `pull_request`, `push` to `main`, and `workflow_dispatch`, with jobs `build` and `integration-test`.
+- Produces: a `Build` workflow named `build` running on `pull_request` limited to `types: [opened, ready_for_review]` and on `workflow_dispatch` (no `push` trigger: a PR is built when it is opened and when it leaves draft, later commits do not start a run), with jobs `build` and `integration-tests`.
 
 - [ ] **Step 1: Write `.github/workflows/build.yml`**
 
@@ -194,14 +194,14 @@ The file must declare:
 - `permissions: contents: read`.
 - `concurrency: group: build-${{ github.ref }}`, `cancel-in-progress: true`.
 - Job `build` on `ubuntu-latest`, `timeout-minutes: 20`: checkout (`actions/checkout@v7`), setup .NET (`actions/setup-dotnet@v6`, `dotnet-version: 10.0.x`), `dotnet restore StreamBus.slnx`, `dotnet build StreamBus.slnx --no-restore -c Release`, `dotnet test tests/StreamBus.UnitTests/StreamBus.UnitTests.csproj --no-build -c Release`, `dotnet pack StreamBus.slnx --no-build -c Release --output ./artifacts`, `ls -lh ./artifacts`, `actions/upload-artifact@v7` with `name: nuget-packages`, `path: ./artifacts/*.nupkg`, `if-no-files-found: error`.
-- Job `integration-test` on `ubuntu-latest`, `timeout-minutes: 20`, `needs: build`, with the service container from Task 2 (`image: rabbitmq:4.2-management`, ports `5552:5552`, `5672:5672`, `15672:15672`, the three env vars, `options: --health-cmd "rabbitmq-diagnostics -q ping" --health-interval 10s --health-timeout 5s --health-retries 12`), then checkout, setup .NET, restore, build, a step that enables the stream plugin on the running node (`docker exec ${{ job.services.rabbitmq.id }} rabbitmq-plugins enable rabbitmq_stream`) and a readiness step that waits for the `5552` listener, `dotnet test tests/StreamBus.IntegrationTests/StreamBus.IntegrationTests.csproj --no-build -c Release` with `STREAMBUS_USER: app` / `STREAMBUS_PASSWORD: password` in `env:`, and `actions/upload-artifact@v7` uploading the TRX report (`path: ./artifacts/test-results/*.trx`, `if-no-files-found: warn`).
+- Job `integration-tests` on `ubuntu-latest`, `timeout-minutes: 20`, `needs: build`, with the service container from Task 2 (`image: rabbitmq:4.2-management`, ports `5552:5552`, `5672:5672`, `15672:15672`, the three env vars, `options: --health-cmd "rabbitmq-diagnostics -q ping" --health-interval 10s --health-timeout 5s --health-retries 12`), then checkout, setup .NET, restore, build, a step that enables the stream plugin on the running node (`docker exec ${{ job.services.rabbitmq.id }} rabbitmq-plugins enable rabbitmq_stream`) and a readiness step that waits for the `5552` listener, `dotnet test tests/StreamBus.IntegrationTests/StreamBus.IntegrationTests.csproj --no-build -c Release` with `STREAMBUS_USER: app` / `STREAMBUS_PASSWORD: password` in `env:`, and `actions/upload-artifact@v7` uploading the TRX report (`path: ./artifacts/test-results/*.trx`, `if-no-files-found: warn`).
 
 Use `--logger "trx;LogFileName=integration.trx"` on the integration `dotnet test` invocation and `--results-directory ./artifacts/test-results`.
 
 - [ ] **Step 2: Validate the YAML parses and the structure is what was specified**
 
 Run: `python -c "import yaml,sys; d=yaml.safe_load(open('.github/workflows/build.yml')); print(list(d['jobs']))"`
-Expected: `['build', 'integration-test']`.
+Expected: `['build', 'integration-tests']`.
 
 - [ ] **Step 3: Verify the commands the workflow runs actually work from a clean output**
 
@@ -318,8 +318,8 @@ Expected: the remote branch is created.
 - [ ] **Step 2: Watch the workflow**
 
 Run: `gh run list --workflow build.yml --branch feature/ci-github-actions --limit 3`
-Expected: one run per push, status `success` for the `build` job and the `integration-test` job.
+Expected: one run per push, status `success` for the `build` job and the `integration-tests` job.
 
 - [ ] **Step 3: Report the outcome**
 
-State plainly which jobs passed, how long the integration job took, and that `main` still needs the branch-protection rule (required checks: `build`, `integration-test`) plus the nuget.org Trusted Publisher before the first release.
+State plainly which jobs passed, how long the integration job took, and that `main` still needs the branch-protection rule (required checks: `build`, `integration-tests`) plus the nuget.org Trusted Publisher before the first release.

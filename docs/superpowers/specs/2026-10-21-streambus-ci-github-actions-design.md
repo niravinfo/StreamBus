@@ -91,7 +91,10 @@ CS1591 build errors.
 
 ### `.github/workflows/build.yml`
 
-Triggers: `pull_request`, `push` to `main`, `workflow_dispatch`.
+Triggers: `pull_request` limited to `types: [opened, ready_for_review]`, plus
+`workflow_dispatch`. There is no `push` trigger: a PR is built when it is
+opened and when it leaves draft, later commits to the PR branch do not start
+a run, and merging to `main` starts nothing. Everything else is a manual run.
 Permissions: `contents: read`. Concurrency group per ref with
 `cancel-in-progress: true`.
 
@@ -99,7 +102,7 @@ Two jobs on `ubuntu-latest`:
 
 1. `build` - restore the solution, build Release, run the unit tests, pack,
    upload the `.nupkg` as an artifact for inspection.
-2. `integration-test` - `needs: build`; starts the RabbitMQ service container,
+2. `integration-tests` - `needs: build`; starts the RabbitMQ service container,
    waits for the stream listener, runs the integration suite, uploads the TRX.
 
 ### `.github/workflows/release.yml`
