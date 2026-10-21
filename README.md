@@ -1,5 +1,8 @@
 # StreamBus
 
+[![Build](https://github.com/niravinfo/StreamBus/actions/workflows/build.yml/badge.svg)](https://github.com/niravinfo/StreamBus/actions/workflows/build.yml)
+[![NuGet](https://img.shields.io/nuget/v/StreamBus.svg)](https://www.nuget.org/packages/StreamBus)
+
 MassTransit-style client for RabbitMQ streams on .NET 10. Workers declare
 buses with nested `AddStreamBus((context, cfg) => ...)` blocks, publish
 typed messages without manual serialization, and consume through
