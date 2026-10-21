@@ -1,0 +1,191 @@
+name: Release
+
+# Publishing is deliberately not wired to pushes: a green build on `main` must never
+# publish. The intended flow is to create a GitHub Release (tag vX.Y.Z) -> this
+# workflow builds that version, publishes it to nuget.org over OIDC Trusted Publishing,
+# and attaches the .nupkg files to the same GitHub Release.
+on:
+  release:
+    types: [published]
+  # Manual escape hatch for re-runs. The version is taken from the `version` input.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish (e.g. 1.2.3). Only used for manual dispatch."
+        required: false
+        type: string
+
+# Permissions required:
+# - id-token: write -> request the OIDC token for NuGet Trusted Publishing
+# - contents: write -> upload .nupkg assets to the GitHub Release
+permissions:
+  id-token: write
+  contents: write
+
+jobs:
+  publish:
+    name: Pack and publish to NuGet
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    # Same broker as the build workflow: the integration suite runs before anything
+    # is published. rabbitmq_stream is bundled but not enabled by default, and the
+    # stream client connects to the host the broker advertises - a container
+    # advertises its own hostname, which the runner cannot resolve, hence
+    # advertised_host=localhost. `guest` is rejected by the stream client.
+    # The image is pinned to the 4.2 minor line to match the build workflow.
+    services:
+      rabbitmq:
+        image: rabbitmq:4.2-management
+        ports:
+          - 5552:5552
+          - 5672:5672
+          - 15672:15672
+        env:
+          RABBITMQ_DEFAULT_USER: app
+          RABBITMQ_DEFAULT_PASS: password
+          RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: "-rabbitmq_stream advertised_host localhost"
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 12
+
+    env:
+      STREAMBUS_USER: app
+      STREAMBUS_PASSWORD: password
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Determine package version
+        id: version
+        run: |
+          set -euo pipefail
+          RAW_VERSION=""
+
+          if [ "${{ github.event_name }}" = "release" ]; then
+            RAW_VERSION="${{ github.event.release.tag_name }}"
+            echo "Triggered by release with tag: $RAW_VERSION"
+          elif [ -n "${{ inputs.version }}" ]; then
+            RAW_VERSION="${{ inputs.version }}"
+            echo "Triggered by workflow_dispatch with input version: $RAW_VERSION"
+          else
+            RAW_VERSION="${GITHUB_REF_NAME:-}"
+            echo "Fallback ref name: $RAW_VERSION"
+          fi
+
+          if [ -z "$RAW_VERSION" ]; then
+            echo "::error::Could not determine version (empty tag/input)."
+            exit 1
+          fi
+
+          # Strip a leading 'v' (v1.2.3 -> 1.2.3) and a refs/tags/ prefix.
+          VERSION="${RAW_VERSION#v}"
+          VERSION="${VERSION#refs/tags/}"
+
+          if [ -z "$VERSION" ]; then
+            echo "::error::Version is empty after stripping prefix."
+            exit 1
+          fi
+
+          # Basic semver validation (prerelease/build metadata allowed).
+          if ! echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'; then
+            echo "::warning::Version '$VERSION' does not look like SemVer. Proceeding anyway."
+          fi
+
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Resolved package version: $VERSION"
+
+      - name: Restore
+        run: dotnet restore StreamBus.slnx
+
+      # RabbitMQ 3.7+ ignores "-<plugin> enable" in RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS,
+      # so the stream plugin is enabled on the running node instead.
+      - name: Enable RabbitMQ stream plugin
+        run: docker exec ${{ job.services.rabbitmq.id }} rabbitmq-plugins enable rabbitmq_stream
+
+      - name: Wait for the stream listener
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 30); do
+            if docker exec ${{ job.services.rabbitmq.id }} rabbitmq-diagnostics -q listeners 2>/dev/null | grep -q '5552'; then
+              echo "stream listener is up"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::the RabbitMQ stream listener did not come up on port 5552"
+          exit 1
+
+      - name: Build (Release)
+        run: >
+          dotnet build StreamBus.slnx --no-restore --configuration Release
+          -p:ContinuousIntegrationBuild=true
+          -p:Version=${{ env.VERSION }}
+          -p:PackageVersion=${{ env.VERSION }}
+
+      - name: Test (unit + integration)
+        # Both suites run against the service-container broker above, so nothing is
+        # published that has not been verified against a real RabbitMQ.
+        run: dotnet test StreamBus.slnx --no-build --configuration Release -p:Version=${{ env.VERSION }}
+
+      - name: Pack
+        run: |
+          # The tag is the single source of truth for the published version.
+          dotnet pack StreamBus.slnx --no-build --configuration Release --output ./artifacts \
+            -p:ContinuousIntegrationBuild=true \
+            -p:PackageVersion=${{ env.VERSION }} \
+            -p:Version=${{ env.VERSION }}
+          echo "Packages produced:"
+          ls -lh ./artifacts/
+
+      # Docs: https://learn.microsoft.com/en-us/nuget/nuget-org/trusted-publishing
+      - name: NuGet login (OIDC -> temporary API key)
+        uses: NuGet/login@v1
+        id: login
+        with:
+          user: ${{ secrets.NUGET_USER }}
+
+      - name: Push to NuGet
+        run: |
+          # The temporary API key from NuGet/login is short-lived and single-use.
+          # --skip-duplicate makes the step idempotent if the version was already pushed.
+          dotnet nuget push ./artifacts/*.nupkg \
+            --api-key ${{ steps.login.outputs.NUGET_API_KEY }} \
+            --source https://api.nuget.org/v3/index.json \
+            --skip-duplicate
+
+      - name: Push symbols to NuGet
+        run: |
+          dotnet nuget push ./artifacts/*.snupkg \
+            --api-key ${{ steps.login.outputs.NUGET_API_KEY }} \
+            --source https://api.nuget.org/v3/index.json \
+            --skip-duplicate
+
+      # Attach every package to the GitHub Release that triggered this workflow.
+      - name: Attach packages to GitHub Release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            ./artifacts/*.nupkg
+            ./artifacts/*.snupkg
+          fail_on_unmatched_files: false
+
+      - name: Upload packages artifact (for workflow_dispatch runs)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v7
+        with:
+          name: nuget-packages-${{ env.VERSION }}
+          path: |
+            ./artifacts/*.nupkg
+            ./artifacts/*.snupkg
+          if-no-files-found: error
