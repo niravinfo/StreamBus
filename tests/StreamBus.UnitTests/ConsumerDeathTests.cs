@@ -22,15 +22,19 @@ sealed class ScriptedConsumerFactory
     private readonly object _gate = new();
     private readonly List<RawConsumerConfig> _configs = new();
     private readonly List<ScriptedConsumer> _consumers = new();
+    private readonly List<IStreamSystemHandle> _systems = new();
     public int CreateCount { get { lock (_gate) return _consumers.Count; } }
     public RawConsumerConfig FirstConfig { get { lock (_gate) return _configs[0]; } }
+    public RawConsumerConfig CurrentConfig { get { lock (_gate) return _configs[^1]; } }
     public ScriptedConsumer Current { get { lock (_gate) return _consumers[^1]; } }
+    public IStreamSystemHandle SystemAt(int index) { lock (_gate) return _systems[index]; }
 
-    public Task<IStreamConsumerHandle> CreateAsync(RawConsumerConfig config, CancellationToken ct)
+    public Task<IStreamConsumerHandle> CreateAsync(IStreamSystemHandle system, RawConsumerConfig config, CancellationToken ct)
     {
         lock (_gate)
         {
             _configs.Add(config);
+            _systems.Add(system);
             _consumers.Add(new ScriptedConsumer());
             return Task.FromResult<IStreamConsumerHandle>(_consumers[^1]);
         }
@@ -189,6 +193,21 @@ public sealed class ConsumerDeathTests
             try { await run; } catch (OperationCanceledException) { }
             await consumer.DisposeAsync();
         }
+    }
+
+    [Fact]
+    public async Task Late_connection_closed_callback_does_not_hide_the_new_consumer_from_the_watchdog()
+    {
+        await using var harness = Create();
+        await harness.Consumer.FirstAttachAsync.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        await harness.Factory.FirstConfig.ConnectionClosedHandler("first close");
+        await WaitUntilAsync(() => harness.Factory.CreateCount >= 2, TimeSpan.FromSeconds(5));
+
+        var current = harness.Factory.Current;
+        await harness.Factory.FirstConfig.ConnectionClosedHandler("late close from the replaced consumer");
+        current.MarkClosed();
+
+        await WaitUntilAsync(() => harness.Factory.CreateCount >= 3, TimeSpan.FromSeconds(7));
     }
 
     [Fact]

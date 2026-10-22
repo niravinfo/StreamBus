@@ -125,7 +125,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
     // Configuration callbacks are built before the consumer exists; the holder
     // lets them see the instance without resurrecting races on the current field.
     private readonly ConsumerHolder _consumerHandle = new();
-    private readonly Func<RawConsumerConfig, CancellationToken, Task<IStreamConsumerHandle>> _createConsumer;
+    private readonly Func<IStreamSystemHandle, RawConsumerConfig, CancellationToken, Task<IStreamConsumerHandle>> _createConsumer;
     private readonly Action<int, BusRegistrationState, string?>? _health;
     private readonly IStreamSerializer _serializer;
     private readonly ConsumePipeline _pipeline;
@@ -157,7 +157,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
         EffectivelyOnceConfig? effectivelyOnce = null,
         ResultProducerRegistry? results = null,
         IServiceScopeFactory? scopeFactory = null,
-        Func<RawConsumerConfig, CancellationToken, Task<IStreamConsumerHandle>>? consumerFactory = null,
+        Func<IStreamSystemHandle, RawConsumerConfig, CancellationToken, Task<IStreamConsumerHandle>>? consumerFactory = null,
         Action<int, BusRegistrationState, string?>? health = null,
         IStreamSerializer? serializer = null,
         ConsumePipeline? pipeline = null,
@@ -198,8 +198,8 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
         _errors = errorPublisher;
         _logger = logger ?? NullLogger<StreamPartitionConsumer>.Instance;
         _createConsumer = consumerFactory
-            ?? (async (config, ct) => new RawConsumerHandle(
-                await ResolveSystem().CreateRawConsumerAsync(config, ct).ConfigureAwait(false)));
+            ?? (async (resolvedSystem, config, ct) => new RawConsumerHandle(
+                await resolvedSystem.CreateRawConsumerAsync(config, ct).ConfigureAwait(false)));
         _health = health;
         _serializer = serializer ?? SystemTextJsonStreamSerializer.Default;
         _pipeline = pipeline ?? new ConsumePipeline(Array.Empty<IStreamConsumeFilter>());
@@ -275,8 +275,12 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                     ConnectionClosedHandler = reason =>
                     {
                         // The client marks the consumer closed and delivers nothing further;
-                        // the only recovery is our attach loop closing and recreating.
-                        _consumerHandle.Clear();
+                        // the only recovery is our attach loop closing and recreating. A late
+                        // callback from a replaced consumer must not clear the newer handle.
+                        if (ReferenceEquals(_consumerHandle.Current, consumer))
+                        {
+                            _consumerHandle.Clear();
+                        }
                         FailAttach(
                             attach,
                             new StreamBusTransientException($"Consumer subscription closed by the stream client ({reason})."),
@@ -301,7 +305,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                     },
                 };
 
-                consumer = await _createConsumer(config, loopCt).ConfigureAwait(false);
+                consumer = await _createConsumer(ResolveSystem(), config, loopCt).ConfigureAwait(false);
                 _firstAttach.TrySetResult();
                 _consumerHandle.Set(consumer);
                 _health?.Invoke(_partitionIndex, BusRegistrationState.Attached, null);

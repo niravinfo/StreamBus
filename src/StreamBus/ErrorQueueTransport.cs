@@ -141,17 +141,19 @@ internal sealed class AmqpPublishChannel : IErrorQueuePublishChannel
                 CorrelationId = envelope.CorrelationId,
                 Headers = envelope.ToHeaders(),
             };
-            await _channel.BasicPublishAsync(
-                exchange: string.Empty,
-                routingKey: queue,
-                mandatory: true,
-                basicProperties: properties,
-                body: envelope.Body,
-                cancellationToken: ct).ConfigureAwait(false);
+            // The confirm budget covers the send as well as the ack/nack: a blocked
+            // AMQP publish must not hold the partition dispatch gate past the budget.
             using var timeout = new CancellationTokenSource(confirmTimeout);
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, timeout.Token);
             try
             {
+                await _channel.BasicPublishAsync(
+                    exchange: string.Empty,
+                    routingKey: queue,
+                    mandatory: true,
+                    basicProperties: properties,
+                    body: envelope.Body,
+                    cancellationToken: linked.Token).ConfigureAwait(false);
                 await confirmed.Task.WaitAsync(linked.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested)

@@ -719,7 +719,7 @@ public sealed class PipelineSemanticsTests
 
         public ScriptedConsumer Current { get { lock (_gate) return _consumers[^1]; } }
 
-        public Task<IStreamConsumerHandle> CreateAsync(RawConsumerConfig config, CancellationToken ct)
+        public Task<IStreamConsumerHandle> CreateAsync(IStreamSystemHandle system, RawConsumerConfig config, CancellationToken ct)
         {
             lock (_gate)
             {

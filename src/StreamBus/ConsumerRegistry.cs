@@ -84,13 +84,13 @@ internal sealed class StreamConsumerRegistry
     private readonly IServiceScopeFactory? _scopes;
     private readonly ErrorQueueTransport? _queues;
     private readonly StreamBusHealthAggregator? _health;
-    private readonly Func<RawConsumerConfig, CancellationToken, Task<IStreamConsumerHandle>>? _consumerFactory;
+    private readonly Func<IStreamSystemHandle, RawConsumerConfig, CancellationToken, Task<IStreamConsumerHandle>>? _consumerFactory;
     private readonly ConcurrentDictionary<string, int> _rawSequence = new();
     private readonly StreamBusConsumeFilterStore? _consumeFilterStore;
     private readonly IServiceProvider? _rootProvider;
     private readonly ConcurrentDictionary<(Type BusType, ConsumeFilterRegistration Registration), IStreamConsumeFilter> _filterInstances = new();
 
-    public StreamConsumerRegistry(StreamBusConnectionSupervisor supervisor, string vhost, StreamProducerRegistry producers, ILoggerFactory? loggerFactory, ResultProducerRegistry results, IServiceScopeFactory? scopeFactory = null, ErrorQueueTransport? queues = null, StreamBusHealthAggregator? health = null, Func<RawConsumerConfig, CancellationToken, Task<IStreamConsumerHandle>>? consumerFactory = null, StreamBusConsumeFilterStore? consumeFilters = null, IServiceProvider? rootProvider = null)
+    public StreamConsumerRegistry(StreamBusConnectionSupervisor supervisor, string vhost, StreamProducerRegistry producers, ILoggerFactory? loggerFactory, ResultProducerRegistry results, IServiceScopeFactory? scopeFactory = null, ErrorQueueTransport? queues = null, StreamBusHealthAggregator? health = null, Func<IStreamSystemHandle, RawConsumerConfig, CancellationToken, Task<IStreamConsumerHandle>>? consumerFactory = null, StreamBusConsumeFilterStore? consumeFilters = null, IServiceProvider? rootProvider = null)
     {
         _supervisor = supervisor;
         _vhost = vhost;
@@ -454,7 +454,7 @@ internal sealed class StreamConsumerRegistry
                     static _ => Task.CompletedTask, // unreached in EO mode (the branch above calls ResultHandler)
                     _guard, state, StreamBusMetrics.Shared, _vhost, busName, errors,
                     _loggerFactory.CreateLogger<StreamPartitionConsumer>(), consumeOptions.EffectivelyOnce, _results, _scopes,
-                    _consumerFactory, healthCallback, serializer, pipeline);
+                    _consumerFactory, healthCallback, serializer, pipeline, systemProvider: () => _supervisor.CurrentHandle);
                 loops.Add((loop, loop.RunAsync(family.Token)));
             }
             // Same attach contract as ConsumeAsync: every partition's first broker
@@ -555,7 +555,7 @@ internal sealed class StreamConsumerRegistry
         var replayed = 0;
         var skipped = 0;
         long lastTicks = DateTimeOffset.UtcNow.UtcTicks; // cross-thread via Interlocked below.
-        var producers = new Dictionary<string, IStreamPlainProducerHandle>();
+        var producers = new Dictionary<(string Source, string Partition), IStreamPlainProducerHandle>();
         void DisposeProducers()
         {
             foreach (var (_, producer) in producers)
@@ -585,20 +585,34 @@ internal sealed class StreamConsumerRegistry
                             errorStream, ctx.Offset);
                         return;
                     }
+                    // A supervisor swap can dispose the handle captured when replay
+                    // started. Resolve per message so retries and producer creation use
+                    // the live handle; a null handle is transient and retried by the
+                    // dispatch loop.
+                    var current = _supervisor.CurrentHandle
+                        ?? throw new StreamBusTransientException(
+                            $"StreamBus for vhost '{_vhost}' is not ready; replay of '{errorStream}' is retrying.");
                     var partitionStream = targetStream ?? envelope.SourcePartitionStream;
                     if (targetStream is null
-                        && !await handle.StreamExistsAsync(partitionStream, ct).ConfigureAwait(false))
+                        && !await current.StreamExistsAsync(partitionStream, ct).ConfigureAwait(false))
                     {
                         Interlocked.Increment(ref skipped);
                         _logger.LogWarning("Replay skipping message for vanished partition stream '{Partition}' (error offset {Offset}).",
                             partitionStream, ctx.Offset);
                         return;
                     }
-                    if (!producers.TryGetValue(partitionStream, out var producer))
+                    // Dedup is scoped to (stream, producer name, publishing id). A single
+                    // replay target can receive equal source offsets from different source
+                    // partitions, so the producer identity must include the source
+                    // partition, not just the destination.
+                    var producerKey = (envelope.SourceStream, envelope.SourcePartitionStream);
+                    if (!producers.TryGetValue(producerKey, out var producer))
                     {
-                        producer = await handle.CreatePlainProducerWithReferenceAsync(
-                            partitionStream, ReplayNaming.ProducerName(envelope.SourceStream, partitionStream), ct).ConfigureAwait(false);
-                        producers[partitionStream] = producer;
+                        producer = await current.CreatePlainProducerWithReferenceAsync(
+                            targetStream ?? envelope.SourcePartitionStream,
+                            ReplayNaming.ProducerName(envelope.SourceStream, envelope.SourcePartitionStream),
+                            ct).ConfigureAwait(false);
+                        producers[producerKey] = producer;
                     }
                     await producer.PublishReplayAsync(
                         envelope.Body,
@@ -609,7 +623,9 @@ internal sealed class StreamConsumerRegistry
                     Interlocked.Exchange(ref lastTicks, DateTimeOffset.UtcNow.UtcTicks);
                 },
                 guard, state, StreamBusMetrics.Shared, _vhost, "replay", errors,
-                _loggerFactory.CreateLogger<StreamPartitionConsumer>());
+                _loggerFactory.CreateLogger<StreamPartitionConsumer>(),
+                consumerFactory: _consumerFactory,
+                systemProvider: () => _supervisor.CurrentHandle);
             var run = loop.RunAsync(family.Token);
             try
             {
