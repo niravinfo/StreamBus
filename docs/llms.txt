@@ -10,8 +10,9 @@
   once per bus. Empty credentials are rejected; `guest`/`guest` is
   accepted for a local broker, and remote deployments should use a
   dedicated non-`guest` user. Defaults: StreamPort 5552, AmqpPort 5672
-  (queue dead letters only, else no AMQP connection), Heartbeat 60s,
-  MonitorInterval 5s (must be >0 and <=60s), pools 1/1.
+  (queue dead letters and error-queue requeues; otherwise no AMQP
+  connection), Heartbeat 60s, MonitorInterval 5s (must be >0 and <=60s),
+  pools 1/1.
 - Typed publish: `cfg.Publish<T>(stream)` for plain streams,
   `cfg.PublishSuper<T>(stream, s => s.Partitions(n))` for super streams.
   `bus.PublishAsync(msg)` / `bus.PublishAsync(stream, msg)` are plain;
@@ -32,12 +33,15 @@
   two processes: both receive deliveries (at-least-once doubles, never
   skips). Stores interleave; a stale process may regress the broker-side
   offset - never run two writers on one reference outside SAC.
-- Startup topology derives from explicit declarations plus endpoint and
-  publish registrations. Endpoints without an explicit declaration adopt
+- Startup topology derives from endpoint registrations, publish
+  registrations, and stream dead-letter destinations. Endpoints adopt
   broker reality (matching kind consumed read-only, mismatch conflicts,
   missing declarable streams are declared, otherwise config error).
-  Publish/endpoint kinds must agree with declarations. Single-partition
-  reads are plain consumes of `{super}-{N}` with no declaration.
+  Publish/endpoint kinds must agree with the merged declarations.
+  Runtime/operator declarations use
+  `bus.Topology.EnsureStreamAsync` / `EnsureSuperStreamAsync`.
+  Single-partition reads are plain consumes of `{super}-{N}` with no
+  declaration.
 - Retry: `cfg.UseMessageRetry(...)` global default, per-endpoint
   override, `UseRetry` escape hatches. Schedules: Immediate, Interval,
   Intervals, Exponential, None. Unbounded default retries forever
@@ -91,7 +95,8 @@
   pair.
 - Observability: meter `StreamBus` (`streambus_partition_lag/_inflight/_retry_blocked`,
   `streambus_connection_state`, `streambus_offset_store_rejected_total`,
-  `streambus_offset_regressed_total`, `streambus_offset_fallback_total`).
+  `streambus_offset_regressed_total`, `streambus_offset_fallback_total`,
+  `streambus_pipeline_duration` histogram).
 - Exceptions: every StreamBus exception derives from
   `StreamBusException`. Configuration and topology-conflict failures are
   permanent; `StreamBusNotReadyException` is transient;

@@ -53,7 +53,7 @@
 - A3 confirm-path hardening: close callbacks complete pending confirms
   instead of leaving producers hung (A3 / V2-A3).
 - A4 unwedged dispatch: the error-stream hand-off send and confirmation share
-  one budget, so a blocked AMQP publish or a lost confirmation cannot wedge
+  one budget, so a blocked hand-off publish or a lost confirmation cannot wedge
   the partition dispatch gate (A4 / V2-A3).
 - A5 producer lifecycle: producer registry slots serialize creation,
   invalidation, and non-blocking disposal (A5 / V2-A5).

@@ -8,7 +8,8 @@ buses with nested `AddStreamBus((context, cfg) => ...)` blocks, publish typed
 messages without manual serialization, and consume through `ReceiveEndpoint`s
 with first-class consumer-group identity. Global retry with per-endpoint
 override is strict and unbounded by default; a bounded schedule can hand
-exhausted messages to per-stream classic `{stream}_error` queues.
+exhausted messages to a configured destination or an owning callback or,
+when neither is set, to a per-stream classic `{stream}_error` queue.
 
 **Configuration is explicit and fluent.** StreamBus does not read host
 configuration, bind JSON settings, or discover connection settings. Every
@@ -77,56 +78,57 @@ public sealed class OrderConsumer(ILogger<OrderConsumer> log) : IConsumer<OrderP
 
 ## Features
 
-Every capability links to its guide section:
+Every capability points to its guide section:
 
-- Buses: default + marker buses, explicit fluent configuration (`guide/config.md`)
-- Connection: host/credentials/ports/heartbeat/monitor/pools (`guide/config.md`)
-- Serialization: JSON options per bus (`guide/config.md`)
-- Declarations: streams/super-streams + retention/placement knobs (`guide/topology.md`)
-- Startup: blocking/non-blocking, readiness waits, health checks (`guide/hosting.md`)
-- Typed publish: route table, keyed super publish, overrides, raw bytes (`guide/publish.md`)
-- Endpoints: required groups, scale-out, SAC/offset/store knobs (`guide/consume.md`)
-- Raw consume + manual offset get/set (`guide/consume.md`)
-- Effectively-once pipelines + manual result publish (`guide/effectively-once.md`)
-- Retry: global + per-endpoint schedules, escape hatch (`guide/errors.md`)
-- Exhaustion: stream / classic+quorum queues (derived `{stream}_error` default) / owning callback (`guide/errors.md`)
-- Replay (streams) and requeue (queues) (`guide/errors.md`)
-- Topology derivation + broker adopt rule + conflicts (`guide/topology.md`)
-- Multi-bus markers + shared consumer classes (`guide/multi-bus.md`)
-- Message properties: message/correlation IDs and typed headers (`guide/publish.md`)
-- Middleware: ordered publish/consume filters, explicit consume skip, telemetry (`guide/publish.md`, `guide/consume.md`)
-- Observability: per-registration health, metrics, log events (`guide/observability.md`)
+- Buses: default + marker buses, explicit fluent configuration (`docs/guide/config.md`)
+- Connection: host/credentials/ports/heartbeat/monitor/pools (`docs/guide/config.md`)
+- Serialization: JSON options per bus (`docs/guide/config.md`)
+- Declarations: streams/super-streams + retention/placement knobs (`docs/guide/topology.md`)
+- Startup: blocking/non-blocking, readiness waits, health checks (`docs/guide/hosting.md`)
+- Typed publish: route table, keyed super publish, overrides, raw bytes (`docs/guide/publish.md`)
+- Endpoints: required groups, scale-out, SAC/offset/store knobs (`docs/guide/consume.md`)
+- Raw consume + manual offset get/set (`docs/guide/consume.md`)
+- Effectively-once pipelines + manual result publish (`docs/guide/effectively-once.md`)
+- Retry: global + per-endpoint schedules, escape hatch (`docs/guide/errors.md`)
+- Exhaustion: stream / classic+quorum queue (bounded schedule, no destination or callback: `{stream}_error`) / owning callback (`docs/guide/errors.md`)
+- Replay (streams) and requeue (queues) (`docs/guide/errors.md`)
+- Topology derivation, runtime `bus.Topology`, adopt rule, conflicts (`docs/guide/topology.md`)
+- Multi-bus markers + shared consumer classes (`docs/guide/multi-bus.md`)
+- Message properties: message/correlation IDs and typed headers (`docs/guide/publish.md`)
+- Middleware: ordered publish/consume filters, explicit consume skip, telemetry (`docs/guide/publish.md`, `docs/guide/consume.md`)
+- Observability: per-registration health, metrics, log events (`docs/guide/observability.md`)
 
 ## Concepts
 
-- **Bus registration** (`guide/config.md`): one `AddStreamBus` per bus,
+- **Bus registration** (`docs/guide/config.md`): one `AddStreamBus` per bus,
   `AddStreamBus<TBus>` per extra bus. `Host` exactly once; streams declared
   up front; startup blocking is service-level via `AddStreamBusHosting`.
-- **Explicit configuration** (`guide/config.md`): no configuration binder.
+- **Explicit configuration** (`docs/guide/config.md`): no configuration binder.
   Read environment variables or a vault in your own code if you want to, then
   pass the values to `Host`, `Publish`, `ReceiveEndpoint`, and the other
   configurator methods.
-- **Typed publish** (`guide/publish.md`): `Publish<T>` for plain streams,
+- **Typed publish** (`docs/guide/publish.md`): `Publish<T>` for plain streams,
   `PublishSuper<T>` for super streams; the routing key travels with the
   `PublishSuperAsync` call (forgetting it is a compile error).
-- **Endpoints** (`guide/consume.md`): the consumer group is required and
+- **Endpoints** (`docs/guide/consume.md`): the consumer group is required and
   verbatim - same group scales out, different groups are independent.
-- **Multi-bus** (`guide/multi-bus.md`): marker types disambiguate buses;
+- **Multi-bus** (`docs/guide/multi-bus.md`): marker types disambiguate buses;
   a shared consumer class needs a different group per bus.
-- **Retry and errors** (`guide/errors.md`): global schedule, per-endpoint
-  override, exhaustion to a stream, a classic/quorum queue (default
+- **Retry and errors** (`docs/guide/errors.md`): global schedule, per-endpoint
+  override, exhaustion to a stream, a classic/quorum queue (a bounded
+  schedule with neither destination nor callback defaults to
   `{stream}_error`), or an owning `OnExhausted` callback.
 
 ## Docs map
 
-- `docs/guide/config.md` - connection, declarations, serializers, full option reference.
+- `docs/guide/config.md` - connection, declarations, serializers, hosting.
 - `docs/guide/hosting.md` - startup blocking, readiness, health checks.
 - `docs/guide/publish.md` - typed publish, super streams, escape hatches.
 - `docs/guide/consume.md` - endpoints, groups, raw consume, offsets.
 - `docs/guide/effectively-once.md` - read-process-write pipelines.
 - `docs/guide/multi-bus.md` - marker buses and shared consumers.
 - `docs/guide/errors.md` - retry layering, dead letters, requeue, exception table.
-- `docs/guide/topology.md` - declarations, derivation, adopt rule.
+- `docs/guide/topology.md` - declarations, runtime topology, derivation, adopt rule.
 - `docs/guide/observability.md` - health data, metrics, log events.
 - `docs/llms.txt` - ground truths for automated consumers.
 - `CHANGELOG.md` - 0.2.0 breaking changes and fixes.

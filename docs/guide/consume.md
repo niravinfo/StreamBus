@@ -44,7 +44,7 @@ Stream spec knobs live on the endpoint too and feed startup topology
 derivation: `Partitions(n)` (super expectation, mirrors the publish
 registration's `s.Partitions(n)`), `MaxAge`, `MaxLengthBytes`,
 `MaxSegmentSizeBytes`, `LeaderLocator`. Multiple references to one
-stream must agree per knob; see `guide/topology.md` for the full
+stream must agree per knob; see `topology.md` for the full
 declare-level rules. The endpoint adopts the broker reality (matching
 kind is consumed as-is, a kind mismatch is a conflict, a missing stream
 is declared from the endpoint's and any publish registration's spec).
@@ -66,7 +66,7 @@ Raw consume also requires `Reference` — a missing group throws
 
 Read-process-write pipelines are unchanged apart from the bus they run
 on, which is unambiguous by construction. See
-`guide/effectively-once.md` for the full projection example:
+`effectively-once.md` for the full projection example:
 
 ```csharp
 await using var pipe = await bus.ConsumeEffectivelyOnceAsync("orders", "invoices",
@@ -101,9 +101,11 @@ public sealed class TenantFilter : IStreamConsumeFilter
 ```
 
 One DI scope is created per delivered message and shared by the pipeline
-and the typed consumer, so scoped services and `SetPayload<T>` bridge the
-two. Filters are singletons per bus. A filter must call `next` exactly
-once; zero without `SkipHandler`, or more than once, is retried and then
+and the typed consumer, so scoped services resolve to the same instance in
+filters and consumer constructors. `SetPayload<T>` carries values between
+filters in the pipeline. Filters are singletons per bus. A filter must
+call `next` exactly once; zero without `SkipHandler`, or more than once,
+is retried and then
 exhausted rather than silently advancing the offset. Skipping requires
 `CanSkip => true`; raw endpoints skip freely, typed endpoints must opt in
 with `e.AllowPipelineSkip()`, and effectively-once pipelines reject

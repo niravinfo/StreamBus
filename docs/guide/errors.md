@@ -16,6 +16,7 @@ services.AddStreamBus((context, cfg) =>
         TimeSpan.FromSeconds(10)));
 
     cfg.Publish<OrderEvent>("orders");
+    cfg.Publish<PaymentFailed>("payments-dlq"); // target used by the payments callback
 
     cfg.ReceiveEndpoint("orders", e =>
     {
@@ -58,7 +59,7 @@ a raw `RetryPolicy` as an escape hatch on both levels.
 |---|---|---|
 | bounded schedule | `DeadLetterToStream` / `DeadLetterToQueue` | handoff to the declared destination, then advance |
 | bounded schedule | `OnExhausted` | the callback owns the outcome (a declared destination is shadowed with a startup warning) |
-| bounded schedule | neither | handoff to the derived default: classic queue `{stream}_error` (durable, full headers) |
+| bounded schedule | neither | handoff to the derived destination: classic queue `{stream}_error` (durable, full headers) |
 | unbounded (default) | neither | `Strict`: retry forever |
 | unbounded | destination or callback | configuration error at startup (a handoff needs a bound) |
 | `None()` | explicit/callback/nothing | immediate handoff or callback on first failure |
@@ -149,7 +150,7 @@ type-specific:
 | `StreamBusStartupBlockedException` | A typed consumer could not attach during blocking startup. | No - fix the consumer or dependency first. |
 | `StreamBusFatalException` | The bus connection is fatal. | No - reconnect/operator action. |
 | `StreamBusNotReadyException` | The bus is not ready for the operation yet. | Yes - transient. |
-| `StreamBusStreamNotFoundException` | An explicit publish target does not exist. | No - publishing never auto-creates. |
+| `StreamBusStreamNotFoundException` | A referenced publish, consume, replay, or effectively-once stream is missing. | No at runtime; a blocking startup attach may retry while declarations converge. |
 | `StreamBusTimeoutException` | A budget expired; the outcome may be unknown. | Only when the operation is safe/idempotent. |
 | `StreamBusPublishTransientException` | A publish failed transiently and the producer was discarded. | Yes - retry. |
 | `StreamBusPublishException` | A publish was rejected, returned, or otherwise failed without a transient classification. | Do not blindly retry. |
