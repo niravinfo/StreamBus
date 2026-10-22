@@ -181,11 +181,15 @@ jobs:
 
       - name: Upload test results
         if: always()
+        # Artifact upload is diagnostics, not a gate: a storage quota problem must
+        # never fail the build (and with it skip the integration job).
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: release-test-results-${{ env.VERSION }}
           path: ./artifacts/test-results/*.trx
           if-no-files-found: warn
+          retention-days: 3
 
       - name: Pack
         run: |
@@ -195,7 +199,7 @@ jobs:
             -p:PackageVersion=${{ env.VERSION }} \
             -p:Version=${{ env.VERSION }}
           echo "Packages produced:"
-          ls -lh ./artifacts/
+          ls -lh ./artifacts/ 
 
       # Guard against version drift: the package file name must carry exactly the
       # version that was resolved from the tag.
@@ -248,6 +252,9 @@ jobs:
 
       - name: Upload packages artifact (for workflow_dispatch runs)
         if: github.event_name == 'workflow_dispatch'
+        # Artifact upload is diagnostics, not a gate: a storage quota problem must
+        # never fail the build (and with it skip the integration job).
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           # The commit is in the name so a hand-triggered publish stays traceable
@@ -257,3 +264,4 @@ jobs:
             ./artifacts/*.nupkg
             ./artifacts/*.snupkg
           if-no-files-found: error
+          retention-days: 3
