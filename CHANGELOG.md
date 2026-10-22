@@ -52,9 +52,9 @@
   (A2 / V2-A2).
 - A3 confirm-path hardening: close callbacks complete pending confirms
   instead of leaving producers hung (A3 / V2-A3).
-- A4 unwedged dispatch: error-stream hand-off confirmation is bounded, so a
-  lost confirmation cannot wedge the partition dispatch gate
-  (A4 / V2-A3).
+- A4 unwedged dispatch: the error-stream hand-off send and confirmation share
+  one budget, so a blocked AMQP publish or a lost confirmation cannot wedge
+  the partition dispatch gate (A4 / V2-A3).
 - A5 producer lifecycle: producer registry slots serialize creation,
   invalidation, and non-blocking disposal (A5 / V2-A5).
 - A6 health truth: degraded/unhealthy states now reflect registration-level
@@ -64,15 +64,22 @@
   (A7 / V2-A7).
 - A8 error-queue round-trips: dead-letter bursts reuse the AMQP channel and
   both destination kinds use a uniform confirmation budget (A8 / V2-A8).
-- Stale-handle reattach: partition consumers resolve the supervisor's current
-  system handle on every attach and offset query, so a reconnect cannot retry
-  against a disposed system forever (D2 / V2-D2).
+- Stale-handle reattach: raw, typed, effectively-once, and replay partition
+  consumers resolve the supervisor's current system handle on every attach,
+  query, and replay producer operation, so a reconnect cannot retry against a
+  disposed system forever (D2 / V2-D2).
+- Partition-scoped replay identity: explicit-target replay names and caches
+  producers per source partition, so equal source offsets from different
+  partitions no longer share a broker dedup space (D2 / V2-D2).
+- Late consumer-close callbacks no longer clear a newer consumer handle, so the
+  watchdog keeps observing the live subscription (D2 / V2-D2).
 
 ### Validation
 
 - Release gate: `dotnet build StreamBus.slnx` reports 0 warnings and 0 errors
-  at `latest-recommended` analyzers (B16 / V2-B16); unit suite 328/328;
-  integration suite 65 passed, 2 skipped against RabbitMQ 4.2.6.
+  at `latest-recommended` analyzers (B16 / V2-B16); unit suite 334/334;
+  integration suite 65 passed, 2 skipped against RabbitMQ 4.2.6; the three
+  destructive chaos tests passed on three consecutive runs (9/9).
 - Traceability: `docs/superpowers/specs/2026-10-18-streambus-v2-architecture-and-middleware-design.md`
   §10.1 maps every review finding to its acceptance ID, task, and test.
 - Docs: the README snippet compiles verbatim through `StreamBus.DocsSnippets`;

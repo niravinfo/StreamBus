@@ -7,8 +7,8 @@ MassTransit-style client for RabbitMQ streams on .NET 10. Workers register
 buses with nested `AddStreamBus((context, cfg) => ...)` blocks, publish typed
 messages without manual serialization, and consume through `ReceiveEndpoint`s
 with first-class consumer-group identity. Global retry with per-endpoint
-override hands exhausted messages to per-stream classic `{stream}_error`
-queues by default.
+override is strict and unbounded by default; a bounded schedule can hand
+exhausted messages to per-stream classic `{stream}_error` queues.
 
 **Configuration is explicit and fluent.** StreamBus does not read host
 configuration, bind JSON settings, or discover connection settings. Every
@@ -18,7 +18,8 @@ option is a configurator method call in code, validated once at registration.
 
 - .NET 10 SDK.
 - RabbitMQ 4.x with streams enabled: stream port `5552`, AMQP `5672`
-  (AMQP is only used when a queue dead-letter destination exists).
+  (AMQP is used for queue dead-letter destinations and error-queue requeue
+  operations).
 - Empty credentials are rejected. `guest`/`guest` is accepted for a local
   broker; remote deployments need a dedicated non-`guest` user.
 

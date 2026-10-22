@@ -70,7 +70,7 @@ on, which is unambiguous by construction. See
 
 ```csharp
 await using var pipe = await bus.ConsumeEffectivelyOnceAsync("orders", "invoices",
-    new EffectivelyOnceOptions(), async (ctx, ct) => resultBytes, ct);
+    new EffectivelyOnceOptions(), ctx => Task.FromResult<ReadOnlyMemory<byte>>(resultBytes), ct);
 ```
 
 ## Pipelines
@@ -127,10 +127,8 @@ cfg.ReceiveEndpoint("orders", e =>
 await using var tail = await bus.ConsumeAsync(
     "audit",
     new ConsumeOptions { Offset = ConsumeOffset.AlwaysFirst, Reference = "ops-tail" },
-    async (ctx, ct) =>
-    {
-        await bus.SetConsumerOffsetAsync("audit", "ops-tail", ctx.Partition, ctx.Offset, ct);
-    },
+    ctx => bus.SetConsumerOffsetAsync(
+        "audit", "ops-tail", ctx.Partition, ctx.Offset, ctx.CancellationToken),
     ct);
 
 var stored = await bus.GetConsumerOffsetAsync("audit", "ops-tail", partition: 0, ct);
