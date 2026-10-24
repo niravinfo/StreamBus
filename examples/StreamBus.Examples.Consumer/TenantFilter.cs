@@ -13,9 +13,9 @@ public sealed class TenantFilter : IStreamConsumeFilter
 {
     public Task OnConsume(StreamConsumeFilterContext context, ConsumeDelegate next, CancellationToken ct)
     {
-        var scope = (TenantScope)context.Services.GetRequiredService(typeof(TenantScope));
+        TenantScope scope = context.Services.GetRequiredService<TenantScope>();
         scope.Tenant = context.Message.Metadata.GetString("x-tenant");
-        context.SetPayload(scope.Tenant);
+
         return next(context);
     }
 }

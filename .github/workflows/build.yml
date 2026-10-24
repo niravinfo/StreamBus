@@ -2,9 +2,9 @@ name: Build
 
 on:
   push:
-    branches: [v2, main, nirav/feature/StreamBusV2]
+    branches: [main]
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, ready_for_review]
   workflow_dispatch:
 
 # The build workflow never needs to write to the repository.
