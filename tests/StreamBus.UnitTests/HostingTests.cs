@@ -2,6 +2,7 @@ using System.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using RabbitMQ.Stream.Client;
 
 namespace StreamBus.UnitTests;
@@ -19,13 +20,13 @@ public sealed class HostingTests
         public Func<string, CancellationToken, Task<bool>> SuperExistsFunc = (_, _) => Task.FromResult(false);
         public bool IsClosed => false;
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-        public Task<IStreamProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct)
+        public Task<IStreamPlainProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct)
             => throw new NotImplementedException("HostingTests never publishes.");
-        public Task<IStreamProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
+        public Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
             => throw new NotImplementedException("HostingTests never publishes.");
-        public Task<IStreamProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
+        public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
             => throw new NotImplementedException("HostingTests never publishes.");
-        public Task<IStreamProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
+        public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
             => throw new NotImplementedException("StubHandle never creates stable super producers.");
         public Task<ulong> QuerySequenceAsync(string reference, string stream, CancellationToken ct)
             => throw new NotImplementedException("StubHandle never queries publishing sequences.");
@@ -56,19 +57,21 @@ public sealed class HostingTests
     private sealed class CountingHandle : IStreamSystemHandle
     {
         public int DisposedCount;
+        public bool ThrowOnDispose;
         public bool IsClosed => DisposedCount > 0;
         public ValueTask DisposeAsync()
         {
             Interlocked.Increment(ref DisposedCount);
+            if (ThrowOnDispose) throw new InvalidOperationException("scripted supervisor dispose failure");
             return ValueTask.CompletedTask;
         }
-        public Task<IStreamProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct)
+        public Task<IStreamPlainProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct)
             => throw new NotImplementedException("HostingTests never publishes.");
-        public Task<IStreamProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
+        public Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
             => throw new NotImplementedException("HostingTests never publishes.");
-        public Task<IStreamProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
+        public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
             => throw new NotImplementedException("HostingTests never publishes.");
-        public Task<IStreamProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
+        public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
             => throw new NotImplementedException("CountingHandle never creates stable super producers.");
         public Task<ulong> QuerySequenceAsync(string reference, string stream, CancellationToken ct)
             => throw new NotImplementedException("CountingHandle never queries publishing sequences.");
@@ -104,6 +107,13 @@ public sealed class HostingTests
             await Task.Delay(Timeout.InfiniteTimeSpan, ct).ConfigureAwait(false);
             throw new OperationCanceledException(ct);
         }
+    }
+
+    private sealed class CapturingLoggerProvider : ILoggerProvider
+    {
+        public readonly ListLogger Logger = new();
+        public ILogger CreateLogger(string categoryName) => Logger;
+        public void Dispose() { }
     }
 
     private sealed class FatalConnector : IStreamSystemConnector
@@ -286,6 +296,25 @@ public sealed class HostingTests
     }
 
     [Fact]
+    public void BlockUntilConsumersAttached_defaults_true_and_can_be_disabled()
+    {
+        var defaults = new StreamBusHostingOptionsBuilder().Build();
+        Assert.True(defaults.BlockUntilConsumersAttached);
+        Assert.False(defaults.BlockStartupUntilReady);
+
+        var enabled = new StreamBusHostingOptionsBuilder().BlockUntilConsumersAttached().Build();
+        Assert.True(enabled.BlockUntilConsumersAttached);
+        Assert.True(enabled.BlockStartupUntilReady);
+
+        var disabled = new StreamBusHostingOptionsBuilder()
+            .BlockStartupUntilReady()
+            .BlockUntilConsumersAttached(false)
+            .Build();
+        Assert.False(disabled.BlockUntilConsumersAttached);
+        Assert.True(disabled.BlockStartupUntilReady);
+    }
+
+    [Fact]
     public async Task Empty_registry_reports_degraded_with_hint()
     {
         var registry = new StreamBusRegistry(
@@ -385,6 +414,55 @@ public sealed class HostingTests
         {
             await hosted.StopAsync(CancellationToken.None);
         }
+    }
+
+    [Fact]
+    public async Task Stop_during_blocking_startup_rethrows_OCE_not_timeout()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddStreamBus((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("app", "secret")));
+        services.AddStreamBusHosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(30)));
+        services.AddSingleton<IStreamSystemConnector>(new NeverReadyConnector());
+        await using var sp = services.BuildServiceProvider();
+        var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
+        try
+        {
+            using var stop = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
+            var ex = await Record.ExceptionAsync(() => hosted.StartAsync(stop.Token));
+            Assert.IsAssignableFrom<OperationCanceledException>(ex);
+            Assert.IsNotType<StreamBusTimeoutException>(ex);
+        }
+        finally
+        {
+            await hosted.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task Stop_logs_dispose_failures_instead_of_swallowing()
+    {
+        var provider = new CapturingLoggerProvider();
+        var services = new ServiceCollection();
+        services.AddLogging(b => b.AddProvider(provider));
+        services.AddStreamBus((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("app", "secret")));
+        services.AddSingleton<IStreamSystemConnector>(new SuccessConnector(new CountingHandle { ThrowOnDispose = true }));
+        await using var sp = services.BuildServiceProvider();
+        var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
+        await hosted.StartAsync(TestContext.Current.CancellationToken);
+
+        var registry = sp.GetRequiredService<IStreamBusRegistry>();
+        var before = registry.SupervisorFor("/");
+        await before.WaitUntilReadyAsync(ReadinessPolicy.Indefinitely, TestContext.Current.CancellationToken);
+
+        await hosted.StopAsync(CancellationToken.None);
+
+        Assert.Contains(provider.Logger.Lines, line =>
+            line.Contains("Supervisor dispose did not complete cleanly", StringComparison.Ordinal));
+
+        var after = registry.SupervisorFor("/");
+        Assert.NotSame(before, after);
+        await after.DisposeAsync();
     }
 
     [Fact]
@@ -488,6 +566,32 @@ public sealed class HostingTests
     }
 
     [Fact]
+    public void Registration_view_exposes_connection_metadata_without_credentials()
+    {
+        var store = new StreamBusConfigStore();
+        store.Add(typeof(DefaultBus), new StreamBusOptions
+        {
+            Vhost = "/",
+            Host = "broker.internal",
+            UserName = "app",
+            Password = "secret",
+            StreamPort = 5553,
+            AmqpPort = 5673,
+            Heartbeat = TimeSpan.FromSeconds(30),
+        });
+
+        var view = Assert.Single(store.Registrations);
+        Assert.Equal("/", view.Vhost);
+        Assert.Equal("broker.internal", view.Host);
+        Assert.Equal(5553, view.StreamPort);
+        Assert.Equal(5673, view.AmqpPort);
+        Assert.Equal(30, view.HeartbeatSeconds);
+        Assert.DoesNotContain(
+            typeof(StreamBusRegistrationView).GetProperties(),
+            p => p.Name.Contains("Password", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
     public async Task Blocking_startup_timeout_names_topology()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -557,9 +661,11 @@ public sealed class HostingTests
             endpoints: new[] { EndpointDescriptor("endpoint-plain"), EndpointDescriptor("endpoint-super", super: true, partitions: 3) },
             publishes: new[] { new PublishRegistration { BusMarker = typeof(DefaultBus), MessageType = typeof(DerivedEvent), Stream = "publish-plain", IsSuper = false } });
         Assert.Equal(3, set.Count);
-        Assert.Contains(set, d => d.Name == "endpoint-plain" && !d.IsSuper && d.Source == "endpoint");
-        Assert.Contains(set, d => d is { Name: "endpoint-super", IsSuper: true, Partitions: 3 } && d.Source == "endpoint");
-        Assert.Contains(set, d => d.Name == "publish-plain" && !d.IsSuper && d.Source == "publish");
+        Assert.Contains(set, d => d.Name == "endpoint-plain" && !d.IsSuper && d.Source == DeclaredStreamSource.Endpoint);
+        Assert.Contains(set, d => d is { Name: "endpoint-super", IsSuper: true, Partitions: 3 } && d.Source == DeclaredStreamSource.Endpoint);
+        Assert.Contains(set, d => d.Name == "publish-plain" && !d.IsSuper && d.Source == DeclaredStreamSource.Publish);
+        Assert.Contains(set, d => d.Name == "endpoint-plain" && d.Description == "endpoint 'endpoint-plain'");
+        Assert.Contains(set, d => d.Name == "publish-plain" && d.Description.StartsWith("publish ", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -575,8 +681,8 @@ public sealed class HostingTests
         };
         var set = DeclareSet(endpoints: new[] { errorEndpoint });
         Assert.Equal(2, set.Count);
-        Assert.Contains(set, d => d.Name == "orders-errors" && !d.IsSuper && d.Source == "dead-letter");
-        Assert.Contains(set, d => d.Name == "orders" && !d.IsSuper && d.Source == "endpoint");
+        Assert.Contains(set, d => d.Name == "orders-errors" && !d.IsSuper && d.Source == DeclaredStreamSource.DeadLetter);
+        Assert.Contains(set, d => d.Name == "orders" && !d.IsSuper && d.Source == DeclaredStreamSource.Endpoint);
     }
 
     [Fact]
@@ -638,7 +744,7 @@ public sealed class HostingTests
         var set = DeclareSet(
             endpoints: new[] { EndpointDescriptor("orders-super", super: true, partitions: 3) },
             publishes: new[] { new PublishRegistration { BusMarker = typeof(DefaultBus), MessageType = typeof(DerivedEvent), Stream = "orders-super", IsSuper = true } });
-        Assert.DoesNotContain(set, d => d.Source == "publish");
+        Assert.DoesNotContain(set, d => d.Source == DeclaredStreamSource.Publish);
         Assert.Contains(set, d => d is { Name: "orders-super", IsSuper: true, Partitions: 3 });
     }
 

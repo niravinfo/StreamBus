@@ -23,7 +23,7 @@ public sealed class AcceptanceTests : IDisposable
 
     private void Record<T>(Instrument instrument, T measurement, ReadOnlySpan<KeyValuePair<string, object?>> tags, object? state)
     {
-        lock (_measurements) _measurements.Add((instrument.Name, Convert.ToDouble(measurement), tags.ToArray()));
+        lock (_measurements) _measurements.Add((instrument.Name, Convert.ToDouble(measurement, System.Globalization.CultureInfo.InvariantCulture), tags.ToArray()));
     }
 
     public void Dispose() => _listener.Dispose();
@@ -65,17 +65,19 @@ public sealed class AcceptanceTests : IDisposable
         Assert.Equal(1, new ConsumeOptions().OffsetStore.EveryMessages);
     }
 
-    private sealed class CountingHandle : IStreamProducerHandle
+    private sealed class CountingHandle : IStreamSuperProducerHandle
     {
         public int SendCount;
-        public Task SendAsync(ReadOnlyMemory<byte> body, string? routingKey, CancellationToken ct)
+        public Task SendAsync(ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct)
         {
             Interlocked.Increment(ref SendCount);
             return Task.CompletedTask;
         }
-        public Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, string? routingKey, IReadOnlyDictionary<string, object?> applicationProperties, string? messageId, string? correlationId, CancellationToken ct)
+        public Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, PublishOptions options, IReadOnlyDictionary<string, object?> applicationProperties, string? messageId, string? correlationId, CancellationToken ct)
             => throw new NotImplementedException("Acceptance tests publish plain only.");
-        public Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, CancellationToken ct)
+        public Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, PublishOptions options, CancellationToken ct)
+            => throw new NotImplementedException("Acceptance tests publish plain only.");
+        public Task PublishWithIdAsync(ulong publishingId, ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct)
             => throw new NotImplementedException("Acceptance tests publish plain only.");
         public Task PublishResultAsync(ReadOnlyMemory<byte> body, ulong publishingId, string? routingKey, CancellationToken ct)
             => throw new NotImplementedException("Acceptance tests publish plain only.");
@@ -87,10 +89,10 @@ public sealed class AcceptanceTests : IDisposable
         private readonly CountingHandle _handle;
         public ScriptSystemHandle(CountingHandle handle) => _handle = handle;
         public bool IsClosed => false;
-        public Task<IStreamProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct) => Task.FromResult<IStreamProducerHandle>(_handle);
-        public Task<IStreamProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct) => throw new NotImplementedException("Acceptance tests use the unique-name path.");
-        public Task<IStreamProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct) => throw new NotImplementedException("Acceptance tests publish plain only.");
-        public Task<IStreamProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct) => throw new NotImplementedException("Acceptance tests publish plain only.");
+        public Task<IStreamPlainProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct) => Task.FromResult<IStreamPlainProducerHandle>(_handle);
+        public Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct) => throw new NotImplementedException("Acceptance tests use the unique-name path.");
+        public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct) => throw new NotImplementedException("Acceptance tests publish plain only.");
+        public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct) => throw new NotImplementedException("Acceptance tests publish plain only.");
         public Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct) => throw new NotImplementedException("Acceptance tests never attach.");
         public Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken ct) => Task.FromResult<ulong?>(null);
         public Task<ulong> QuerySequenceAsync(string reference, string stream, CancellationToken ct) => Task.FromResult(0UL);
@@ -171,18 +173,19 @@ public sealed class AcceptanceTests : IDisposable
         // Super_stream_keys_land_on_stable_partitions).
         var confirmations = new ConfirmationTracker();
         var producer = new RecordingSuperProducer();
-        var handle = new SuperStreamProducerHandle(producer, "events", confirmations);
+        var routing = new SuperStreamRouting();
+        var handle = new SuperStreamProducerHandle(producer, "events", confirmations, routing);
         var ct = TestContext.Current.CancellationToken;
-        await SendAndConfirmAsync(handle, confirmations, producer, new byte[] { 1 }, "key-a", ct);
-        await SendAndConfirmAsync(handle, confirmations, producer, new byte[] { 2 }, "key-a", ct);
-        await SendAndConfirmAsync(handle, confirmations, producer, new byte[] { 3 }, "key-b", ct);
+        await SendAndConfirmAsync(handle, confirmations, producer, routing, new byte[] { 1 }, "key-a", ct);
+        await SendAndConfirmAsync(handle, confirmations, producer, routing, new byte[] { 2 }, "key-a", ct);
+        await SendAndConfirmAsync(handle, confirmations, producer, routing, new byte[] { 3 }, "key-b", ct);
     }
 
-    private static async Task SendAndConfirmAsync(IStreamProducerHandle handle, ConfirmationTracker tracker, RecordingSuperProducer producer, byte[] body, string routing, CancellationToken ct)
+    private static async Task SendAndConfirmAsync(IStreamProducerHandle handle, ConfirmationTracker tracker, RecordingSuperProducer producer, SuperStreamRouting routing, byte[] body, string routingKey, CancellationToken ct)
     {
         int before;
         lock (producer.Sent) before = producer.Sent.Count;
-        var send = handle.SendAsync(body, routing, ct);
+        var send = handle.SendAsync(body, new PublishOptions { IsSuperStream = true, RoutingKey = routingKey }, ct);
         ulong id;
         Message recorded;
         while (true)
@@ -199,7 +202,7 @@ public sealed class AcceptanceTests : IDisposable
             }
             await Task.Delay(10, ct);
         }
-        Assert.Equal(routing, SuperStreamProducerHandle.RoutingFor(recorded));
+        Assert.Equal(routingKey, routing.Route(recorded));
         tracker.Complete(new Confirmation { PublishingId = id, Code = ResponseCode.Ok });
         await send;
     }

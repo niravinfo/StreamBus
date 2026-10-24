@@ -18,6 +18,7 @@ var builder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings
 // The library never reads configuration by itself: the user owns it.
 // Connection values are read here (in the app) and handed to the
 // configurator so every knob is validated in code at startup.
+builder.Services.AddSingleton(new TenantScope());
 builder.Services.AddStreamBus((context, cfg) =>
 {
     cfg.Host(
@@ -32,6 +33,12 @@ builder.Services.AddStreamBus((context, cfg) =>
             h.Heartbeat(TimeSpan.FromSeconds(
                 double.TryParse(builder.Configuration["StreamBus:HeartbeatSeconds"], out var seconds) ? seconds : 60));
         });
+
+    // Cross-cutting middleware runs before each typed send. Filters are
+    // singletons per bus; resolve per-message scoped services from the
+    // filter context when needed.
+    cfg.UsePublishFilter<TenantFilter>();
+    cfg.UsePublishFilter<CorrelationIdFilter>();
 
     // The stream spec lives on the registration that references the
     // stream — no manual DeclareStream/DeclareSuperStream anywhere.
@@ -63,15 +70,15 @@ public sealed class SeedWorker(
     IHostApplicationLifetime lifetime,
     ILogger<SeedWorker> log) : BackgroundService
 {
-    protected override async Task ExecuteAsync(CancellationToken ct)
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        await bus.WaitUntilReadyAsync(ReadinessPolicy.UpTo(TimeSpan.FromSeconds(30)), ct);
+        await bus.WaitUntilReadyAsync(ReadinessPolicy.UpTo(TimeSpan.FromSeconds(30)), stoppingToken);
 
         // Plain stream: PublishAsync resolves the stream from the registration.
         for (var i = 0; i < 5; i++)
         {
             var order = new OrderEvent($"order-{i}", i);
-            await bus.PublishAsync(order, ct);
+            await bus.PublishAsync(order, stoppingToken);
             log.LogInformation("orders <- {OrderId}", order.OrderId);
         }
 
@@ -82,7 +89,7 @@ public sealed class SeedWorker(
             for (var i = 0; i < count; i++)
             {
                 var payment = new PaymentEvent($"pay-{accountId}-{i}", accountId, (i + 1) * 10m);
-                await bus.PublishSuperAsync(payment, accountId, ct);
+                await bus.PublishSuperAsync(payment, accountId, stoppingToken);
                 log.LogInformation("payments-super <- {PaymentId} (key {Key})", payment.PaymentId, accountId);
             }
         }

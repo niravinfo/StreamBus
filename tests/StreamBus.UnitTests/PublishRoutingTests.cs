@@ -9,18 +9,20 @@ public sealed class PublishRoutingTests
     private sealed record InvoiceEvent(string InvoiceId);
     private sealed class OrdersBus;
 
-    private sealed class CapturingHandle : IStreamProducerHandle
+    private sealed class CapturingHandle : IStreamSuperProducerHandle
     {
         public readonly List<(byte[] Body, string? RoutingKey)> Sent = new();
-        public Task SendAsync(ReadOnlyMemory<byte> body, string? routingKey, CancellationToken ct)
+        public Task SendAsync(ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct)
         {
-            lock (Sent) Sent.Add((body.ToArray(), routingKey));
+            lock (Sent) Sent.Add((body.ToArray(), options.RoutingKey));
             return Task.CompletedTask;
         }
-        public Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, string? routingKey, IReadOnlyDictionary<string, object?> applicationProperties, string? messageId, string? correlationId, CancellationToken ct)
+        public Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, PublishOptions options, IReadOnlyDictionary<string, object?> applicationProperties, string? messageId, string? correlationId, CancellationToken ct)
             => throw new NotImplementedException("PublishRoutingTests never sends envelopes.");
-        public Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, CancellationToken ct)
+        public Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, PublishOptions options, CancellationToken ct)
             => throw new NotImplementedException("PublishRoutingTests never replays.");
+        public Task PublishWithIdAsync(ulong publishingId, ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct)
+            => throw new NotImplementedException("PublishRoutingTests never publishes results.");
         public Task PublishResultAsync(ReadOnlyMemory<byte> body, ulong publishingId, string? routingKey, CancellationToken ct)
             => throw new NotImplementedException("PublishRoutingTests never publishes results.");
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
@@ -33,19 +35,19 @@ public sealed class PublishRoutingTests
         public readonly CapturingHandle Plain = new();
         public readonly CapturingHandle Super = new();
         public bool IsClosed => false;
-        public Task<IStreamProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct)
+        public Task<IStreamPlainProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct)
         {
             lock (PlainStreams) PlainStreams.Add(stream);
-            return Task.FromResult<IStreamProducerHandle>(Plain);
+            return Task.FromResult<IStreamPlainProducerHandle>(Plain);
         }
-        public Task<IStreamProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
+        public Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
             => throw new NotImplementedException("PublishRoutingTests never replays.");
-        public Task<IStreamProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
+        public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
         {
             lock (SuperStreams) SuperStreams.Add(stream);
-            return Task.FromResult<IStreamProducerHandle>(Super);
+            return Task.FromResult<IStreamSuperProducerHandle>(Super);
         }
-        public Task<IStreamProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
+        public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
             => throw new NotImplementedException("PublishRoutingTests never replays.");
         public Task<ulong> QuerySequenceAsync(string reference, string stream, CancellationToken ct)
             => throw new NotImplementedException("PublishRoutingTests never queries sequences.");
@@ -218,15 +220,15 @@ public sealed class PublishRoutingTests
     private sealed class NotFoundSystem : IStreamSystemHandle
     {
         public bool IsClosed => false;
-        public Task<IStreamProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct)
-            => Task.FromException<IStreamProducerHandle>(new RabbitMQ.Stream.Client.CreateProducerException(
+        public Task<IStreamPlainProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct)
+            => Task.FromException<IStreamPlainProducerHandle>(new RabbitMQ.Stream.Client.CreateProducerException(
                 "producer could not be created code: StreamDoesNotExist",
                 RabbitMQ.Stream.Client.ResponseCode.StreamDoesNotExist));
-        public Task<IStreamProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
+        public Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
             => throw new NotImplementedException("NotFoundSystem never replays.");
-        public Task<IStreamProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
+        public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
             => throw new NotImplementedException("NotFoundSystem never creates super producers.");
-        public Task<IStreamProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
+        public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
             => throw new NotImplementedException("NotFoundSystem never replays.");
         public Task<ulong> QuerySequenceAsync(string reference, string stream, CancellationToken ct)
             => throw new NotImplementedException("NotFoundSystem never queries sequences.");

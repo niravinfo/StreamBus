@@ -7,7 +7,15 @@ internal sealed class StreamProducerRegistry
 {
     private readonly StreamBusConnectionSupervisor _supervisor;
     private readonly string _vhost;
-    private readonly ConcurrentDictionary<string, Task<IStreamProducerHandle>> _handles = new();
+    private readonly ConcurrentDictionary<string, ProducerSlot> _slots = new();
+
+    private sealed class ProducerSlot
+    {
+        public readonly object Gate = new();
+        public TaskCompletionSource<IStreamProducerHandle>? Pending;
+        public TaskCompletionSource<IStreamProducerHandle>? Success;
+        public bool Failed;
+    }
 
     public StreamProducerRegistry(StreamBusConnectionSupervisor supervisor, string vhost)
     {
@@ -29,16 +37,15 @@ internal sealed class StreamProducerRegistry
         if (readiness != BusReadiness.Ready)
             throw new StreamBusNotReadyException($"StreamBus for vhost '{_vhost}' is not ready ({readiness}); publish to '{stream}' refused.");
         var (entry, handle) = await GetOrCreateAsync(stream, options.IsSuperStream, ct).ConfigureAwait(false);
-        var key = Key(stream, options.IsSuperStream);
         using var timeoutCts = new CancellationTokenSource(options.Timeout);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
         try
         {
-            await handle.SendAsync(body, options.RoutingKey, linked.Token).ConfigureAwait(false);
+            await handle.SendAsync(body, options, linked.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !ct.IsCancellationRequested)
         {
-            await InvalidateAsync(key, entry, handle).ConfigureAwait(false);
+            await InvalidateAsync(entry, handle).ConfigureAwait(false);
             throw new StreamBusTimeoutException($"Publish to stream '{stream}' was not confirmed within {options.Timeout} (outcome unknown).");
         }
         catch (StreamBusPublishException)
@@ -51,25 +58,45 @@ internal sealed class StreamProducerRegistry
         }
         catch (Exception ex) when (!IsCallerCancel(ex, ct))
         {
-            await InvalidateAsync(key, entry, handle).ConfigureAwait(false);
+            await InvalidateAsync(entry, handle).ConfigureAwait(false);
             throw new StreamBusPublishTransientException($"Publish to stream '{stream}' failed transiently; the cached producer was discarded.", ex);
         }
     }
 
-    public async Task PublishEnvelopeAsync(string stream, ReadOnlyMemory<byte> body, string? routingKey, IReadOnlyDictionary<string, object?> applicationProperties, string? messageId, string? correlationId, CancellationToken ct = default)
+    public async Task PublishEnvelopeAsync(string stream, ReadOnlyMemory<byte> body, string? routingKey, IReadOnlyDictionary<string, object?> applicationProperties, string? messageId, string? correlationId, TimeSpan confirmTimeout, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(stream);
         ArgumentNullException.ThrowIfNull(applicationProperties);
+        if (confirmTimeout <= TimeSpan.Zero)
+            throw new StreamBusConfigurationException("Error hand-off confirm timeout must be positive.");
         var readiness = await _supervisor.WaitUntilReadyAsync(ReadinessPolicy.FailFastPolicy, ct).ConfigureAwait(false);
         if (readiness == BusReadiness.Fatal)
             throw new StreamBusFatalException($"StreamBus for vhost '{_vhost}' is in Fatal state; publish to '{stream}' refused.");
         if (readiness != BusReadiness.Ready)
             throw new StreamBusNotReadyException($"StreamBus for vhost '{_vhost}' is not ready ({readiness}); publish to '{stream}' refused.");
         var (entry, handle) = await GetOrCreateAsync(stream, super: false, ct).ConfigureAwait(false);
-        var key = Key(stream, super: false);
+        var plain = handle as IStreamPlainProducerHandle
+            ?? throw new StreamBusConfigurationException($"Error hand-off target '{stream}' is not a plain stream (internal error).");
+        using var attemptCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        attemptCts.CancelAfter(confirmTimeout);
         try
         {
-            await handle.SendEnvelopeAsync(body, routingKey, applicationProperties, messageId, correlationId, ct).ConfigureAwait(false);
+            await plain.SendEnvelopeAsync(
+                body,
+                new PublishOptions { IsSuperStream = false, RoutingKey = routingKey },
+                applicationProperties,
+                messageId,
+                correlationId,
+                attemptCts.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested && attemptCts.IsCancellationRequested)
+        {
+            // The hand-off must never wedge the partition dispatch gate. The
+            // handle's outcome is unknown, so discard it; the caller retries and
+            // re-publishes the same envelope (at-least-once, never a skip).
+            await InvalidateAsync(entry, handle).ConfigureAwait(false);
+            throw new StreamBusTransientException(
+                $"Error hand-off publish was not confirmed within {confirmTimeout}; outcome unknown. A retry will re-publish the envelope.");
         }
         catch (OperationCanceledException)
         {
@@ -81,7 +108,7 @@ internal sealed class StreamProducerRegistry
         }
         catch (Exception ex) when (!IsCallerCancel(ex, ct))
         {
-            await InvalidateAsync(key, entry, handle).ConfigureAwait(false);
+            await InvalidateAsync(entry, handle).ConfigureAwait(false);
             throw new StreamBusPublishTransientException($"Publish to stream '{stream}' failed transiently; the cached producer was discarded.", ex);
         }
     }
@@ -93,11 +120,18 @@ internal sealed class StreamProducerRegistry
 
     private static string Key(string stream, bool super) => super ? $"super:{stream}" : $"plain:{stream}";
 
-    private async Task InvalidateAsync(string key, Task<IStreamProducerHandle> expected, IStreamProducerHandle handleToDispose)
+    private static async Task InvalidateAsync(ProducerSlot expected, IStreamProducerHandle handleToDispose)
     {
-        var removed = ((ICollection<KeyValuePair<string, Task<IStreamProducerHandle>>>)_handles)
-            .Remove(new KeyValuePair<string, Task<IStreamProducerHandle>>(key, expected));
-        if (!removed)
+        bool shouldDispose;
+        lock (expected.Gate)
+        {
+            shouldDispose = expected.Success is { } success
+                && success.Task.IsCompletedSuccessfully
+                && ReferenceEquals(success.Task.Result, handleToDispose);
+            if (shouldDispose)
+                expected.Success = null;
+        }
+        if (!shouldDispose)
             return;
         try
         {
@@ -108,22 +142,62 @@ internal sealed class StreamProducerRegistry
         }
     }
 
-    private async Task<(Task<IStreamProducerHandle> Entry, IStreamProducerHandle Handle)> GetOrCreateAsync(string stream, bool super, CancellationToken ct)
+    private async Task<(ProducerSlot Entry, IStreamProducerHandle Handle)> GetOrCreateAsync(string stream, bool super, CancellationToken ct)
     {
         var key = Key(stream, super);
-        // The factory must not capture the first caller's ct: a caller cancelling must not
-        // abort producer creation for concurrent or future waiters. Client creates are
-        // RpcTimeOut-bounded so nothing hangs; each waiter observes its own cancellation below.
-        var task = _handles.GetOrAdd(key, _ => CreateAsync(stream, super, CancellationToken.None));
+        // Slot creation has no side effects, so the harmless duplicate a
+        // ConcurrentDictionary.GetOrAdd factory race may produce is discarded;
+        // exactly one slot survives and owns the key's single producer.
+        var slot = _slots.GetOrAdd(key, static _ => new ProducerSlot());
+        // The shared creation is not tied to this caller's ct: a caller cancelling
+        // must not abort producer creation for waiters that follow.
+        var handle = await CreateOrWaitAsync(slot, stream, super).WaitAsync(ct).ConfigureAwait(false);
+        return (slot, handle);
+    }
+
+    private async Task<IStreamProducerHandle> CreateOrWaitAsync(ProducerSlot slot, string stream, bool super)
+    {
+        TaskCompletionSource<IStreamProducerHandle>? completed = null;
+        TaskCompletionSource<IStreamProducerHandle>? pending = null;
+        TaskCompletionSource<IStreamProducerHandle>? owner = null;
+        lock (slot.Gate)
+        {
+            if (slot.Success is { } success)
+                completed = success;
+            else if (slot.Pending is null)
+            {
+                owner = new TaskCompletionSource<IStreamProducerHandle>(TaskCreationOptions.RunContinuationsAsynchronously);
+                slot.Pending = owner;
+                slot.Failed = false;
+            }
+            else
+                pending = slot.Pending;
+        }
+        if (completed is not null)
+            return await completed.Task.ConfigureAwait(false);
+        if (pending is not null)
+            return await pending.Task.ConfigureAwait(false);
+
         try
         {
-            var handle = await task.WaitAsync(ct).ConfigureAwait(false);
-            return (task, handle);
+            var handle = await CreateAsync(stream, super, CancellationToken.None).ConfigureAwait(false);
+            lock (slot.Gate)
+            {
+                slot.Success = owner!;
+                slot.Pending = null;
+                slot.Failed = false;
+                owner!.TrySetResult(handle);
+            }
+            return handle;
         }
-        catch
+        catch (Exception ex)
         {
-            if (task.IsFaulted || task.IsCanceled)
-                ((ICollection<KeyValuePair<string, Task<IStreamProducerHandle>>>)_handles).Remove(new KeyValuePair<string, Task<IStreamProducerHandle>>(key, task));
+            lock (slot.Gate)
+            {
+                slot.Pending = null;
+                slot.Failed = true;
+                owner!.TrySetException(ex);
+            }
             throw;
         }
     }
@@ -134,9 +208,10 @@ internal sealed class StreamProducerRegistry
             ?? throw new StreamBusNotReadyException($"StreamBus for vhost '{_vhost}' is not ready; publish to '{stream}' refused.");
         try
         {
-            return super
+            IStreamProducerHandle created = super
                 ? await handle.CreateSuperStreamProducerAsync(stream, ct).ConfigureAwait(false)
                 : await handle.CreatePlainProducerAsync(stream, ct).ConfigureAwait(false);
+            return created;
         }
         catch (CreateProducerException ex) when (ex.ResponseCode == ResponseCode.StreamDoesNotExist)
         {

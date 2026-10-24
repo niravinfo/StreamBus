@@ -1,12 +1,11 @@
-using System.Security.Cryptography;
 using System.Text;
 
 namespace StreamBus;
 
 public sealed record EffectivelyOnceOptions
 {
-    public bool SourceIsSuperStream { get; init; } = false;
-    public bool TargetIsSuperStream { get; init; } = false;
+    public bool SourceIsSuperStream { get; init; }
+    public bool TargetIsSuperStream { get; init; }
     public string? Reference { get; init; }
     public Func<ConsumeContext, string?>? TargetRouting { get; init; }
     public RetryPolicy Retry { get; init; } = new();
@@ -16,7 +15,7 @@ public sealed record EffectivelyOnceOptions
 public sealed record PublishResultOptions
 {
     public required string ProducerName { get; init; }
-    public bool IsSuperStream { get; init; } = false;
+    public bool IsSuperStream { get; init; }
     public string? RoutingKey { get; init; }
     public TimeSpan BaseDelay { get; init; } = TimeSpan.FromMilliseconds(200);
     public double Multiplier { get; init; } = 2.0;
@@ -49,27 +48,10 @@ internal sealed record EffectivelyOnceConfig
 internal static class ResultNaming
 {
     public static string ProducerName(string sourcePartitionStream, string targetStream)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(sourcePartitionStream);
-        ArgumentException.ThrowIfNullOrWhiteSpace(targetStream);
-        var full = $"streambus-eo-{sourcePartitionStream}-to-{targetStream}";
-        if (Encoding.UTF8.GetByteCount(full) <= StreamBusLimits.MaxReferenceBytes)
-            return full;
-        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(full)))[..32];
-        return $"streambus-eo-{hash}";
-    }
+        => StreamBusNaming.EffectivelyOnceProducerName(sourcePartitionStream, targetStream);
 
     public static string ConsumerReference(Type busType, string sourceStream, string targetStream)
-    {
-        ArgumentNullException.ThrowIfNull(busType);
-        ArgumentException.ThrowIfNullOrWhiteSpace(sourceStream);
-        ArgumentException.ThrowIfNullOrWhiteSpace(targetStream);
-        var full = $"streambus-eo:{busType.FullName}:{sourceStream}->{targetStream}";
-        if (Encoding.UTF8.GetByteCount(full) <= StreamBusLimits.MaxReferenceBytes)
-            return full;
-        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(full)))[..32];
-        return $"streambus-eo-{hash}";
-    }
+        => StreamBusNaming.EffectivelyOnceConsumerReference(busType, sourceStream, targetStream);
 
     public static ulong PublishingId(ulong sourceOffset) => sourceOffset;
 }

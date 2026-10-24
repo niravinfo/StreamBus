@@ -56,7 +56,7 @@ public sealed class OffsetResolutionTests
         var (log, branches) = NewSink();
         var result = OffsetResolution.ResolveOffset(ConsumeOffset.ResumeOrFirst, 5, 9, "r", "p", log, branches.Add);
         Assert.Equal(new OffsetTypeOffset(6), result);
-        Assert.Contains(log.Lines, l => l.Contains("9") && l.Contains("5"));
+        Assert.Contains(log.Lines, l => l.Contains('9') && l.Contains('5'));
         Assert.Empty(branches);
     }
 
@@ -185,10 +185,10 @@ public sealed class ConsumeValidationTests
         public bool Exists = true;
         public bool SuperExists;
         public bool IsClosed => false;
-        public Task<IStreamProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct) => throw new NotImplementedException();
-        public Task<IStreamProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct) => throw new NotImplementedException();
-        public Task<IStreamProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct) => throw new NotImplementedException();
-        public Task<IStreamProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct) => throw new NotImplementedException("StubSystemHandle never creates stable super producers.");
+        public Task<IStreamPlainProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct) => throw new NotImplementedException();
+        public Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct) => throw new NotImplementedException();
+        public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct) => throw new NotImplementedException();
+        public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct) => throw new NotImplementedException("StubSystemHandle never creates stable super producers.");
         public Task<ulong> QuerySequenceAsync(string reference, string stream, CancellationToken ct) => throw new NotImplementedException("StubSystemHandle never queries publishing sequences.");
         public Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken ct) => Task.FromResult<ulong?>(null);
         public Task StoreSystemOffsetAsync(string reference, string stream, ulong offset, CancellationToken ct) => Task.CompletedTask;
@@ -215,7 +215,7 @@ public sealed class ConsumeValidationTests
         var factory = new ListLoggerFactory();
         var registry = RegistryWithLogging(factory, new StubSystemHandle());
         await registry.SetOffsetAsync("s", "grp", 0, 7, TestContext.Current.CancellationToken);
-        Assert.Contains(factory.Logger.Lines, l => l.Contains("grp") && l.Contains("7"));
+        Assert.Contains(factory.Logger.Lines, l => l.Contains("grp") && l.Contains('7'));
     }
 
     [Fact]
