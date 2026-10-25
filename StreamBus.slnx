@@ -7,7 +7,6 @@
     <Project Path="examples/StreamBus.Examples.Producer/StreamBus.Examples.Producer.csproj" />
   </Folder>
   <Folder Name="/tests/">
-    <Project Path="tests/StreamBus.DocsSnippets/StreamBus.DocsSnippets.csproj" />
     <Project Path="tests/StreamBus.IntegrationTests/StreamBus.IntegrationTests.csproj" />
     <Project Path="tests/StreamBus.UnitTests/StreamBus.UnitTests.csproj" />
   </Folder>
