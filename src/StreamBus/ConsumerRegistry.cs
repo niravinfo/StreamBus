@@ -89,6 +89,8 @@ internal sealed class StreamConsumerRegistry
     private readonly StreamBusConsumeFilterStore? _consumeFilterStore;
     private readonly IServiceProvider? _rootProvider;
     private readonly ConcurrentDictionary<(Type BusType, ConsumeFilterRegistration Registration), IStreamConsumeFilter> _filterInstances = new();
+    private readonly ConcurrentDictionary<(Type BusType, Type ClosedFilterType), object> _typedFilterInstances = new();
+    private readonly ConcurrentDictionary<(Type BusType, Type ClosedFilterType, Type MessageType), IStreamConsumeFilter> _typedFilterAdapters = new();
 
     public StreamConsumerRegistry(StreamBusConnectionSupervisor supervisor, string vhost, StreamProducerRegistry producers, ILoggerFactory? loggerFactory, ResultProducerRegistry results, IServiceScopeFactory? scopeFactory = null, ErrorQueueTransport? queues = null, StreamBusHealthAggregator? health = null, Func<IStreamSystemHandle, RawConsumerConfig, CancellationToken, Task<IStreamConsumerHandle>>? consumerFactory = null, StreamBusConsumeFilterStore? consumeFilters = null, IServiceProvider? rootProvider = null)
     {
@@ -124,7 +126,8 @@ internal sealed class StreamConsumerRegistry
         IReadOnlyList<ConsumeFilterRegistration> endpointFilters,
         bool effectivelyOnce,
         bool typedEndpoint,
-        bool allowSkip)
+        bool allowSkip,
+        Type? messageType)
     {
         var busFilters = _consumeFilterStore?.FiltersFor(busType) ?? Array.Empty<ConsumeFilterRegistration>();
         if (busFilters.Count == 0 && endpointFilters.Count == 0)
@@ -136,36 +139,60 @@ internal sealed class StreamConsumerRegistry
         }
 
         var filters = new List<IStreamConsumeFilter>(busFilters.Count + endpointFilters.Count);
-        AddFilters(busFilters, filters, "bus");
-        AddFilters(endpointFilters, filters, "endpoint");
+        AddFilters(busFilters, filters, "bus", endpointScope: false);
+        AddFilters(endpointFilters, filters, "endpoint", endpointScope: true);
 
         foreach (var filter in filters)
         {
             if (effectivelyOnce && filter.CanSkip)
             {
                 throw new StreamBusConfigurationException(
-                    $"Consume filter '{filter.GetType().Name}' can skip messages (CanSkip), but effectively-once pipelines must never skip: a skipped source message would publish no result and replay forever.");
+                    $"Consume filter '{FilterIdentity.TypeOf(filter).Name}' can skip messages (CanSkip), but effectively-once pipelines must never skip: a skipped source message would publish no result and replay forever.");
             }
             if (typedEndpoint && !allowSkip && filter.CanSkip)
             {
                 throw new StreamBusConfigurationException(
-                    $"Consume filter '{filter.GetType().Name}' can skip messages (CanSkip), but typed endpoint '{stream}' has not called AllowPipelineSkip(); a skipped message would advance the offset without invoking the consumer.");
+                    $"Consume filter '{FilterIdentity.TypeOf(filter).Name}' can skip messages (CanSkip), but typed endpoint '{stream}' has not called AllowPipelineSkip(); a skipped message would advance the offset without invoking the consumer.");
             }
         }
-        return new ConsumePipeline(filters);
+        return new ConsumePipeline(filters, filters.Any(f => f is ITypedFilterAdapter));
 
-        void AddFilters(IReadOnlyList<ConsumeFilterRegistration> registrations, List<IStreamConsumeFilter> target, string scope)
+        void AddFilters(IReadOnlyList<ConsumeFilterRegistration> registrations, List<IStreamConsumeFilter> target, string scope, bool endpointScope)
         {
             var seen = new HashSet<Type>();
             foreach (var registration in registrations)
             {
-                var filter = _filterInstances.GetOrAdd(
-                    (busType, registration),
-                    _ => registration.Create(_rootProvider));
-                if (!seen.Add(filter.GetType()))
+                IStreamConsumeFilter filter;
+                if (registration.IsTyped)
+                {
+                    if (messageType is null)
+                        continue;
+                    var closedType = registration.ClosedFilterType(messageType);
+                    if (closedType is null)
+                    {
+                        if (endpointScope)
+                            throw new StreamBusConfigurationException(
+                                $"ReceiveEndpoint '{stream}': consume filter '{registration.FilterType}' does not implement IStreamConsumeFilter<{messageType.Name}> for this endpoint's message type.");
+                        continue;
+                    }
+                    var instance = _typedFilterInstances.GetOrAdd(
+                        (busType, closedType),
+                        _ => registration.ResolveTyped(closedType, _rootProvider!));
+                    filter = _typedFilterAdapters.GetOrAdd(
+                        (busType, closedType, messageType),
+                        _ => ConsumeFilterRegistration.CreateTypedAdapter(messageType, instance));
+                }
+                else
+                {
+                    filter = _filterInstances.GetOrAdd(
+                        (busType, registration),
+                        _ => registration.CreateUniversal(_rootProvider!));
+                }
+                var filterType = FilterIdentity.TypeOf(filter);
+                if (!seen.Add(filterType))
                 {
                     throw new StreamBusConfigurationException(
-                        $"Consume filter '{filter.GetType()}' is already registered on this {scope}; duplicate registration would run it twice.");
+                        $"Consume filter '{filterType}' is already registered on this {scope}; duplicate registration would run it twice.");
                 }
                 target.Add(filter);
             }
@@ -301,7 +328,7 @@ internal sealed class StreamConsumerRegistry
         if (tracker is not null) healthCallback = tracker.Update;
         var family = new CancellationTokenSource();
         var errors = new ErrorPublisher(_producers, _loggerFactory.CreateLogger<ErrorPublisher>(), _queues);
-        var pipeline = BuildPipeline(busType, stream, options.ConsumeFilters, false, options.IsTypedEndpoint, options.AllowPipelineSkip);
+        var pipeline = BuildPipeline(busType, stream, options.ConsumeFilters, false, options.IsTypedEndpoint, options.AllowPipelineSkip, options.MessageType);
         var loops = new List<(StreamPartitionConsumer Loop, Task RunTask)>(partitionStreams.Length);
         var scopes = new List<IDisposable>(partitionStreams.Length);
         try
@@ -421,7 +448,7 @@ internal sealed class StreamConsumerRegistry
         if (tracker is not null) healthCallback = tracker.Update;
         var family = new CancellationTokenSource();
         var errors = new ErrorPublisher(_producers, _loggerFactory.CreateLogger<ErrorPublisher>(), _queues);
-        var pipeline = BuildPipeline(busType, sourceStream, Array.Empty<ConsumeFilterRegistration>(), true, false, false);
+        var pipeline = BuildPipeline(busType, sourceStream, Array.Empty<ConsumeFilterRegistration>(), true, false, false, null);
         var targetRouting = options.TargetRouting ?? (static ctx => ctx.RoutingValue);
         var loops = new List<(StreamPartitionConsumer Loop, Task RunTask)>(sourcePartitions.Length);
         var scopes = new List<IDisposable>(sourcePartitions.Length);

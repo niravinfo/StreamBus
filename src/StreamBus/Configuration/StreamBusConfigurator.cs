@@ -686,6 +686,7 @@ public static class StreamBusConfiguratorExtensions
                 ConsumeFilters = descriptor.ConsumeFilters,
                 AllowPipelineSkip = descriptor.AllowPipelineSkip,
                 IsTypedEndpoint = true,
+                MessageType = descriptor.MessageType,
             });
         }
         ServiceCollectionExtensions.AddShared(services, busType, options);

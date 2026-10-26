@@ -633,9 +633,22 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
             return;
         }
 
+        if (_pipeline.RequiresTypedMessage)
+        {
+            var messageType = _options.MessageType
+                ?? throw new StreamBusConfigurationException(
+                    "Typed consume filter attached without an endpoint message type (internal error).");
+            consumeContext = consumeContext with
+            {
+                TypedMessage = TypedMessageDeserializer.Deserialize(_serializer, messageType, consumeContext),
+            };
+        }
+
         var pipelineContext = new StreamConsumeFilterContext
         {
             Message = consumeContext,
+            MessageType = _options.MessageType,
+            TypedMessage = consumeContext.TypedMessage,
             OutputHeaders = headers ?? new HeaderWriter(),
             Services = services ?? EmptyServiceProvider.Instance,
         };

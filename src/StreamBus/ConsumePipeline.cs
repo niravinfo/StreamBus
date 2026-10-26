@@ -116,9 +116,20 @@ internal sealed class ConsumeFilterRegistration
     {
         ArgumentNullException.ThrowIfNull(closedFilterType);
         ArgumentNullException.ThrowIfNull(messageType);
-        return TypedFilterAdapter.Consume(
-            messageType,
-            FilterRegistrationSupport.ResolveTyped(FilterType, closedFilterType, provider, "Consume"));
+        return CreateTypedAdapter(messageType, ResolveTyped(closedFilterType, provider));
+    }
+
+    public object ResolveTyped(Type closedFilterType, IServiceProvider provider)
+    {
+        ArgumentNullException.ThrowIfNull(closedFilterType);
+        return FilterRegistrationSupport.ResolveTyped(FilterType, closedFilterType, provider, "Consume");
+    }
+
+    public static IStreamConsumeFilter CreateTypedAdapter(Type messageType, object filter)
+    {
+        ArgumentNullException.ThrowIfNull(messageType);
+        ArgumentNullException.ThrowIfNull(filter);
+        return TypedFilterAdapter.Consume(messageType, filter);
     }
 }
 
@@ -161,13 +172,16 @@ internal sealed class ConsumePipeline
 {
     private readonly IStreamConsumeFilter[] _filters;
 
-    public ConsumePipeline(IReadOnlyList<IStreamConsumeFilter> filters)
+    public ConsumePipeline(IReadOnlyList<IStreamConsumeFilter> filters, bool requiresTypedMessage = false)
     {
         ArgumentNullException.ThrowIfNull(filters);
         _filters = filters.ToArray();
+        RequiresTypedMessage = requiresTypedMessage;
     }
 
     public int Count => _filters.Length;
+
+    public bool RequiresTypedMessage { get; }
 
     public Task RunAsync(
         StreamConsumeFilterContext context,

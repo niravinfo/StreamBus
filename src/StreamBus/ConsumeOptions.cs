@@ -37,4 +37,5 @@ public sealed record ConsumeOptions
     internal IReadOnlyList<ConsumeFilterRegistration> ConsumeFilters { get; init; } = Array.Empty<ConsumeFilterRegistration>();
     internal bool AllowPipelineSkip { get; init; }
     internal bool IsTypedEndpoint { get; init; }
+    internal Type? MessageType { get; init; }
 }
