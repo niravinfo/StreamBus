@@ -238,6 +238,122 @@ public sealed class TypedFilterRegistrationTests
         Assert.Equal(typeof(RegistrationOpenPublishFilter<>).GetGenericArguments(), result.MessageTypes);
     }
 
+    [Fact]
+    public void ClosedFilterType_returns_expected_types_for_publish_registrations()
+    {
+        var universal = PublishFilterRegistration.ForType(typeof(RegistrationUniversalPublishFilter));
+        Assert.Null(universal.ClosedFilterType(typeof(RegistrationOrder)));
+
+        var concrete = PublishFilterRegistration.ForType(typeof(RegistrationTypedPublishFilter));
+        Assert.Null(concrete.ClosedFilterType(typeof(RegistrationInvoice)));
+        Assert.Equal(typeof(RegistrationTypedPublishFilter), concrete.ClosedFilterType(typeof(RegistrationOrder)));
+
+        var multi = PublishFilterRegistration.ForType(typeof(RegistrationMultiPublishFilter));
+        Assert.Equal(typeof(RegistrationMultiPublishFilter), multi.ClosedFilterType(typeof(RegistrationOrder)));
+        Assert.Equal(typeof(RegistrationMultiPublishFilter), multi.ClosedFilterType(typeof(RegistrationInvoice)));
+
+        var open = PublishFilterRegistration.ForType(typeof(RegistrationOpenPublishFilter<>));
+        Assert.Equal(
+            typeof(RegistrationOpenPublishFilter<RegistrationOrder>),
+            open.ClosedFilterType(typeof(RegistrationOrder)));
+    }
+
+    [Fact]
+    public void ClosedFilterType_returns_expected_types_for_consume_registrations()
+    {
+        var universal = ConsumeFilterRegistration.ForType(typeof(RegistrationUniversalConsumeFilter));
+        Assert.Null(universal.ClosedFilterType(typeof(RegistrationOrder)));
+
+        var concrete = ConsumeFilterRegistration.ForType(typeof(RegistrationTypedConsumeFilter));
+        Assert.Null(concrete.ClosedFilterType(typeof(RegistrationInvoice)));
+        Assert.Equal(typeof(RegistrationTypedConsumeFilter), concrete.ClosedFilterType(typeof(RegistrationOrder)));
+
+        var open = ConsumeFilterRegistration.ForType(typeof(RegistrationOpenConsumeFilter<>));
+        Assert.Equal(
+            typeof(RegistrationOpenConsumeFilter<RegistrationOrder>),
+            open.ClosedFilterType(typeof(RegistrationOrder)));
+    }
+
+    [Fact]
+    public void CreateTyped_wraps_the_resolved_publish_filter_with_the_user_filter_identity()
+    {
+        var services = new ServiceCollection();
+        services.AddTransient<RegistrationTypedPublishFilter>();
+        using var provider = services.BuildServiceProvider();
+
+        var registration = PublishFilterRegistration.ForType(typeof(RegistrationTypedPublishFilter));
+        var closedFilterType = registration.ClosedFilterType(typeof(RegistrationOrder));
+        Assert.NotNull(closedFilterType);
+
+        var adapter = registration.CreateTyped(closedFilterType, typeof(RegistrationOrder), provider);
+
+        Assert.Equal(typeof(RegistrationTypedPublishFilter), FilterIdentity.TypeOf(adapter));
+    }
+
+    [Fact]
+    public void CreateTyped_wraps_the_resolved_open_generic_publish_filter_with_the_closed_user_filter_identity()
+    {
+        var services = new ServiceCollection();
+        services.AddTransient(typeof(RegistrationOpenPublishFilter<>));
+        using var provider = services.BuildServiceProvider();
+
+        var registration = PublishFilterRegistration.ForType(typeof(RegistrationOpenPublishFilter<>));
+        var closedFilterType = registration.ClosedFilterType(typeof(RegistrationOrder));
+        Assert.NotNull(closedFilterType);
+
+        var adapter = registration.CreateTyped(closedFilterType, typeof(RegistrationOrder), provider);
+
+        Assert.Equal(typeof(RegistrationOpenPublishFilter<RegistrationOrder>), FilterIdentity.TypeOf(adapter));
+    }
+
+    [Fact]
+    public void CreateTyped_wraps_the_resolved_consume_filter_with_the_user_filter_identity()
+    {
+        var services = new ServiceCollection();
+        services.AddTransient<RegistrationTypedConsumeFilter>();
+        using var provider = services.BuildServiceProvider();
+
+        var registration = ConsumeFilterRegistration.ForType(typeof(RegistrationTypedConsumeFilter));
+        var closedFilterType = registration.ClosedFilterType(typeof(RegistrationOrder));
+        Assert.NotNull(closedFilterType);
+
+        var adapter = registration.CreateTyped(closedFilterType, typeof(RegistrationOrder), provider);
+
+        Assert.Equal(typeof(RegistrationTypedConsumeFilter), FilterIdentity.TypeOf(adapter));
+    }
+
+    [Fact]
+    public void CreateTyped_wraps_a_multi_interface_publish_filter_for_each_requested_message_type()
+    {
+        var services = new ServiceCollection();
+        services.AddTransient<RegistrationMultiPublishFilter>();
+        using var provider = services.BuildServiceProvider();
+
+        var registration = PublishFilterRegistration.ForType(typeof(RegistrationMultiPublishFilter));
+        var orderFilterType = registration.ClosedFilterType(typeof(RegistrationOrder));
+        var invoiceFilterType = registration.ClosedFilterType(typeof(RegistrationInvoice));
+        Assert.NotNull(orderFilterType);
+        Assert.NotNull(invoiceFilterType);
+
+        var orderAdapter = registration.CreateTyped(orderFilterType, typeof(RegistrationOrder), provider);
+        var invoiceAdapter = registration.CreateTyped(invoiceFilterType, typeof(RegistrationInvoice), provider);
+
+        Assert.Equal(typeof(RegistrationMultiPublishFilter), FilterIdentity.TypeOf(orderAdapter));
+        Assert.Equal(typeof(RegistrationMultiPublishFilter), FilterIdentity.TypeOf(invoiceAdapter));
+    }
+
+    [Fact]
+    public void CreateTyped_reports_a_missing_service_with_the_existing_resolution_message()
+    {
+        using var provider = new ServiceCollection().BuildServiceProvider();
+        var registration = PublishFilterRegistration.ForType(typeof(RegistrationTypedPublishFilter));
+
+        var ex = Assert.Throws<StreamBusConfigurationException>(() =>
+            registration.CreateTyped(typeof(RegistrationTypedPublishFilter), typeof(RegistrationOrder), provider));
+
+        Assert.Contains("could not be resolved from the root service provider", ex.Message, StringComparison.Ordinal);
+    }
+
     private sealed record RegistrationOrder(string Id);
 
     private sealed record RegistrationInvoice(string Id);

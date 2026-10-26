@@ -46,69 +46,24 @@ internal sealed class PublishFilterRegistration
     public IStreamPublishFilter Create(IServiceProvider provider) => CreateUniversal(provider);
 
     public IStreamPublishFilter CreateUniversal(IServiceProvider provider)
-    {
-        ArgumentNullException.ThrowIfNull(provider);
-        if (IsTyped)
-        {
-            throw new StreamBusConfigurationException(
-                $"Publish filter '{FilterType}' is typed and cannot be created without a message type.");
-        }
-        if (Instance is { } instance)
-            return instance;
-        if (Factory is { } factory)
-        {
-            return factory(provider)
-                ?? throw new StreamBusConfigurationException("Publish filter factory returned null.");
-        }
-        return provider.GetService(FilterType!) as IStreamPublishFilter
-            ?? throw new StreamBusConfigurationException(
-                $"Publish filter '{FilterType!.FullName}' could not be resolved from the root service provider.");
-    }
+        => FilterRegistrationSupport.CreateUniversal(provider, FilterType, Factory, Instance, IsTyped, "Publish");
 
     public Type? ClosedFilterType(Type messageType)
-    {
-        ArgumentNullException.ThrowIfNull(messageType);
-        return Kind switch
-        {
-            FilterRegistrationKind.Universal => null,
-            FilterRegistrationKind.ConcreteTyped => TypedMessageTypes.Contains(messageType) ? FilterType : null,
-            FilterRegistrationKind.OpenGenericTyped => CloseOpenGeneric(messageType),
-            _ => throw new StreamBusConfigurationException(
-                $"Publish filter '{FilterType}' has unknown registration kind '{Kind}'."),
-        };
-    }
+        => FilterRegistrationSupport.ClosedFilterType(
+            Kind,
+            FilterType,
+            TypedMessageTypes,
+            messageType,
+            typeof(IStreamPublishFilter<>),
+            "Publish");
 
     public IStreamPublishFilter CreateTyped(Type closedFilterType, Type messageType, IServiceProvider provider)
     {
         ArgumentNullException.ThrowIfNull(closedFilterType);
         ArgumentNullException.ThrowIfNull(messageType);
-        ArgumentNullException.ThrowIfNull(provider);
-        var filter = provider.GetService(closedFilterType)
-            ?? throw new StreamBusConfigurationException(
-                $"Publish filter '{FilterType?.FullName ?? closedFilterType.FullName}' could not be resolved from the root service provider.");
-        return TypedFilterAdapter.Publish(messageType, filter);
-    }
-
-    private Type CloseOpenGeneric(Type messageType)
-    {
-        Type closedFilterType;
-        try
-        {
-            closedFilterType = FilterType!.MakeGenericType(messageType);
-        }
-        catch (ArgumentException ex)
-        {
-            throw new StreamBusConfigurationException(
-                $"Publish filter '{FilterType}' cannot be closed for message type '{messageType.FullName}': {ex.Message}");
-        }
-
-        var typedInterface = typeof(IStreamPublishFilter<>).MakeGenericType(messageType);
-        if (!typedInterface.IsAssignableFrom(closedFilterType))
-        {
-            throw new StreamBusConfigurationException(
-                $"Publish filter '{FilterType}' closed for message type '{messageType.FullName}' does not implement IStreamPublishFilter<{messageType.Name}>.");
-        }
-        return closedFilterType;
+        return TypedFilterAdapter.Publish(
+            messageType,
+            FilterRegistrationSupport.ResolveTyped(FilterType, closedFilterType, provider, "Publish"));
     }
 }
 

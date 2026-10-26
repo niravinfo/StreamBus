@@ -101,69 +101,24 @@ internal sealed class ConsumeFilterRegistration
     public IStreamConsumeFilter Create(IServiceProvider provider) => CreateUniversal(provider);
 
     public IStreamConsumeFilter CreateUniversal(IServiceProvider provider)
-    {
-        ArgumentNullException.ThrowIfNull(provider);
-        if (IsTyped)
-        {
-            throw new StreamBusConfigurationException(
-                $"Consume filter '{FilterType}' is typed and cannot be created without a message type.");
-        }
-        if (Instance is { } instance)
-            return instance;
-        if (Factory is { } factory)
-        {
-            return factory(provider)
-                ?? throw new StreamBusConfigurationException("Consume filter factory returned null.");
-        }
-        return provider.GetService(FilterType!) as IStreamConsumeFilter
-            ?? throw new StreamBusConfigurationException(
-                $"Consume filter '{FilterType!.FullName}' could not be resolved from the root service provider.");
-    }
+        => FilterRegistrationSupport.CreateUniversal(provider, FilterType, Factory, Instance, IsTyped, "Consume");
 
     public Type? ClosedFilterType(Type messageType)
-    {
-        ArgumentNullException.ThrowIfNull(messageType);
-        return Kind switch
-        {
-            FilterRegistrationKind.Universal => null,
-            FilterRegistrationKind.ConcreteTyped => TypedMessageTypes.Contains(messageType) ? FilterType : null,
-            FilterRegistrationKind.OpenGenericTyped => CloseOpenGeneric(messageType),
-            _ => throw new StreamBusConfigurationException(
-                $"Consume filter '{FilterType}' has unknown registration kind '{Kind}'."),
-        };
-    }
+        => FilterRegistrationSupport.ClosedFilterType(
+            Kind,
+            FilterType,
+            TypedMessageTypes,
+            messageType,
+            typeof(IStreamConsumeFilter<>),
+            "Consume");
 
     public IStreamConsumeFilter CreateTyped(Type closedFilterType, Type messageType, IServiceProvider provider)
     {
         ArgumentNullException.ThrowIfNull(closedFilterType);
         ArgumentNullException.ThrowIfNull(messageType);
-        ArgumentNullException.ThrowIfNull(provider);
-        var filter = provider.GetService(closedFilterType)
-            ?? throw new StreamBusConfigurationException(
-                $"Consume filter '{FilterType?.FullName ?? closedFilterType.FullName}' could not be resolved from the root service provider.");
-        return TypedFilterAdapter.Consume(messageType, filter);
-    }
-
-    private Type CloseOpenGeneric(Type messageType)
-    {
-        Type closedFilterType;
-        try
-        {
-            closedFilterType = FilterType!.MakeGenericType(messageType);
-        }
-        catch (ArgumentException ex)
-        {
-            throw new StreamBusConfigurationException(
-                $"Consume filter '{FilterType}' cannot be closed for message type '{messageType.FullName}': {ex.Message}");
-        }
-
-        var typedInterface = typeof(IStreamConsumeFilter<>).MakeGenericType(messageType);
-        if (!typedInterface.IsAssignableFrom(closedFilterType))
-        {
-            throw new StreamBusConfigurationException(
-                $"Consume filter '{FilterType}' closed for message type '{messageType.FullName}' does not implement IStreamConsumeFilter<{messageType.Name}>.");
-        }
-        return closedFilterType;
+        return TypedFilterAdapter.Consume(
+            messageType,
+            FilterRegistrationSupport.ResolveTyped(FilterType, closedFilterType, provider, "Consume"));
     }
 }
 
