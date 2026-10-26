@@ -7,6 +7,7 @@ internal sealed class PublishPipelineCache
     private readonly IReadOnlyList<PublishFilterRegistration> _registrations;
     private readonly IServiceProvider? _rootProvider;
     private readonly Dictionary<PublishFilterRegistration, IStreamPublishFilter> _universal = new();
+    private readonly ConcurrentDictionary<Type, object> _typedInstances = new();
     private readonly ConcurrentDictionary<(Type ClosedFilterType, Type MessageType), IStreamPublishFilter> _typed = new();
     private readonly ConcurrentDictionary<Type, PublishPipeline> _pipelines = new();
 
@@ -72,9 +73,13 @@ internal sealed class PublishPipelineCache
                 if (closedFilterType is null)
                     continue;
 
+                var instance = _typedInstances.GetOrAdd(
+                    closedFilterType,
+                    type => registration.ResolveTyped(type, _rootProvider!));
+
                 filter = _typed.GetOrAdd(
                     (closedFilterType, messageType),
-                    _ => registration.CreateTyped(closedFilterType, messageType, _rootProvider!));
+                    key => PublishFilterRegistration.CreateTypedAdapter(key.MessageType, instance));
             }
 
             var filterType = FilterIdentity.TypeOf(filter);

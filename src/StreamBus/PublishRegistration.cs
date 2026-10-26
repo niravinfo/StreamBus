@@ -61,9 +61,20 @@ internal sealed class PublishFilterRegistration
     {
         ArgumentNullException.ThrowIfNull(closedFilterType);
         ArgumentNullException.ThrowIfNull(messageType);
-        return TypedFilterAdapter.Publish(
-            messageType,
-            FilterRegistrationSupport.ResolveTyped(FilterType, closedFilterType, provider, "Publish"));
+        return CreateTypedAdapter(messageType, ResolveTyped(closedFilterType, provider));
+    }
+
+    public object ResolveTyped(Type closedFilterType, IServiceProvider provider)
+    {
+        ArgumentNullException.ThrowIfNull(closedFilterType);
+        return FilterRegistrationSupport.ResolveTyped(FilterType, closedFilterType, provider, "Publish");
+    }
+
+    public static IStreamPublishFilter CreateTypedAdapter(Type messageType, object filter)
+    {
+        ArgumentNullException.ThrowIfNull(messageType);
+        ArgumentNullException.ThrowIfNull(filter);
+        return TypedFilterAdapter.Publish(messageType, filter);
     }
 }
 

@@ -51,6 +51,49 @@ public sealed class PublishPipelineLog
     public void Clear() => _entries.Clear();
 }
 
+public sealed class MultiMessagePublishProbe
+{
+    private int _instances;
+    private int _calls;
+
+    public int Instances => _instances;
+
+    public int Calls => _calls;
+
+    public void RecordInstance() => Interlocked.Increment(ref _instances);
+
+    public void RecordCall() => Interlocked.Increment(ref _calls);
+}
+
+public sealed class MultiMessagePublishFilter : IStreamPublishFilter<PipelineOrder>, IStreamPublishFilter<PipelineInvoice>
+{
+    private readonly MultiMessagePublishProbe _probe;
+
+    public MultiMessagePublishFilter(MultiMessagePublishProbe probe)
+    {
+        _probe = probe;
+        probe.RecordInstance();
+    }
+
+    public Task OnPublish(
+        StreamPublishFilterContext<PipelineOrder> context,
+        PublishDelegate next,
+        CancellationToken ct)
+    {
+        _probe.RecordCall();
+        return next(context.Inner);
+    }
+
+    public Task OnPublish(
+        StreamPublishFilterContext<PipelineInvoice> context,
+        PublishDelegate next,
+        CancellationToken ct)
+    {
+        _probe.RecordCall();
+        return next(context.Inner);
+    }
+}
+
 public sealed class OrderOnlyPublishFilter(TypedPublishProbe probe) : IStreamPublishFilter<PipelineOrder>
 {
     public Task OnPublish(
@@ -309,6 +352,25 @@ public sealed class PublishPipelineTests
         Assert.Equal("o-1", order.Options.Properties!.Headers["order"]);
         Assert.False(invoice.Options.Properties?.Headers.ContainsKey("order") ?? false);
         Assert.Equal(1, probe.Calls);
+    }
+
+    [Fact]
+    public async Task Multi_interface_publish_filter_uses_one_instance_across_message_types()
+    {
+        var probe = new MultiMessagePublishProbe();
+        await using var bus = await TestBus.StartAsync(cfg =>
+        {
+            cfg.Publish<PipelineOrder>("orders");
+            cfg.Publish<PipelineInvoice>("invoices");
+            cfg.UsePublishFilter<MultiMessagePublishFilter>();
+        }, TestContext.Current.CancellationToken, s => s.AddSingleton(probe));
+
+        await bus.Bus.PublishAsync(new PipelineOrder("o-1"), TestContext.Current.CancellationToken);
+        await bus.Bus.PublishAsync(new PipelineInvoice("i-1"), TestContext.Current.CancellationToken);
+
+        Assert.Equal(1, probe.Instances);
+        Assert.Equal(2, probe.Calls);
+        Assert.Equal(2, bus.System.Publishes.Count);
     }
 
     [Fact]
