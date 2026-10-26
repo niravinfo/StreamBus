@@ -7,6 +7,11 @@ public interface IStreamPublishFilter
     Task OnPublish(StreamPublishFilterContext context, PublishDelegate next, CancellationToken ct);
 }
 
+public interface IStreamPublishFilter<T>
+{
+    Task OnPublish(StreamPublishFilterContext<T> context, PublishDelegate next, CancellationToken ct);
+}
+
 public delegate Task PublishDelegate(StreamPublishFilterContext context);
 
 public sealed class StreamPublishFilterContext
@@ -14,9 +19,39 @@ public sealed class StreamPublishFilterContext
     public required string Stream { get; init; }
     public required string? RoutingKey { get; init; }
     public required object Message { get; init; }
+
+    /// <summary>
+    /// Declared pipe type (<c>typeof(T)</c> at the publish call site); null only
+    /// for a context constructed directly outside the bus.
+    /// </summary>
+    public Type? MessageType { get; init; }
+
+    public Type RuntimeMessageType => Message.GetType();
+
     public required IStreamHeaderWriter Headers { get; init; }
     public required StreamBusRegistrationView Bus { get; init; }
     public required IServiceProvider Services { get; init; }
+}
+
+public sealed class StreamPublishFilterContext<T>
+{
+    public required StreamPublishFilterContext Inner { get; init; }
+
+    public T Message => (T)Inner.Message;
+
+    public Type MessageType => typeof(T);
+
+    public Type RuntimeMessageType => Inner.RuntimeMessageType;
+
+    public string Stream => Inner.Stream;
+
+    public string? RoutingKey => Inner.RoutingKey;
+
+    public IStreamHeaderWriter Headers => Inner.Headers;
+
+    public StreamBusRegistrationView Bus => Inner.Bus;
+
+    public IServiceProvider Services => Inner.Services;
 }
 
 public interface IStreamHeaderWriter

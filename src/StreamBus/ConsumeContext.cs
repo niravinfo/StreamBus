@@ -85,4 +85,5 @@ public sealed record ConsumeContext
     public required MessageMetadata Metadata { get; init; }
     public required CancellationToken CancellationToken { get; init; }
     internal IServiceProvider? Services { get; init; }
+    internal object? TypedMessage { get; init; }
 }

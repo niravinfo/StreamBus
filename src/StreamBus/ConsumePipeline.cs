@@ -9,11 +9,26 @@ public interface IStreamConsumeFilter
     Task OnConsume(StreamConsumeFilterContext context, ConsumeDelegate next, CancellationToken ct);
 }
 
+public interface IStreamConsumeFilter<T>
+{
+    bool CanSkip => false;
+
+    Task OnConsume(StreamConsumeFilterContext<T> context, ConsumeDelegate next, CancellationToken ct);
+}
+
 public delegate Task ConsumeDelegate(StreamConsumeFilterContext context);
 
 public sealed class StreamConsumeFilterContext
 {
     public required ConsumeContext Message { get; init; }
+
+    /// <summary>
+    /// Endpoint message type; null for raw and effectively-once pipelines.
+    /// </summary>
+    public Type? MessageType { get; init; }
+
+    internal object? TypedMessage { get; init; }
+
     public required IStreamHeaderWriter OutputHeaders { get; init; }
     public required IServiceProvider Services { get; init; }
     public bool SkipHandler { get; set; }
@@ -26,6 +41,31 @@ public sealed class StreamConsumeFilterContext
             : default;
 
     public void SetPayload<T>(T value) => _payloads[typeof(T)] = value;
+}
+
+public sealed class StreamConsumeFilterContext<T>
+{
+    public required StreamConsumeFilterContext Inner { get; init; }
+
+    public required T Message { get; init; }
+
+    public Type MessageType => typeof(T);
+
+    public ConsumeContext Raw => Inner.Message;
+
+    public IStreamHeaderWriter OutputHeaders => Inner.OutputHeaders;
+
+    public IServiceProvider Services => Inner.Services;
+
+    public bool SkipHandler
+    {
+        get => Inner.SkipHandler;
+        set => Inner.SkipHandler = value;
+    }
+
+    public TPayload? GetPayload<TPayload>() => Inner.GetPayload<TPayload>();
+
+    public void SetPayload<TPayload>(TPayload value) => Inner.SetPayload(value);
 }
 
 internal sealed class ConsumeFilterRegistration
