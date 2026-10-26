@@ -232,7 +232,7 @@ internal sealed class ConsumePipeline
             if (call > 1)
             {
                 throw new StreamBusTransientException(
-                    $"Consume filter '{filter.GetType().Name}' invoked next {call} times; a message must be handled exactly once.");
+                    $"Consume filter '{FilterIdentity.TypeOf(filter).Name}' invoked next {call} times; a message must be handled exactly once.");
             }
 
             return InvokeAsync(index + 1, context, terminal, ct, allowSkip);
@@ -246,12 +246,12 @@ internal sealed class ConsumePipeline
             if (allowSkip && context.SkipHandler)
                 return;
             throw new StreamBusTransientException(
-                $"Consume filter '{filter.GetType().Name}' returned without calling next and without setting SkipHandler; the message would be dropped while the offset advances.");
+                $"Consume filter '{FilterIdentity.TypeOf(filter).Name}' returned without calling next and without setting SkipHandler; the message would be dropped while the offset advances.");
         }
         if (calls > 1)
         {
             throw new StreamBusTransientException(
-                $"Consume filter '{filter.GetType().Name}' invoked next {calls} times; a message must be handled exactly once.");
+                $"Consume filter '{FilterIdentity.TypeOf(filter).Name}' invoked next {calls} times; a message must be handled exactly once.");
         }
     }
 }

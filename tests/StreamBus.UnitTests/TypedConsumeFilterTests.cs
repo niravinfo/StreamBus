@@ -65,6 +65,21 @@ internal sealed class TypedSkipFilter : IStreamConsumeFilter<TypedOrderMessage>
     }
 }
 
+internal sealed class NoNextTypedFilter : IStreamConsumeFilter<TypedOrderMessage>
+{
+    public Task OnConsume(StreamConsumeFilterContext<TypedOrderMessage> context, ConsumeDelegate next, CancellationToken ct)
+        => Task.CompletedTask;
+}
+
+internal sealed class DoubleNextTypedFilter : IStreamConsumeFilter<TypedOrderMessage>
+{
+    public async Task OnConsume(StreamConsumeFilterContext<TypedOrderMessage> context, ConsumeDelegate next, CancellationToken ct)
+    {
+        await next(context.Inner);
+        await next(context.Inner);
+    }
+}
+
 internal sealed class LoggingUniversalFilter<TTag>(string name, List<string> log) : IStreamConsumeFilter
 {
     public async Task OnConsume(StreamConsumeFilterContext context, ConsumeDelegate next, CancellationToken ct)
@@ -383,6 +398,69 @@ public sealed class TypedConsumeFilterTests
         Assert.Contains("AllowPipelineSkip", ex.Message, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task Typed_filter_zero_next_error_names_the_user_filter_not_the_adapter()
+    {
+        var pipeline = new ConsumePipeline(new IStreamConsumeFilter[]
+        {
+            new TypedConsumeFilterAdapter<TypedOrderMessage>(new NoNextTypedFilter()),
+        });
+
+        var ex = await Assert.ThrowsAsync<StreamBusTransientException>(() =>
+            pipeline.RunAsync(
+                PipelineContext(),
+                _ => Task.CompletedTask,
+                TestContext.Current.CancellationToken,
+                allowSkip: false));
+
+        Assert.Contains(nameof(NoNextTypedFilter), ex.Message, StringComparison.Ordinal);
+        Assert.Contains("returned without calling next", ex.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("TypedConsumeFilterAdapter", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Typed_filter_double_next_error_names_the_user_filter_not_the_adapter()
+    {
+        var pipeline = new ConsumePipeline(new IStreamConsumeFilter[]
+        {
+            new TypedConsumeFilterAdapter<TypedOrderMessage>(new DoubleNextTypedFilter()),
+        });
+
+        var ex = await Assert.ThrowsAsync<StreamBusTransientException>(() =>
+            pipeline.RunAsync(
+                PipelineContext(),
+                _ => Task.CompletedTask,
+                TestContext.Current.CancellationToken,
+                allowSkip: false));
+
+        Assert.Contains(nameof(DoubleNextTypedFilter), ex.Message, StringComparison.Ordinal);
+        Assert.Contains("invoked next 2 times", ex.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("TypedConsumeFilterAdapter", ex.Message, StringComparison.Ordinal);
+    }
+
+    private static StreamConsumeFilterContext PipelineContext()
+    {
+        var message = new TypedOrderMessage("one");
+        return new StreamConsumeFilterContext
+        {
+            Message = new ConsumeContext
+            {
+                Stream = "orders",
+                Partition = 0,
+                Offset = 0,
+                RoutingValue = null,
+                Body = ReadOnlyMemory<byte>.Empty,
+                Metadata = new MessageMetadata(),
+                CancellationToken = TestContext.Current.CancellationToken,
+                TypedMessage = message,
+            },
+            MessageType = typeof(TypedOrderMessage),
+            TypedMessage = message,
+            OutputHeaders = new HeaderWriter(),
+            Services = EmptyProvider.Instance,
+        };
+    }
+
     private static ConsumeOptions TypedOptions(
         Type messageType,
         IReadOnlyList<ConsumeFilterRegistration>? endpointFilters = null,
@@ -419,4 +497,11 @@ public sealed class TypedConsumeFilterTests
         AllowPipelineSkip = allowSkip,
         MessageType = messageType,
     };
+
+    private sealed class EmptyProvider : IServiceProvider
+    {
+        public static readonly EmptyProvider Instance = new();
+
+        public object? GetService(Type serviceType) => null;
+    }
 }
