@@ -2,16 +2,6 @@
 
 ## Code-first, user-owned
 
-The library never reads configuration automatically. There is no
-host-configuration overload and no JSON settings binding: the user owns the
-values and passes them in code. Everything is validated together at
-registration (`Build`), so bad inputs fail once at startup, each error
-naming the knob.
-
-If you want values from environment variables, a vault, or another store,
-read them in your own code and pass the resolved values to the
-configurator:
-
 ```csharp
 services.AddStreamBus((_, cfg) =>
 {
