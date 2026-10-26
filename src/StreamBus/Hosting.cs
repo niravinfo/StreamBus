@@ -282,17 +282,9 @@ internal static class TypedConsumerHandler
         where TConsumer : class, IConsumer<T>
         => async raw =>
         {
-            T message;
-            try
-            {
-                message = serializer.Deserialize<T>(raw.Body);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                throw new StreamBusDeserializationException(raw.Stream, raw.Partition, raw.Offset, typeof(T), ex);
-            }
-            if (ReferenceEquals(message, null))
-                throw new StreamBusDeserializationException(raw.Stream, raw.Partition, raw.Offset, typeof(T), null);
+            var message = raw.TypedMessage is { } typed
+                ? (T)typed
+                : (T)TypedMessageDeserializer.Deserialize(serializer, typeof(T), raw);
             var ownedScope = raw.Services is null ? scopes.CreateScope() : null;
             try
             {

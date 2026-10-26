@@ -719,6 +719,10 @@ public sealed class PipelineSemanticsTests
 
         public ScriptedConsumer Current { get { lock (_gate) return _consumers[^1]; } }
 
+        public RawConsumerConfig ConfigAt(int index) { lock (_gate) return _configs[index]; }
+
+        public ScriptedConsumer ConsumerAt(int index) { lock (_gate) return _consumers[index]; }
+
         public Task<IStreamConsumerHandle> CreateAsync(IStreamSystemHandle system, RawConsumerConfig config, CancellationToken ct)
         {
             lock (_gate)
@@ -866,9 +870,15 @@ public sealed class PipelineSemanticsTests
             => Filters.AddFilter(typeof(DefaultBus), ConsumeFilterRegistration.ForInstance(filter));
 
         public Task DeliverAsync(ulong offset, string body, string? tenant = null, string? correlationId = null)
-            => DeliverAsync(offset, Encoding.UTF8.GetBytes(body), tenant, correlationId);
+            => DeliverToAsync(0, offset, body, tenant, correlationId);
 
         public Task DeliverAsync(ulong offset, ReadOnlyMemory<byte> body, string? tenant = null, string? correlationId = null)
+            => DeliverToAsync(0, offset, body, tenant, correlationId);
+
+        public Task DeliverToAsync(int configIndex, ulong offset, string body, string? tenant = null, string? correlationId = null)
+            => DeliverToAsync(configIndex, offset, Encoding.UTF8.GetBytes(body), tenant, correlationId);
+
+        public Task DeliverToAsync(int configIndex, ulong offset, ReadOnlyMemory<byte> body, string? tenant = null, string? correlationId = null)
         {
             var message = new Message(body.ToArray());
             if (tenant is not null)
@@ -880,7 +890,7 @@ public sealed class PipelineSemanticsTests
             {
                 message.Properties = new RabbitMQ.Stream.Client.AMQP.Properties { CorrelationId = correlationId };
             }
-            return Factory.FirstConfig.MessageHandler(
+            return Factory.ConfigAt(configIndex).MessageHandler(
                 null!,
                 new MessageContext(offset, TimeSpan.Zero, 0, 0),
                 message);
