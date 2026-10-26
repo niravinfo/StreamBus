@@ -114,6 +114,47 @@ skippable filters at attach. Headers written through
 effectively-once result publishes. Complete sample:
 `examples/StreamBus.Examples.Consumer/TenantFilter.cs`.
 
+### Typed consume filters
+
+`IStreamConsumeFilter<T>` attaches by endpoint message type. A bus-wide
+typed filter runs on every endpoint whose message type is `T` and is
+omitted silently on all others; an endpoint-scoped concrete typed filter
+must match the endpoint's message type or `AddStreamBus` fails. A bus-wide
+open generic that cannot close for an endpoint's message type is a
+configuration error when the endpoint attaches.
+
+```csharp
+cfg.UseConsumeFilter(typeof(TenantFilter<>));  // bus-wide, closes per endpoint message type
+cfg.ReceiveEndpoint("orders", e =>
+{
+    e.Consumer<OrderConsumer>("order-processors");
+    e.UseConsumeFilter<OrderEnrichmentFilter>(); // appended after bus-wide filters
+});
+
+public sealed class OrderEnrichmentFilter : IStreamConsumeFilter<OrderEvent>
+{
+    public Task OnConsume(StreamConsumeFilterContext<OrderEvent> context, ConsumeDelegate next, CancellationToken ct)
+    {
+        context.SetPayload(context.Message.OrderId); // typed value for later filters
+        return next(context.Inner);
+    }
+}
+```
+
+A typed context exposes `context.Message` as `T` and `context.Raw` as the
+underlying `ConsumeContext`; headers, payloads, services, and
+`SkipHandler` delegate to `Inner`, the shared context that `next`
+expects. Deserialization timing changes as soon as one typed filter
+attaches: the message is deserialized before the pipeline on every
+delivery attempt, a deserialization failure is retried and exhausted
+without running filters or the consumer, and the consumer receives the
+same instance — no second deserialization. A pipeline of universal
+filters only keeps the lazy path, so a `CanSkip` filter that skips still
+avoids deserialization; a typed-filter pipeline deserializes before the
+skip. Raw and effectively-once pipelines never attach typed filters and
+retain the `CanSkip` rules above. Complete sample:
+`examples/StreamBus.Examples.Consumer/OrderEventFilter.cs`.
+
 ## Full example
 
 ```csharp

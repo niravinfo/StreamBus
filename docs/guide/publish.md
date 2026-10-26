@@ -94,6 +94,51 @@ duplicate send). Call-level
 `examples/StreamBus.Examples.Producer/TenantFilter.cs` and
 `CorrelationIdFilter.cs`.
 
+### Typed publish filters
+
+`IStreamPublishFilter` is universal — it runs for every publish.
+`IStreamPublishFilter<T>` attaches only to the declared pipe type `T`, so
+message-specific enrichment needs no runtime-type guard in a shared
+filter:
+
+```csharp
+public sealed class OrderPublishFilter : IStreamPublishFilter<OrderEvent>
+{
+    public Task OnPublish(StreamPublishFilterContext<OrderEvent> context, PublishDelegate next, CancellationToken ct)
+    {
+        context.Headers.Set("x-order-id", context.Message.OrderId);
+        return next(context.Inner); // continue the shared pipeline
+    }
+}
+
+public sealed class TenantFilter<T> : IStreamPublishFilter<T> // open generic
+{
+    public Task OnPublish(StreamPublishFilterContext<T> context, PublishDelegate next, CancellationToken ct)
+    {
+        context.Headers.Set("x-message-type", typeof(T).Name);
+        return next(context.Inner);
+    }
+}
+
+cfg.UsePublishFilter<OrderPublishFilter>();    // attaches to OrderEvent publishes only
+cfg.UsePublishFilter(typeof(TenantFilter<>));  // closes once per message type
+```
+
+A typed context adds `context.Message` as `T`; every other member
+delegates to `Inner`, the shared universal context that `next` expects.
+Attachment is by declared type, not runtime type: `context.MessageType`
+is the `typeof(T)` at the publish call site (a typed context always
+reports its own `T`), while `context.RuntimeMessageType` is the payload's
+runtime type — they differ when a derived message is published through a
+base-type pipe. A concrete typed filter whose `T` does not match the pipe
+type is skipped silently. An open generic that cannot close for the pipe
+type (constraint violation or a missing typed interface) is a
+configuration error when that type's pipeline is built — at bus creation
+for registered publish types, at the first explicit publish otherwise.
+Explicit-stream publishes (`PublishAsync(stream, message, ct)`) use the
+declared `T` the same way. `PublishRawAsync` still bypasses the pipeline.
+Complete sample: `examples/StreamBus.Examples.Producer/OrderPublishFilter.cs`.
+
 ## Serializer
 
 ```csharp

@@ -40,6 +40,10 @@ builder.Services.AddStreamBus((context, cfg) =>
     cfg.UsePublishFilter<TenantFilter>();
     cfg.UsePublishFilter<CorrelationIdFilter>();
 
+    // Typed middleware: attaches only to publishes whose declared pipe
+    // type is OrderEvent — the PaymentEvent pipeline is untouched.
+    cfg.UsePublishFilter<OrderPublishFilter>();
+
     // The stream spec lives on the registration that references the
     // stream — no manual DeclareStream/DeclareSuperStream anywhere.
     cfg.Publish<OrderEvent>("orders", s =>

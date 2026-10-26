@@ -18,6 +18,15 @@
   startup (`BlockStartupUntilReady`) waits for typed consumer attaches by
   default; call `BlockUntilConsumersAttached(false)` to keep the old
   connections-and-topology-only behavior.
+- Typed filter attachment changes deserialization timing for typed
+  consume endpoints: with at least one typed filter attached, the message
+  is deserialized before the pipeline on every attempt.
+- Endpoint-scoped concrete typed consume filters that do not match the
+  endpoint message type now fail during `AddStreamBus` instead of being
+  skipped.
+- `UsePublishFilter<TFilter>()` / `UseConsumeFilter<TFilter>()` generic
+  constraints relax to `class`, and open generic filter registration via
+  the `Type` overloads is now valid.
 
 ### Added
 
@@ -42,6 +51,13 @@
   (D1 / V2-G7).
 - Forced-close, metadata-close, and full connection-kill chaos integration
   coverage (D2 / V2-D2).
+- Typed publish and consume filters: `IStreamPublishFilter<T>` /
+  `IStreamConsumeFilter<T>` attach per declared pipe type or endpoint
+  message type, with open generic closure through the `Type` overloads.
+  `StreamPublishFilterContext.MessageType` / `RuntimeMessageType` and
+  `StreamConsumeFilterContext.MessageType` expose the declared and runtime
+  message types to filters, and typed consume endpoints deserialize
+  eagerly, sharing one message instance with the consumer.
 
 ### Fixed
 

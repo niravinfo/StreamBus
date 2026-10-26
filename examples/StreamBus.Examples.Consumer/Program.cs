@@ -39,6 +39,13 @@ builder.Services.AddStreamBus((context, cfg) =>
     // The same scoped TenantScope instance is injected into the consumer.
     cfg.UseConsumeFilter<TenantFilter>();
 
+    // Typed consume middleware, still bus-wide: it attaches only to
+    // endpoints whose message type is OrderEvent — the "orders" endpoint,
+    // not "payments-super". Because a typed filter attaches there, the
+    // message is deserialized before the pipeline on every attempt and
+    // the consumer receives the same instance.
+    cfg.UseConsumeFilter<OrderEventFilter>();
+
     // The group is the cursor identity, used verbatim. The same group
     // across instances scales out through one shared cursor; a different
     // group is an independent cursor that receives everything again.
