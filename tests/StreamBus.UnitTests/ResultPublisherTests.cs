@@ -4,15 +4,17 @@ namespace StreamBus.UnitTests;
 
 public sealed class ResultPublisherTests
 {
-    private sealed class FlakyHandle : IStreamProducerHandle
+    private sealed class FlakyHandle : IStreamSuperProducerHandle
     {
         private int _failuresLeft;
         public int Calls;
         public FlakyHandle(int failures) => _failuresLeft = failures;
-        public Task SendAsync(ReadOnlyMemory<byte> body, string? routingKey, CancellationToken ct) => throw new NotImplementedException();
-        public Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, string? routingKey, IReadOnlyDictionary<string, object?> app, string? mid, string? cid, CancellationToken ct) => throw new NotImplementedException();
-        public Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, CancellationToken ct) => throw new NotImplementedException();
-        public Task PublishResultAsync(ReadOnlyMemory<byte> body, ulong publishingId, string? routingKey, CancellationToken ct)
+        public Task SendAsync(ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct) => throw new NotImplementedException();
+        public Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, PublishOptions options, IReadOnlyDictionary<string, object?> app, string? mid, string? cid, CancellationToken ct) => throw new NotImplementedException();
+        public Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, PublishOptions options, CancellationToken ct) => Record();
+        public Task PublishWithIdAsync(ulong publishingId, ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct) => Record();
+        public Task PublishResultAsync(ReadOnlyMemory<byte> body, ulong publishingId, string? routingKey, CancellationToken ct) => Record();
+        private Task Record()
         {
             Calls++;
             if (Interlocked.Decrement(ref _failuresLeft) >= 0)
@@ -28,10 +30,10 @@ public sealed class ResultPublisherTests
         public FlakySystem(int failures) => _handle = new FlakyHandle(failures);
         public int Calls => _handle.Calls;
         public bool IsClosed => false;
-        public Task<IStreamProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct) => throw new NotImplementedException();
-        public Task<IStreamProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct) => Task.FromResult<IStreamProducerHandle>(_handle);
-        public Task<IStreamProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct) => throw new NotImplementedException();
-        public Task<IStreamProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct) => Task.FromResult<IStreamProducerHandle>(_handle);
+        public Task<IStreamPlainProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct) => throw new NotImplementedException();
+        public Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct) => Task.FromResult<IStreamPlainProducerHandle>(_handle);
+        public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct) => throw new NotImplementedException();
+        public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct) => Task.FromResult<IStreamSuperProducerHandle>(_handle);
         public Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken ct) => Task.FromResult<ulong?>(null);
         public Task StoreSystemOffsetAsync(string reference, string stream, ulong offset, CancellationToken ct) => Task.CompletedTask;
         public Task<bool> StreamExistsAsync(string stream, CancellationToken ct) => Task.FromResult(true);

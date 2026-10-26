@@ -23,7 +23,7 @@ public sealed class SystemTextJsonStreamSerializer : IStreamSerializer
         => JsonSerializer.Deserialize<T>(body.Span) ?? throw new JsonException($"Deserialization of {typeof(T).FullName} returned null.");
 }
 
-public sealed class StreamBusDeserializationException : Exception
+public sealed class StreamBusDeserializationException : StreamBusException
 {
     public StreamBusDeserializationException(string stream, int partition, ulong offset, Type messageType, Exception? inner)
         : base($"Could not deserialize the message at {stream} partition {partition} offset {offset} as {messageType.FullName}." + (inner is null ? " The payload deserialized to null." : ""), inner)

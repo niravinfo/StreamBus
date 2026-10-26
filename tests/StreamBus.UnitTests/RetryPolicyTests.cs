@@ -34,7 +34,22 @@ public sealed class RetryPolicyTests
     {
         var ex = await Assert.ThrowsAsync<StreamBusConfigurationException>(() =>
             Consume(new ConsumeOptions { ErrorStream = new ErrorStreamOptions { Stream = "e" } }));
-        Assert.Contains("Strict", ex.Message);
+        Assert.Equal(
+            "Retry policy Strict never exhausts; a hand-off destination (ErrorStream/DeadLetter) cannot fire. Remove the destination or use a bounded retry schedule.",
+            ex.Message);
+    }
+
+    [Fact]
+    public async Task Strict_with_dead_letter_throws()
+    {
+        var ex = await Assert.ThrowsAsync<StreamBusConfigurationException>(() =>
+            Consume(new ConsumeOptions
+            {
+                DeadLetter = new DeadLetterOptions { Name = "e", QueueType = DeadLetterQueueType.ClassicQueue },
+            }));
+        Assert.Equal(
+            "Retry policy Strict never exhausts; a hand-off destination (ErrorStream/DeadLetter) cannot fire. Remove the destination or use a bounded retry schedule.",
+            ex.Message);
     }
 
     [Fact]
@@ -106,6 +121,21 @@ public sealed class RetryPolicyTests
         var ex = await Assert.ThrowsAsync<StreamBusConfigurationException>(() =>
             Consume(new ConsumeOptions { Retry = new RetryPolicy { Multiplier = multiplier } }));
         Assert.Contains("finite", ex.Message);
+    }
+
+    [Fact]
+    public void Unit_multiplier_is_allowed_and_yields_a_constant_delay()
+    {
+        var log = new ListLogger();
+        var policy = new RetryPolicy
+        {
+            BaseDelay = TimeSpan.FromMilliseconds(25),
+            Multiplier = 1.0,
+            MaxDelay = TimeSpan.FromSeconds(30),
+            MaxJitter = TimeSpan.Zero,
+        };
+        Assert.Equal(TimeSpan.FromMilliseconds(25), RetryDelays.ResolveDelay(policy, 1, new InvalidOperationException(), log));
+        Assert.Equal(TimeSpan.FromMilliseconds(25), RetryDelays.ResolveDelay(policy, 5, new InvalidOperationException(), log));
     }
 
     [Fact]

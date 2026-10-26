@@ -19,6 +19,7 @@ var builder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings
 
 // The library never reads configuration by itself: the user owns it.
 // Connection values are read here (in the app) and handed to the configurator.
+builder.Services.AddScoped<TenantScope>();
 builder.Services.AddStreamBus((context, cfg) =>
 {
     cfg.Host(
@@ -33,6 +34,17 @@ builder.Services.AddStreamBus((context, cfg) =>
             h.Heartbeat(TimeSpan.FromSeconds(
                 double.TryParse(builder.Configuration["StreamBus:HeartbeatSeconds"], out var seconds) ? seconds : 60));
         });
+
+    // Bus-wide consume middleware: read the tenant header once per message.
+    // The same scoped TenantScope instance is injected into the consumer.
+    cfg.UseConsumeFilter<TenantFilter>();
+
+    // Typed consume middleware, still bus-wide: it attaches only to
+    // endpoints whose message type is OrderEvent — the "orders" endpoint,
+    // not "payments-super". Because a typed filter attaches there, the
+    // message is deserialized before the pipeline on every attempt and
+    // the consumer receives the same instance.
+    cfg.UseConsumeFilter<OrderEventFilter>();
 
     // The group is the cursor identity, used verbatim. The same group
     // across instances scales out through one shared cursor; a different
@@ -63,22 +75,22 @@ public sealed record OrderEvent(string OrderId, int Sequence);
 
 public sealed record PaymentEvent(string PaymentId, string AccountId, decimal Amount);
 
-public sealed class OrderConsumer(ILogger<OrderConsumer> log) : IConsumer<OrderEvent>
+public sealed class OrderConsumer(ILogger<OrderConsumer> log, TenantScope tenant) : IConsumer<OrderEvent>
 {
-    public Task Consume(ConsumeContext<OrderEvent> ctx, CancellationToken ct)
+    public Task Consume(ConsumeContext<OrderEvent> context, CancellationToken cancellationToken)
     {
-        log.LogInformation("orders [{Partition}] offset {Offset}: {OrderId}",
-            ctx.Partition, ctx.Offset, ctx.Message.OrderId);
+        log.LogInformation("orders [{Partition}] offset {Offset} tenant {Tenant}: {OrderId}",
+            context.Partition, context.Offset, tenant.Tenant, context.Message.OrderId);
         return Task.CompletedTask;
     }
 }
 
 public sealed class PaymentConsumer(ILogger<PaymentConsumer> log) : IConsumer<PaymentEvent>
 {
-    public Task Consume(ConsumeContext<PaymentEvent> ctx, CancellationToken ct)
+    public Task Consume(ConsumeContext<PaymentEvent> context, CancellationToken cancellationToken)
     {
         log.LogInformation("payments-super [{Partition}] offset {Offset}: {PaymentId} key {AccountId}",
-            ctx.Partition, ctx.Offset, ctx.Message.PaymentId, ctx.Message.AccountId);
+            context.Partition, context.Offset, context.Message.PaymentId, context.Message.AccountId);
         return Task.CompletedTask;
     }
 }

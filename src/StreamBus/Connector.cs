@@ -1,5 +1,4 @@
 using System.Net;
-using System.Security.Cryptography;
 using System.Text;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -10,10 +9,10 @@ namespace StreamBus;
 public interface IStreamSystemHandle : IAsyncDisposable
 {
     bool IsClosed { get; }
-    Task<IStreamProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct);
-    Task<IStreamProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct);
-    Task<IStreamProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct);
-    Task<IStreamProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct);
+    Task<IStreamPlainProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct);
+    Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct);
+    Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct);
+    Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct);
     Task<ulong> QuerySequenceAsync(string reference, string stream, CancellationToken ct);
     Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct);
     Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken ct);
@@ -39,15 +38,7 @@ public sealed class StreamSystemHandle : IStreamSystemHandle
     private static long _producerSeq;
 
     private static string ProducerReference(string stream)
-    {
-        var full = $"streambus-pub-{stream}-{Interlocked.Increment(ref _producerSeq)}";
-        if (Encoding.UTF8.GetByteCount(full) <= StreamBusLimits.MaxReferenceBytes)
-            return full;
-        // Mirror the consumer-reference fallback: hash-suffix stays under the cap.
-        // (Phase 7 replaces naming with stable per-(partition,target) names.)
-        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(full)))[..32];
-        return $"streambus-pub-{hash}";
-    }
+        => StreamBusNaming.PublishReference(stream, Interlocked.Increment(ref _producerSeq));
     public StreamSystemHandle(StreamSystem system, ILoggerFactory? loggerFactory = null)
     {
         _system = system;
@@ -55,18 +46,18 @@ public sealed class StreamSystemHandle : IStreamSystemHandle
     }
     public bool IsClosed => _system.IsClosed;
 
-    public async Task<IStreamProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct)
+    public async Task<IStreamPlainProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct)
         => await CreatePlainProducerCoreAsync(stream, ProducerReference(stream), ct).ConfigureAwait(false);
 
-    public async Task<IStreamProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
+    public async Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(reference);
-        if (Encoding.UTF8.GetByteCount(reference) > StreamBusLimits.MaxReferenceBytes)
+        if (Encoding.UTF8.GetByteCount(reference) > StreamBusNaming.MaxName)
             throw new StreamBusConfigurationException($"Producer reference exceeds the broker's 255-byte limit.");
         return await CreatePlainProducerCoreAsync(stream, reference, ct).ConfigureAwait(false);
     }
 
-    private async Task<IStreamProducerHandle> CreatePlainProducerCoreAsync(string stream, string reference, CancellationToken ct)
+    private async Task<IStreamPlainProducerHandle> CreatePlainProducerCoreAsync(string stream, string reference, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         var confirmations = new ConfirmationTracker();
@@ -82,43 +73,61 @@ public sealed class StreamSystemHandle : IStreamSystemHandle
             MessagesBufferSize = 100,
             Reference = reference,
             ConfirmHandler = confirmations.Complete,
+            ConnectionClosedHandler = _ =>
+            {
+                confirmations.OnConnectionLost();
+                return Task.CompletedTask;
+            },
         }, _factory.CreateLogger<RawProducer>()).ConfigureAwait(false);
-        return new StreamProducerHandle(producer, stream, confirmations);
+        return new StreamProducerHandle(producer, stream, confirmations, _factory.CreateLogger<StreamProducerHandle>());
     }
 
-    public async Task<IStreamProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
+    public async Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         var confirmations = new ConfirmationTracker();
+        var routing = new SuperStreamRouting();
         // Same dedup rationale as the plain-producer call above.
         var producer = await _system.CreateRawSuperStreamProducer(new RawSuperStreamProducerConfig(stream)
         {
             MessagesBufferSize = 100,
             Reference = ProducerReference(stream),
-            Routing = SuperStreamProducerHandle.RoutingFor,
+            Routing = routing.Route,
             ConfirmHandler = confirmation => confirmations.Complete(confirmation.Item2),
+            ConnectionClosedHandler = (_, _) =>
+            {
+                confirmations.OnConnectionLost();
+                return Task.CompletedTask;
+            },
         }, _factory.CreateLogger<RawProducer>()).ConfigureAwait(false);
-        return new SuperStreamProducerHandle(producer, stream, confirmations);
+        return new SuperStreamProducerHandle(producer, stream, confirmations, routing, _factory.CreateLogger<SuperStreamProducerHandle>());
     }
 
-    public async Task<IStreamProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
+    public async Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(reference);
-        if (Encoding.UTF8.GetByteCount(reference) > StreamBusLimits.MaxReferenceBytes)
+        if (Encoding.UTF8.GetByteCount(reference) > StreamBusNaming.MaxName)
             throw new StreamBusConfigurationException($"Producer reference exceeds the broker's 255-byte limit.");
         ct.ThrowIfCancellationRequested();
         var confirmations = new ConfirmationTracker();
+        var routing = new SuperStreamRouting();
         // Stable name (not the unique-name path): recreating under the same name is
         // safe — dedup is broker-side per (name, id) and the fresh tracker holds no
-        // stale in-flight ids. The same routing table as the unique-name path applies.
+        // stale in-flight ids. The same per-handle routing table as the unique-name
+        // path applies.
         var producer = await _system.CreateRawSuperStreamProducer(new RawSuperStreamProducerConfig(stream)
         {
             MessagesBufferSize = 100,
             Reference = reference,
-            Routing = SuperStreamProducerHandle.RoutingFor,
+            Routing = routing.Route,
             ConfirmHandler = confirmation => confirmations.Complete(confirmation.Item2),
+            ConnectionClosedHandler = (_, _) =>
+            {
+                confirmations.OnConnectionLost();
+                return Task.CompletedTask;
+            },
         }, _factory.CreateLogger<RawProducer>()).ConfigureAwait(false);
-        return new SuperStreamProducerHandle(producer, stream, confirmations);
+        return new SuperStreamProducerHandle(producer, stream, confirmations, routing, _factory.CreateLogger<SuperStreamProducerHandle>());
     }
 
     public async Task CreateStreamAsync(RabbitMQ.Stream.Client.StreamSpec spec, CancellationToken ct)
@@ -197,12 +206,8 @@ public sealed class StreamSystemConnector : IStreamSystemConnector
     public async Task<IStreamSystemHandle> ConnectAsync(StreamBusOptions options, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(options);
-        if (options.Connection.ProducersPerConnection > byte.MaxValue)
-            throw new StreamBusConfigurationException(
-                $"ProducersPerConnection must be <= {byte.MaxValue} (client pool limit).");
-        if (options.Connection.ConsumersPerConnection > byte.MaxValue)
-            throw new StreamBusConfigurationException(
-                $"ConsumersPerConnection must be <= {byte.MaxValue} (client pool limit).");
+        foreach (var error in options.Validate())
+            throw new StreamBusConfigurationException(error);
         EndPoint endpoint = IPAddress.TryParse(options.Host, out var address)
             ? new IPEndPoint(address, options.StreamPort)
             : new DnsEndPoint(options.Host, options.StreamPort);

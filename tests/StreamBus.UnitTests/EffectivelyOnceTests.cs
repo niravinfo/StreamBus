@@ -31,6 +31,16 @@ public sealed class EffectivelyOnceTests
     }
 
     [Fact]
+    public void Replay_producer_name_is_stable_bounded_and_partition_scoped()
+    {
+        var name = StreamBusNaming.ReplayProducerName("orders", "orders-2");
+        Assert.StartsWith("streambus-replay-", name);
+        Assert.Equal(name, StreamBusNaming.ReplayProducerName("orders", "orders-2"));
+        Assert.NotEqual(name, StreamBusNaming.ReplayProducerName("orders", "orders-3"));
+        Assert.True(System.Text.Encoding.UTF8.GetByteCount(name) <= StreamBusNaming.MaxName);
+    }
+
+    [Fact]
     public void Consumer_reference_is_stable_per_group()
     {
         var a = ResultNaming.ConsumerReference(typeof(DefaultBus), "src", "dst");
@@ -111,16 +121,29 @@ public sealed class EffectivelyOnceTests
         Assert.Null(ResultResume.ResumeOffset(new ulong?[] { null }));
     }
 
-    private sealed class StubHandle : IStreamProducerHandle
+    private sealed class StubHandle : IStreamSuperProducerHandle
     {
         public readonly List<(ulong Id, string? Routing)> Published = new();
-        public Task SendAsync(ReadOnlyMemory<byte> body, string? routingKey, CancellationToken ct) => throw new NotImplementedException("EO tests publish results only.");
-        public Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, string? routingKey, IReadOnlyDictionary<string, object?> app, string? mid, string? cid, CancellationToken ct) => throw new NotImplementedException("EO tests publish results only.");
-        public Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, CancellationToken ct) => throw new NotImplementedException("EO tests publish results only.");
+        public Task SendAsync(ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct) => throw new NotImplementedException("EO tests publish results only.");
+        public Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, PublishOptions options, IReadOnlyDictionary<string, object?> app, string? mid, string? cid, CancellationToken ct) => throw new NotImplementedException("EO tests publish results only.");
+        public Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, PublishOptions options, CancellationToken ct)
+        {
+            Record(publishingId, null);
+            return Task.CompletedTask;
+        }
+        public Task PublishWithIdAsync(ulong publishingId, ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct)
+        {
+            Record(publishingId, options.RoutingKey);
+            return Task.CompletedTask;
+        }
         public Task PublishResultAsync(ReadOnlyMemory<byte> body, ulong publishingId, string? routingKey, CancellationToken ct)
         {
-            lock (Published) Published.Add((publishingId, routingKey));
+            Record(publishingId, routingKey);
             return Task.CompletedTask;
+        }
+        private void Record(ulong publishingId, string? routingKey)
+        {
+            lock (Published) Published.Add((publishingId, routingKey));
         }
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
@@ -131,19 +154,19 @@ public sealed class EffectivelyOnceTests
         public readonly Dictionary<string, ulong> Sequences = new();
         public string[] Partitions = new[] { "p" };
         public bool IsClosed => false;
-        public Task<IStreamProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct) => throw new NotImplementedException("EO tests use stable names.");
-        public Task<IStreamProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
+        public Task<IStreamPlainProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct) => throw new NotImplementedException("EO tests use stable names.");
+        public Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
         {
             var h = new StubHandle();
             Created[$"plain:{stream}:{reference}"] = h;
-            return Task.FromResult<IStreamProducerHandle>(h);
+            return Task.FromResult<IStreamPlainProducerHandle>(h);
         }
-        public Task<IStreamProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct) => throw new NotImplementedException("EO tests use stable names.");
-        public Task<IStreamProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
+        public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct) => throw new NotImplementedException("EO tests use stable names.");
+        public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
         {
             var h = new StubHandle();
             Created[$"super:{stream}:{reference}"] = h;
-            return Task.FromResult<IStreamProducerHandle>(h);
+            return Task.FromResult<IStreamSuperProducerHandle>(h);
         }
         public Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken ct) => Task.FromResult<ulong?>(null);
         public Task StoreSystemOffsetAsync(string reference, string stream, ulong offset, CancellationToken ct) => Task.CompletedTask;

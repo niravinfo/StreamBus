@@ -16,6 +16,7 @@ public interface IHostConfigurator
     void StreamPort(int port = 5552);
     void AmqpPort(int port = 5672);
     void Heartbeat(TimeSpan heartbeat);
+    void MonitorInterval(TimeSpan interval);
     void ProducersPerConnection(int count = 1);
     void ConsumersPerConnection(int count = 1);
 }
@@ -32,6 +33,14 @@ public interface IStreamBusConfigurator
     void ReceiveEndpoint(string stream, Action<IReceiveEndpointConfigurator> configure);
     void UseMessageRetry(Action<IRetryConfigurator> configure);
     void UseRetry(RetryPolicy policy);
+    void UsePublishFilter<TFilter>() where TFilter : class;
+    void UsePublishFilter(Type filterType);
+    void UsePublishFilter(Func<IServiceProvider, IStreamPublishFilter> factory);
+    void UsePublishFilter(IStreamPublishFilter instance);
+    void UseConsumeFilter<TFilter>() where TFilter : class;
+    void UseConsumeFilter(Type filterType);
+    void UseConsumeFilter(Func<IServiceProvider, IStreamConsumeFilter> factory);
+    void UseConsumeFilter(IStreamConsumeFilter instance);
 }
 
 public interface IReceiveEndpointConfigurator
@@ -44,9 +53,16 @@ public interface IReceiveEndpointConfigurator
     void Readiness(ReadinessPolicy policy);
     void UseMessageRetry(Action<IRetryConfigurator> configure);
     void UseRetry(RetryPolicy policy);
+    void UseConsumeFilter<TFilter>() where TFilter : class;
+    void UseConsumeFilter(Type filterType);
+    void UseConsumeFilter(Func<IServiceProvider, IStreamConsumeFilter> factory);
+    void UseConsumeFilter(IStreamConsumeFilter instance);
+    void AllowPipelineSkip(bool enabled = true);
     void DeadLetterToStream(string name, Action<IStreamOptionsBuilder>? configure = null);
     void DeadLetterToStream(string name, StreamOptions spec);
     void DeadLetterToQueue(string name, DeadLetterQueueType type);
+    void DeadLetterToQueue(string name, DeadLetterQueueType type, Action<IErrorQueueOptionsBuilder> configure);
+    void ErrorHandoffTimeout(TimeSpan timeout);
     void OnExhausted(Func<ExhaustedContext, CancellationToken, Task> handler);
     void Partitions(int partitions);
     void MaxAge(TimeSpan maxAge);
@@ -72,15 +88,32 @@ public sealed record ReceiveEndpointDescriptor
     public OffsetStoreOptions OffsetStore { get; init; } = new();
     public RetryPolicy? RetryOverride { get; init; }
     public DeadLetterOptions? DeadLetter { get; init; }
+    public TimeSpan HandoffConfirmTimeout { get; init; } = TimeSpan.FromSeconds(10);
     public Func<ExhaustedContext, CancellationToken, Task>? OnExhausted { get; init; }
     public ReadinessPolicy Readiness { get; init; } = ReadinessPolicy.FailFastPolicy;
+    internal IReadOnlyList<ConsumeFilterRegistration> ConsumeFilters { get; init; } = Array.Empty<ConsumeFilterRegistration>();
+    internal bool AllowPipelineSkip { get; init; }
+
+    internal void Validate()
+        => StreamOptionsValidation.Validate(
+            new StreamOptions
+            {
+                Partitions = IsSuperStream ? SuperPartitions : null,
+                MaxAge = MaxAge,
+                MaxLengthBytes = MaxLengthBytes,
+                MaxSegmentSizeBytes = MaxSegmentSizeBytes,
+                LeaderLocator = LeaderLocator,
+            },
+            $"ReceiveEndpoint '{Stream}'",
+            allowPartitions: IsSuperStream,
+            partitionsError: "super-stream partitions must be >= 1.");
 }
 
 public sealed class StreamBusEndpointStore
 {
     private readonly List<(Type BusMarker, ReceiveEndpointDescriptor Descriptor)> _endpoints = new();
 
-    public void Add(Type busMarker, ReceiveEndpointDescriptor descriptor)
+    internal void Add(Type busMarker, ReceiveEndpointDescriptor descriptor)
     {
         ArgumentNullException.ThrowIfNull(busMarker);
         ArgumentNullException.ThrowIfNull(descriptor);
@@ -108,10 +141,13 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
     private int _streamPort = 5552;
     private int _amqpPort = 5672;
     private TimeSpan _heartbeat = TimeSpan.FromSeconds(60);
+    private TimeSpan _monitorInterval = TimeSpan.FromSeconds(5);
     private int _producers = 1;
     private int _consumers = 1;
     private IStreamSerializer _serializer = SystemTextJsonStreamSerializer.Default;
     private readonly List<(Type MessageType, string Stream, bool IsSuper, StreamOptions Spec)> _publishes = new();
+    private readonly List<PublishFilterRegistration> _publishFilters = new();
+    private readonly List<ConsumeFilterRegistration> _consumeFilters = new();
     private readonly List<ReceiveEndpointDescriptor> _endpoints = new();
     private RetryPolicy? _globalRetry;
     private bool _hostCalled;
@@ -123,6 +159,10 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
     }
 
     internal IReadOnlyList<(Type MessageType, string Stream, bool IsSuper, StreamOptions Spec)> Publishes => _publishes;
+
+    internal IReadOnlyList<PublishFilterRegistration> PublishFilters => _publishFilters;
+
+    internal IReadOnlyList<ConsumeFilterRegistration> ConsumeFilters => _consumeFilters;
 
     internal IReadOnlyList<ReceiveEndpointDescriptor> Endpoints => _endpoints;
 
@@ -216,6 +256,72 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
         _globalRetry = policy;
     }
 
+    public void UsePublishFilter<TFilter>() where TFilter : class
+    {
+        AddPublishFilter(PublishFilterRegistration.ForType(typeof(TFilter)));
+    }
+
+    public void UsePublishFilter(Type filterType)
+    {
+        ArgumentNullException.ThrowIfNull(filterType);
+        AddPublishFilter(PublishFilterRegistration.ForType(filterType));
+    }
+
+    public void UsePublishFilter(Func<IServiceProvider, IStreamPublishFilter> factory)
+    {
+        ArgumentNullException.ThrowIfNull(factory);
+        AddPublishFilter(PublishFilterRegistration.ForFactory(factory));
+    }
+
+    public void UsePublishFilter(IStreamPublishFilter instance)
+    {
+        ArgumentNullException.ThrowIfNull(instance);
+        AddPublishFilter(PublishFilterRegistration.ForInstance(instance));
+    }
+
+    private void AddPublishFilter(PublishFilterRegistration filter)
+    {
+        if (filter.FilterType is { } type && _publishFilters.Any(existing => existing.FilterType == type))
+        {
+            throw new StreamBusConfigurationException(
+                $"Publish filter '{type}' is already registered on this bus; duplicate registration would run it twice.");
+        }
+        _publishFilters.Add(filter);
+    }
+
+    public void UseConsumeFilter<TFilter>() where TFilter : class
+    {
+        AddConsumeFilter(ConsumeFilterRegistration.ForType(typeof(TFilter)));
+    }
+
+    public void UseConsumeFilter(Type filterType)
+    {
+        ArgumentNullException.ThrowIfNull(filterType);
+        AddConsumeFilter(ConsumeFilterRegistration.ForType(filterType));
+    }
+
+    public void UseConsumeFilter(Func<IServiceProvider, IStreamConsumeFilter> factory)
+    {
+        ArgumentNullException.ThrowIfNull(factory);
+        AddConsumeFilter(ConsumeFilterRegistration.ForFactory(factory));
+    }
+
+    public void UseConsumeFilter(IStreamConsumeFilter instance)
+    {
+        ArgumentNullException.ThrowIfNull(instance);
+        AddConsumeFilter(ConsumeFilterRegistration.ForInstance(instance));
+    }
+
+    private void AddConsumeFilter(ConsumeFilterRegistration filter)
+    {
+        if (filter.FilterType is { } type && _consumeFilters.Any(existing => existing.FilterType == type))
+        {
+            throw new StreamBusConfigurationException(
+                $"Consume filter '{type}' is already registered on this bus; duplicate registration would run it twice.");
+        }
+        _consumeFilters.Add(filter);
+    }
+
     internal StreamBusOptions Build(Type busType)
     {
         ArgumentNullException.ThrowIfNull(busType);
@@ -223,27 +329,13 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
             throw new StreamBusConfigurationException($"Internal error: configurator for {_busType.FullName} built as {busType.FullName}.");
         if (!_hostCalled)
             throw new StreamBusConfigurationException($"Bus {busType.FullName}: Host must be configured exactly once.");
-        if (string.IsNullOrWhiteSpace(_host))
-            throw new StreamBusConfigurationException($"Bus {busType.FullName}: Host host must be supplied.");
-        if (string.IsNullOrWhiteSpace(_vhost))
-            throw new StreamBusConfigurationException($"Bus {busType.FullName}: Host vhost must be supplied.");
-        if (_streamPort is < 1 or > 65535)
-            throw new StreamBusConfigurationException($"Bus {busType.FullName}: StreamPort must be in 1..65535.");
-        if (_amqpPort is < 1 or > 65535)
-            throw new StreamBusConfigurationException($"Bus {busType.FullName}: AmqpPort must be in 1..65535.");
-        if (_heartbeat <= TimeSpan.Zero)
-            throw new StreamBusConfigurationException($"Bus {busType.FullName}: Heartbeat must be positive.");
-        if (_producers < 1 || _producers > byte.MaxValue)
-            throw new StreamBusConfigurationException($"Bus {busType.FullName}: ProducersPerConnection must be in 1..{byte.MaxValue}.");
-        if (_consumers < 1 || _consumers > byte.MaxValue)
-            throw new StreamBusConfigurationException($"Bus {busType.FullName}: ConsumersPerConnection must be in 1..{byte.MaxValue}.");
 
         var options = new StreamBusOptions
         {
-            Vhost = _vhost.Trim(),
+            Vhost = _vhost!.Trim(),
             UserName = _user,
             Password = _password,
-            Host = _host.Trim(),
+            Host = _host!.Trim(),
             StreamPort = _streamPort,
             AmqpPort = _amqpPort,
             Heartbeat = _heartbeat,
@@ -251,10 +343,12 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
             {
                 ProducersPerConnection = _producers,
                 ConsumersPerConnection = _consumers,
+                MonitorInterval = _monitorInterval,
             },
             Serializer = _serializer,
         };
-        StreamBusCredentialValidator.Validate(options);
+        foreach (var error in options.Validate())
+            throw new StreamBusConfigurationException(error);
         return options;
     }
 
@@ -271,40 +365,17 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
             _owner._password = password;
         }
 
-        public void StreamPort(int port = 5552)
-        {
-            if (port is < 1 or > 65535)
-                throw new StreamBusConfigurationException("StreamPort must be in 1..65535.");
-            _owner._streamPort = port;
-        }
+        public void StreamPort(int port = 5552) => _owner._streamPort = port;
 
-        public void AmqpPort(int port = 5672)
-        {
-            if (port is < 1 or > 65535)
-                throw new StreamBusConfigurationException("AmqpPort must be in 1..65535.");
-            _owner._amqpPort = port;
-        }
+        public void AmqpPort(int port = 5672) => _owner._amqpPort = port;
 
-        public void Heartbeat(TimeSpan heartbeat)
-        {
-            if (heartbeat <= TimeSpan.Zero)
-                throw new StreamBusConfigurationException("Heartbeat must be positive.");
-            _owner._heartbeat = heartbeat;
-        }
+        public void Heartbeat(TimeSpan heartbeat) => _owner._heartbeat = heartbeat;
 
-        public void ProducersPerConnection(int count = 1)
-        {
-            if (count < 1 || count > byte.MaxValue)
-                throw new StreamBusConfigurationException($"ProducersPerConnection must be in 1..{byte.MaxValue}.");
-            _owner._producers = count;
-        }
+        public void MonitorInterval(TimeSpan interval) => _owner._monitorInterval = interval;
 
-        public void ConsumersPerConnection(int count = 1)
-        {
-            if (count < 1 || count > byte.MaxValue)
-                throw new StreamBusConfigurationException($"ConsumersPerConnection must be in 1..{byte.MaxValue}.");
-            _owner._consumers = count;
-        }
+        public void ProducersPerConnection(int count = 1) => _owner._producers = count;
+
+        public void ConsumersPerConnection(int count = 1) => _owner._consumers = count;
     }
 
     internal static Type ResolveConsumerMessageType(Type consumerType)
@@ -339,8 +410,11 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
         private OffsetStoreOptions _store = new();
         private RetryPolicy? _retryOverride;
         private DeadLetterOptions? _deadLetter;
+        private TimeSpan _handoffConfirmTimeout = TimeSpan.FromSeconds(10);
         private Func<ExhaustedContext, CancellationToken, Task>? _onExhausted;
         private ReadinessPolicy _readiness = ReadinessPolicy.FailFastPolicy;
+        private readonly List<ConsumeFilterRegistration> _consumeFilters = new();
+        private bool _allowPipelineSkip;
 
         public ReceiveEndpointConfigurator(string stream) => _stream = stream;
 
@@ -389,6 +463,35 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
             ArgumentNullException.ThrowIfNull(policy);
             _retryOverride = policy;
         }
+        public void UseConsumeFilter<TFilter>() where TFilter : class
+        {
+            AddConsumeFilter(ConsumeFilterRegistration.ForType(typeof(TFilter)));
+        }
+        public void UseConsumeFilter(Type filterType)
+        {
+            ArgumentNullException.ThrowIfNull(filterType);
+            AddConsumeFilter(ConsumeFilterRegistration.ForType(filterType));
+        }
+        public void UseConsumeFilter(Func<IServiceProvider, IStreamConsumeFilter> factory)
+        {
+            ArgumentNullException.ThrowIfNull(factory);
+            AddConsumeFilter(ConsumeFilterRegistration.ForFactory(factory));
+        }
+        public void UseConsumeFilter(IStreamConsumeFilter instance)
+        {
+            ArgumentNullException.ThrowIfNull(instance);
+            AddConsumeFilter(ConsumeFilterRegistration.ForInstance(instance));
+        }
+        public void AllowPipelineSkip(bool enabled = true) => _allowPipelineSkip = enabled;
+        private void AddConsumeFilter(ConsumeFilterRegistration filter)
+        {
+            if (filter.FilterType is { } type && _consumeFilters.Any(existing => existing.FilterType == type))
+            {
+                throw new StreamBusConfigurationException(
+                    $"Consume filter '{type}' is already registered on this endpoint; duplicate registration would run it twice.");
+            }
+            _consumeFilters.Add(filter);
+        }
         public void DeadLetterToStream(string name, Action<IStreamOptionsBuilder>? configure = null)
         {
             EnsureDeadLetterSlot("stream");
@@ -408,12 +511,29 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
             _deadLetter = new DeadLetterOptions { Name = name.Trim(), Spec = spec };
         }
         public void DeadLetterToQueue(string name, DeadLetterQueueType type)
+            => SetDeadLetterQueue(name, type, new ErrorQueueOptions());
+
+        public void DeadLetterToQueue(string name, DeadLetterQueueType type, Action<IErrorQueueOptionsBuilder> configure)
+        {
+            ArgumentNullException.ThrowIfNull(configure);
+            var builder = new ErrorQueueOptionsBuilder();
+            configure(builder);
+            SetDeadLetterQueue(name, type, builder.Build());
+        }
+
+        private void SetDeadLetterQueue(string name, DeadLetterQueueType type, ErrorQueueOptions options)
         {
             EnsureDeadLetterSlot("queue");
             ArgumentException.ThrowIfNullOrWhiteSpace(name);
             if (!Enum.IsDefined(type))
                 throw new StreamBusConfigurationException($"ReceiveEndpoint '{_stream}': DeadLetterQueueType has an undefined value.");
-            _deadLetter = new DeadLetterOptions { Name = name.Trim(), QueueType = type };
+            _deadLetter = new DeadLetterOptions { Name = name.Trim(), QueueType = type, QueueOptions = options };
+        }
+        public void ErrorHandoffTimeout(TimeSpan timeout)
+        {
+            if (timeout <= TimeSpan.Zero)
+                throw new StreamBusConfigurationException($"ReceiveEndpoint '{_stream}': ErrorHandoffTimeout must be positive.");
+            _handoffConfirmTimeout = timeout < TimeSpan.FromSeconds(1) ? TimeSpan.FromSeconds(1) : timeout;
         }
         private void EnsureDeadLetterSlot(string attempted)
         {
@@ -428,41 +548,33 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
                 : $"stream '{destination.Name}'";
         public void Partitions(int partitions)
         {
-            if (partitions < 1)
-                throw new StreamBusConfigurationException($"ReceiveEndpoint '{_stream}': super-stream partitions must be >= 1.");
             _super = true;
             _superPartitions = partitions;
         }
-        public void MaxAge(TimeSpan maxAge)
+        public void MaxAge(TimeSpan maxAge) => _maxAge = maxAge;
+        public void MaxLengthBytes(ulong maxLengthBytes) => _maxLengthBytes = maxLengthBytes;
+        public void MaxSegmentSizeBytes(int maxSegmentSizeBytes) => _maxSegmentSizeBytes = maxSegmentSizeBytes;
+        public void LeaderLocator(StreamLeaderLocator locator) => _locator = locator;
+
+        private void ValidateEndpointTypedFilters(Type messageType)
         {
-            if (maxAge <= TimeSpan.Zero)
-                throw new StreamBusConfigurationException($"ReceiveEndpoint '{_stream}': MaxAge must be positive when set.");
-            _maxAge = maxAge;
-        }
-        public void MaxLengthBytes(ulong maxLengthBytes)
-        {
-            if (maxLengthBytes < 1)
-                throw new StreamBusConfigurationException($"ReceiveEndpoint '{_stream}': MaxLengthBytes must be >= 1 when set.");
-            _maxLengthBytes = maxLengthBytes;
-        }
-        public void MaxSegmentSizeBytes(int maxSegmentSizeBytes)
-        {
-            if (maxSegmentSizeBytes < 1)
-                throw new StreamBusConfigurationException($"ReceiveEndpoint '{_stream}': MaxSegmentSizeBytes must be >= 1 when set.");
-            _maxSegmentSizeBytes = maxSegmentSizeBytes;
-        }
-        public void LeaderLocator(StreamLeaderLocator locator)
-        {
-            if (!Enum.IsDefined(locator))
-                throw new StreamBusConfigurationException($"ReceiveEndpoint '{_stream}': LeaderLocator has an undefined value.");
-            _locator = locator;
+            foreach (var filter in _consumeFilters)
+            {
+                if (filter.Kind != FilterRegistrationKind.ConcreteTyped)
+                    continue;
+                if (filter.TypedMessageTypes.Contains(messageType))
+                    continue;
+                throw new StreamBusConfigurationException(
+                    $"ReceiveEndpoint '{_stream}': consume filter '{filter.FilterType}' does not implement IStreamConsumeFilter<{messageType.Name}> for this endpoint's message type '{messageType.Name}'.");
+            }
         }
 
         public ReceiveEndpointDescriptor Build()
         {
             if (_consumerType is null || _messageType is null || _reference is null)
                 throw new StreamBusConfigurationException($"ReceiveEndpoint '{_stream}': Consumer<T>(\"group\") must be called exactly once per endpoint.");
-            return new ReceiveEndpointDescriptor
+            ValidateEndpointTypedFilters(_messageType);
+            var descriptor = new ReceiveEndpointDescriptor
             {
                 Stream = _stream,
                 MessageType = _messageType,
@@ -479,9 +591,14 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
                 OffsetStore = _store,
                 RetryOverride = _retryOverride,
                 DeadLetter = _deadLetter,
+                HandoffConfirmTimeout = _handoffConfirmTimeout,
                 OnExhausted = _onExhausted,
                 Readiness = _readiness,
+                ConsumeFilters = _consumeFilters.ToArray(),
+                AllowPipelineSkip = _allowPipelineSkip,
             };
+            descriptor.Validate();
+            return descriptor;
         }
     }
 }
@@ -518,12 +635,32 @@ public static class StreamBusConfiguratorExtensions
         var publishStore = ServiceCollectionExtensions.GetOrCreatePublishStore(services);
         foreach (var p in configurator.Publishes)
             publishStore.Add(busType, p.MessageType, p.Stream, p.IsSuper, p.Spec);
+        foreach (var filter in configurator.PublishFilters)
+        {
+            publishStore.AddFilter(busType, filter);
+            if (filter.FilterType is { } filterType && filter.Instance is null)
+                services.TryAddTransient(filterType, filterType);
+        }
+        publishStore.Seal(busType);
+        var consumeFilterStore = ServiceCollectionExtensions.GetOrCreateConsumeFilterStore(services);
+        foreach (var filter in configurator.ConsumeFilters)
+        {
+            consumeFilterStore.AddFilter(busType, filter);
+            if (filter.FilterType is { } filterType && filter.Instance is null)
+                services.TryAddTransient(filterType, filterType);
+        }
+        consumeFilterStore.Seal(busType);
         var endpointStore = ServiceCollectionExtensions.GetOrCreateEndpointStore(services);
         var consumerStore = ServiceCollectionExtensions.GetOrCreateConsumerStore(services);
         foreach (var descriptor in configurator.Endpoints)
         {
             endpointStore.Add(busType, descriptor);
             services.TryAddTransient(descriptor.ConsumerType, descriptor.ConsumerType);
+            foreach (var filter in descriptor.ConsumeFilters)
+            {
+                if (filter.FilterType is { } filterType && filter.Instance is null)
+                    services.TryAddTransient(filterType, filterType);
+            }
             var busName = busType.FullName ?? busType.Name;
             var derived = RetryDerivation.Derive(
                 configurator.GlobalRetry,
@@ -542,9 +679,14 @@ public static class StreamBusConfiguratorExtensions
                 Retry = derived.Policy,
                 ErrorStream = derived.Kind == ExhaustionKind.StreamHandoff ? derived.Stream : null,
                 ReadinessPolicy = descriptor.Readiness,
+                HandoffConfirmTimeout = descriptor.HandoffConfirmTimeout,
                 ExhaustionCallback = derived.Kind == ExhaustionKind.Callback ? descriptor.OnExhausted : null,
                 DeadLetter = derived.Kind == ExhaustionKind.QueueHandoff ? derived.Queue : null,
                 ShadowedDeadLetter = derived.DestinationShadowed ? descriptor.DeadLetter : null,
+                ConsumeFilters = descriptor.ConsumeFilters,
+                AllowPipelineSkip = descriptor.AllowPipelineSkip,
+                IsTypedEndpoint = true,
+                MessageType = descriptor.MessageType,
             });
         }
         ServiceCollectionExtensions.AddShared(services, busType, options);

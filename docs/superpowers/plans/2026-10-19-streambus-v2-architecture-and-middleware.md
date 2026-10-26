@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Close the liveness loop (detect and recover from connection/consumer death and lost confirms), consolidate the drifted API surface, and add publish/consume middleware with a header carrier — per spec.
+**Goal:** Close the liveness loop (detect and recover from connection/consumer death and lost confirms), consolidate the drifted API surface, and add user-composable publish/consume middleware (any number of filters, executed in registration order) with a header carrier — per spec, minus configuration-binding scope (B8 dropped).
 
-**Architecture:** RabbitMQ.Stream.Client is kept as-is; resilience is owned in-library via a supervising connection monitor + client death callbacks + per-handle corruption invalidation. The publish and consume facades collapse into one generic core; ordered user pipelines compose around serialize/send and around the outer per-message handler delegate. Every remediation lands with regression tests before the next milestone starts.
+**Architecture:** RabbitMQ.Stream.Client is kept as-is; resilience is owned in-library via a supervising connection monitor + client death callbacks + per-handle corruption invalidation. The publish and consume facades collapse into one generic core; ordered user pipelines compose around serialize/send and around the outer per-message handler delegate. Configuration remains explicit and code-first — options are passed through configurator method calls, with no `IConfiguration`/`appsettings.json` binding. Every remediation lands with regression tests before the next milestone starts.
 
 **Tech Stack:** .NET 10 (net10.0), RabbitMQ.Stream.Client 1.12.1 (pinned), RabbitMQ.Client 7.2.2 (dead-letter classic queues only), Microsoft.Extensions.Hosting 10.0.12, xunit.v3
 
@@ -16,6 +16,8 @@
 - Branch: `v2` (created in Task 0). One branch, frequent commits, one task per commit.
 - Preserve verbatim (spec §4): (1) strict per-partition handler ordering, at most one in-flight handler per partition; (2) offset advances only after handler success (cadence rules) or **confirmed** error-destination publish, never before, with the monotonic-window guard rejecting regression; (3) never skip before hand-off confirms; exhaustion is confirmed-then-commit; (4) effectively-once: publishing id = source offset, resume = target's last confirmed publishing id recomputed each attach, source never stores offsets, `QuerySequence == 0` resolves to replay-from-first under dedup; (5) unique process-wide producer names (broker dedup trap); replay/EO names stable per (source-partition → target); (6) SAC promotion listener never throws (client fallback for a throwing listener = scroll forward = skipped backlog); (7) `ConsumeAsync` returns only after the broker confirms the subscription.
 - Public API adds only what the spec defines; every removed/changed public member goes into CHANGELOG.md; version becomes 0.2.0.
+- **Configuration is explicit — no `IConfiguration` surface (ADR: supersedes spec B8).** Callers configure the library by calling methods: `AddStreamBus((context, cfg) => cfg.Host(host, vhost, h => ...))`. Do NOT add `IConfiguration`/`IConfigurationSection` overloads, `string sectionName` overloads, `Bind(...)` methods, section-key parsing, unknown-key warnings, or per-field code-vs-section precedence. Every knob (including `MonitorInterval`, `HandoffConfirmTimeout`, `ErrorQueueOptions.ConfirmTimeout`) must be reachable from a configurator method; nothing may be settable only from a config file.
+- **Pipelines are additive and ordered (C2/C3 contract).** Users may register any number of publish filters and any number of consume filters. Order of execution is exactly registration order; first registered = outermost wrapper = runs first on the way in and last on the way out. No filtering, reordering, deduplication or cap (beyond rejecting an accidental duplicate registration of the same filter type). Filters compose; each one may call `next` exactly once.
 - Line anchors in this plan reflect the tree as of 2026-10-18. If a symbol name or line drifted, locate by symbol (`grep -n "<symbol>" src/StreamBus`) and apply the edit to the located member — the change itself is fully specified everywhere.
 - Every task's verify gate BEFORE its commit: `dotnet build StreamBus.slnx` reports **0 warnings, 0 errors** and `dotnet test tests/StreamBus.UnitTests` is fully green (the suite takes ~4s locally). Integration tests need a broker on `localhost:5552` (env `STREAMBUS_USER`/`STREAMBUS_PASSWORD`).
 - New test naming follows the repo's lowercase-snake test-method convention (see existing `RetryIntegrationTests`).
@@ -37,7 +39,7 @@ The five failure modes from the spec that are most likely to bite a real user, e
 - **M1 — Liveness mechanics** (Tasks 1–3, gate V2-G1)
 - **M2 — Supervision & truth** (Tasks 4–7, gate V2-G2)
 - **M3 — Surface consolidation** (Tasks 8–11, gate V2-G3)
-- **M4 — Config & docs honesty** (Tasks 12–13, gate V2-G4)
+- **M4 — Docs honesty** (Task 13, gate V2-G4)
 - **M5 — Properties + publish pipeline** (Tasks 14–15, gate V2-G5)
 - **M6 — Consume pipeline + EO + telemetry** (Tasks 16–17, gate V2-G6)
 - **M7 — CI & chaos** (Tasks 18–19, gate V2-G7)
@@ -380,7 +382,7 @@ If `CurrentHandle` currently has a different throwing behavior on null, preserve
 
 - [ ] **Step 3: Options + configurator knob**
 
-`StreamBusConnectionOptions` gains `public TimeSpan MonitorInterval { get; init; } = TimeSpan.FromSeconds(5);` with validation in its existing `Validate()` (positive, ≤ 60s). `HostConfigurator` gains `void MonitorInterval(TimeSpan interval);` (same bound). This knob rides the B8 section binding later without further change.
+`StreamBusConnectionOptions` gains `public TimeSpan MonitorInterval { get; init; } = TimeSpan.FromSeconds(5);` with validation in its existing `Validate()` (positive, ≤ 60s). `HostConfigurator` gains `void MonitorInterval(TimeSpan interval);` (same bound). This is the ONLY configuration path for the knob — there is no section binding (see Global Constraints); do not add one.
 
 - [ ] **Step 4: Tests (extend `ConnectionSupervisorTests.cs`)**
 
@@ -967,60 +969,54 @@ git add -A src tests
 git commit -m "refactor(core): exception base; cached declarations; topology merge; parallel vhost starts; raw-mode guards (B10-B15)"
 ```
 
-# Task 12 (B8): IConfiguration binding
+# Task 12 (B8): REMOVED — no IConfiguration binding
 
-**Files:**
-- Modify: `src/StreamBus/Configuration/StreamBusConfigurator.cs` (binder + HostConfigurator explicit-tracking), `src/StreamBus/Options.cs` (Bind from section)
-- Test: `tests/StreamBus.UnitTests/ConfigBindingTests.cs` (new)
+**Status:** dropped from v2. Configuration is explicit only.
 
-**Interfaces:**
-- Produces: `AddStreamBus(IConfigurationSection section, Action<IStreamRegistrationContext, IStreamBusConfigurator> configure)` and `AddStreamBus(string sectionName, Action<...>)`; per-field precedence: explicitly-set configurator fields win individually; section fills the gaps; `Host()` mandatory ONLY when neither supplies a host.
+**Files:** none.
 
-- [ ] **Step 1: Per-field explicit tracking in HostConfigurator** — backing fields become nullable sentinels (`bool _hostSet`-style flags or `string? _host` with `-1` port sentinels); every setter sets its flag; `Build()` requires `hostSet || section host` present and validates via `StreamBusConnectionOptions.Validate()` exactly once.
+**Interfaces:** none. Do NOT produce `AddStreamBus(IConfigurationSection, ...)`, `AddStreamBus(string sectionName, ...)`, `StreamBusConnectionOptions.Bind(...)`, configurator nullable sentinel tracking, section-key parsing, unknown-key warnings, or code-vs-section precedence.
 
-- [ ] **Step 2: The binder**
+**Why:** the maintainer decision is that callers pass everything by calling methods — hosts, ports, credentials, pools, timeouts, monitor interval, pipeline registrations. A config file is not part of the v2 surface, so no public API, no tests, and no docs may reference one. The existing `AddStreamBus(configure)` / `AddStreamBus<TBus>(configure)` overloads remain the only entry points.
 
-```csharp
-public static IStreamRegistrationContext AddStreamBus(
-    this IServiceCollection services,
-    IConfigurationSection section,
-    Action<IStreamRegistrationContext, IStreamBusConfigurator> configure)
-{
-    // Runs configure with a HostConfigurator whose unset fields are back-filled
-    // from `section` (keys: Vhost, UserName, Password, Host, StreamPort, AmqpPort,
-    // HeartbeatSeconds, MonitorInterval) BEFORE Build(). Precedence table + tests:
-    //   section-only value           -> used
-    //   code-only value              -> used
-    //   both set                     -> code wins (log Warning naming the field)
-    //   neither                      -> validation error names the field
-}
-```
+**Enforcement (add to Task 13's grep gate):** `grep -rn "IConfiguration" src/StreamBus` returns zero hits.
 
-Port binding: `GetSection("StreamBus")["StreamPort"]` via `GetValue<int>`; unknown keys log Warning (typos surface, never silently ignored).
-
-- [ ] **Step 3: Tests (`ConfigBindingTests.cs`)**
-
-```csharp
-[Fact] public void Section_fills_unfields_and_code_wins_on_conflict() // in-memory ConfigurationBuilder; assert precedence table case-by-case incl. one Warning logged per conflict
-[Fact] public void Missing_host_everywhere_throws_validation_error() 
-[Fact] public void Guest_credentials_bind_from_section_for_local() // matches corrected credential rule (empty rejects, guest accepted)
-```
-
-- [ ] **Step 4: Verify + commit**
-
-```bash
-git add src/StreamBus tests/StreamBus.UnitTests/ConfigBindingTests.cs
-git commit -m "feat(config): IConfiguration-section binding with per-field code-wins precedence (B8)"
-```
+**Numbering note:** later tasks keep their existing numbers so every cross-reference in this plan stays valid. This gap is intentional — do not renumber.
 
 # Task 13 (D3+B16+B17): Docs truth, version, CHANGELOG, docs-compile project
 
 **Files:**
 - Create: `CHANGELOG.md`, `tests/StreamBus.DocsSnippets/StreamBus.DocsSnippets.csproj`, `tests/StreamBus.DocsSnippets/Program.Readme.cs`
-- Modify: `README.md`, `docs/llms.txt`, all `docs/guide/*.md` deltas (config binder §, errors § timeout note, hosting § health semantics, publish/consume § — leave pipeline guide sections for Tasks 15–17 adds), `src/StreamBus/StreamBus.csproj` (`<VersionPrefix>0.2.0</VersionPrefix>` + `<PackageId>StreamBus</PackageId>` if missing), `src/StreamBus/Abstractions.md` exception table if the repo keeps one (else fold into docs/guide/errors.md)
+- Modify: `README.md`, `docs/llms.txt`, all `docs/guide/*.md` deltas (errors § timeout note, hosting § health semantics, publish/consume § — leave pipeline guide sections for Tasks 15–17 adds), `src/StreamBus/StreamBus.csproj` (`<VersionPrefix>0.2.0</VersionPrefix>` + `<PackageId>StreamBus</PackageId>` if missing), `src/StreamBus/Abstractions.md` exception table if the repo keeps one (else fold into docs/guide/errors.md)
 - Modify: `Directory.Build.props`, `docs/guide/consume.md`
 
-- [ ] **Step 1: README rewrite** — the "90% case" becomes: `AddStreamBus(builder.Configuration.GetSection("StreamBus"), (context, cfg) => ...)`, `AddStreamBusHosting(h => h.BlockStartupUntilReady(...))`, consumer group required — READ exactly what the compiled API today offers (the binder from Task 12). Every snippet copied into `tests/StreamBus.DocsSnippets/Program.Readme.cs` and compiled by the solution.
+- [ ] **Step 1: README rewrite** — the "90% case" becomes the explicit/fluent path, with **no `IConfiguration`, no `Builder.Configuration.GetSection(...)`, no `appsettings.json` snippet anywhere**:
+
+```csharp
+services.AddStreamBus((context, cfg) =>
+{
+    cfg.Host("localhost", "/", h =>
+    {
+        h.Credentials("guest", "guest");
+        h.StreamPort(5552);
+        h.AmqpPort(5672);
+        h.Heartbeat(TimeSpan.FromSeconds(60));
+        h.MonitorInterval(TimeSpan.FromSeconds(5));
+    });
+
+    cfg.Publish<OrderPlaced>("orders");
+
+    cfg.ReceiveEndpoint("orders", e =>
+    {
+        e.Consumer<OrderConsumer>("billing");
+        e.UseMessageRetry(r => r.Immediate(3));
+    });
+});
+
+services.AddStreamBusHosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(30)));
+```
+
+Read the real `IHostConfigurator` / `IReceiveEndpointConfigurator` members before writing (`h.Credentials(user, password)`, `h.StreamPort/AmqpPort/Heartbeat`, `e.Consumer<TConsumer>("consumerGroup")`) — do not invent overloads. Every snippet copied into `tests/StreamBus.DocsSnippets/Program.Readme.cs` and compiled by the solution.
 
 - [ ] **Step 2: DocsSnippets project**
 
@@ -1039,9 +1035,9 @@ git commit -m "feat(config): IConfiguration-section binding with per-field code-
 
 `Program.Readme.cs` mirrors the README example verbatim (files named after the doc section). CI (Task 18) builds the whole solution, so snippets compile-checked forever. A top comment in `Program.Readme.cs` states the sync rule: README snippets MUST be reproduced here; a CI failure means the README drifted.
 
-- [ ] **Step 3: llms.txt regeneration** — rewrite from code-ground truths: binder overload exists; empty credentials rejected / `guest` accepted for local; `DeadLetterToStream/DeadLetterToQueue` + `DeadLetterQueueType`; pipeline hooks (empty stubs pointing to Tasks 15–17 final states); monitor interval documented; health-check semantics documented.
+- [ ] **Step 3: llms.txt regeneration** — rewrite from code-ground truths: **configuration is explicit/fluent only — state plainly that there is no `IConfiguration`/`appsettings.json` binding and that every option is a configurator method call**; empty credentials rejected / `guest` accepted for local; `DeadLetterToStream/DeadLetterToQueue` + `DeadLetterQueueType`; pipeline hooks (`UsePublishFilter` / `UseConsumeFilter`, registration order, N filters — see Tasks 15–17); monitor interval documented; health-check semantics documented.
 
-- [ ] **Step 4: CHANGELOG.md** — `## 0.2.0` heading, `### Breaking` (stores internal, Password projection removed, orphaned builders deleted, hosting `BlockUntilConsumersAttached` introduced), `### Added` (monitor interval, binder, health aggregation, hand-off timeout), `### Fixed` (A1–A8 short list with acceptance IDs).
+- [ ] **Step 4: CHANGELOG.md** — `## 0.2.0` heading, `### Breaking` (stores internal, Password projection removed, orphaned builders deleted, hosting `BlockUntilConsumersAttached` introduced), `### Added` (monitor interval, health aggregation, hand-off timeout, message properties/header carrier, publish + consume pipelines), `### Fixed` (A1–A8 short list with acceptance IDs). Do NOT list a configuration binder — B8 is out of scope and no `IConfiguration` surface ships.
 
 - [ ] **Step 5: Analyzer discipline on** — in `Directory.Build.props` add `<AnalysisLevel>latest-recommended</AnalysisLevel>`; build the solution; if any CA diagnostic fires, fix the code (or add a documented `dotnet_diagnostic.<rule>.severity = suggestion|none` line with a one-line reason in the props file). Acceptance (V2-B16): `dotnet build StreamBus.slnx` reports 0 warnings WITH analyzers active — run once and paste the summary into the PR description.
 
@@ -1051,6 +1047,7 @@ git commit -m "feat(config): IConfiguration-section binding with per-field code-
 
 ```bash
 dotnet build StreamBus.slnx  # DocsSnippets must compile = README compiles
+grep -rn "IConfiguration" src/StreamBus   # MUST return zero hits (B8 dropped)
 git add -A
 git commit -m "docs(v2): README/llms truth pass, docs-compile snippets, CHANGELOG 0.2.0 (D3 + B16 + B17)"
 ```
@@ -1160,7 +1157,21 @@ public interface IStreamHeaderWriter
 }
 ```
 
-- [ ] **Step 1: Store & composition** — `cfg.UsePublishFilter(Type filterType)` / `cfg.UsePublishFilter(Func<IServiceProvider, IStreamPublishFilter> factory)` per bus, registration order preserved; publish-store carries the ordered list. Filters constructed ONCE per bus from the root provider at bus creation (thread-safe contract), and every publish executes inside a per-publish DI scope exposed as `context.Services`.
+- [ ] **Step 1: Store & composition** — **additive, ordered, repeatable**: a bus may register any number of publish filters (no cap), and execution order is exactly registration order.
+
+```csharp
+// On IStreamBusConfigurator (all four are additive; calling one N times registers N filters)
+void UsePublishFilter<TFilter>() where TFilter : class, IStreamPublishFilter;   // resolved once from root provider
+void UsePublishFilter(Type filterType);                                          // non-generic equivalent
+void UsePublishFilter(Func<IServiceProvider, IStreamPublishFilter> factory);     // custom construction
+void UsePublishFilter(IStreamPublishFilter instance);                            // caller-owned singleton
+```
+
+- The publish-store carries the **ordered list**; `BusCore` composes it once per bus. `list[0]` is the outermost wrapper: it runs **first** on the way in and **last** on the way out (standard middleware nesting — document this with the two-filter diagram in `docs/guide/publish.md`).
+- Filters are constructed ONCE per bus from the root provider at bus creation and MUST be thread-safe; per-publish scoped services come from `context.Services`, never from the filter's constructor.
+- Registering the same filter **type** twice on the same bus throws `StreamBusConfigurationException("Publish filter '{type}' is already registered on this bus; duplicate registration would run it twice.")` — duplicate is always a mistake, never an intended pipeline.
+- Registration after the bus is built/started throws `StreamBusConfigurationException` (config is immutable at runtime, same rule as topology).
+- `PublishRawAsync` does not run filters (documented explicitly — raw means raw).
 
 - [ ] **Step 2: Execution** — in `StreamBusCore`:
 
@@ -1183,9 +1194,16 @@ await _publishPipeline.RunAsync(context, serializeAndSendAsync, ct).ConfigureAwa
 
 where `serializeAndSendAsync` is the existing body (serialize → `_producers.PublishAsync(reg.Stream, body, effective, ct)`), passed AS the terminal `next` delegate; the `Headers` writer materializes into the `PublishOptions.Properties.Headers` at send time (compose with any call-level `options.Properties` — call-level wins on key conflict, documented). Filters that misbehave (not calling `next` more than once) throw `StreamBusConfigurationException("Publish filter {name} invoked next {n} times; exactly one continuation is allowed.")` — publish-side double-invocation is a programming error, never silent.
 
-- [ ] **Step 3: Exception classification** — a filter exception classifies through the SAME path as send-time exceptions (existing transient/fatal classification), because the pipeline is invoked inside the same await chain. No publish short-circuit exists: `next` skipping is impossible by construction (RunAsync always calls next unless an exception interrupts).
+- [ ] **Step 3: Exception classification + contract enforcement** — a filter exception classifies through the SAME path as send-time exceptions (existing transient/fatal classification), because the pipeline is invoked inside the same await chain.
 
-- [ ] **Step 4: Tests** — order (two filters + access of before/after), header enrichment visible in a scripted Handle's rendered `PublishOptions.Properties`, filter exception → `StreamBusTransientException`-classified path, super routing-untouched assert, `PublishRawAsync` NOT running filters, double-`next` rejection; integration: header-filter E2E (`PublishPipelineIntegrationTests.cs`: filter adds tenant → consume side reads it via Task 14 accessors).
+There is **no publish short-circuit**, and this must be enforced, not assumed: the runner counts how many times the terminal delegate was invoked.
+- `0` invocations → throw `StreamBusConfigurationException("Publish filter '{name}' returned without calling next; the message would have been silently dropped.")` — a forgotten `next` is a bug, never a silent no-op.
+- `> 1` invocations → throw `StreamBusConfigurationException("Publish filter {name} invoked next {n} times; exactly one continuation is allowed.")`.
+- Exactly `1` → normal completion.
+
+Both guards live in one place (`PublishPipeline.RunAsync`) so no filter can bypass the contract.
+
+- [ ] **Step 4: Tests** — order across **three** filters (record entry/exit sequence, assert first-registered-first-in/last-out), N-filter composition, duplicate-type rejection at config time, zero-`next` rejection, double-`next` rejection, header enrichment visible in a scripted Handle's rendered `PublishOptions.Properties`, filter exception → `StreamBusTransientException`-classified path, super routing-untouched assert, `PublishRawAsync` NOT running filters; integration: header-filter E2E (`PublishPipelineIntegrationTests.cs`: filter adds tenant → consume side reads it via Task 14 accessors).
 
 - [ ] **Step 5: Verify + commit**
 
@@ -1223,12 +1241,34 @@ public sealed class StreamConsumeFilterContext
 }
 ```
 
-- [ ] **Step 1: Scope sharing** — the per-message `IServiceScopeFactory.CreateScope()` used for typed consumer resolution today becomes the pipeline's `context.Services` scope: ONE scope per delivered message, created in `Hosting.TypedConsumerHandler`'s invoke path (locate the `CreateScope` in `Hosting.cs:299–300` and hoist to a shared holder consumed by both the pipeline and the consumer resolution).
-
-- [ ] **Step 2: SPC integration (outer wrap)** — in `DispatchAsync`, the "run handler" step becomes "run pipeline whose terminal `next` invokes the (possibly typed) handler":
+- [ ] **Step 1: Registration & composition** — **additive, ordered, repeatable**, at two scopes:
 
 ```csharp
-var pipeline = _pipelines; // ordered, built per attach from bus+endpoint filters
+// IStreamBusConfigurator — bus-wide, applies to every consume endpoint on the bus
+void UseConsumeFilter<TFilter>() where TFilter : class, IStreamConsumeFilter;
+void UseConsumeFilter(Type filterType);
+void UseConsumeFilter(Func<IServiceProvider, IStreamConsumeFilter> factory);
+void UseConsumeFilter(IStreamConsumeFilter instance);
+
+// IReceiveEndpointConfigurator — endpoint-specific, appended after the bus-wide filters
+void UseConsumeFilter<TFilter>() where TFilter : class, IStreamConsumeFilter;
+void UseConsumeFilter(Type filterType);
+void UseConsumeFilter(Func<IServiceProvider, IStreamConsumeFilter> factory);
+void UseConsumeFilter(IStreamConsumeFilter instance);
+```
+
+- Final order = **bus-wide filters in registration order, then endpoint filters in registration order**. `list[0]` is the outermost wrapper: first in, last out. (Rationale, documented: cross-cutting concerns registered on the bus — tracing, tenant extraction — always wrap endpoint-specific logic.)
+- No cap on filter count. The composed list is built once per attach and reused for every delivery on that endpoint.
+- Filters are singletons per bus (constructed once from the root provider) and MUST be thread-safe; per-message scoped services come from `context.Services`.
+- Registering the same filter **type** twice within the same scope throws `StreamBusConfigurationException("Consume filter '{type}' is already registered on this bus/endpoint; duplicate registration would run it twice.")`.
+- Registration after start throws `StreamBusConfigurationException` (configuration is immutable at runtime).
+
+- [ ] **Step 2: Scope sharing** — the per-message `IServiceScopeFactory.CreateScope()` used for typed consumer resolution today becomes the pipeline's `context.Services` scope: ONE scope per delivered message, created in `Hosting.TypedConsumerHandler`'s invoke path (locate the `CreateScope` in `Hosting.cs:299–300` and hoist to a shared holder consumed by both the pipeline and the consumer resolution).
+
+- [ ] **Step 3: SPC integration (outer wrap)** — in `DispatchAsync`, the "run handler" step becomes "run pipeline whose terminal `next` invokes the (possibly typed) handler":
+
+```csharp
+var pipeline = _pipelines; // ordered, built per attach from bus-wide + endpoint filters
 await pipeline.RunAsync(pipelineContext /* built with Message + OutputHeaders + Services + payloads */,
     ctx =>
     {
@@ -1241,7 +1281,20 @@ if (pipelineContext.SkipHandler) { /* treat as processed: return success without
 
 Retry/exhaustion/offset cadence are UNTOUCHED machinery: a pipeline exception replaces the handler exception in the same `catch` — classification chain identical. `ErrorPublisher` gains `OutputHeaders` routing: when exhaustion publishes the envelope, envelope headers are the C1-legal projection of `OutputHeaders` on top of existing envelope fields (existing `source-stream/...` keys preserved; name collisions → `OutputHeaders` skipped for the colliding key with a warning naming both keys).
 
-- [ ] **Step 3: Configuration-time rejection matrix**
+**Contract enforcement (consume side differs from publish — never drop a message):** the runner counts terminal-handler invocations and the dispatch acts on that count:
+
+| Count / state | Action |
+|---|---|
+| `1` | normal success |
+| `0` **and** `SkipHandler == true` | intentional skip — advance per skip semantics |
+| `0` **and** `SkipHandler == false` | throw `StreamBusTransientException("Consume filter '{name}' returned without calling next and without setting SkipHandler; the message would be dropped while the offset advances.")` → retried, then exhausted to the error destination. Never silently advanced. |
+| `>1` | throw `StreamBusTransientException("Consume filter '{name}' invoked next {n} times; a message must be handled exactly once.")` |
+
+Rationale for the asymmetry with publish: a publish-side contract violation throws straight to the caller because nothing was sent yet; a consume-side violation must not return "success", because success advances the offset and the message is unrecoverable.
+
+The runner records a per-layer invocation count, so the message names the **specific** filter that failed the contract rather than the outermost one — the offending registration is identifiable from the log alone.
+
+- [ ] **Step 4: Configuration-time rejection matrix**
 
 ```csharp
 // Effectively-once pipeline + any filter with CanSkip == true -> config exception naming the filter:
@@ -1250,9 +1303,9 @@ throw new StreamBusConfigurationException(
 // Typed endpoint + any CanSkip filter without e.AllowPipelineSkip() -> config exception naming both.
 ```
 
-- [ ] **Step 4: Tests (`PipelineSemanticsTests.cs`)** — the matrix: ordering (2 filters before/after sequence recorded), exception→retry→exhaustion with OutputHeaders on envelope, skip→advance-without-destination (no error publish, offset stored per cadence), skip NOT possible in EO (config rejection), typed endpoint without AllowPipelineSkip (config rejection), scope-sharing assert (payload set by filter read by consumer — the flagship tenant E2E), OutputHeaders key-collision warning path.
+- [ ] **Step 5: Tests (`PipelineSemanticsTests.cs`)** — the matrix: ordering across **three** filters at one scope and across bus+endpoint scopes (entry/exit sequence recorded, first-in/last-out asserted), duplicate-type rejection, zero-`next` without `SkipHandler` → transient (offset NOT advanced), double-`next` → transient, exception→retry→exhaustion with OutputHeaders on envelope, skip→advance-without-destination (no error publish, offset stored per cadence), skip NOT possible in EO (config rejection), typed endpoint without AllowPipelineSkip (config rejection), scope-sharing assert (payload set by filter read by consumer — the flagship tenant E2E), OutputHeaders key-collision warning path.
 
-- [ ] **Step 5: Verify + commit**
+- [ ] **Step 6: Verify + commit**
 
 ```bash
 git add -A src tests
@@ -1413,15 +1466,17 @@ git commit -m "test(integration): forced-close, metadata-close, and connection-k
 | Two-transport handle / public stores / password leak | B5–B6 | V2-B5/B6 | Task 9 | compile probes + grep gates |
 | Dead knobs, `@`-keys, replay dedup loss | B7+B9+B14 | V2-B7.1 | Task 10 | `ReplayNamingTests` + greps |
 | Exception hierarchy, per-publish declare rebuild, topology dupes, serial starts, raw Strict | B10–B15 | V2-B10.1 | Task 11 | suite + `grep` gates |
-| README does not compile / `IConfiguration` missing / `llms.txt` lies | B8, D3 | V2-G4 | Tasks 12–13 | `ConfigBindingTests` + DocsSnippets compile + llms grep gates |
+| README does not compile / `llms.txt` lies | D3 | V2-G4 | Task 13 | DocsSnippets compile + llms grep gates |
+| Configuration binding (proposed, **dropped** — explicit config only) | B8 (dropped) | — | Task 12 (removed) | `grep -rn "IConfiguration" src/StreamBus` = 0 hits |
 | No header carrier / no pipelines | C1–C3 | V2-C1..C3 | Tasks 14–16 | `HeaderCarrierTests`, `PublishPipelineTests`, `PipelineSemanticsTests` |
+| Pipeline registration is additive + ordered (N filters, registration order, contract guards) | C2/C3 | V2-C2.1/C3.1 | Tasks 15–16 | 3-filter ordering tests, duplicate-type rejection, zero/double-`next` guards, bus+endpoint scope ordering |
 | EO + filter composition / telemetry silent | C4–C6 | V2-C4..C6 | Tasks 17 | Activity/Meter tests + EO integration |
 | Analyzers off / lint debt | B16 | V2-B16 | Task 13 | build gate: 0 diagnostics at latest-recommended |
 | Cross-process reference caveat undocumented | B17 | V2-B17 | Task 13 | guide consume section text (quoted rule) |
 | No CI / green requires memory | D1 | V2-G7 | Task 18 | workflow run on `v2` |
 | Chaos modes untested | D2 | V2-D2 | Task 19 | the three chaos tests |
 
-- [ ] **Step 2: Definition of done** — (a) 0 warnings incl. analyzers; (b) 247+ unit tests green + all integration green on CI service broker; (c) README + every guide snippet compiles via DocsSnippets; (d) `llms.txt` matches grepped code facts; (e) LOC delta on `src/StreamBus` ≤ 0 relative to `main` merge-base; (f) both pipelines + health + chaos evidenced in CHANGELOG with acceptance IDs; (g) ADRs ADR-1..ADR-6 exist under `docs/adr/` with final (not draft) wording.
+- [ ] **Step 2: Definition of done** — (a) 0 warnings incl. analyzers; (b) 247+ unit tests green + all integration green on CI service broker; (c) README + every guide snippet compiles via DocsSnippets, and no doc contains an `IConfiguration`/`appsettings.json` example; (c2) `grep -rn "IConfiguration" src/StreamBus` returns zero hits; (c3) publish and consume endpoints each accept N filters and execute them strictly in registration order (proven by the three-filter ordering tests, including bus-wide-then-endpoint scope order); (d) `llms.txt` matches grepped code facts; (e) LOC delta on `src/StreamBus` ≤ 0 relative to `main` merge-base; (f) both pipelines + health + chaos evidenced in CHANGELOG with acceptance IDs; (g) ADRs ADR-1..ADR-6 exist under `docs/adr/` with final (not draft) wording.
 
 - [ ] **Step 3: Commit**
 

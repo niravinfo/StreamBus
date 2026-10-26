@@ -24,6 +24,9 @@ internal sealed class ResultProducerRegistry
     }
 
     public async Task PublishResultAsync(string targetStream, bool targetSuper, ReadOnlyMemory<byte> body, ulong sourceOffset, string? routingKey, string producerName, CancellationToken ct = default)
+        => await PublishResultAsync(targetStream, targetSuper, body, sourceOffset, routingKey, producerName, ct, outputHeaders: null).ConfigureAwait(false);
+
+    internal async Task PublishResultAsync(string targetStream, bool targetSuper, ReadOnlyMemory<byte> body, ulong sourceOffset, string? routingKey, string producerName, CancellationToken ct, IReadOnlyDictionary<string, object?>? outputHeaders)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(targetStream);
         ArgumentException.ThrowIfNullOrWhiteSpace(producerName);
@@ -34,9 +37,22 @@ internal sealed class ResultProducerRegistry
             throw new StreamBusNotReadyException($"StreamBus for vhost '{_vhost}' is not ready ({readiness}); result publish to '{targetStream}' refused.");
         var (entry, handle) = await GetOrCreateCoreAsync(targetStream, targetSuper, producerName, ct).ConfigureAwait(false);
         var key = Key(targetStream, targetSuper, producerName);
+        var options = ResultOptions(targetSuper, routingKey, outputHeaders);
         try
         {
-            await handle.PublishResultAsync(body, ResultNaming.PublishingId(sourceOffset), routingKey, ct).ConfigureAwait(false);
+            var publishingId = ResultNaming.PublishingId(sourceOffset);
+            if (targetSuper)
+            {
+                var super = handle as IStreamSuperProducerHandle
+                    ?? throw new StreamBusConfigurationException($"Result target '{targetStream}' is not a super stream (internal error).");
+                await super.PublishWithIdAsync(publishingId, body, options with { IsSuperStream = true, RoutingKey = routingKey }, ct).ConfigureAwait(false);
+            }
+            else
+            {
+                var plain = handle as IStreamPlainProducerHandle
+                    ?? throw new StreamBusConfigurationException($"Result target '{targetStream}' is not a plain stream (internal error).");
+                await plain.PublishReplayAsync(body, publishingId, options, ct).ConfigureAwait(false);
+            }
         }
         catch (OperationCanceledException)
         {
@@ -57,6 +73,21 @@ internal sealed class ResultProducerRegistry
             await InvalidateAsync(key, entry, handle).ConfigureAwait(false);
             throw new StreamBusPublishTransientException($"Result publish to stream '{targetStream}' failed transiently; the cached stable producer was discarded (the same name is recreated and publishing id {sourceOffset} is safe to retry).", ex);
         }
+    }
+
+    private static PublishOptions ResultOptions(
+        bool targetSuper,
+        string? routingKey,
+        IReadOnlyDictionary<string, object?>? outputHeaders)
+    {
+        var options = new PublishOptions
+        {
+            IsSuperStream = targetSuper,
+            RoutingKey = targetSuper ? routingKey : null,
+        };
+        if (outputHeaders is { Count: > 0 })
+            options = options with { Properties = new StreamMessageProperties { Headers = outputHeaders } };
+        return options;
     }
 
     public async Task<IStreamProducerHandle> GetOrCreateAsync(string targetStream, bool targetSuper, string producerName, CancellationToken ct)
@@ -198,9 +229,10 @@ internal sealed class ResultProducerRegistry
             ?? throw new StreamBusNotReadyException($"StreamBus for vhost '{_vhost}' is not ready; result publish to '{targetStream}' refused.");
         try
         {
-            return targetSuper
+            IStreamProducerHandle created = targetSuper
                 ? await handle.CreateSuperStreamProducerWithReferenceAsync(targetStream, producerName, ct).ConfigureAwait(false)
                 : await handle.CreatePlainProducerWithReferenceAsync(targetStream, producerName, ct).ConfigureAwait(false);
+            return created;
         }
         catch (CreateProducerException ex) when (ex.ResponseCode == ResponseCode.StreamDoesNotExist)
         {

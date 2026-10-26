@@ -11,9 +11,22 @@ services.AddStreamBusHosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(
 ```
 
 Blocking waits for connections, topology declarations (streams, super
-streams, error queues), and consumer attaches — then either returns or
-throws (`StreamBusTimeoutException` on timeout, configuration or
-conflict errors immediately). Omit the timeout to wait indefinitely.
+streams, error queues), and typed consumer attaches - then either returns
+or throws. A timeout raises `StreamBusTimeoutException`, a configuration
+or topology conflict raises immediately, and a consumer that cannot attach
+raises `StreamBusStartupBlockedException`. Omit the timeout to wait
+indefinitely.
+
+Blocking startup waits for consumers by default. Disable that part when
+the host must come up before consumers can attach:
+
+```csharp
+services.AddStreamBusHosting(h =>
+{
+    h.BlockStartupUntilReady(TimeSpan.FromSeconds(30));
+    h.BlockUntilConsumersAttached(false);
+});
+```
 
 ## Readiness waits
 
@@ -48,11 +61,22 @@ public sealed class CheckoutWorker(IStreamBus bus) : BackgroundService
 
 ## Health checks
 
-A `streambus` health check is registered automatically. Per-bus data
-entries are keyed `{vhost}|{busType}` with the connection state as the
-value; the check is healthy only when every bus is ready:
+A `streambus` health check is registered automatically. Data entries use
+two shapes:
+
+- `{vhost}|{busType}` - the live connection state for that bus.
+- `{vhost}|{registration}` - one row per typed consumer or declaration,
+  formatted as `consumer:<state>` or `declare:<state>`, with the failure
+  reason and `since` timestamp appended when present.
+
+The check is healthy only when every registration is attached and every
+connection is ready. It is degraded while a bus is starting or retrying,
+or while some consumers are retrying. It is unhealthy when a connection
+is fatal, a declaration has exhausted its retry budget, or every typed
+consumer has failed. No registered buses reports degraded with a hint.
 
 ```csharp
 var report = await health.CheckHealthAsync(ct);
 var entry = report.Entries["streambus"];
+var connection = entry.Data["/|StreamBus.DefaultBus"];
 ```

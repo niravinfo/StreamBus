@@ -7,12 +7,14 @@ namespace StreamBus.IntegrationTests;
 
 public sealed class RetryIntegrationTests : IAsyncDisposable
 {
+    public RetryIntegrationTests() => IntegrationLane.RequireBroker();
+
     private static string User() => Environment.GetEnvironmentVariable("STREAMBUS_USER") ?? "app";
     private static string Password() => Environment.GetEnvironmentVariable("STREAMBUS_PASSWORD") ?? "password";
     private readonly List<string> _streams = new();
     private readonly List<string> _superStreams = new();
 
-    private async Task<StreamSystem> ConnectAdminAsync()
+    private static async Task<StreamSystem> ConnectAdminAsync()
         => await StreamSystem.Create(new StreamSystemConfig
         {
             UserName = User(),
@@ -64,7 +66,7 @@ public sealed class RetryIntegrationTests : IAsyncDisposable
     private static (string Key, int Seq) Parse(ReadOnlyMemory<byte> body)
     {
         var parts = System.Text.Encoding.UTF8.GetString(body.Span).Split(':');
-        return (parts[0], int.Parse(parts[1]));
+        return (parts[0], int.Parse(parts[1], System.Globalization.CultureInfo.InvariantCulture));
     }
 
     private static int Count<T>(List<T> list) { lock (list) return list.Count; }
@@ -144,7 +146,7 @@ public sealed class RetryIntegrationTests : IAsyncDisposable
         Assert.Equal(stream, Env(eApp, "source-stream"));
         Assert.Equal("0", Env(eApp, "source-partition"));
         Assert.Equal("2", Env(eApp, "source-offset"));
-        Assert.Equal(expectedAttempts.ToString(), Env(eApp, "attempts"));
+        Assert.Equal(expectedAttempts.ToString(System.Globalization.CultureInfo.InvariantCulture), Env(eApp, "attempts"));
         Assert.Contains("InvalidOperationException", Env(eApp, "exception-type"));
         Assert.Equal("poison 2", Env(eApp, "exception-message"));
         Assert.False(string.IsNullOrWhiteSpace(Env(eApp, "exception-stack")));

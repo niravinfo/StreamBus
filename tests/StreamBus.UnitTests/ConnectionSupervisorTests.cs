@@ -4,15 +4,15 @@ using RabbitMQ.Stream.Client;
 
 file sealed class StubHandle : IStreamSystemHandle
 {
-    public bool IsClosed => false;
+    public bool IsClosed { get; set; }
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-    public Task<IStreamProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct)
+    public Task<IStreamPlainProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct)
         => throw new NotImplementedException("ConnectionSupervisorTests never publishes.");
-    public Task<IStreamProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
+    public Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
         => throw new NotImplementedException("ConnectionSupervisorTests never publishes.");
-    public Task<IStreamProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
+    public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
         => throw new NotImplementedException("ConnectionSupervisorTests never publishes.");
-    public Task<IStreamProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
+    public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
         => throw new NotImplementedException("StubHandle never creates stable super producers.");
     public Task<ulong> QuerySequenceAsync(string reference, string stream, CancellationToken ct)
         => throw new NotImplementedException("StubHandle never queries publishing sequences.");
@@ -38,20 +38,28 @@ file sealed class ScriptedConnector : IStreamSystemConnector
 {
     private readonly Queue<Func<Task<IStreamSystemHandle>>> _steps = new();
     private readonly object _gate = new();
+    public readonly List<DateTime> Attempts = new();
     public void FailWith(Exception ex)
     {
         lock (_gate) _steps.Enqueue(() => Task.FromException<IStreamSystemHandle>(ex));
     }
-    public void Succeed()
+    public void Succeed() => Succeed(new StubHandle());
+    public void Succeed(IStreamSystemHandle handle)
     {
-        lock (_gate) _steps.Enqueue(() => Task.FromResult<IStreamSystemHandle>(new StubHandle()));
+        lock (_gate) _steps.Enqueue(() => Task.FromResult(handle));
     }
+    public int AttemptCount { get { lock (_gate) return Attempts.Count; } }
+    public DateTime AttemptAt(int index) { lock (_gate) return Attempts[index]; }
     public async Task<IStreamSystemHandle> ConnectAsync(StreamBusOptions options, CancellationToken ct)
     {
         while (true)
         {
             Func<Task<IStreamSystemHandle>>? step = null;
-            lock (_gate) { if (_steps.Count > 0) step = _steps.Dequeue(); }
+            lock (_gate)
+            {
+                Attempts.Add(DateTime.UtcNow);
+                if (_steps.Count > 0) step = _steps.Dequeue();
+            }
             if (step is not null) return await step().ConfigureAwait(false);
             await Task.Delay(50, ct).ConfigureAwait(false);
         }
@@ -137,6 +145,85 @@ public sealed class ConnectionSupervisorTests
         await using var sup = new StreamBusConnectionSupervisor(Valid(), new ScriptedConnector());
         foreach (var attempt in new[] { 1, 5, 10, 50, 100 })
             Assert.True(sup.ComputeDelay(attempt) <= TimeSpan.FromSeconds(31));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    [InlineData(61)]
+    public void Monitor_interval_out_of_range_rejects(int seconds)
+    {
+        var options = new StreamBusOptions
+        {
+            Vhost = "/",
+            UserName = "app",
+            Password = "secret",
+            Connection = new StreamBusConnectionOptions { MonitorInterval = TimeSpan.FromSeconds(seconds) },
+        };
+        var ex = Assert.Throws<StreamBusConfigurationException>(
+            () => new StreamBusConnectionSupervisor(options, new ScriptedConnector()));
+        Assert.Contains("MonitorInterval", ex.Message, StringComparison.Ordinal);
+    }
+
+    private static StreamBusOptions FastMonitor() => new()
+    {
+        Vhost = "/",
+        UserName = "app",
+        Password = "secret",
+        Connection = new StreamBusConnectionOptions { MonitorInterval = TimeSpan.FromMilliseconds(20) },
+    };
+
+    [Fact]
+    public async Task Supervisor_reconnects_after_system_handle_closes()
+    {
+        var first = new StubHandle();
+        var second = new StubHandle();
+        var connector = new ScriptedConnector();
+        connector.Succeed(first);
+        connector.Succeed(second);
+
+        await using var sup = new StreamBusConnectionSupervisor(FastMonitor(), connector);
+        var transient = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var recovered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        sup.StateChanged += state =>
+        {
+            if (state == BusConnectionState.TransientFailure) transient.TrySetResult();
+            else if (state == BusConnectionState.Ready && transient.Task.IsCompleted) recovered.TrySetResult();
+        };
+
+        await sup.StartAsync(CancellationToken.None);
+        Assert.Equal(BusReadiness.Ready,
+            await sup.WaitUntilReadyAsync(ReadinessPolicy.Indefinitely, TestContext.Current.CancellationToken));
+        Assert.Same(first, sup.CurrentHandle);
+
+        first.IsClosed = true;
+
+        await recovered.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        Assert.Equal(BusConnectionState.Ready, sup.State);
+        Assert.Same(second, sup.CurrentHandle);
+    }
+
+    [Fact]
+    public async Task Backoff_streak_resets_after_successful_reconnect()
+    {
+        var connector = new ScriptedConnector();
+        connector.FailWith(new System.IO.IOException("one"));
+        connector.FailWith(new System.IO.IOException("two"));
+        connector.Succeed(new StubHandle { IsClosed = true });
+        connector.FailWith(new System.IO.IOException("after success"));
+        connector.Succeed();
+
+        await using var sup = new StreamBusConnectionSupervisor(FastMonitor(), connector);
+        await sup.StartAsync(CancellationToken.None);
+        await sup.WaitUntilReadyAsync(ReadinessPolicy.Indefinitely, TestContext.Current.CancellationToken);
+
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+        while (connector.AttemptCount < 5 && DateTime.UtcNow < deadline)
+            await Task.Delay(25, TestContext.Current.CancellationToken);
+
+        Assert.True(connector.AttemptCount >= 5, "the reconnect loop did not reach the final successful attempt");
+        var gap = connector.AttemptAt(4) - connector.AttemptAt(3);
+        Assert.InRange(gap.TotalMilliseconds, 100, 600);
     }
 }
 

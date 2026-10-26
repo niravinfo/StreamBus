@@ -9,11 +9,6 @@ public enum ConsumeOffset
     AlwaysNext = 4,
 }
 
-public enum ConsumeOrdering
-{
-    Strict = 0,
-}
-
 public sealed record OffsetStoreOptions
 {
     public int EveryMessages { get; init; } = 1;
@@ -22,18 +17,25 @@ public sealed record OffsetStoreOptions
 
 public sealed record ConsumeOptions
 {
-    public bool IsSuperStream { get; init; } = false;
+    public bool IsSuperStream { get; init; }
     public string? Reference { get; init; }
     public bool SingleActiveConsumer { get; init; } = true;
-    public ConsumeOrdering Ordering { get; init; } = ConsumeOrdering.Strict;
     public ConsumeOffset Offset { get; init; } = ConsumeOffset.ResumeOrFirst;
     public OffsetStoreOptions OffsetStore { get; init; } = new();
     public RetryPolicy Retry { get; init; } = new();
     public ErrorStreamOptions? ErrorStream { get; init; }
     public Func<ErrorHandoff, Task>? OnRetryExhausted { get; init; }
     public ReadinessPolicy ReadinessPolicy { get; init; } = ReadinessPolicy.FailFastPolicy;
+    /// <summary>Bound on the confirmed error-stream hand-off publish. A lost
+    /// confirmation surfaces as transient so the partition dispatch gate is
+    /// never wedged; the envelope stays replayable.</summary>
+    public TimeSpan HandoffConfirmTimeout { get; init; } = TimeSpan.FromSeconds(10);
     internal EffectivelyOnceConfig? EffectivelyOnce { get; init; }
     internal Func<ExhaustedContext, CancellationToken, Task>? ExhaustionCallback { get; init; }
     internal DeadLetterOptions? DeadLetter { get; init; }
     internal DeadLetterOptions? ShadowedDeadLetter { get; init; }
+    internal IReadOnlyList<ConsumeFilterRegistration> ConsumeFilters { get; init; } = Array.Empty<ConsumeFilterRegistration>();
+    internal bool AllowPipelineSkip { get; init; }
+    internal bool IsTypedEndpoint { get; init; }
+    internal Type? MessageType { get; init; }
 }

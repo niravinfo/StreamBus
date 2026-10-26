@@ -2,11 +2,13 @@
 
 ## Stream specifications live on registrations
 
-There is no explicit declare API: every stream's broker spec is carried by
-the registrations that reference that stream — the publish registration,
-consuming endpoints, and dead-letter stream destinations. A registration
-without a spec counts: it references the stream but sets no knobs, and
-the stream is declared with defaults.
+Startup topology is registration-owned: every stream's broker spec is
+carried by the registrations that reference that stream - the publish
+registration, consuming endpoints, and dead-letter stream destinations.
+A registration without a spec counts: it references the stream but sets
+no knobs, and the stream is declared with defaults. Runtime/operator
+declarations use `bus.Topology` instead of a `cfg` declare call; see
+[Explicit declarations](#explicit-declarations).
 
 Plain (non-super) references:
 
@@ -36,6 +38,25 @@ knob per statement, no fluent chaining.
 ```csharp
 s.Partitions(3).MaxAge(TimeSpan.FromDays(7)); // does not compile
 ```
+
+## Explicit declarations
+
+`bus.Topology` declares streams and super streams idempotently at
+runtime. Repeated calls are cached; kind conflicts and super-stream
+partition mismatches throw `StreamConfigurationConflictException`.
+
+```csharp
+await bus.Topology.EnsureStreamAsync(
+    new StreamDeclaration { Name = "audit", MaxAge = TimeSpan.FromDays(7) }, ct);
+
+await bus.Topology.EnsureSuperStreamAsync(
+    new SuperStreamDeclaration { Name = "orders-super", Partitions = 3 }, ct);
+```
+
+Startup declarations still come from registrations; this API is for
+operator-driven or post-startup declarations. An existing plain stream
+is adopted with a warning because argument detail is not readable via
+the stream protocol (see below).
 
 ## Derived topology and agreement rules
 

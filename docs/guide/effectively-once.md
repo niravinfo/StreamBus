@@ -19,11 +19,12 @@ await using var pipe = await bus.ConsumeEffectivelyOnceAsync(
     "orders",
     "invoices",
     new EffectivelyOnceOptions { SourceIsSuperStream = false, TargetIsSuperStream = false },
-    async (ctx, ct) =>
+    ctx =>
     {
         var order = SystemTextJsonStreamSerializer.Default.Deserialize<OrderEvent>(ctx.Body);
         var invoice = new InvoiceEvent(order.OrderId);
-        return SystemTextJsonStreamSerializer.Default.Serialize(invoice);
+        return Task.FromResult<ReadOnlyMemory<byte>>(
+            SystemTextJsonStreamSerializer.Default.Serialize(invoice));
     },
     ct);
 ```

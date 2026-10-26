@@ -7,6 +7,35 @@ public enum DeadLetterQueueType
 }
 
 /// <summary>
+/// AMQP error-queue options. <see cref="ConfirmTimeout"/> is the single
+/// confirmation budget for a dead-letter publish; it is independent of the
+/// stream publish timeout because the two paths have different failure modes.
+/// </summary>
+public sealed record ErrorQueueOptions
+{
+    public TimeSpan ConfirmTimeout { get; init; } = TimeSpan.FromSeconds(10);
+}
+
+public interface IErrorQueueOptionsBuilder
+{
+    void ConfirmTimeout(TimeSpan timeout);
+}
+
+internal sealed class ErrorQueueOptionsBuilder : IErrorQueueOptionsBuilder
+{
+    private TimeSpan _confirmTimeout = TimeSpan.FromSeconds(10);
+
+    public void ConfirmTimeout(TimeSpan timeout)
+    {
+        if (timeout <= TimeSpan.Zero)
+            throw new StreamBusConfigurationException("ErrorQueue.ConfirmTimeout must be positive.");
+        _confirmTimeout = timeout;
+    }
+
+    public ErrorQueueOptions Build() => new() { ConfirmTimeout = _confirmTimeout };
+}
+
+/// <summary>
 /// Kind-based dead-letter destination. A stream destination sets
 /// <see cref="Spec"/> (queue type unset); a queue destination sets
 /// <see cref="QueueType"/> (stream spec unset). Setting both is
@@ -18,6 +47,9 @@ public sealed record DeadLetterOptions
     public required string Name { get; init; }
     public DeadLetterQueueType? QueueType { get; init; }
     public StreamOptions? Spec { get; init; }
+
+    /// <summary>Options for a queue destination; ignored for stream destinations.</summary>
+    public ErrorQueueOptions QueueOptions { get; init; } = new();
 
     public bool IsStream => QueueType is null;
 }

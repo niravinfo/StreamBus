@@ -17,13 +17,14 @@ internal sealed class ErrorPublisher
         _queues = queues;
     }
 
-    public Task PublishHandoffAsync(string errorStream, ErrorEnvelope envelope, CancellationToken ct)
+    public Task PublishHandoffAsync(string errorStream, ErrorEnvelope envelope, TimeSpan confirmTimeout, CancellationToken ct)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(errorStream);
         ArgumentNullException.ThrowIfNull(envelope);
+        LogOutputHeaderCollisions(envelope);
         return _producers.PublishEnvelopeAsync(
             errorStream, envelope.Body, routingKey: null,
-            envelope.ToApplicationProperties(), envelope.MessageId, envelope.CorrelationId, ct);
+            envelope.ToApplicationProperties(), envelope.MessageId, envelope.CorrelationId, confirmTimeout, ct);
     }
 
     public Task PublishQueueHandoffAsync(DeadLetterOptions queue, ErrorEnvelope envelope, CancellationToken ct)
@@ -32,7 +33,24 @@ internal sealed class ErrorPublisher
         ArgumentNullException.ThrowIfNull(envelope);
         if (_queues is null)
             throw new StreamBusConfigurationException("Queue dead-letter destinations require an error-queue transport (internal error).");
+        LogOutputHeaderCollisions(envelope);
         return _queues.PublishAsync(queue, envelope, ct);
+    }
+
+    private void LogOutputHeaderCollisions(ErrorEnvelope envelope)
+    {
+        if (envelope.OutputHeaders is null)
+            return;
+        var envelopeKeys = envelope.EnvelopeApplicationProperties();
+        foreach (var key in envelope.OutputHeaders.Keys)
+        {
+            if (envelopeKeys.ContainsKey(key))
+            {
+                _logger.LogWarning(
+                    "Consume output header '{HeaderKey}' collides with error-envelope field '{EnvelopeKey}'; the envelope field wins.",
+                    key, key);
+            }
+        }
     }
 
     // Orchestration with injectable transport (unit-testable without a broker):
@@ -43,7 +61,8 @@ internal sealed class ErrorPublisher
         Func<ErrorEnvelope, CancellationToken, Task> publish,
         Func<Task> commitStore,
         Func<int, Exception, TimeSpan> delayFor,
-        CancellationToken ct)
+        CancellationToken ct,
+        TimeSpan? confirmTimeout = null)
     {
         ArgumentNullException.ThrowIfNull(envelope);
         ArgumentNullException.ThrowIfNull(publish);
@@ -66,8 +85,9 @@ internal sealed class ErrorPublisher
             catch (Exception ex)
             {
                 _logger.LogWarning(ex,
-                    "Error-stream handoff publish failed for {Source} offset {Offset} (attempt {Attempt}); retrying without advancing.",
-                    envelope.SourcePartitionStream, envelope.SourceOffset, attempt);
+                    "Error-stream handoff publish failed for {Source} offset {Offset} (attempt {Attempt}, timeout={Timeout}s); retrying without advancing.",
+                    envelope.SourcePartitionStream, envelope.SourceOffset, attempt,
+                    confirmTimeout?.TotalSeconds);
                 var delay = delayFor(attempt, ex);
                 if (delay < TimeSpan.Zero) delay = TimeSpan.Zero;
                 await Task.Delay(delay, ct).ConfigureAwait(false);

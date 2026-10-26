@@ -44,40 +44,15 @@ internal sealed class StreamOptionsBuilder : ISuperStreamOptionsBuilder
     private int? _maxSegmentSizeBytes;
     private StreamLeaderLocator? _locator;
 
-    public void Partitions(int partitions)
-    {
-        if (partitions < 1)
-            throw new StreamBusConfigurationException("Stream spec partitions must be >= 1.");
-        _partitions = partitions;
-    }
+    public void Partitions(int partitions) => _partitions = partitions;
 
-    public void MaxAge(TimeSpan maxAge)
-    {
-        if (maxAge <= TimeSpan.Zero)
-            throw new StreamBusConfigurationException("Stream spec MaxAge must be positive when set.");
-        _maxAge = maxAge;
-    }
+    public void MaxAge(TimeSpan maxAge) => _maxAge = maxAge;
 
-    public void MaxLengthBytes(ulong maxLengthBytes)
-    {
-        if (maxLengthBytes < 1)
-            throw new StreamBusConfigurationException("Stream spec MaxLengthBytes must be >= 1 when set.");
-        _maxLengthBytes = maxLengthBytes;
-    }
+    public void MaxLengthBytes(ulong maxLengthBytes) => _maxLengthBytes = maxLengthBytes;
 
-    public void MaxSegmentSizeBytes(int maxSegmentSizeBytes)
-    {
-        if (maxSegmentSizeBytes < 1)
-            throw new StreamBusConfigurationException("Stream spec MaxSegmentSizeBytes must be >= 1 when set.");
-        _maxSegmentSizeBytes = maxSegmentSizeBytes;
-    }
+    public void MaxSegmentSizeBytes(int maxSegmentSizeBytes) => _maxSegmentSizeBytes = maxSegmentSizeBytes;
 
-    public void LeaderLocator(StreamLeaderLocator locator)
-    {
-        if (!Enum.IsDefined(locator))
-            throw new StreamBusConfigurationException("Stream spec LeaderLocator has an undefined value.");
-        _locator = locator;
-    }
+    public void LeaderLocator(StreamLeaderLocator locator) => _locator = locator;
 
     internal StreamOptions Build() => new()
     {
@@ -91,20 +66,26 @@ internal sealed class StreamOptionsBuilder : ISuperStreamOptionsBuilder
 
 internal static class StreamOptionsValidation
 {
-    public static void Validate(StreamOptions spec, string what, bool allowPartitions)
+    public static void Validate(
+        StreamOptions spec,
+        string what,
+        bool allowPartitions,
+        string separator = ": ",
+        string partitionsError = "Partitions must be >= 1.")
     {
         ArgumentNullException.ThrowIfNull(spec);
+        ArgumentException.ThrowIfNullOrWhiteSpace(what);
         if (spec.Partitions is { } partitions && !allowPartitions)
-            throw new StreamBusConfigurationException($"{what}: plain streams have no partitions; use PublishSuper with Partitions.");
+            throw new StreamBusConfigurationException($"{what}{separator}plain streams have no partitions; use PublishSuper with Partitions.");
         if (spec.Partitions is { } p && p < 1)
-            throw new StreamBusConfigurationException($"{what}: Partitions must be >= 1.");
+            throw new StreamBusConfigurationException($"{what}{separator}{partitionsError}");
         if (spec.MaxAge is { } age && age <= TimeSpan.Zero)
-            throw new StreamBusConfigurationException($"{what}: MaxAge must be positive when set.");
+            throw new StreamBusConfigurationException($"{what}{separator}MaxAge must be positive when set.");
         if (spec.MaxLengthBytes is { } length && length < 1)
-            throw new StreamBusConfigurationException($"{what}: MaxLengthBytes must be >= 1 when set.");
+            throw new StreamBusConfigurationException($"{what}{separator}MaxLengthBytes must be >= 1 when set.");
         if (spec.MaxSegmentSizeBytes is { } segment && segment < 1)
-            throw new StreamBusConfigurationException($"{what}: MaxSegmentSizeBytes must be >= 1 when set.");
+            throw new StreamBusConfigurationException($"{what}{separator}MaxSegmentSizeBytes must be >= 1 when set.");
         if (spec.LeaderLocator is { } locator && !Enum.IsDefined(locator))
-            throw new StreamBusConfigurationException($"{what}: LeaderLocator has an undefined value.");
+            throw new StreamBusConfigurationException($"{what}{separator}LeaderLocator has an undefined value.");
     }
 }

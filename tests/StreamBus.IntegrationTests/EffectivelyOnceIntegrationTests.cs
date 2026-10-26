@@ -5,14 +5,25 @@ using RabbitMQ.Stream.Client;
 
 namespace StreamBus.IntegrationTests;
 
+internal sealed class EoAnnotatingFilter : IStreamConsumeFilter
+{
+    public Task OnConsume(StreamConsumeFilterContext context, ConsumeDelegate next, CancellationToken ct)
+    {
+        context.OutputHeaders.Set("tenant", "acme");
+        return next(context);
+    }
+}
+
 public sealed class EffectivelyOnceIntegrationTests : IAsyncDisposable
 {
+    public EffectivelyOnceIntegrationTests() => IntegrationLane.RequireBroker();
+
     private static string User() => Environment.GetEnvironmentVariable("STREAMBUS_USER") ?? "app";
     private static string Password() => Environment.GetEnvironmentVariable("STREAMBUS_PASSWORD") ?? "password";
     private readonly List<string> _streams = new();
     private readonly List<string> _superStreams = new();
 
-    private async Task<StreamSystem> ConnectAdminAsync()
+    private static async Task<StreamSystem> ConnectAdminAsync()
         => await StreamSystem.Create(new StreamSystemConfig
         {
             UserName = User(),
@@ -40,11 +51,15 @@ public sealed class EffectivelyOnceIntegrationTests : IAsyncDisposable
         public StreamBusHostedService Hosted { get; private set; } = null!;
         public IStreamBus Bus { get; private set; } = null!;
         public string Name { get; private set; } = "";
-        public static async Task<BusInstance> StartAsync(string name, string vhost = "/")
+        public static async Task<BusInstance> StartAsync(string name, string vhost = "/", Action<IStreamBusConfigurator>? configureBus = null)
         {
             var services = new ServiceCollection();
             services.AddLogging();
-            services.AddStreamBus((_, cfg) => cfg.Host("localhost", vhost, h => h.Credentials(User(), Password())));
+            services.AddStreamBus((_, cfg) =>
+            {
+                cfg.Host("localhost", vhost, h => h.Credentials(User(), Password()));
+                configureBus?.Invoke(cfg);
+            });
             var sp = services.BuildServiceProvider();
             var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
             await hosted.StartAsync(TestContext.Current.CancellationToken);
@@ -64,7 +79,7 @@ public sealed class EffectivelyOnceIntegrationTests : IAsyncDisposable
     private static (string Key, int Seq) Parse(ReadOnlyMemory<byte> body)
     {
         var parts = Encoding.UTF8.GetString(body.Span).Split(':');
-        return (parts[0], int.Parse(parts[1]));
+        return (parts[0], int.Parse(parts[1], System.Globalization.CultureInfo.InvariantCulture));
     }
 
     private static async Task WaitForAsync(Func<bool> done, TimeSpan timeout, string what)
@@ -404,6 +419,44 @@ public sealed class EffectivelyOnceIntegrationTests : IAsyncDisposable
         // one stable producer (resume-from-max had something to read).
         var parts = await admin.QueryPartition(target);
         Assert.Equal(2, parts.Length);
+    }
+
+    [Fact]
+    public async Task Pipeline_output_headers_are_published_on_the_result_target()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var source = Unique("eo-src");
+        var target = Unique("eo-dst");
+        var admin = await ConnectAdminAsync();
+        await using var _ = admin;
+        await admin.CreateStream(new StreamSpec(source));
+        _streams.Add(source);
+        await admin.CreateStream(new StreamSpec(target));
+        _streams.Add(target);
+        await using var pub = await BusInstance.StartAsync("pub");
+        for (var seq = 0; seq < 3; seq++)
+            await pub.Bus.PublishRawAsync(source, Body($"k:{seq}"), new PublishOptions(), ct);
+        await pub.DisposeAsync();
+
+        await using var eo = await BusInstance.StartAsync("eo", configureBus: cfg => cfg.UseConsumeFilter<EoAnnotatingFilter>());
+        await using var consumer = await eo.Bus.ConsumeEffectivelyOnceAsync(source, target, new EffectivelyOnceOptions(), Echo, ct);
+
+        var got = new List<(int Seq, string? Tenant)>();
+        await using var reader = await eo.Bus.ConsumeAsync(target,
+            new ConsumeOptions { Offset = ConsumeOffset.AlwaysFirst, Reference = Unique("read") },
+            ctx =>
+            {
+                var (_, seq) = Parse(ctx.Body);
+                var tenant = ctx.Metadata.ApplicationProperties.TryGetValue("tenant", out var value) ? value?.ToString() : null;
+                lock (got) got.Add((seq, tenant));
+                return Task.CompletedTask;
+            }, ct);
+        await WaitForAsync(() => { lock (got) return got.Count >= 3; }, TimeSpan.FromSeconds(30), "the annotated result target");
+        lock (got)
+        {
+            Assert.Equal(new[] { 0, 1, 2 }, got.Select(x => x.Seq).ToArray());
+            Assert.All(got, x => Assert.Equal("acme", x.Tenant));
+        }
     }
 
     private int _flakes;
