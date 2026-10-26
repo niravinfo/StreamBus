@@ -33,11 +33,11 @@ public interface IStreamBusConfigurator
     void ReceiveEndpoint(string stream, Action<IReceiveEndpointConfigurator> configure);
     void UseMessageRetry(Action<IRetryConfigurator> configure);
     void UseRetry(RetryPolicy policy);
-    void UsePublishFilter<TFilter>() where TFilter : class, IStreamPublishFilter;
+    void UsePublishFilter<TFilter>() where TFilter : class;
     void UsePublishFilter(Type filterType);
     void UsePublishFilter(Func<IServiceProvider, IStreamPublishFilter> factory);
     void UsePublishFilter(IStreamPublishFilter instance);
-    void UseConsumeFilter<TFilter>() where TFilter : class, IStreamConsumeFilter;
+    void UseConsumeFilter<TFilter>() where TFilter : class;
     void UseConsumeFilter(Type filterType);
     void UseConsumeFilter(Func<IServiceProvider, IStreamConsumeFilter> factory);
     void UseConsumeFilter(IStreamConsumeFilter instance);
@@ -53,7 +53,7 @@ public interface IReceiveEndpointConfigurator
     void Readiness(ReadinessPolicy policy);
     void UseMessageRetry(Action<IRetryConfigurator> configure);
     void UseRetry(RetryPolicy policy);
-    void UseConsumeFilter<TFilter>() where TFilter : class, IStreamConsumeFilter;
+    void UseConsumeFilter<TFilter>() where TFilter : class;
     void UseConsumeFilter(Type filterType);
     void UseConsumeFilter(Func<IServiceProvider, IStreamConsumeFilter> factory);
     void UseConsumeFilter(IStreamConsumeFilter instance);
@@ -256,16 +256,14 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
         _globalRetry = policy;
     }
 
-    public void UsePublishFilter<TFilter>() where TFilter : class, IStreamPublishFilter
+    public void UsePublishFilter<TFilter>() where TFilter : class
     {
-        ValidateFilterType(typeof(TFilter));
         AddPublishFilter(PublishFilterRegistration.ForType(typeof(TFilter)));
     }
 
     public void UsePublishFilter(Type filterType)
     {
         ArgumentNullException.ThrowIfNull(filterType);
-        ValidateFilterType(filterType);
         AddPublishFilter(PublishFilterRegistration.ForType(filterType));
     }
 
@@ -291,28 +289,14 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
         _publishFilters.Add(filter);
     }
 
-    private static void ValidateFilterType(Type filterType)
+    public void UseConsumeFilter<TFilter>() where TFilter : class
     {
-        if (!typeof(IStreamPublishFilter).IsAssignableFrom(filterType)
-            || !filterType.IsClass
-            || filterType.IsAbstract
-            || filterType.ContainsGenericParameters)
-        {
-            throw new StreamBusConfigurationException(
-                $"Publish filter type '{filterType}' must be a concrete IStreamPublishFilter implementation.");
-        }
-    }
-
-    public void UseConsumeFilter<TFilter>() where TFilter : class, IStreamConsumeFilter
-    {
-        ValidateConsumeFilterType(typeof(TFilter));
         AddConsumeFilter(ConsumeFilterRegistration.ForType(typeof(TFilter)));
     }
 
     public void UseConsumeFilter(Type filterType)
     {
         ArgumentNullException.ThrowIfNull(filterType);
-        ValidateConsumeFilterType(filterType);
         AddConsumeFilter(ConsumeFilterRegistration.ForType(filterType));
     }
 
@@ -336,18 +320,6 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
                 $"Consume filter '{type}' is already registered on this bus; duplicate registration would run it twice.");
         }
         _consumeFilters.Add(filter);
-    }
-
-    private static void ValidateConsumeFilterType(Type filterType)
-    {
-        if (!typeof(IStreamConsumeFilter).IsAssignableFrom(filterType)
-            || !filterType.IsClass
-            || filterType.IsAbstract
-            || filterType.ContainsGenericParameters)
-        {
-            throw new StreamBusConfigurationException(
-                $"Consume filter type '{filterType}' must be a concrete IStreamConsumeFilter implementation.");
-        }
     }
 
     internal StreamBusOptions Build(Type busType)
@@ -491,15 +463,13 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
             ArgumentNullException.ThrowIfNull(policy);
             _retryOverride = policy;
         }
-        public void UseConsumeFilter<TFilter>() where TFilter : class, IStreamConsumeFilter
+        public void UseConsumeFilter<TFilter>() where TFilter : class
         {
-            ValidateConsumeFilterType(typeof(TFilter));
             AddConsumeFilter(ConsumeFilterRegistration.ForType(typeof(TFilter)));
         }
         public void UseConsumeFilter(Type filterType)
         {
             ArgumentNullException.ThrowIfNull(filterType);
-            ValidateConsumeFilterType(filterType);
             AddConsumeFilter(ConsumeFilterRegistration.ForType(filterType));
         }
         public void UseConsumeFilter(Func<IServiceProvider, IStreamConsumeFilter> factory)
@@ -521,17 +491,6 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
                     $"Consume filter '{type}' is already registered on this endpoint; duplicate registration would run it twice.");
             }
             _consumeFilters.Add(filter);
-        }
-        private static void ValidateConsumeFilterType(Type filterType)
-        {
-            if (!typeof(IStreamConsumeFilter).IsAssignableFrom(filterType)
-                || !filterType.IsClass
-                || filterType.IsAbstract
-                || filterType.ContainsGenericParameters)
-            {
-                throw new StreamBusConfigurationException(
-                    $"Consume filter type '{filterType}' must be a concrete IStreamConsumeFilter implementation.");
-            }
         }
         public void DeadLetterToStream(string name, Action<IStreamOptionsBuilder>? configure = null)
         {
@@ -597,10 +556,24 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
         public void MaxSegmentSizeBytes(int maxSegmentSizeBytes) => _maxSegmentSizeBytes = maxSegmentSizeBytes;
         public void LeaderLocator(StreamLeaderLocator locator) => _locator = locator;
 
+        private void ValidateEndpointTypedFilters(Type messageType)
+        {
+            foreach (var filter in _consumeFilters)
+            {
+                if (filter.Kind != FilterRegistrationKind.ConcreteTyped)
+                    continue;
+                if (filter.TypedMessageTypes.Contains(messageType))
+                    continue;
+                throw new StreamBusConfigurationException(
+                    $"ReceiveEndpoint '{_stream}': consume filter '{filter.FilterType}' does not implement IStreamConsumeFilter<{messageType.Name}> for this endpoint's message type '{messageType.Name}'.");
+            }
+        }
+
         public ReceiveEndpointDescriptor Build()
         {
             if (_consumerType is null || _messageType is null || _reference is null)
                 throw new StreamBusConfigurationException($"ReceiveEndpoint '{_stream}': Consumer<T>(\"group\") must be called exactly once per endpoint.");
+            ValidateEndpointTypedFilters(_messageType);
             var descriptor = new ReceiveEndpointDescriptor
             {
                 Stream = _stream,
