@@ -179,28 +179,15 @@ public sealed class StreamBusRegistry : IStreamBusRegistry
             => declarations.TryGetValue(stream, out var declaration) ? declaration : null;
 
         var registrations = _publishStore?.FiltersFor(busType) ?? Array.Empty<PublishFilterRegistration>();
-        var filters = new List<IStreamPublishFilter>(registrations.Count);
-        if (registrations.Count > 0)
+        var pipelines = new PublishPipelineCache(busType, registrations, _rootProvider);
+        if (_publishStore is not null)
         {
-            if (_rootProvider is null)
+            foreach (var registration in _publishStore.Registrations)
             {
-                throw new StreamBusConfigurationException(
-                    $"Publish filters are configured for {busType.FullName}, but no root service provider is available.");
-            }
-            var seen = new HashSet<Type>();
-            foreach (var registration in registrations)
-            {
-                var filter = registration.Create(_rootProvider);
-                var filterType = filter.GetType();
-                if (!seen.Add(filterType))
-                {
-                    throw new StreamBusConfigurationException(
-                        $"Publish filter '{filterType}' is already registered on this bus; duplicate registration would run it twice.");
-                }
-                filters.Add(filter);
+                if (registration.BusMarker == busType)
+                    pipelines.GetOrCreate(registration.MessageType);
             }
         }
-        var pipeline = new PublishPipeline(filters);
         var options = _resolveOptions(vhost);
         var busView = new StreamBusRegistrationView
         {
@@ -212,11 +199,11 @@ public sealed class StreamBusRegistry : IStreamBusRegistry
         };
 
         IStreamBus bus = busType == typeof(DefaultBus)
-            ? new StreamBus(vhost, supervisor, ProducersFor(vhost), ConsumersFor(vhost), TopologyFor(vhost), serializer, _publishRouter, ErrorQueuesFor(vhost), findDeclaration, pipeline, _scopes, busView)
+            ? new StreamBus(vhost, supervisor, ProducersFor(vhost), ConsumersFor(vhost), TopologyFor(vhost), serializer, _publishRouter, ErrorQueuesFor(vhost), findDeclaration, pipelines, _scopes, busView)
             : (IStreamBus)Activator.CreateInstance(
                 typeof(StreamBus<>).MakeGenericType(busType),
                 vhost, supervisor, ProducersFor(vhost), ConsumersFor(vhost), TopologyFor(vhost), serializer,
-                _publishRouter, ErrorQueuesFor(vhost), findDeclaration, pipeline, _scopes, busView)!;
+                _publishRouter, ErrorQueuesFor(vhost), findDeclaration, pipelines, _scopes, busView)!;
         var created = new BusEntry { Supervisor = supervisor, Bus = bus, Declarations = declarations };
         StreamBusMetrics.Shared.TrackConnection(vhost, busType.FullName ?? busType.Name, () => created.Supervisor.State);
         return created;

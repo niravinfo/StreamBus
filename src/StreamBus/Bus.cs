@@ -70,10 +70,10 @@ internal abstract class StreamBusCore<TBus> : IStreamBus
     private readonly StreamPublishRouter _router;
     private readonly ErrorQueueTransport _errorQueues;
     private readonly Func<string, DeclaredStream?> _findDeclaration;
-    private readonly PublishPipeline _publishPipeline;
+    private readonly PublishPipelineCache _publishPipelines;
     private readonly IServiceScopeFactory? _publishScopeFactory;
     private readonly StreamBusRegistrationView _busView;
-    protected StreamBusCore(string vhost, StreamBusConnectionSupervisor supervisor, StreamProducerRegistry producers, StreamConsumerRegistry consumers, IStreamTopology topology, IStreamSerializer serializer, StreamPublishRouter router, ErrorQueueTransport errorQueues, Func<string, DeclaredStream?>? findDeclaration = null, PublishPipeline? publishPipeline = null, IServiceScopeFactory? publishScopeFactory = null, StreamBusRegistrationView? busView = null)
+    protected StreamBusCore(string vhost, StreamBusConnectionSupervisor supervisor, StreamProducerRegistry producers, StreamConsumerRegistry consumers, IStreamTopology topology, IStreamSerializer serializer, StreamPublishRouter router, ErrorQueueTransport errorQueues, Func<string, DeclaredStream?>? findDeclaration = null, PublishPipelineCache? publishPipelines = null, IServiceScopeFactory? publishScopeFactory = null, StreamBusRegistrationView? busView = null)
     {
         Vhost = vhost;
         _supervisor = supervisor;
@@ -84,7 +84,10 @@ internal abstract class StreamBusCore<TBus> : IStreamBus
         _router = router ?? throw new ArgumentNullException(nameof(router));
         _errorQueues = errorQueues ?? throw new ArgumentNullException(nameof(errorQueues));
         _findDeclaration = findDeclaration ?? (_ => null);
-        _publishPipeline = publishPipeline ?? new PublishPipeline(Array.Empty<IStreamPublishFilter>());
+        _publishPipelines = publishPipelines ?? new PublishPipelineCache(
+            typeof(TBus),
+            Array.Empty<PublishFilterRegistration>(),
+            null);
         _publishScopeFactory = publishScopeFactory;
         _busView = busView ?? new StreamBusRegistrationView
         {
@@ -152,7 +155,8 @@ internal abstract class StreamBusCore<TBus> : IStreamBus
         CancellationToken ct)
     {
         using var activity = StreamBusActivity.StartPublish(stream, routingKey);
-        if (_publishPipeline.Count == 0)
+        var pipeline = _publishPipelines.GetOrCreate(typeof(T));
+        if (pipeline.Count == 0)
         {
             await SendTypedAsync(stream, message, effective, ct, activity).ConfigureAwait(false);
             return;
@@ -168,6 +172,7 @@ internal abstract class StreamBusCore<TBus> : IStreamBus
             Stream = stream,
             RoutingKey = routingKey,
             Message = message!,
+            MessageType = typeof(T),
             Headers = headerWriter,
             Bus = _busView,
             Services = publishScope.ServiceProvider,
@@ -175,7 +180,7 @@ internal abstract class StreamBusCore<TBus> : IStreamBus
 
         try
         {
-            await _publishPipeline.RunAsync(
+            await pipeline.RunAsync(
                 context,
                 _ => SendTypedAsync(
                     stream,
@@ -253,9 +258,9 @@ internal sealed class StreamBus : StreamBusCore<DefaultBus>, IStreamBus
     public StreamBus(string vhost, StreamBusConnectionSupervisor supervisor, StreamProducerRegistry producers,
         StreamConsumerRegistry consumers, IStreamTopology topology, IStreamSerializer serializer,
         StreamPublishRouter router, ErrorQueueTransport errorQueues, Func<string, DeclaredStream?>? findDeclaration = null,
-        PublishPipeline? publishPipeline = null, IServiceScopeFactory? publishScopeFactory = null,
+        PublishPipelineCache? publishPipelines = null, IServiceScopeFactory? publishScopeFactory = null,
         StreamBusRegistrationView? busView = null)
-        : base(vhost, supervisor, producers, consumers, topology, serializer, router, errorQueues, findDeclaration, publishPipeline, publishScopeFactory, busView) { }
+        : base(vhost, supervisor, producers, consumers, topology, serializer, router, errorQueues, findDeclaration, publishPipelines, publishScopeFactory, busView) { }
 }
 
 internal sealed class StreamBus<TBus> : StreamBusCore<TBus>, IStreamBus<TBus>
@@ -263,7 +268,7 @@ internal sealed class StreamBus<TBus> : StreamBusCore<TBus>, IStreamBus<TBus>
     public StreamBus(string vhost, StreamBusConnectionSupervisor supervisor, StreamProducerRegistry producers,
         StreamConsumerRegistry consumers, IStreamTopology topology, IStreamSerializer serializer,
         StreamPublishRouter router, ErrorQueueTransport errorQueues, Func<string, DeclaredStream?>? findDeclaration = null,
-        PublishPipeline? publishPipeline = null, IServiceScopeFactory? publishScopeFactory = null,
+        PublishPipelineCache? publishPipelines = null, IServiceScopeFactory? publishScopeFactory = null,
         StreamBusRegistrationView? busView = null)
-        : base(vhost, supervisor, producers, consumers, topology, serializer, router, errorQueues, findDeclaration, publishPipeline, publishScopeFactory, busView) { }
+        : base(vhost, supervisor, producers, consumers, topology, serializer, router, errorQueues, findDeclaration, publishPipelines, publishScopeFactory, busView) { }
 }

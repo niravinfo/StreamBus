@@ -159,6 +159,8 @@ internal sealed class PublishPipeline
         }
 
         var filter = _filters[index];
+        var filterType = FilterIdentity.TypeOf(filter);
+        var filterName = filterType.FullName ?? filterType.Name;
         var nextCalls = 0;
         Task Next(StreamPublishFilterContext _)
         {
@@ -166,7 +168,7 @@ internal sealed class PublishPipeline
             if (call > 1)
             {
                 throw new StreamBusConfigurationException(
-                    $"Publish filter {filter.GetType().FullName} invoked next {call} times; exactly one continuation is allowed.");
+                    $"Publish filter {filterName} invoked next {call} times; exactly one continuation is allowed.");
             }
 
             // Stream, routing key, message, bus view and services are resolved
@@ -180,12 +182,12 @@ internal sealed class PublishPipeline
         if (calls == 0)
         {
             throw new StreamBusConfigurationException(
-                $"Publish filter '{filter.GetType().FullName}' returned without calling next; the message would have been silently dropped.");
+                $"Publish filter '{filterName}' returned without calling next; the message would have been silently dropped.");
         }
         if (calls > 1)
         {
             throw new StreamBusConfigurationException(
-                $"Publish filter {filter.GetType().FullName} invoked next {calls} times; exactly one continuation is allowed.");
+                $"Publish filter {filterName} invoked next {calls} times; exactly one continuation is allowed.");
         }
     }
 }

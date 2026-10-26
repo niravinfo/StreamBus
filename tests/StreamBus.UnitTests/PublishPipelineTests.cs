@@ -1,10 +1,122 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using RabbitMQ.Stream.Client;
 
 namespace StreamBus.UnitTests;
 
 public sealed record PipelineOrder(string Id);
+
+public sealed record PipelineInvoice(string Id);
+
+public abstract record PipelineBase(string Id);
+
+public sealed record PipelineDerived(string Id) : PipelineBase(Id);
+
+public readonly record struct PipelineStruct(int Id);
+
+public sealed class TypedPublishProbe
+{
+    private int _calls;
+
+    public int Calls => _calls;
+
+    public void Record() => _calls++;
+}
+
+public sealed class PublishContextProbe
+{
+    public int Calls { get; private set; }
+    public Type? MessageType { get; private set; }
+    public Type? RuntimeMessageType { get; private set; }
+    public object? Message { get; private set; }
+
+    public void Record(StreamPublishFilterContext context)
+    {
+        Calls++;
+        MessageType = context.MessageType;
+        RuntimeMessageType = context.RuntimeMessageType;
+        Message = context.Message;
+    }
+}
+
+public sealed class PublishPipelineLog
+{
+    private readonly List<string> _entries = new();
+
+    public IReadOnlyList<string> Entries => _entries;
+
+    public void Add(string entry) => _entries.Add(entry);
+
+    public void Clear() => _entries.Clear();
+}
+
+public sealed class OrderOnlyPublishFilter(TypedPublishProbe probe) : IStreamPublishFilter<PipelineOrder>
+{
+    public Task OnPublish(
+        StreamPublishFilterContext<PipelineOrder> context,
+        PublishDelegate next,
+        CancellationToken ct)
+    {
+        probe.Record();
+        context.Headers.Set("order", context.Message.Id);
+        return next(context.Inner);
+    }
+}
+
+public sealed class ContextProbePublishFilter(PublishContextProbe probe) : IStreamPublishFilter
+{
+    public Task OnPublish(StreamPublishFilterContext context, PublishDelegate next, CancellationToken ct)
+    {
+        probe.Record(context);
+        return next(context);
+    }
+}
+
+public sealed class PipelineLogAFilter(PublishPipelineLog log) : IStreamPublishFilter
+{
+    public async Task OnPublish(StreamPublishFilterContext context, PublishDelegate next, CancellationToken ct)
+    {
+        log.Add("A-in");
+        await next(context);
+        log.Add("A-out");
+    }
+}
+
+public sealed class PipelineLogCFilter(PublishPipelineLog log) : IStreamPublishFilter
+{
+    public async Task OnPublish(StreamPublishFilterContext context, PublishDelegate next, CancellationToken ct)
+    {
+        log.Add("C-in");
+        await next(context);
+        log.Add("C-out");
+    }
+}
+
+public sealed class OrderLogPublishFilter(PublishPipelineLog log) : IStreamPublishFilter<PipelineOrder>
+{
+    public async Task OnPublish(
+        StreamPublishFilterContext<PipelineOrder> context,
+        PublishDelegate next,
+        CancellationToken ct)
+    {
+        log.Add("typed-in");
+        await next(context.Inner);
+        log.Add("typed-out");
+    }
+}
+
+public sealed class OpenGenericPublishFilter<T> : IStreamPublishFilter<T>
+{
+    public Task OnPublish(StreamPublishFilterContext<T> context, PublishDelegate next, CancellationToken ct)
+        => next(context.Inner);
+}
+
+public sealed class ClassOnlyPublishFilter<T> : IStreamPublishFilter<T> where T : class
+{
+    public Task OnPublish(StreamPublishFilterContext<T> context, PublishDelegate next, CancellationToken ct)
+        => next(context.Inner);
+}
 
 public sealed class PipelineNoopFilter : IStreamPublishFilter
 {
@@ -178,6 +290,159 @@ public sealed class PublishPipelineTests
         Assert.Equal(new byte[] { 1, 2, 3 }, captured.Body);
     }
 
+    [Fact]
+    public async Task Typed_publish_filter_runs_only_for_its_message_type()
+    {
+        var probe = new TypedPublishProbe();
+        await using var bus = await TestBus.StartAsync(cfg =>
+        {
+            cfg.Publish<PipelineOrder>("orders");
+            cfg.Publish<PipelineInvoice>("invoices");
+            cfg.UsePublishFilter<OrderOnlyPublishFilter>();
+        }, TestContext.Current.CancellationToken, s => s.AddSingleton(probe));
+
+        await bus.Bus.PublishAsync(new PipelineOrder("o-1"), TestContext.Current.CancellationToken);
+        await bus.Bus.PublishAsync(new PipelineInvoice("i-1"), TestContext.Current.CancellationToken);
+
+        var order = Assert.Single(bus.System.Publishes, p => p.Stream == "orders");
+        var invoice = Assert.Single(bus.System.Publishes, p => p.Stream == "invoices");
+        Assert.Equal("o-1", order.Options.Properties!.Headers["order"]);
+        Assert.False(invoice.Options.Properties?.Headers.ContainsKey("order") ?? false);
+        Assert.Equal(1, probe.Calls);
+    }
+
+    [Fact]
+    public async Task Universal_and_typed_publish_filters_preserve_registration_order()
+    {
+        var log = new PublishPipelineLog();
+        await using var bus = await TestBus.StartAsync(cfg =>
+        {
+            cfg.Publish<PipelineOrder>("orders");
+            cfg.Publish<PipelineInvoice>("invoices");
+            cfg.UsePublishFilter<PipelineLogAFilter>();
+            cfg.UsePublishFilter<OrderLogPublishFilter>();
+            cfg.UsePublishFilter<PipelineLogCFilter>();
+        }, TestContext.Current.CancellationToken, s => s.AddSingleton(log));
+        bus.System.Log = log;
+
+        await bus.Bus.PublishAsync(new PipelineInvoice("i-1"), TestContext.Current.CancellationToken);
+
+        Assert.Equal(new[] { "A-in", "C-in", "terminal", "C-out", "A-out" }, log.Entries);
+
+        log.Clear();
+        await bus.Bus.PublishAsync(new PipelineOrder("o-1"), TestContext.Current.CancellationToken);
+
+        Assert.Equal(
+            new[] { "A-in", "typed-in", "C-in", "terminal", "C-out", "typed-out", "A-out" },
+            log.Entries);
+    }
+
+    [Fact]
+    public async Task Explicit_stream_publish_uses_the_declared_message_type()
+    {
+        var probe = new TypedPublishProbe();
+        await using var bus = await TestBus.StartAsync(
+            cfg => cfg.UsePublishFilter<OrderOnlyPublishFilter>(),
+            TestContext.Current.CancellationToken,
+            s => s.AddSingleton(probe));
+
+        await bus.Bus.PublishAsync("manual", new PipelineOrder("o-2"), TestContext.Current.CancellationToken);
+        await bus.Bus.PublishAsync("manual", new PipelineInvoice("i-2"), TestContext.Current.CancellationToken);
+
+        Assert.Collection(
+            bus.System.Publishes,
+            order =>
+            {
+                Assert.Equal("manual", order.Stream);
+                Assert.Equal("o-2", order.Options.Properties!.Headers["order"]);
+            },
+            invoice =>
+            {
+                Assert.Equal("manual", invoice.Stream);
+                Assert.False(invoice.Options.Properties?.Headers.ContainsKey("order") ?? false);
+            });
+        Assert.Equal(1, probe.Calls);
+    }
+
+    [Fact]
+    public async Task Publish_context_reports_declared_and_runtime_message_types()
+    {
+        var probe = new PublishContextProbe();
+        await using var bus = await TestBus.StartAsync(cfg =>
+        {
+            cfg.Publish<PipelineBase>("bases");
+            cfg.UsePublishFilter<ContextProbePublishFilter>();
+        }, TestContext.Current.CancellationToken, s => s.AddSingleton(probe));
+
+        await bus.Bus.PublishAsync<PipelineBase>(
+            new PipelineDerived("d-1"),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(1, probe.Calls);
+        Assert.Equal(typeof(PipelineBase), probe.MessageType);
+        Assert.Equal(typeof(PipelineDerived), probe.RuntimeMessageType);
+        Assert.IsType<PipelineDerived>(probe.Message);
+        Assert.Single(bus.System.Publishes);
+    }
+
+    [Fact]
+    public async Task Open_generic_constraint_violation_is_a_configuration_error()
+    {
+        var ex = await Assert.ThrowsAsync<StreamBusConfigurationException>(() =>
+            TestBus.StartAsync(cfg =>
+            {
+                cfg.Publish<PipelineStruct>("structs");
+                cfg.UsePublishFilter(typeof(ClassOnlyPublishFilter<>));
+            }, TestContext.Current.CancellationToken));
+
+        Assert.Contains(nameof(ClassOnlyPublishFilter<>), ex.Message, StringComparison.Ordinal);
+        Assert.Contains(nameof(PipelineStruct), ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Unregistered_explicit_message_type_builds_its_pipeline_lazily()
+    {
+        await using var bus = await TestBus.StartAsync(
+            cfg => cfg.UsePublishFilter(typeof(ClassOnlyPublishFilter<>)),
+            TestContext.Current.CancellationToken);
+
+        var ex = await Assert.ThrowsAsync<StreamBusConfigurationException>(() =>
+            bus.Bus.PublishAsync("manual", new PipelineStruct(1), TestContext.Current.CancellationToken));
+
+        Assert.Contains(nameof(ClassOnlyPublishFilter<>), ex.Message, StringComparison.Ordinal);
+        Assert.Contains(nameof(PipelineStruct), ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Open_generic_and_closed_registration_collision_is_rejected_at_bus_creation()
+    {
+        var ex = await Assert.ThrowsAsync<StreamBusConfigurationException>(() =>
+            TestBus.StartAsync(cfg =>
+            {
+                cfg.Publish<PipelineOrder>("orders");
+                cfg.UsePublishFilter(typeof(OpenGenericPublishFilter<>));
+                cfg.UsePublishFilter(typeof(OpenGenericPublishFilter<PipelineOrder>));
+            }, TestContext.Current.CancellationToken));
+
+        Assert.Contains("already registered on this bus", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Missing_filter_registration_fails_at_bus_creation()
+    {
+        var ex = await Assert.ThrowsAsync<StreamBusConfigurationException>(() =>
+            TestBus.StartAsync(
+                cfg =>
+                {
+                    cfg.Publish<PipelineOrder>("orders");
+                    cfg.UsePublishFilter<TenantPublishFilter>();
+                },
+                TestContext.Current.CancellationToken,
+                afterAddStreamBus: services => services.RemoveAll<TenantPublishFilter>()));
+
+        Assert.Contains("could not be resolved from the root service provider", ex.Message, StringComparison.Ordinal);
+    }
+
     private static StreamPublishFilterContext NewContext() => new()
     {
         Stream = "orders",
@@ -274,10 +539,13 @@ public sealed class PublishPipelineTests
 
         public static async Task<TestBus> StartAsync(
             Action<IStreamBusConfigurator> configure,
-            CancellationToken ct)
+            CancellationToken ct,
+            Action<IServiceCollection>? configureServices = null,
+            Action<IServiceCollection>? afterAddStreamBus = null)
         {
             var services = new ServiceCollection();
             services.AddLogging();
+            configureServices?.Invoke(services);
             var system = new CapturingSystem();
             services.AddSingleton<IStreamSystemConnector>(new FakeConnector(system));
             services.AddStreamBus((_, cfg) =>
@@ -285,6 +553,7 @@ public sealed class PublishPipelineTests
                 cfg.Host("localhost", "/", h => h.Credentials("app", "secret"));
                 configure(cfg);
             });
+            afterAddStreamBus?.Invoke(services);
             var provider = services.BuildServiceProvider();
             var hosted = provider.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
             await hosted.StartAsync(ct);
@@ -319,6 +588,7 @@ public sealed class PublishPipelineTests
     private sealed class CapturingSystem : IStreamSystemHandle
     {
         public readonly List<CapturedPublish> Publishes = new();
+        public PublishPipelineLog? Log { get; set; }
 
         public bool IsClosed => false;
 
@@ -348,6 +618,7 @@ public sealed class PublishPipelineTests
         public void Add(string stream, ReadOnlyMemory<byte> body, PublishOptions options)
         {
             lock (Publishes) Publishes.Add(new CapturedPublish(stream, body.ToArray(), options));
+            Log?.Add("terminal");
         }
     }
 
