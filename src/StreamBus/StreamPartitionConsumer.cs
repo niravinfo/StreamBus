@@ -871,6 +871,8 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                 return;
             }
             var producerName = ResultNaming.ProducerName(_partitionStream, _eo.TargetStream);
+            var resultMessageId = Guid.NewGuid();
+            var resultSentTime = StreamWire.NormalizeSentTime(DateTime.UtcNow);
             var publishAttempts = 0;
             while (true)
             {
@@ -878,7 +880,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                 publishAttempts++;
                 try
                 {
-                    await _results!.PublishResultAsync(_eo.TargetStream, _eo.TargetIsSuperStream, result, offset, routing, producerName, attach.LoopToken, outputHeaders).ConfigureAwait(false);
+                    await _results!.PublishResultAsync(_eo.TargetStream, _eo.TargetIsSuperStream, result, offset, routing, producerName, attach.LoopToken, outputHeaders, resultMessageId, resultSentTime).ConfigureAwait(false);
                     return;
                 }
                 catch (OperationCanceledException) when (attach.LoopToken.IsCancellationRequested)

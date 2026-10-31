@@ -24,9 +24,19 @@ internal sealed class ResultProducerRegistry
     }
 
     public async Task PublishResultAsync(string targetStream, bool targetSuper, ReadOnlyMemory<byte> body, ulong sourceOffset, string? routingKey, string producerName, CancellationToken ct = default)
-        => await PublishResultAsync(targetStream, targetSuper, body, sourceOffset, routingKey, producerName, ct, outputHeaders: null).ConfigureAwait(false);
+        => await PublishResultAsync(
+            targetStream,
+            targetSuper,
+            body,
+            sourceOffset,
+            routingKey,
+            producerName,
+            ct,
+            outputHeaders: null,
+            Guid.NewGuid(),
+            StreamWire.NormalizeSentTime(DateTime.UtcNow)).ConfigureAwait(false);
 
-    internal async Task PublishResultAsync(string targetStream, bool targetSuper, ReadOnlyMemory<byte> body, ulong sourceOffset, string? routingKey, string producerName, CancellationToken ct, IReadOnlyDictionary<string, object?>? outputHeaders)
+    internal async Task PublishResultAsync(string targetStream, bool targetSuper, ReadOnlyMemory<byte> body, ulong sourceOffset, string? routingKey, string producerName, CancellationToken ct, IReadOnlyDictionary<string, object?>? outputHeaders, Guid messageId, DateTime sentTime)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(targetStream);
         ArgumentException.ThrowIfNullOrWhiteSpace(producerName);
@@ -37,7 +47,7 @@ internal sealed class ResultProducerRegistry
             throw new StreamBusNotReadyException($"StreamBus for vhost '{_vhost}' is not ready ({readiness}); result publish to '{targetStream}' refused.");
         var (entry, handle) = await GetOrCreateCoreAsync(targetStream, targetSuper, producerName, ct).ConfigureAwait(false);
         var key = Key(targetStream, targetSuper, producerName);
-        var options = ResultOptions(targetSuper, routingKey, outputHeaders);
+        var options = ResultOptions(targetSuper, routingKey, outputHeaders, messageId, sentTime);
         try
         {
             var publishingId = ResultNaming.PublishingId(sourceOffset);
@@ -78,15 +88,17 @@ internal sealed class ResultProducerRegistry
     private static PublishOptions ResultOptions(
         bool targetSuper,
         string? routingKey,
-        IReadOnlyDictionary<string, object?>? outputHeaders)
+        IReadOnlyDictionary<string, object?>? outputHeaders,
+        Guid messageId,
+        DateTime sentTime)
         => new()
         {
             IsSuperStream = targetSuper,
             RoutingKey = targetSuper ? routingKey : null,
             Properties = new StreamMessageProperties
             {
-                MessageId = Guid.NewGuid(),
-                SentTime = StreamWire.NormalizeSentTime(DateTime.UtcNow),
+                MessageId = messageId,
+                SentTime = StreamWire.NormalizeSentTime(sentTime),
                 Headers = outputHeaders ?? new Dictionary<string, object?>(),
             },
         };

@@ -18,7 +18,17 @@ internal sealed class ResultPublisher
     public Task PublishOnceAsync(ResultWork work, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(work);
-        return _results.PublishResultAsync(work.TargetStream, work.TargetSuper, work.Body, work.SourceOffset, work.RoutingKey, work.ProducerName, ct);
+        return _results.PublishResultAsync(
+            work.TargetStream,
+            work.TargetSuper,
+            work.Body,
+            work.SourceOffset,
+            work.RoutingKey,
+            work.ProducerName,
+            ct,
+            outputHeaders: null,
+            work.MessageId,
+            work.SentTime);
     }
 
     // Retry-forever (FR-6.5): a confirmed publish until it lands or ct fires.
