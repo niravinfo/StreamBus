@@ -33,7 +33,11 @@ public interface IStreamSendHeaders : IStreamHeaders
     /// <summary>Sets a header value.</summary>
     void Set(string key, object? value);
 
-    /// <summary>Removes a header value; returns whether it was present.</summary>
+    /// <summary>
+    /// Removes a header value; returns whether it was present. Any non-blank
+    /// key is accepted, so removing a framework key is a no-op. Removal
+    /// takes precedence over values supplied at the call site.
+    /// </summary>
     bool Remove(string key);
 }
 
