@@ -32,10 +32,12 @@ public sealed class HeaderCarrierTests
         var producer = new CapturingProducer();
         var confirmations = new ConfirmationTracker();
         var handle = new StreamProducerHandle(producer, "orders", confirmations);
+        var messageId = Guid.Parse("0f8fad5b-d9cb-469f-a165-70867728950e");
+        var correlationId = Guid.Parse("6b1f5c1a-0d9e-4b6f-9a4e-1f2d3c4b5a69");
         var properties = new StreamMessageProperties
         {
-            MessageId = "m-1",
-            CorrelationId = "c-1",
+            MessageId = messageId,
+            CorrelationId = correlationId,
             Headers = new Dictionary<string, object?>
             {
                 ["tenant"] = "acme",
@@ -50,8 +52,8 @@ public sealed class HeaderCarrierTests
         confirmations.Complete(new Confirmation { PublishingId = id, Code = ResponseCode.Ok });
         await send;
 
-        Assert.Equal("m-1", message.Properties!.MessageId);
-        Assert.Equal("c-1", message.Properties.CorrelationId);
+        Assert.Equal(messageId.ToString("D"), message.Properties!.MessageId);
+        Assert.Equal(correlationId.ToString("D"), message.Properties.CorrelationId);
         Assert.Equal("acme", message.ApplicationProperties!["tenant"]);
         Assert.Equal(3, message.ApplicationProperties["attempt"]);
         Assert.Equal(9_000_000_000L, message.ApplicationProperties["sequence"]);
@@ -65,9 +67,10 @@ public sealed class HeaderCarrierTests
         var confirmations = new ConfirmationTracker();
         var routing = new SuperStreamRouting();
         var handle = new SuperStreamProducerHandle(producer, "events", confirmations, routing);
+        var messageId = Guid.Parse("2b0d6f1c-5a3e-4c9d-8b7a-6f5e4d3c2b1a");
         var properties = new StreamMessageProperties
         {
-            MessageId = "m-2",
+            MessageId = messageId,
             Headers = new Dictionary<string, object?> { ["tenant"] = "acme" },
         };
 
@@ -80,7 +83,7 @@ public sealed class HeaderCarrierTests
         confirmations.Complete(new Confirmation { PublishingId = id, Code = ResponseCode.Ok });
         await send;
 
-        Assert.Equal("m-2", message.Properties!.MessageId);
+        Assert.Equal(messageId.ToString("D"), message.Properties!.MessageId);
         Assert.Equal("acme", message.ApplicationProperties!["tenant"]);
     }
 
@@ -168,6 +171,8 @@ public sealed class HeaderCarrierTests
     private sealed class RecordingSerializer : IStreamSerializer
     {
         public bool DeserializeCalled { get; private set; }
+
+        public string ContentType => "application/json";
 
         public byte[] Serialize<T>(T message) => throw new NotSupportedException("Header tests never serialize bodies.");
 

@@ -2,8 +2,12 @@ namespace StreamBus;
 
 public sealed record StreamMessageProperties
 {
-    public string? MessageId { get; init; }
-    public string? CorrelationId { get; init; }
+    public Guid? MessageId { get; init; }
+    public Guid? CorrelationId { get; init; }
+    public DateTime? SentTime { get; init; }
+
+    internal string? ContentType { get; init; }
+
     public IReadOnlyDictionary<string, object?> Headers { get; init; } = new Dictionary<string, object?>();
 
     internal static void ValidateValue(string key, object? value)
@@ -14,29 +18,59 @@ public sealed record StreamMessageProperties
             "legal header values are string, bool, int, long.", nameof(value));
     }
 
-    internal static void ApplyTo(RabbitMQ.Stream.Client.Message message, StreamMessageProperties? properties)
+    internal static void ValidateHeaders(IReadOnlyDictionary<string, object?>? headers)
     {
-        if (properties is null) return;
-
-        if (properties.MessageId is not null || properties.CorrelationId is not null)
+        if (headers is null) return;
+        foreach (var (key, value) in headers)
         {
-            var messageProperties = message.Properties
-                ?? new RabbitMQ.Stream.Client.AMQP.Properties();
-            if (properties.MessageId is not null)
-                messageProperties.MessageId = properties.MessageId;
-            if (properties.CorrelationId is not null)
-                messageProperties.CorrelationId = properties.CorrelationId;
-            message.Properties = messageProperties;
-        }
-
-        if (properties.Headers.Count == 0) return;
-        foreach (var (key, value) in properties.Headers)
+            StreamHeaderKeys.EnsureNotReserved(key);
             ValidateValue(key, value);
+        }
+    }
 
-        var app = message.ApplicationProperties
-            ?? new RabbitMQ.Stream.Client.AMQP.ApplicationProperties();
-        foreach (var (key, value) in properties.Headers)
-            app[key] = value;
-        message.ApplicationProperties = app;
+    internal static void ApplyTo(
+        RabbitMQ.Stream.Client.Message message,
+        StreamMessageProperties? properties,
+        string? routingKey = null)
+    {
+        if (properties is not null)
+        {
+            ValidateHeaders(properties.Headers);
+
+            if (properties.MessageId is not null || properties.CorrelationId is not null
+                || properties.SentTime is not null || properties.ContentType is not null)
+            {
+                var messageProperties = message.Properties
+                    ?? new RabbitMQ.Stream.Client.AMQP.Properties();
+                if (properties.MessageId is { } messageId)
+                    messageProperties.MessageId = messageId.ToString("D");
+                if (properties.CorrelationId is { } correlationId)
+                    messageProperties.CorrelationId = correlationId.ToString("D");
+                if (properties.SentTime is { } sentTime)
+                    messageProperties.CreationTime = StreamWire.NormalizeSentTime(sentTime);
+                if (properties.ContentType is { } contentType)
+                    messageProperties.ContentType = contentType;
+                message.Properties = messageProperties;
+            }
+
+            if (properties.Headers.Count > 0 || routingKey is not null)
+            {
+                var applicationProperties = new RabbitMQ.Stream.Client.AMQP.ApplicationProperties();
+                foreach (var (key, value) in properties.Headers)
+                    applicationProperties[key] = value;
+                // Framework value is written after user headers so it always wins.
+                if (routingKey is not null)
+                    applicationProperties[StreamHeaderKeys.RoutingKey] = routingKey;
+                message.ApplicationProperties = applicationProperties;
+            }
+        }
+        else if (routingKey is not null)
+        {
+            message.ApplicationProperties =
+                new RabbitMQ.Stream.Client.AMQP.ApplicationProperties
+                {
+                    [StreamHeaderKeys.RoutingKey] = routingKey,
+                };
+        }
     }
 }

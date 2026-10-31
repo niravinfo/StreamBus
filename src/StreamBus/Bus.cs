@@ -155,6 +155,7 @@ internal abstract class StreamBusCore<TBus> : IStreamBus
         CancellationToken ct)
     {
         using var activity = StreamBusActivity.StartPublish(stream, routingKey);
+        StreamMessageProperties.ValidateHeaders(effective.Properties?.Headers);
         var pipeline = _publishPipelines.GetOrCreate(typeof(T));
         if (pipeline.Count == 0)
         {
@@ -234,12 +235,15 @@ internal abstract class StreamBusCore<TBus> : IStreamBus
     {
         var body = _serializer.Serialize(message);
         StreamBusActivity.SetSize(activity, body.Length);
-        await _producers.PublishAsync(stream, body, effective, ct).ConfigureAwait(false);
+        var properties = (effective.Properties ?? new StreamMessageProperties())
+            with { ContentType = _serializer.ContentType };
+        await _producers.PublishAsync(stream, body, effective with { Properties = properties }, ct).ConfigureAwait(false);
     }
 
     public async Task PublishRawAsync(string stream, ReadOnlyMemory<byte> body, PublishOptions? options = null, CancellationToken ct = default)
     {
         using var activity = StreamBusActivity.StartPublish(stream, options?.RoutingKey);
+        StreamMessageProperties.ValidateHeaders(options?.Properties?.Headers);
         StreamBusActivity.SetSize(activity, body.Length);
         await _producers.PublishAsync(stream, body, options ?? new PublishOptions(), ct).ConfigureAwait(false);
     }

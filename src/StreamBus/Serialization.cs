@@ -4,6 +4,9 @@ namespace StreamBus;
 
 public interface IStreamSerializer
 {
+    /// <summary>Media type written to the AMQP content-type property.</summary>
+    string ContentType { get; }
+
     byte[] Serialize<T>(T message);
     T Deserialize<T>(ReadOnlyMemory<byte> body);
 }
@@ -16,6 +19,8 @@ public sealed class SystemTextJsonStreamSerializer : IStreamSerializer
 
     public SystemTextJsonStreamSerializer(JsonSerializerOptions? options = null)
         => _options = options ?? new JsonSerializerOptions();
+
+    public string ContentType => "application/json";
 
     public byte[] Serialize<T>(T message) => JsonSerializer.SerializeToUtf8Bytes(message, _options);
 

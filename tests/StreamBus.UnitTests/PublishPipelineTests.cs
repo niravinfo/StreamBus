@@ -277,20 +277,20 @@ public sealed class PublishPipelineTests
     {
         var callLevel = new StreamMessageProperties
         {
-            MessageId = "m-1",
+            MessageId = Guid.Parse("0f8fad5b-d9cb-469f-a165-70867728950e"),
             Headers = new Dictionary<string, object?>
             {
                 ["tenant"] = "call-level",
                 ["call-only"] = true,
             },
         };
-        var writer = new HeaderWriter(callLevel.Headers);
+        var writer = new StreamSendHeaders(callLevel.Headers, SystemTextJsonStreamSerializer.Default);
         writer.Set("tenant", "filter-level");
         writer.Set("filter-only", 7);
 
         var merged = writer.Materialize(callLevel);
         Assert.NotNull(merged);
-        Assert.Equal("m-1", merged.MessageId);
+        Assert.Equal(callLevel.MessageId, merged.MessageId);
         Assert.Equal("call-level", merged.Headers["tenant"]);
         Assert.Equal(true, merged.Headers["call-only"]);
         Assert.Equal(7, merged.Headers["filter-only"]);

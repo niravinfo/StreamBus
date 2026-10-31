@@ -202,7 +202,7 @@ internal sealed class StreamProducerHandle : IStreamPlainProducerHandle
         ArgumentNullException.ThrowIfNull(options);
         ct.ThrowIfCancellationRequested();
         var message = new Message(body.ToArray());
-        StreamMessageProperties.ApplyTo(message, options.Properties);
+        StreamMessageProperties.ApplyTo(message, options.Properties, options.RoutingKey);
         await _confirmations.PublishAsync(_producer, _stream, message, ct).ConfigureAwait(false);
     }
 
@@ -230,7 +230,7 @@ internal sealed class StreamProducerHandle : IStreamPlainProducerHandle
         ArgumentNullException.ThrowIfNull(options);
         ct.ThrowIfCancellationRequested();
         var message = new Message(body.ToArray());
-        StreamMessageProperties.ApplyTo(message, options.Properties);
+        StreamMessageProperties.ApplyTo(message, options.Properties, options.RoutingKey);
         await _confirmations.PublishWithIdAsync(_producer, _stream, publishingId, message, ct).ConfigureAwait(false);
     }
 
@@ -325,7 +325,7 @@ internal sealed class SuperStreamProducerHandle : IStreamSuperProducerHandle
         if (string.IsNullOrWhiteSpace(options.RoutingKey))
             throw new StreamBusConfigurationException($"Super-stream publish to '{_stream}' requires a routing key.");
         ct.ThrowIfCancellationRequested();
-        StreamMessageProperties.ApplyTo(message, options.Properties);
+        StreamMessageProperties.ApplyTo(message, options.Properties, options.RoutingKey);
         _routing.Stamp(message, options.RoutingKey);
         try
         {
