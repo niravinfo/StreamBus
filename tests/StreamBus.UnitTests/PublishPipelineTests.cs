@@ -212,6 +212,24 @@ public sealed class TenantPublishFilter : IStreamPublishFilter
     }
 }
 
+public sealed class RemoveTenantPublishFilter : IStreamPublishFilter
+{
+    public Task OnPublish(PublishContext context, PublishDelegate next)
+    {
+        context.Headers.Remove("tenant");
+        return next();
+    }
+}
+
+public sealed class BlankContentTypeSerializer : IStreamSerializer
+{
+    public string ContentType => " ";
+
+    public byte[] Serialize<T>(T message) => SystemTextJsonStreamSerializer.Default.Serialize(message);
+
+    public T Deserialize<T>(ReadOnlyMemory<byte> body) => SystemTextJsonStreamSerializer.Default.Deserialize<T>(body);
+}
+
 public sealed class PublishPipelineTests
 {
     [Fact]
@@ -535,6 +553,40 @@ public sealed class PublishPipelineTests
             bus.Bus.PublishAsync(new PipelineOrder("p-1"), options, TestContext.Current.CancellationToken));
         Assert.Contains("streambus.message-id", ex.Message, StringComparison.Ordinal);
         Assert.Empty(bus.System.Publishes);
+    }
+
+    [Fact]
+    public async Task Publish_filter_can_remove_a_call_level_header()
+    {
+        await using var bus = await TestBus.StartAsync(cfg =>
+        {
+            cfg.Publish<PipelineOrder>("orders");
+            cfg.UsePublishFilter<RemoveTenantPublishFilter>();
+        }, TestContext.Current.CancellationToken);
+
+        await bus.Bus.PublishAsync(
+            new PipelineOrder("p-1"),
+            new PublishOptions
+            {
+                Properties = new StreamMessageProperties
+                {
+                    Headers = new Dictionary<string, object?> { ["tenant"] = "call-level", ["keep"] = true },
+                },
+            },
+            TestContext.Current.CancellationToken);
+
+        var sent = Assert.Single(bus.System.Publishes);
+        Assert.False(sent.Options.Properties!.Headers.ContainsKey("tenant"));
+        Assert.Equal(true, sent.Options.Properties.Headers["keep"]);
+    }
+
+    [Fact]
+    public async Task Blank_serializer_content_type_is_rejected_at_bus_construction()
+    {
+        await Assert.ThrowsAsync<StreamBusConfigurationException>(() =>
+            TestBus.StartAsync(
+                cfg => cfg.Serializer(new BlankContentTypeSerializer()),
+                TestContext.Current.CancellationToken));
     }
 
     [Fact]

@@ -771,12 +771,12 @@ public sealed class TypedConsumeFilterTests
         IReadOnlyList<ConsumeFilterRegistration>? endpointFilters = null,
         int maxAttempts = 1,
         string? errorStream = null) => new()
-    {
-        Reference = "grp",
-        SingleActiveConsumer = false,
-        Offset = ConsumeOffset.AlwaysFirst,
-        OffsetStore = new OffsetStoreOptions { EveryMessages = 1 },
-        Retry = errorStream is null
+        {
+            Reference = "grp",
+            SingleActiveConsumer = false,
+            Offset = ConsumeOffset.AlwaysFirst,
+            OffsetStore = new OffsetStoreOptions { EveryMessages = 1 },
+            Retry = errorStream is null
             ? new RetryPolicy
             {
                 MaxAttempts = null,
@@ -793,11 +793,11 @@ public sealed class TypedConsumeFilterTests
                 Multiplier = 1.0,
                 MaxJitter = TimeSpan.Zero,
             },
-        ErrorStream = errorStream is null ? null : new ErrorStreamOptions { Stream = errorStream },
-        ConsumeFilters = endpointFilters ?? Array.Empty<ConsumeFilterRegistration>(),
-        IsTypedEndpoint = true,
-        MessageType = messageType,
-    };
+            ErrorStream = errorStream is null ? null : new ErrorStreamOptions { Stream = errorStream },
+            ConsumeFilters = endpointFilters ?? Array.Empty<ConsumeFilterRegistration>(),
+            IsTypedEndpoint = true,
+            MessageType = messageType,
+        };
 
     private sealed class EmptyProvider : IServiceProvider
     {

@@ -80,6 +80,9 @@ internal abstract class StreamBusCore<TBus> : IStreamBus
         _consumers = consumers;
         _topology = topology;
         _serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
+        if (string.IsNullOrWhiteSpace(_serializer.ContentType))
+            throw new StreamBusConfigurationException(
+                "The configured IStreamSerializer returned a null or blank ContentType; every serialized publish needs a media type.");
         _router = router ?? throw new ArgumentNullException(nameof(router));
         _errorQueues = errorQueues ?? throw new ArgumentNullException(nameof(errorQueues));
         _findDeclaration = findDeclaration ?? (_ => null);
@@ -221,7 +224,8 @@ internal abstract class StreamBusCore<TBus> : IStreamBus
         var body = _serializer.Serialize(message);
         StreamBusActivity.SetSize(activity, body.Length);
         var properties = (effective.Properties ?? new StreamMessageProperties())
-            with { ContentType = _serializer.ContentType };
+            with
+        { ContentType = _serializer.ContentType };
         await _producers.PublishAsync(stream, body, effective with { Properties = properties }, ct).ConfigureAwait(false);
     }
 
@@ -237,7 +241,7 @@ internal abstract class StreamBusCore<TBus> : IStreamBus
         ArgumentException.ThrowIfNullOrWhiteSpace(stream);
         ArgumentException.ThrowIfNullOrWhiteSpace(errorQueue);
         return _errorQueues.DrainAsync(errorQueue, (envelope, ct2) =>
-            _producers.PublishAsync(stream, envelope.Body, new PublishOptions(), ct2), ct);
+            _producers.PublishAsync(stream, envelope.Body, envelope.ToReplayOptions(), ct2), ct);
     }
     public Task<IStreamConsumer> ConsumeAsync(string stream, ConsumeOptions options, Func<ConsumeContext, Task> handler, CancellationToken ct = default)
         => _consumers.ConsumeAsync(typeof(TBus), stream, options, handler, ct, serializer: _serializer);

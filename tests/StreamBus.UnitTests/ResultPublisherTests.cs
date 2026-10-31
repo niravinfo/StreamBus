@@ -64,8 +64,12 @@ public sealed class ResultPublisherTests
 
     private static ResultWork Work() => new()
     {
-        TargetStream = "dst", TargetSuper = false, Body = new byte[] { 1 },
-        SourceOffset = 9, RoutingKey = null, ProducerName = "grp",
+        TargetStream = "dst",
+        TargetSuper = false,
+        Body = new byte[] { 1 },
+        SourceOffset = 9,
+        RoutingKey = null,
+        ProducerName = "grp",
     };
 
     [Fact]

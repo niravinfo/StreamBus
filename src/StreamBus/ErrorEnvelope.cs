@@ -58,6 +58,20 @@ public sealed record ErrorEnvelope
         return properties;
     }
 
+    /// <summary>
+    /// Rebuilds the publish options for a requeue or replay so the message
+    /// keeps the identity it had when it entered the error destination.
+    /// </summary>
+    internal PublishOptions ToReplayOptions() => new()
+    {
+        Properties = new StreamMessageProperties
+        {
+            MessageId = MessageId,
+            CorrelationId = CorrelationId,
+            SentTime = SentTime,
+        },
+    };
+
     public Dictionary<string, object?> ToHeaders()
     {
         var headers = new Dictionary<string, object?>(StringComparer.Ordinal);
@@ -128,9 +142,13 @@ public sealed record ErrorEnvelope
         => Guid.TryParse(raw, out var value) ? value : null;
 
     private static DateTime? ParseSentTime(string? raw)
-        => DateTime.TryParse(raw, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var value)
+    {
+        if (!DateTime.TryParse(raw, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var value))
+            return null;
+        return value.Kind == DateTimeKind.Unspecified
             ? DateTime.SpecifyKind(value, DateTimeKind.Utc)
-            : null;
+            : value.ToUniversalTime();
+    }
 }
 
 internal static class ReplayNaming

@@ -143,6 +143,7 @@ internal sealed class StreamHeaders : StreamHeaderBag
 internal sealed class StreamSendHeaders : StreamHeaderBag, IStreamSendHeaders
 {
     private readonly Dictionary<string, object?> _values;
+    private readonly HashSet<string> _removed = new(StringComparer.Ordinal);
 
     public StreamSendHeaders(IReadOnlyDictionary<string, object?>? initial, IStreamSerializer serializer)
         : base(serializer)
@@ -158,11 +159,21 @@ internal sealed class StreamSendHeaders : StreamHeaderBag, IStreamSendHeaders
         StreamHeaderKeys.EnsureNotReserved(key);
         StreamMessageProperties.ValidateValue(key, value);
         _values[key] = value;
+        _removed.Remove(key);
     }
 
-    public bool Remove(string key) => _values.Remove(key);
+    public bool Remove(string key)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(key);
+        _removed.Add(key);
+        return _values.Remove(key);
+    }
 
-    internal void Reset() => _values.Clear();
+    internal void Reset()
+    {
+        _values.Clear();
+        _removed.Clear();
+    }
 
     internal IReadOnlyDictionary<string, object?> Snapshot()
         => new Dictionary<string, object?>(_values, StringComparer.Ordinal);
@@ -175,6 +186,9 @@ internal sealed class StreamSendHeaders : StreamHeaderBag, IStreamSendHeaders
             foreach (var (key, value) in callLevel.Headers)
                 merged[key] = value;
         }
+
+        foreach (var key in _removed)
+            merged.Remove(key);
 
         return (callLevel ?? new StreamMessageProperties()) with { Headers = merged };
     }

@@ -110,6 +110,38 @@ public sealed class HeadersTests
     }
 
     [Fact]
+    public void Remove_hides_a_call_level_header_from_the_materialized_set()
+    {
+        var callLevel = new StreamMessageProperties
+        {
+            Headers = new Dictionary<string, object?> { ["tenant"] = "call-level", ["keep"] = true },
+        };
+        var headers = new StreamSendHeaders(callLevel.Headers, SystemTextJsonStreamSerializer.Default);
+
+        Assert.True(headers.Remove("tenant"));
+        var merged = headers.Materialize(callLevel)!;
+
+        Assert.False(merged.Headers.ContainsKey("tenant"));
+        Assert.Equal(true, merged.Headers["keep"]);
+    }
+
+    [Fact]
+    public void Reset_clears_removal_tombstones_so_the_next_attempt_sees_the_header_again()
+    {
+        var callLevel = new StreamMessageProperties
+        {
+            Headers = new Dictionary<string, object?> { ["tenant"] = "call-level" },
+        };
+        var headers = new StreamSendHeaders(callLevel.Headers, SystemTextJsonStreamSerializer.Default);
+        headers.Remove("tenant");
+        Assert.False(headers.Materialize(callLevel)!.Headers.ContainsKey("tenant"));
+
+        headers.Reset();
+
+        Assert.Equal("call-level", headers.Materialize(callLevel)!.Headers["tenant"]);
+    }
+
+    [Fact]
     public void All_includes_framework_and_user_keys()
     {
         var headers = new StreamHeaders(new Dictionary<string, object?>

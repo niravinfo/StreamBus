@@ -141,6 +141,8 @@ public sealed class ErrorQueueIntegrationTests : IAsyncDisposable
         _streams.Add(stream);
         _errorQueues.Add(errorQueue);
         var poison = new OrderEvent("o-1", 1);
+        var messageId = Guid.NewGuid();
+        var sentTime = new DateTime(2026, 10, 31, 9, 12, 3, 284, DateTimeKind.Utc);
 
         await using var inst = await BusInstance.StartAsync(
             null,
@@ -158,7 +160,10 @@ public sealed class ErrorQueueIntegrationTests : IAsyncDisposable
             },
             TimeSpan.FromSeconds(60));
         await using var pub = await BusInstance.StartAsync();
-        await pub.Bus.PublishRawAsync(stream, Body(poison), new PublishOptions(), ct);
+        await pub.Bus.PublishRawAsync(stream, Body(poison), new PublishOptions
+        {
+            Properties = new StreamMessageProperties { MessageId = messageId, SentTime = sentTime },
+        }, ct);
 
         var (queuedBody, queuedHeaders) = await PeekQueueAsync(errorQueue);
         Assert.Equal(Body(poison).ToArray(), queuedBody);
@@ -174,12 +179,17 @@ public sealed class ErrorQueueIntegrationTests : IAsyncDisposable
         var requeued = await pub.Bus.RequeueErrorsAsync(stream, errorQueue, ct);
         Assert.Equal(1, requeued);
 
-        var bodies = new List<byte[]>();
+        var seen = new List<ConsumeContext>();
         await using var reader = await pub.Bus.ConsumeAsync(stream,
             new ConsumeOptions { Offset = ConsumeOffset.AlwaysFirst, Reference = Unique("read") },
-            ctx => { lock (bodies) bodies.Add(ctx.Body.ToArray()); return Task.CompletedTask; }, ct);
-        await WaitForAsync(() => { lock (bodies) return bodies.Count >= 2; }, TimeSpan.FromSeconds(30), "redelivered copy on source stream");
-        Assert.All(bodies, b => Assert.Equal(Body(poison).ToArray(), b));
+            ctx => { lock (seen) seen.Add(ctx); return Task.CompletedTask; }, ct);
+        await WaitForAsync(() => { lock (seen) return seen.Count >= 2; }, TimeSpan.FromSeconds(30), "redelivered copy on source stream");
+        Assert.All(seen, context =>
+        {
+            Assert.Equal(Body(poison).ToArray(), context.Body.ToArray());
+            Assert.Equal(messageId, context.MessageId);
+            Assert.Equal(sentTime, context.SentTime);
+        });
     }
 
     [Fact]
