@@ -20,7 +20,7 @@ public sealed class SystemTextJsonStreamSerializer : IStreamSerializer
     public byte[] Serialize<T>(T message) => JsonSerializer.SerializeToUtf8Bytes(message, _options);
 
     public T Deserialize<T>(ReadOnlyMemory<byte> body)
-        => JsonSerializer.Deserialize<T>(body.Span) ?? throw new JsonException($"Deserialization of {typeof(T).FullName} returned null.");
+        => JsonSerializer.Deserialize<T>(body.Span, _options) ?? throw new JsonException($"Deserialization of {typeof(T).FullName} returned null.");
 }
 
 public sealed class StreamBusDeserializationException : StreamBusException
