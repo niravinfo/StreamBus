@@ -76,7 +76,7 @@ cfg.UsePublishFilter<CorrelationIdFilter>();
 
 public sealed class TenantFilter(TenantScope ambient) : IStreamPublishFilter
 {
-    public Task OnPublish(StreamPublishFilterContext context, PublishDelegate next, CancellationToken ct)
+    public Task OnPublish(PublishContext context, PublishDelegate next)
     {
         context.Headers.Set("x-tenant", ambient.Tenant);
         return next();
@@ -104,7 +104,7 @@ filter:
 ```csharp
 public sealed class OrderPublishFilter : IStreamPublishFilter<OrderEvent>
 {
-    public Task OnPublish(StreamPublishFilterContext<OrderEvent> context, PublishDelegate next, CancellationToken ct)
+    public Task OnPublish(PublishContext<OrderEvent> context, PublishDelegate next)
     {
         context.Headers.Set("x-order-id", context.Message.OrderId);
         return next();
@@ -113,7 +113,7 @@ public sealed class OrderPublishFilter : IStreamPublishFilter<OrderEvent>
 
 public sealed class TenantFilter<T> : IStreamPublishFilter<T> // open generic
 {
-    public Task OnPublish(StreamPublishFilterContext<T> context, PublishDelegate next, CancellationToken ct)
+    public Task OnPublish(PublishContext<T> context, PublishDelegate next)
     {
         context.Headers.Set("x-message-type", typeof(T).Name);
         return next();
@@ -128,18 +128,27 @@ A typed context adds `context.Message` as `T` to the shared universal context,
 which exposes the same payload as `context.Payload`. Every other member is the
 same object that universal filters receive. `next` is parameterless because
 there is no separate wrapper context to pass forward.
-Attachment is by declared type, not runtime type: `context.MessageType`
-is the `typeof(T)` at the publish call site (a typed context always
-reports its own `T`), while `context.RuntimeMessageType` is the payload's
-runtime type — they differ when a derived message is published through a
-base-type pipe. A concrete typed filter whose `T` does not match the pipe
-type is skipped silently. An open generic that cannot close for the pipe
-type (constraint violation or a missing typed interface) is a
-configuration error when that type's pipeline is built — at bus creation
-for registered publish types, at the first explicit publish otherwise.
+Filters attach by declared type; there is no runtime-type dispatch.
+A concrete typed filter whose `T` does not match the pipe type is skipped
+silently. An open generic that cannot close for the pipe type (constraint
+violation or a missing typed interface) is a configuration error when that
+type's pipeline is built — at bus creation for registered publish types, at
+the first explicit publish otherwise.
 Explicit-stream publishes (`PublishAsync(stream, message, ct)`) use the
 declared `T` the same way. `PublishRawAsync` still bypasses the pipeline.
 Complete sample: `examples/StreamBus.Examples.Producer/OrderPublishFilter.cs`.
+
+### Identity
+
+`PublishContext.MessageId` and `PublishContext.SentTime` are always
+populated before the pipeline runs: `MessageId` is generated when
+`PublishOptions.Properties.MessageId` is absent, and `SentTime` defaults to
+`DateTime.UtcNow` truncated to milliseconds. Supplied values are
+preserved. `CorrelationId` is never generated — it stays null unless the
+caller supplies `PublishOptions.Properties.CorrelationId`. The four
+framework keys (`streambus.message-id`, `streambus.correlation-id`,
+`streambus.sent-time`, `streambus.routing-key`) are rejected in
+`PublishOptions.Properties.Headers` and in `context.Headers.Set`.
 
 ## Serializer
 

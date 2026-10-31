@@ -52,7 +52,7 @@ default exists to collide on, and each bus keeps its own cursor:
 ```csharp
 public sealed class SharedConsumer(ILogger<SharedConsumer> log) : IConsumer<OrderEvent>
 {
-    public Task Consume(ConsumeContext<OrderEvent> ctx, CancellationToken ct)
+    public Task Consume(ConsumeContext<OrderEvent> ctx)
     {
         log.LogInformation("Saw {Id} on {Stream}", ctx.Message.OrderId, ctx.Stream);
         return Task.CompletedTask;

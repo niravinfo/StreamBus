@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.3.0
+
+### Breaking
+
+- Consume filters now receive one `ConsumeContext`
+  (`StreamConsumeFilterContext*` → `ConsumeContext*`); publish filters
+  receive one `PublishContext` (`StreamPublishFilterContext*` →
+  `PublishContext*`). `context.Raw`, `context.Metadata`,
+  `context.OutputHeaders`, `context.MessageType`, `context.RuntimeMessageType`,
+  and `context.Bus` are removed.
+- `MessageMetadata` is removed. Consume ids are `Guid?`
+  (`MessageId`, `CorrelationId`), `SentTime` is a nullable `DateTime`, and
+  `Headers` / `SendHeaders` expose the application properties.
+- `IConsumer<T>.Consume` and both filter interfaces drop the
+  `CancellationToken` parameter; the token is on the context.
+- `IStreamHeaderWriter` is replaced by `IStreamSendHeaders`.
+- `ErrorEnvelope.MessageId` / `CorrelationId` are `Guid?`, and the
+  envelope carries `SentTime`.
+- StreamBus writes `content-type` and `creation-time` (plus `message-id`
+  when supplied or generated) to the AMQP properties section.
+- Super-stream publishes now write `streambus.routing-key` as an
+  application property, so every partition consumer observes the routing
+  key.
+
+### Added
+
+- Reserved-key guards reject `streambus.message-id`,
+  `streambus.correlation-id`, `streambus.sent-time`, and
+  `streambus.routing-key` from user headers.
+- `IStreamSerializer` exposes `ContentType`.
+
 ## 0.2.0
 
 ### Breaking

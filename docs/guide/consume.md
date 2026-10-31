@@ -90,10 +90,10 @@ cfg.ReceiveEndpoint("orders", e =>
 
 public sealed class TenantFilter : IStreamConsumeFilter
 {
-    public Task OnConsume(StreamConsumeFilterContext context, ConsumeDelegate next, CancellationToken ct)
+    public Task OnConsume(ConsumeContext context, ConsumeDelegate next)
     {
         var scope = (TenantScope)context.Services.GetRequiredService(typeof(TenantScope));
-        scope.Tenant = context.Raw.Metadata.GetString("x-tenant");
+        scope.Tenant = context.Headers.GetString("x-tenant");
         context.SetPayload(scope.Tenant);
         return next();
     }
@@ -109,9 +109,23 @@ filtered the delivery, the consumer handler is not invoked, and the offset
 still advances. More than one `next` call is retried and then exhausted
 rather than silently duplicating work. Effectively-once pipelines require
 exactly one `next`; a zero-`next` filter there is a runtime contract error.
-Headers written through `context.OutputHeaders` are carried on the
+Headers written through `context.SendHeaders` are carried on the
 exhaustion envelope and on effectively-once result publishes. Complete
 sample: `examples/StreamBus.Examples.Consumer/TenantFilter.cs`.
+
+The delivery's `Stream`, `Partition`, `Offset`, `MessageId`,
+`CorrelationId`, `SentTime`, `Services`, and `CancellationToken` are fixed
+for the lifetime of the context; `Headers` (read-only) and `SendHeaders`
+(writable) are the only mutable surface. The full shape:
+
+| Member | Type | Meaning |
+|---|---|---|
+| `MessageId` | `Guid?` | AMQP `message-id`; null when absent or not a Guid |
+| `CorrelationId` | `Guid?` | AMQP `correlation-id`; never invented |
+| `SentTime` | `DateTime?` | AMQP `creation-time`, UTC, millisecond precision |
+| `Headers` | `IStreamHeaders` | application properties as received, framework keys included |
+| `SendHeaders` | `IStreamSendHeaders` | headers carried on the error envelope or effectively-once result |
+| `Stream` / `Partition` / `Offset` / `RoutingValue` / `Body` / `Services` / `CancellationToken` | unchanged semantics | |
 
 ### Typed consume filters
 
@@ -132,7 +146,7 @@ cfg.ReceiveEndpoint("orders", e =>
 
 public sealed class OrderEnrichmentFilter : IStreamConsumeFilter<OrderEvent>
 {
-    public Task OnConsume(StreamConsumeFilterContext<OrderEvent> context, ConsumeDelegate next, CancellationToken ct)
+    public Task OnConsume(ConsumeContext<OrderEvent> context, ConsumeDelegate next)
     {
         context.SetPayload(context.Message.OrderId); // typed value for later filters
         return next();
@@ -140,17 +154,15 @@ public sealed class OrderEnrichmentFilter : IStreamConsumeFilter<OrderEvent>
 }
 ```
 
-A typed context exposes `context.Message` as `T` and `context.Raw` as the
-underlying `ConsumeContext`; headers, payloads, services, and the
-continuation are the same shared context that universal filters receive.
-Deserialization timing changes as soon as one typed filter attaches: the
-message is deserialized before the pipeline on every delivery attempt, a
-deserialization failure is retried and exhausted without running filters
-or the consumer, and the consumer receives the same instance — no second
-deserialization. A pipeline of universal filters only keeps the lazy path,
-so a filter can filter a delivery without deserializing it; a typed-filter
-pipeline deserializes before the filter runs. Raw and effectively-once
-pipelines never attach typed filters. Complete sample:
+A typed context *is* the shared context: `ConsumeContext<T>` derives
+from `ConsumeContext`, and `context.Message` is the deserialized `T`.
+Headers, `SendHeaders`, payloads, services, and the continuation are the
+same object that universal filters receive — there is no `Raw` wrapper.
+A typed endpoint deserializes before any filter runs on every delivery
+attempt; a deserialization failure is retried and exhausted without
+running filters or the consumer, and the consumer receives the same
+instance — no second deserialization. Raw and effectively-once pipelines
+never attach typed filters. Complete sample:
 `examples/StreamBus.Examples.Consumer/OrderEventFilter.cs`.
 
 ## Full example
