@@ -27,24 +27,19 @@ public sealed class PipelineMetricsTests : IDisposable
     public async Task Publish_pipeline_duration_is_recorded_in_seconds_with_the_publish_kind()
     {
         var pipeline = new PublishPipeline(new IStreamPublishFilter[] { new NoopPublishFilter() });
-        var context = new StreamPublishFilterContext
+        var context = new PublishContext
         {
             Stream = "orders",
             RoutingKey = null,
             Payload = new object(),
-            Headers = new HeaderWriter(),
-            Bus = new StreamBusRegistrationView
-            {
-                Vhost = "/",
-                Host = "localhost",
-                StreamPort = 5552,
-                AmqpPort = 5672,
-                HeartbeatSeconds = 60,
-            },
+            MessageId = Guid.NewGuid(),
+            SentTime = DateTime.UtcNow,
+            Headers = new StreamSendHeaders(null, SystemTextJsonStreamSerializer.Default),
             Services = EmptyProvider.Instance,
+            CancellationToken = TestContext.Current.CancellationToken,
         };
 
-        await pipeline.RunAsync(context, () => Task.CompletedTask, TestContext.Current.CancellationToken);
+        await pipeline.RunAsync(context, () => Task.CompletedTask);
 
         var measurement = Assert.Single(_measurements, m =>
             m.Instrument == "streambus_pipeline_duration"
@@ -81,7 +76,7 @@ public sealed class PipelineMetricsTests : IDisposable
 
     private sealed class NoopPublishFilter : IStreamPublishFilter
     {
-        public Task OnPublish(StreamPublishFilterContext context, PublishDelegate next, CancellationToken ct)
+        public Task OnPublish(PublishContext context, PublishDelegate next)
             => next();
     }
 

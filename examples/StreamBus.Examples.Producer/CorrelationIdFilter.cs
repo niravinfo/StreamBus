@@ -6,7 +6,7 @@ using StreamBus;
 // take Activity.Current.TraceId and let OpenTelemetry wire the rest.
 public sealed class CorrelationIdFilter : IStreamPublishFilter
 {
-    public Task OnPublish(StreamPublishFilterContext context, PublishDelegate next, CancellationToken ct)
+    public Task OnPublish(PublishContext context, PublishDelegate next)
     {
         var correlationId = Activity.Current?.TraceId.ToString() ?? Guid.NewGuid().ToString("N");
         context.Headers.Set("x-correlation-id", correlationId);

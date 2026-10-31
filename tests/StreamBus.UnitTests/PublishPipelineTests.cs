@@ -24,35 +24,47 @@ public sealed class TypedPublishProbe
     public void Record() => _calls++;
 }
 
+public sealed class SentContextProbe
+{
+    public PublishContext? Context { get; private set; }
+
+    public void Record(PublishContext context) => Context = context;
+}
+
+public sealed class SentProbeFilter(SentContextProbe probe) : IStreamPublishFilter
+{
+    public Task OnPublish(PublishContext context, PublishDelegate next)
+    {
+        probe.Record(context);
+        return next();
+    }
+}
+
 public sealed class PublishContextProbe
 {
     public int Calls { get; private set; }
-    public Type? MessageType { get; private set; }
-    public Type? RuntimeMessageType { get; private set; }
     public object? Payload { get; private set; }
 
-    public void Record(StreamPublishFilterContext context)
+    public void Record(PublishContext context)
     {
         Calls++;
-        MessageType = context.MessageType;
-        RuntimeMessageType = context.RuntimeMessageType;
         Payload = context.Payload;
     }
 }
 
 public sealed class SharedPublishContextProbe
 {
-    public StreamPublishFilterContext? UniversalContext { get; private set; }
-    public StreamPublishFilterContext? TypedContext { get; private set; }
+    public PublishContext? UniversalContext { get; private set; }
+    public PublishContext<PipelineOrder>? TypedContext { get; private set; }
 
-    public void RecordUniversal(StreamPublishFilterContext context) => UniversalContext = context;
+    public void RecordUniversal(PublishContext context) => UniversalContext = context;
 
-    public void RecordTyped(StreamPublishFilterContext<PipelineOrder> context) => TypedContext = context;
+    public void RecordTyped(PublishContext<PipelineOrder> context) => TypedContext = context;
 }
 
 public sealed class SharedUniversalPublishFilter(SharedPublishContextProbe probe) : IStreamPublishFilter
 {
-    public Task OnPublish(StreamPublishFilterContext context, PublishDelegate next, CancellationToken ct)
+    public Task OnPublish(PublishContext context, PublishDelegate next)
     {
         probe.RecordUniversal(context);
         return next();
@@ -61,7 +73,7 @@ public sealed class SharedUniversalPublishFilter(SharedPublishContextProbe probe
 
 public sealed class SharedTypedPublishFilter(SharedPublishContextProbe probe) : IStreamPublishFilter<PipelineOrder>
 {
-    public Task OnPublish(StreamPublishFilterContext<PipelineOrder> context, PublishDelegate next, CancellationToken ct)
+    public Task OnPublish(PublishContext<PipelineOrder> context, PublishDelegate next)
     {
         probe.RecordTyped(context);
         return next();
@@ -104,18 +116,16 @@ public sealed class MultiMessagePublishFilter : IStreamPublishFilter<PipelineOrd
     }
 
     public Task OnPublish(
-        StreamPublishFilterContext<PipelineOrder> context,
-        PublishDelegate next,
-        CancellationToken ct)
+        PublishContext<PipelineOrder> context,
+        PublishDelegate next)
     {
         _probe.RecordCall();
         return next();
     }
 
     public Task OnPublish(
-        StreamPublishFilterContext<PipelineInvoice> context,
-        PublishDelegate next,
-        CancellationToken ct)
+        PublishContext<PipelineInvoice> context,
+        PublishDelegate next)
     {
         _probe.RecordCall();
         return next();
@@ -125,9 +135,8 @@ public sealed class MultiMessagePublishFilter : IStreamPublishFilter<PipelineOrd
 public sealed class OrderOnlyPublishFilter(TypedPublishProbe probe) : IStreamPublishFilter<PipelineOrder>
 {
     public Task OnPublish(
-        StreamPublishFilterContext<PipelineOrder> context,
-        PublishDelegate next,
-        CancellationToken ct)
+        PublishContext<PipelineOrder> context,
+        PublishDelegate next)
     {
         probe.Record();
         context.Headers.Set("order", context.Message.Id);
@@ -137,7 +146,7 @@ public sealed class OrderOnlyPublishFilter(TypedPublishProbe probe) : IStreamPub
 
 public sealed class ContextProbePublishFilter(PublishContextProbe probe) : IStreamPublishFilter
 {
-    public Task OnPublish(StreamPublishFilterContext context, PublishDelegate next, CancellationToken ct)
+    public Task OnPublish(PublishContext context, PublishDelegate next)
     {
         probe.Record(context);
         return next();
@@ -146,7 +155,7 @@ public sealed class ContextProbePublishFilter(PublishContextProbe probe) : IStre
 
 public sealed class PipelineLogAFilter(PublishPipelineLog log) : IStreamPublishFilter
 {
-    public async Task OnPublish(StreamPublishFilterContext context, PublishDelegate next, CancellationToken ct)
+    public async Task OnPublish(PublishContext context, PublishDelegate next)
     {
         log.Add("A-in");
         await next();
@@ -156,7 +165,7 @@ public sealed class PipelineLogAFilter(PublishPipelineLog log) : IStreamPublishF
 
 public sealed class PipelineLogCFilter(PublishPipelineLog log) : IStreamPublishFilter
 {
-    public async Task OnPublish(StreamPublishFilterContext context, PublishDelegate next, CancellationToken ct)
+    public async Task OnPublish(PublishContext context, PublishDelegate next)
     {
         log.Add("C-in");
         await next();
@@ -167,9 +176,8 @@ public sealed class PipelineLogCFilter(PublishPipelineLog log) : IStreamPublishF
 public sealed class OrderLogPublishFilter(PublishPipelineLog log) : IStreamPublishFilter<PipelineOrder>
 {
     public async Task OnPublish(
-        StreamPublishFilterContext<PipelineOrder> context,
-        PublishDelegate next,
-        CancellationToken ct)
+        PublishContext<PipelineOrder> context,
+        PublishDelegate next)
     {
         log.Add("typed-in");
         await next();
@@ -179,25 +187,25 @@ public sealed class OrderLogPublishFilter(PublishPipelineLog log) : IStreamPubli
 
 public sealed class OpenGenericPublishFilter<T> : IStreamPublishFilter<T>
 {
-    public Task OnPublish(StreamPublishFilterContext<T> context, PublishDelegate next, CancellationToken ct)
+    public Task OnPublish(PublishContext<T> context, PublishDelegate next)
         => next();
 }
 
 public sealed class ClassOnlyPublishFilter<T> : IStreamPublishFilter<T> where T : class
 {
-    public Task OnPublish(StreamPublishFilterContext<T> context, PublishDelegate next, CancellationToken ct)
+    public Task OnPublish(PublishContext<T> context, PublishDelegate next)
         => next();
 }
 
 public sealed class PipelineNoopFilter : IStreamPublishFilter
 {
-    public Task OnPublish(StreamPublishFilterContext context, PublishDelegate next, CancellationToken ct)
+    public Task OnPublish(PublishContext context, PublishDelegate next)
         => next();
 }
 
 public sealed class TenantPublishFilter : IStreamPublishFilter
 {
-    public Task OnPublish(StreamPublishFilterContext context, PublishDelegate next, CancellationToken ct)
+    public Task OnPublish(PublishContext context, PublishDelegate next)
     {
         context.Headers.Set("tenant", "acme");
         return next();
@@ -221,7 +229,7 @@ public sealed class PublishPipelineTests
         {
             log.Add("terminal");
             return Task.CompletedTask;
-        }, TestContext.Current.CancellationToken);
+        });
 
         Assert.Equal(new[] { "A-in", "B-in", "C-in", "terminal", "C-out", "B-out", "A-out" }, log);
     }
@@ -232,7 +240,7 @@ public sealed class PublishPipelineTests
         var pipeline = new PublishPipeline(new IStreamPublishFilter[] { new ZeroNextFilter() });
 
         var ex = await Assert.ThrowsAsync<StreamBusConfigurationException>(() =>
-            pipeline.RunAsync(NewContext(), () => Task.CompletedTask, TestContext.Current.CancellationToken));
+            pipeline.RunAsync(NewContext(), () => Task.CompletedTask));
 
         Assert.Contains(nameof(ZeroNextFilter), ex.Message, StringComparison.Ordinal);
         Assert.Contains("returned without calling next", ex.Message, StringComparison.Ordinal);
@@ -249,7 +257,7 @@ public sealed class PublishPipelineTests
             {
                 Interlocked.Increment(ref terminalCalls);
                 return Task.CompletedTask;
-            }, TestContext.Current.CancellationToken));
+            }));
 
         Assert.Contains(nameof(DoubleNextFilter), ex.Message, StringComparison.Ordinal);
         Assert.Contains("invoked next 2 times", ex.Message, StringComparison.Ordinal);
@@ -445,9 +453,88 @@ public sealed class PublishPipelineTests
 
         Assert.Same(probe.UniversalContext, probe.TypedContext);
         Assert.NotNull(probe.UniversalContext);
-        Assert.Equal(typeof(PipelineOrder), probe.UniversalContext.MessageType);
         Assert.Same(message, probe.UniversalContext.Payload);
         Assert.Equal("p-1", Assert.IsType<PipelineOrder>(probe.TypedContext!.Payload).Id);
+    }
+
+    [Fact]
+    public async Task Publish_context_carries_generated_identity_and_sent_time()
+    {
+        var probe = new SentContextProbe();
+        await using var bus = await TestBus.StartAsync(cfg =>
+        {
+            cfg.Publish<PipelineOrder>("orders");
+            cfg.UsePublishFilter<SentProbeFilter>();
+        }, TestContext.Current.CancellationToken, s => s.AddSingleton(probe));
+
+        await bus.Bus.PublishAsync(new PipelineOrder("p-1"), TestContext.Current.CancellationToken);
+
+        var context = Assert.IsType<PublishContext<PipelineOrder>>(probe.Context);
+        Assert.NotEqual(Guid.Empty, context.MessageId);
+        Assert.Null(context.CorrelationId);
+        Assert.Equal(DateTimeKind.Utc, context.SentTime.Kind);
+        Assert.Equal(0, context.SentTime.Ticks % TimeSpan.TicksPerMillisecond);
+
+        var sent = Assert.Single(bus.System.Publishes);
+        Assert.Equal(context.MessageId, sent.Options.Properties!.MessageId);
+        Assert.Equal(context.SentTime, sent.Options.Properties.SentTime);
+        Assert.Equal("application/json", sent.Options.Properties.ContentType);
+    }
+
+    [Fact]
+    public async Task Supplied_message_id_and_sent_time_are_preserved()
+    {
+        var probe = new SentContextProbe();
+        await using var bus = await TestBus.StartAsync(cfg =>
+        {
+            cfg.Publish<PipelineOrder>("orders");
+            cfg.UsePublishFilter<SentProbeFilter>();
+        }, TestContext.Current.CancellationToken, s => s.AddSingleton(probe));
+
+        var messageId = Guid.NewGuid();
+        var correlationId = Guid.NewGuid();
+        var sentTime = new DateTime(2026, 10, 31, 9, 12, 3, 284, DateTimeKind.Utc);
+        await bus.Bus.PublishAsync(
+            new PipelineOrder("p-1"),
+            new PublishOptions
+            {
+                Properties = new StreamMessageProperties
+                {
+                    MessageId = messageId,
+                    CorrelationId = correlationId,
+                    SentTime = sentTime,
+                },
+            },
+            TestContext.Current.CancellationToken);
+
+        var context = Assert.IsType<PublishContext<PipelineOrder>>(probe.Context);
+        Assert.Equal(messageId, context.MessageId);
+        Assert.Equal(correlationId, context.CorrelationId);
+        Assert.Equal(sentTime, context.SentTime);
+
+        var sent = Assert.Single(bus.System.Publishes);
+        Assert.Equal(messageId, sent.Options.Properties!.MessageId);
+        Assert.Equal(sentTime, sent.Options.Properties.SentTime);
+    }
+
+    [Fact]
+    public async Task Publish_context_rejects_reserved_headers_from_options()
+    {
+        await using var bus = await TestBus.StartAsync(
+            cfg => cfg.Publish<PipelineOrder>("orders"), TestContext.Current.CancellationToken);
+
+        var options = new PublishOptions
+        {
+            Properties = new StreamMessageProperties
+            {
+                Headers = new Dictionary<string, object?> { ["streambus.message-id"] = "spoofed" },
+            },
+        };
+
+        var ex = await Assert.ThrowsAsync<ArgumentException>(() =>
+            bus.Bus.PublishAsync(new PipelineOrder("p-1"), options, TestContext.Current.CancellationToken));
+        Assert.Contains("streambus.message-id", ex.Message, StringComparison.Ordinal);
+        Assert.Empty(bus.System.Publishes);
     }
 
     [Fact]
@@ -478,7 +565,7 @@ public sealed class PublishPipelineTests
     }
 
     [Fact]
-    public async Task Publish_context_reports_declared_and_runtime_message_types()
+    public async Task Publish_context_carries_the_published_payload()
     {
         var probe = new PublishContextProbe();
         await using var bus = await TestBus.StartAsync(cfg =>
@@ -492,8 +579,6 @@ public sealed class PublishPipelineTests
             TestContext.Current.CancellationToken);
 
         Assert.Equal(1, probe.Calls);
-        Assert.Equal(typeof(PipelineBase), probe.MessageType);
-        Assert.Equal(typeof(PipelineDerived), probe.RuntimeMessageType);
         Assert.IsType<PipelineDerived>(probe.Payload);
         Assert.Single(bus.System.Publishes);
     }
@@ -556,26 +641,21 @@ public sealed class PublishPipelineTests
         Assert.Contains("could not be resolved from the root service provider", ex.Message, StringComparison.Ordinal);
     }
 
-    private static StreamPublishFilterContext NewContext() => new()
+    private static PublishContext NewContext() => new()
     {
         Stream = "orders",
         RoutingKey = null,
         Payload = new PipelineOrder("1"),
-        Headers = new HeaderWriter(),
-        Bus = new StreamBusRegistrationView
-        {
-            Vhost = "/",
-            Host = "localhost",
-            StreamPort = 5552,
-            AmqpPort = 5672,
-            HeartbeatSeconds = 60,
-        },
+        MessageId = Guid.NewGuid(),
+        SentTime = DateTime.UtcNow,
+        Headers = new StreamSendHeaders(null, SystemTextJsonStreamSerializer.Default),
         Services = EmptyProvider.Instance,
+        CancellationToken = TestContext.Current.CancellationToken,
     };
 
     private sealed class RecordingFilter(string name, List<string> log) : IStreamPublishFilter
     {
-        public async Task OnPublish(StreamPublishFilterContext context, PublishDelegate next, CancellationToken ct)
+        public async Task OnPublish(PublishContext context, PublishDelegate next)
         {
             log.Add($"{name}-in");
             await next();
@@ -585,13 +665,13 @@ public sealed class PublishPipelineTests
 
     private sealed class ZeroNextFilter : IStreamPublishFilter
     {
-        public Task OnPublish(StreamPublishFilterContext context, PublishDelegate next, CancellationToken ct)
+        public Task OnPublish(PublishContext context, PublishDelegate next)
             => Task.CompletedTask;
     }
 
     private sealed class DoubleNextFilter : IStreamPublishFilter
     {
-        public async Task OnPublish(StreamPublishFilterContext context, PublishDelegate next, CancellationToken ct)
+        public async Task OnPublish(PublishContext context, PublishDelegate next)
         {
             await next();
             await next();
@@ -602,7 +682,7 @@ public sealed class PublishPipelineTests
     {
         public int Calls { get; private set; }
 
-        public Task OnPublish(StreamPublishFilterContext context, PublishDelegate next, CancellationToken ct)
+        public Task OnPublish(PublishContext context, PublishDelegate next)
         {
             Calls++;
             throw new InvalidOperationException("filter boom");
@@ -613,7 +693,7 @@ public sealed class PublishPipelineTests
     {
         public int Calls { get; private set; }
 
-        public Task OnPublish(StreamPublishFilterContext context, PublishDelegate next, CancellationToken ct)
+        public Task OnPublish(PublishContext context, PublishDelegate next)
         {
             Calls++;
             return next();
@@ -622,7 +702,7 @@ public sealed class PublishPipelineTests
 
     private sealed class HeaderOnlyFilter : IStreamPublishFilter
     {
-        public Task OnPublish(StreamPublishFilterContext context, PublishDelegate next, CancellationToken ct)
+        public Task OnPublish(PublishContext context, PublishDelegate next)
         {
             context.Headers.Set("x-filter", "1");
             return next();

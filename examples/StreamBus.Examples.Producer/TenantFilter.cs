@@ -10,7 +10,7 @@ public sealed class TenantScope
 
 public sealed class TenantFilter(TenantScope ambient) : IStreamPublishFilter
 {
-    public Task OnPublish(StreamPublishFilterContext context, PublishDelegate next, CancellationToken ct)
+    public Task OnPublish(PublishContext context, PublishDelegate next)
     {
         context.Headers.Set("x-tenant", ambient.Tenant);
         return next();

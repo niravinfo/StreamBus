@@ -3,21 +3,13 @@ namespace StreamBus.UnitTests;
 public sealed class TypedFilterContractTests
 {
     [Fact]
-    public void Universal_publish_context_reports_declared_and_runtime_types()
-    {
-        var context = NewPublishContext(new ContractDerived("d-1"), declared: typeof(ContractBase));
-        Assert.Equal(typeof(ContractBase), context.MessageType);
-        Assert.Equal(typeof(ContractDerived), context.RuntimeMessageType);
-    }
-
-    [Fact]
     public async Task Typed_publish_adapter_names_the_user_filter_and_forwards_the_typed_message()
     {
         var filter = new ContractTypedPublishFilter();
         var adapter = new TypedPublishFilterAdapter<ContractDerived>(filter);
         var context = NewTypedPublishContext(new ContractDerived("d-1"));
 
-        await adapter.OnPublish(context, () => Task.CompletedTask, TestContext.Current.CancellationToken);
+        await adapter.OnPublish(context, () => Task.CompletedTask);
 
         Assert.Same(context, filter.SeenContext);
         Assert.Equal("d-1", filter.Seen!.Id);
@@ -62,34 +54,16 @@ public sealed class TypedFilterContractTests
         Assert.Equal(typed.CancellationToken, universal.CancellationToken);
     }
 
-    private static StreamPublishFilterContext NewPublishContext(object message, Type declared) => new()
+    private static PublishContext<ContractDerived> NewTypedPublishContext(ContractDerived message) => new()
     {
         Stream = "contracts",
         RoutingKey = null,
         Payload = message,
-        MessageType = declared,
-        Headers = new HeaderWriter(),
-        Bus = NewBusView(),
+        MessageId = Guid.NewGuid(),
+        SentTime = DateTime.UtcNow,
+        Headers = new StreamSendHeaders(null, SystemTextJsonStreamSerializer.Default),
         Services = EmptyProvider.Instance,
-    };
-
-    private static StreamPublishFilterContext<ContractDerived> NewTypedPublishContext(ContractDerived message) => new()
-    {
-        Stream = "contracts",
-        RoutingKey = null,
-        Payload = message,
-        Headers = new HeaderWriter(),
-        Bus = NewBusView(),
-        Services = EmptyProvider.Instance,
-    };
-
-    private static StreamBusRegistrationView NewBusView() => new()
-    {
-        Vhost = "/",
-        Host = "localhost",
-        StreamPort = 5552,
-        AmqpPort = 5672,
-        HeartbeatSeconds = 60,
+        CancellationToken = TestContext.Current.CancellationToken,
     };
 
     private static ConsumeContext<ContractDerived> NewTypedConsumeContext(ContractDerived message) => new()
@@ -113,12 +87,11 @@ public sealed class TypedFilterContractTests
     private sealed class ContractTypedPublishFilter : IStreamPublishFilter<ContractDerived>
     {
         public ContractDerived? Seen { get; private set; }
-        public StreamPublishFilterContext<ContractDerived>? SeenContext { get; private set; }
+        public PublishContext<ContractDerived>? SeenContext { get; private set; }
 
         public Task OnPublish(
-            StreamPublishFilterContext<ContractDerived> context,
-            PublishDelegate next,
-            CancellationToken ct)
+            PublishContext<ContractDerived> context,
+            PublishDelegate next)
         {
             SeenContext = context;
             Seen = context.Message;

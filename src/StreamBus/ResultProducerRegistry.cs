@@ -79,16 +79,17 @@ internal sealed class ResultProducerRegistry
         bool targetSuper,
         string? routingKey,
         IReadOnlyDictionary<string, object?>? outputHeaders)
-    {
-        var options = new PublishOptions
+        => new()
         {
             IsSuperStream = targetSuper,
             RoutingKey = targetSuper ? routingKey : null,
+            Properties = new StreamMessageProperties
+            {
+                MessageId = Guid.NewGuid(),
+                SentTime = StreamWire.NormalizeSentTime(DateTime.UtcNow),
+                Headers = outputHeaders ?? new Dictionary<string, object?>(),
+            },
         };
-        if (outputHeaders is { Count: > 0 })
-            options = options with { Properties = new StreamMessageProperties { Headers = outputHeaders } };
-        return options;
-    }
 
     public async Task<IStreamProducerHandle> GetOrCreateAsync(string targetStream, bool targetSuper, string producerName, CancellationToken ct)
     {

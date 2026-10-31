@@ -47,13 +47,12 @@ internal sealed class TypedPublishFilterAdapter<T> : IStreamPublishFilter, IType
 
     public Type FilterType { get; }
 
-    public Task OnPublish(StreamPublishFilterContext context, PublishDelegate next, CancellationToken ct)
+    public Task OnPublish(PublishContext context, PublishDelegate next)
         => _filter.OnPublish(
-            context as StreamPublishFilterContext<T>
+            context as PublishContext<T>
                 ?? throw new StreamBusConfigurationException(
                     $"Typed publish filter for {typeof(T).FullName} ran without a typed publish context (internal error)."),
-            next,
-            ct);
+            next);
 }
 
 internal sealed class TypedConsumeFilterAdapter<T> : IStreamConsumeFilter, ITypedFilterAdapter

@@ -11,10 +11,10 @@ public sealed class TenantScope
 
 public sealed class TenantFilter : IStreamConsumeFilter
 {
-    public Task OnConsume(StreamConsumeFilterContext context, ConsumeDelegate next, CancellationToken ct)
+    public Task OnConsume(ConsumeContext context, ConsumeDelegate next)
     {
         TenantScope scope = context.Services.GetRequiredService<TenantScope>();
-        scope.Tenant = context.Raw.Metadata.GetString("x-tenant");
+        scope.Tenant = context.Headers.GetString("x-tenant");
 
         return next();
     }

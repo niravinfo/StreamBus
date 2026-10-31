@@ -55,9 +55,8 @@ internal sealed class TypedFilterProbe
 internal sealed class TypedFilterOrderPublishFilter : IStreamPublishFilter<TypedFilterOrder>
 {
     public Task OnPublish(
-        StreamPublishFilterContext<TypedFilterOrder> context,
-        PublishDelegate next,
-        CancellationToken ct)
+        PublishContext<TypedFilterOrder> context,
+        PublishDelegate next)
     {
         context.Headers.Set(TypedFilterHeaders.Order, context.Message.Id);
         return next();

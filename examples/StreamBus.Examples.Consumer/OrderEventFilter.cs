@@ -6,14 +6,14 @@ using StreamBus;
 // sees it. A filter exception follows the normal retry/exhaustion path.
 public sealed class OrderEventFilter : IStreamConsumeFilter<OrderEvent>
 {
-    public Task OnConsume(StreamConsumeFilterContext<OrderEvent> context, ConsumeDelegate next, CancellationToken ct)
+    public Task OnConsume(ConsumeContext<OrderEvent> context, ConsumeDelegate next)
     {
         // Typed access: context.Message is OrderEvent. Blank ids are a
         // poison-message shape, so reject loudly instead of handling.
         if (string.IsNullOrWhiteSpace(context.Message.OrderId))
         {
             throw new InvalidOperationException(
-                $"Order event rejected: OrderId is blank (stream '{context.Raw.Stream}', offset {context.Raw.Offset}).");
+                $"Order event rejected: OrderId is blank (stream '{context.Stream}', offset {context.Offset}).");
         }
 
         // Universal and typed filters share this one context; the pipeline
