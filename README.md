@@ -68,7 +68,7 @@ public sealed record OrderPlaced(string OrderId);
 
 public sealed class OrderConsumer(ILogger<OrderConsumer> log) : IConsumer<OrderPlaced>
 {
-    public Task Consume(ConsumeContext<OrderPlaced> context, CancellationToken cancellationToken)
+    public Task Consume(ConsumeContext<OrderPlaced> context)
     {
         log.LogInformation("Order {OrderId} at offset {Offset}", context.Message.OrderId, context.Offset);
         return Task.CompletedTask;
