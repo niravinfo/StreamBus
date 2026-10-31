@@ -380,16 +380,15 @@ public sealed class TypedFilterRegistrationTests
 
     private sealed class RegistrationUniversalPublishFilter : IStreamPublishFilter
     {
-        public Task OnPublish(StreamPublishFilterContext context, PublishDelegate next, CancellationToken ct)
+        public Task OnPublish(PublishContext context, PublishDelegate next)
             => next();
     }
 
     private sealed class RegistrationTypedPublishFilter : IStreamPublishFilter<RegistrationOrder>
     {
         public Task OnPublish(
-            StreamPublishFilterContext<RegistrationOrder> context,
-            PublishDelegate next,
-            CancellationToken ct)
+            PublishContext<RegistrationOrder> context,
+            PublishDelegate next)
             => next();
     }
 
@@ -397,71 +396,67 @@ public sealed class TypedFilterRegistrationTests
         : IStreamPublishFilter<RegistrationOrder>, IStreamPublishFilter<RegistrationInvoice>
     {
         public Task OnPublish(
-            StreamPublishFilterContext<RegistrationOrder> context,
-            PublishDelegate next,
-            CancellationToken ct)
+            PublishContext<RegistrationOrder> context,
+            PublishDelegate next)
             => next();
 
         public Task OnPublish(
-            StreamPublishFilterContext<RegistrationInvoice> context,
-            PublishDelegate next,
-            CancellationToken ct)
+            PublishContext<RegistrationInvoice> context,
+            PublishDelegate next)
             => next();
     }
 
     private sealed class RegistrationOpenPublishFilter<T> : IStreamPublishFilter<T>
     {
-        public Task OnPublish(StreamPublishFilterContext<T> context, PublishDelegate next, CancellationToken ct)
+        public Task OnPublish(PublishContext<T> context, PublishDelegate next)
             => next();
     }
 
     private sealed class RegistrationTwoArityPublishFilter<T1, T2> : IStreamPublishFilter<T1>
     {
-        public Task OnPublish(StreamPublishFilterContext<T1> context, PublishDelegate next, CancellationToken ct)
+        public Task OnPublish(PublishContext<T1> context, PublishDelegate next)
             => next();
     }
 
     private sealed class RegistrationWrongParameterPublishFilter<T> : IStreamPublishFilter<string>
     {
-        public Task OnPublish(StreamPublishFilterContext<string> context, PublishDelegate next, CancellationToken ct)
+        public Task OnPublish(PublishContext<string> context, PublishDelegate next)
             => next();
     }
 
     private sealed class RegistrationDualPublishFilter
         : IStreamPublishFilter, IStreamPublishFilter<RegistrationOrder>
     {
-        public Task OnPublish(StreamPublishFilterContext context, PublishDelegate next, CancellationToken ct)
+        public Task OnPublish(PublishContext context, PublishDelegate next)
             => next();
 
         public Task OnPublish(
-            StreamPublishFilterContext<RegistrationOrder> context,
-            PublishDelegate next,
-            CancellationToken ct)
+            PublishContext<RegistrationOrder> context,
+            PublishDelegate next)
             => next();
     }
 
     private sealed class RegistrationDualOpenPublishFilter<T>
         : IStreamPublishFilter, IStreamPublishFilter<T>
     {
-        public Task OnPublish(StreamPublishFilterContext context, PublishDelegate next, CancellationToken ct)
+        public Task OnPublish(PublishContext context, PublishDelegate next)
             => next();
 
-        public Task OnPublish(StreamPublishFilterContext<T> context, PublishDelegate next, CancellationToken ct)
+        public Task OnPublish(PublishContext<T> context, PublishDelegate next)
             => next();
     }
 
     private sealed class RegistrationUniversalOpenPublishFilter<T> : IStreamPublishFilter
     {
-        public Task OnPublish(StreamPublishFilterContext context, PublishDelegate next, CancellationToken ct)
+        public Task OnPublish(PublishContext context, PublishDelegate next)
             => next();
     }
 
     private abstract class RegistrationAbstractPublishFilter : IStreamPublishFilter<RegistrationOrder>
     {
         public abstract Task OnPublish(
-            StreamPublishFilterContext<RegistrationOrder> context,
-            PublishDelegate next,
-            CancellationToken ct);
+            PublishContext<RegistrationOrder> context,
+            PublishDelegate next);
     }
 
     private sealed class RegistrationUniversalConsumeFilter : IStreamConsumeFilter

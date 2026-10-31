@@ -188,22 +188,12 @@ internal sealed class StreamBusRegistry : IStreamBusRegistry
                     pipelines.GetOrCreate(registration.MessageType);
             }
         }
-        var options = _resolveOptions(vhost);
-        var busView = new StreamBusRegistrationView
-        {
-            Vhost = options.Vhost,
-            Host = options.Host,
-            StreamPort = options.StreamPort,
-            AmqpPort = options.AmqpPort,
-            HeartbeatSeconds = options.Heartbeat.TotalSeconds,
-        };
-
         IStreamBus bus = busType == typeof(DefaultBus)
-            ? new StreamBus(vhost, supervisor, ProducersFor(vhost), ConsumersFor(vhost), TopologyFor(vhost), serializer, _publishRouter, ErrorQueuesFor(vhost), findDeclaration, pipelines, _scopes, busView)
+            ? new StreamBus(vhost, supervisor, ProducersFor(vhost), ConsumersFor(vhost), TopologyFor(vhost), serializer, _publishRouter, ErrorQueuesFor(vhost), findDeclaration, pipelines, _scopes)
             : (IStreamBus)Activator.CreateInstance(
                 typeof(StreamBus<>).MakeGenericType(busType),
                 vhost, supervisor, ProducersFor(vhost), ConsumersFor(vhost), TopologyFor(vhost), serializer,
-                _publishRouter, ErrorQueuesFor(vhost), findDeclaration, pipelines, _scopes, busView)!;
+                _publishRouter, ErrorQueuesFor(vhost), findDeclaration, pipelines, _scopes)!;
         var created = new BusEntry { Supervisor = supervisor, Bus = bus, Declarations = declarations };
         StreamBusMetrics.Shared.TrackConnection(vhost, busType.FullName ?? busType.Name, () => created.Supervisor.State);
         return created;

@@ -77,7 +77,7 @@ public sealed record PaymentEvent(string PaymentId, string AccountId, decimal Am
 
 public sealed class OrderConsumer(ILogger<OrderConsumer> log, TenantScope tenant) : IConsumer<OrderEvent>
 {
-    public Task Consume(ConsumeContext<OrderEvent> context, CancellationToken cancellationToken)
+    public Task Consume(ConsumeContext<OrderEvent> context)
     {
         log.LogInformation("orders [{Partition}] offset {Offset} tenant {Tenant}: {OrderId}",
             context.Partition, context.Offset, tenant.Tenant, context.Message.OrderId);
@@ -87,7 +87,7 @@ public sealed class OrderConsumer(ILogger<OrderConsumer> log, TenantScope tenant
 
 public sealed class PaymentConsumer(ILogger<PaymentConsumer> log) : IConsumer<PaymentEvent>
 {
-    public Task Consume(ConsumeContext<PaymentEvent> context, CancellationToken cancellationToken)
+    public Task Consume(ConsumeContext<PaymentEvent> context)
     {
         log.LogInformation("payments-super [{Partition}] offset {Offset}: {PaymentId} key {AccountId}",
             context.Partition, context.Offset, context.Message.PaymentId, context.Message.AccountId);
