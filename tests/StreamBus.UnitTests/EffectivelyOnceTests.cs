@@ -129,7 +129,7 @@ public sealed class EffectivelyOnceTests
     {
         public readonly List<(ulong Id, string? Routing)> Published = new();
         public Task SendAsync(ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct) => throw new NotImplementedException("EO tests publish results only.");
-        public Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, PublishOptions options, IReadOnlyDictionary<string, object?> app, string? mid, string? cid, CancellationToken ct) => throw new NotImplementedException("EO tests publish results only.");
+        public Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, StreamMessageProperties properties, CancellationToken ct) => throw new NotImplementedException("EO tests publish results only.");
         public Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, PublishOptions options, CancellationToken ct)
         {
             Record(publishingId, null);

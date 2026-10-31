@@ -140,11 +140,7 @@ internal sealed class StreamConsumerRegistry
         AddFilters(busFilters, filters, "bus", endpointScope: false);
         AddFilters(endpointFilters, filters, "endpoint", endpointScope: true);
 
-        return new ConsumePipeline(
-            filters,
-            messageType,
-            filters.Any(f => f is ITypedFilterAdapter),
-            effectivelyOnce);
+        return new ConsumePipeline(filters, requiresContinuation: effectivelyOnce);
 
         void AddFilters(IReadOnlyList<ConsumeFilterRegistration> registrations, List<IStreamConsumeFilter> target, string scope, bool endpointScope)
         {
@@ -594,7 +590,7 @@ internal sealed class StreamConsumerRegistry
                 handle, errorStream, errorStream, 0, reference, replayOptions,
                 async ctx =>
                 {
-                    if (!ErrorEnvelope.TryParse(errorStream, ctx.Body.ToArray(), ctx.Metadata.ApplicationProperties, out var envelope) || envelope is null)
+                    if (!ErrorEnvelope.TryParse(errorStream, ctx.Body.ToArray(), ctx.Headers.All, out var envelope) || envelope is null)
                     {
                         Interlocked.Increment(ref skipped);
                         _logger.LogWarning("Replay skipping malformed message on error stream '{Error}' at offset {Offset}.",

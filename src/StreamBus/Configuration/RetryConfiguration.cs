@@ -60,7 +60,10 @@ public sealed record ExhaustedContext
     public required int Partition { get; init; }
     public required ulong Offset { get; init; }
     public required ReadOnlyMemory<byte> Body { get; init; }
-    public required MessageMetadata Metadata { get; init; }
+    public Guid? MessageId { get; init; }
+    public Guid? CorrelationId { get; init; }
+    public DateTime? SentTime { get; init; }
+    public required IStreamHeaders Headers { get; init; }
     public required int Attempts { get; init; }
     public required Exception Exception { get; init; }
     public required DateTimeOffset FailedAt { get; init; }

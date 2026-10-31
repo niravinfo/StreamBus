@@ -33,7 +33,7 @@ sealed class StubProducerHandle : IStreamSuperProducerHandle
         SendCount++;
         return _send(body, options.RoutingKey, ct);
     }
-    public Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, PublishOptions options, IReadOnlyDictionary<string, object?> applicationProperties, string? messageId, string? correlationId, CancellationToken ct)
+    public Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, StreamMessageProperties properties, CancellationToken ct)
         => throw new NotImplementedException("PublishTests never sends envelopes.");
     public Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, PublishOptions options, CancellationToken ct)
         => throw new NotImplementedException("PublishTests never replays.");

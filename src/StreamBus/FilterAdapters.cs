@@ -68,11 +68,10 @@ internal sealed class TypedConsumeFilterAdapter<T> : IStreamConsumeFilter, IType
 
     public Type FilterType { get; }
 
-    public Task OnConsume(StreamConsumeFilterContext context, ConsumeDelegate next, CancellationToken ct)
+    public Task OnConsume(ConsumeContext context, ConsumeDelegate next)
         => _filter.OnConsume(
-            context as StreamConsumeFilterContext<T>
+            context as ConsumeContext<T>
                 ?? throw new StreamBusConfigurationException(
                     $"Typed consume filter for {typeof(T).FullName} ran without a typed consume context (internal error)."),
-            next,
-            ct);
+            next);
 }

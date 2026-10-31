@@ -9,7 +9,7 @@ public sealed record ActivityMessage(string Value);
 
 internal sealed class ActivityDoubleNextFilter : IStreamConsumeFilter
 {
-    public async Task OnConsume(StreamConsumeFilterContext context, ConsumeDelegate next, CancellationToken ct)
+    public async Task OnConsume(ConsumeContext context, ConsumeDelegate next)
     {
         await next();
         await next();
@@ -234,7 +234,7 @@ public sealed class ActivityTests
     private class Handle : IStreamPlainProducerHandle
     {
         public Task SendAsync(ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct) => Task.CompletedTask;
-        public Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, PublishOptions options, IReadOnlyDictionary<string, object?> applicationProperties, string? messageId, string? correlationId, CancellationToken ct) => Task.CompletedTask;
+        public Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, StreamMessageProperties properties, CancellationToken ct) => Task.CompletedTask;
         public Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, PublishOptions options, CancellationToken ct) => Task.CompletedTask;
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }

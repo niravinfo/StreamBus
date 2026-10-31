@@ -83,7 +83,7 @@ public sealed class TypedConsumerIntegrationTests : IAsyncDisposable
     {
         private readonly List<(ConsumeContext<OrderEvent> Ctx, byte[] Raw)> _got;
         public OrderConsumer(List<(ConsumeContext<OrderEvent>, byte[])> got) => _got = got;
-        public Task Consume(ConsumeContext<OrderEvent> context, CancellationToken ct)
+        public Task Consume(ConsumeContext<OrderEvent> context)
         {
             lock (_got) _got.Add((context, context.Body.ToArray()));
             return Task.CompletedTask;
@@ -101,7 +101,7 @@ public sealed class TypedConsumerIntegrationTests : IAsyncDisposable
             _attempts = attempts;
             _got = got;
         }
-        public Task Consume(ConsumeContext<OrderEvent> context, CancellationToken ct)
+        public Task Consume(ConsumeContext<OrderEvent> context)
         {
             int attempt;
             lock (_attempts)

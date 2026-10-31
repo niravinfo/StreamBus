@@ -514,13 +514,13 @@ public sealed class ConsumerIntegrationTests : IAsyncDisposable
         Assert.Contains(seen, x => x.Kind == "super");
         foreach (var (_, context) in seen)
         {
-            Assert.Equal(messageId.ToString("D"), context.Metadata.MessageId);
-            Assert.Equal(correlationId.ToString("D"), context.Metadata.CorrelationId);
-            Assert.Equal("acme", context.Metadata.GetString("tenant"));
-            Assert.Equal(3, context.Metadata.GetInt("attempt"));
-            Assert.Equal(9_000_000_000L, context.Metadata.GetLong("sequence"));
-            Assert.True(context.Metadata.GetBool("flag"));
-            var payload = context.Metadata.GetJson<PropertyHeaderPayload>("payload");
+            Assert.Equal(messageId, context.MessageId);
+            Assert.Equal(correlationId, context.CorrelationId);
+            Assert.Equal("acme", context.Headers.GetString("tenant"));
+            Assert.Equal(3, context.Headers.GetInt("attempt"));
+            Assert.Equal(9_000_000_000L, context.Headers.GetLong("sequence"));
+            Assert.True(context.Headers.GetBool("flag"));
+            var payload = context.Headers.GetJson<PropertyHeaderPayload>("payload");
             Assert.NotNull(payload);
             Assert.Equal(7, payload.Id);
         }

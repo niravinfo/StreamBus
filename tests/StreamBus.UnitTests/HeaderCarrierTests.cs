@@ -104,34 +104,30 @@ public sealed class HeaderCarrierTests
     }
 
     [Fact]
-    public void Metadata_accessors_read_the_legal_value_set()
+    public void Header_accessors_read_the_legal_value_set()
     {
         var serializer = new RecordingSerializer();
-        var metadata = new MessageMetadata
+        var headers = new StreamHeaders(new Dictionary<string, object?>
         {
-            ApplicationProperties = new Dictionary<string, object?>
-            {
-                ["text"] = "value",
-                ["int"] = 42,
-                ["long"] = 9_000_000_000L,
-                ["bool"] = true,
-                ["json"] = "{\"Id\":7}",
-                ["not-a-number"] = "42",
-            },
-            Serializer = serializer,
-        };
+            ["text"] = "value",
+            ["int"] = 42,
+            ["long"] = 9_000_000_000L,
+            ["bool"] = true,
+            ["json"] = "{\"Id\":7}",
+            ["not-a-number"] = "42",
+        }, serializer);
 
-        Assert.Equal("value", metadata.GetString("text"));
-        Assert.Equal(42, metadata.GetInt("int"));
-        Assert.Null(metadata.GetInt("long"));
-        Assert.Equal(42L, metadata.GetLong("int"));
-        Assert.Equal(9_000_000_000L, metadata.GetLong("long"));
-        Assert.True(metadata.GetBool("bool"));
-        Assert.Null(metadata.GetBool("text"));
-        Assert.Null(metadata.GetInt("not-a-number"));
-        Assert.Null(metadata.GetString("missing"));
+        Assert.Equal("value", headers.GetString("text"));
+        Assert.Equal(42, headers.GetInt("int"));
+        Assert.Null(headers.GetInt("long"));
+        Assert.Equal(42L, headers.GetLong("int"));
+        Assert.Equal(9_000_000_000L, headers.GetLong("long"));
+        Assert.True(headers.GetBool("bool"));
+        Assert.Null(headers.GetBool("text"));
+        Assert.Null(headers.GetInt("not-a-number"));
+        Assert.Null(headers.GetString("missing"));
 
-        var payload = metadata.GetJson<HeaderPayload>("json");
+        var payload = headers.GetJson<HeaderPayload>("json");
         Assert.NotNull(payload);
         Assert.Equal(7, payload.Id);
         Assert.True(serializer.DeserializeCalled);
@@ -140,12 +136,11 @@ public sealed class HeaderCarrierTests
     [Fact]
     public void GetJson_invalid_json_names_the_key_and_keeps_the_json_exception()
     {
-        var metadata = new MessageMetadata
-        {
-            ApplicationProperties = new Dictionary<string, object?> { ["payload"] = "{not-json" },
-        };
+        var headers = new StreamHeaders(
+            new Dictionary<string, object?> { ["payload"] = "{not-json" },
+            SystemTextJsonStreamSerializer.Default);
 
-        var ex = Assert.Throws<ArgumentException>(() => metadata.GetJson<HeaderPayload>("payload"));
+        var ex = Assert.Throws<ArgumentException>(() => headers.GetJson<HeaderPayload>("payload"));
         Assert.Contains("payload", ex.Message, StringComparison.Ordinal);
         Assert.IsType<JsonException>(ex.InnerException);
     }

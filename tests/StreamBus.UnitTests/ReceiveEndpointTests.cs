@@ -8,12 +8,12 @@ public sealed class ReceiveEndpointTests
 
     private sealed class OrderConsumer : IConsumer<OrderEvent>
     {
-        public Task Consume(ConsumeContext<OrderEvent> context, CancellationToken ct) => Task.CompletedTask;
+        public Task Consume(ConsumeContext<OrderEvent> context) => Task.CompletedTask;
     }
 
     private sealed class AuditConsumer : IConsumer<OrderEvent>
     {
-        public Task Consume(ConsumeContext<OrderEvent> context, CancellationToken ct) => Task.CompletedTask;
+        public Task Consume(ConsumeContext<OrderEvent> context) => Task.CompletedTask;
     }
 
     private sealed class NotAConsumer;

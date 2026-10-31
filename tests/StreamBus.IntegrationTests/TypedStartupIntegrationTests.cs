@@ -82,7 +82,7 @@ public sealed class TypedStartupIntegrationTests : IAsyncDisposable
     {
         private readonly List<(string Who, int Seq)> _got;
         public OrderConsumer(List<(string Who, int Seq)> got) => _got = got;
-        public Task Consume(ConsumeContext<OrderEvent> context, CancellationToken ct)
+        public Task Consume(ConsumeContext<OrderEvent> context)
         {
             lock (_got) _got.Add((nameof(OrderConsumer), context.Message.Seq));
             return Task.CompletedTask;
@@ -93,7 +93,7 @@ public sealed class TypedStartupIntegrationTests : IAsyncDisposable
     {
         private readonly List<(string Who, int Seq)> _got;
         public AuditConsumer(List<(string Who, int Seq)> got) => _got = got;
-        public Task Consume(ConsumeContext<OrderEvent> context, CancellationToken ct)
+        public Task Consume(ConsumeContext<OrderEvent> context)
         {
             lock (_got) _got.Add((nameof(AuditConsumer), context.Message.Seq));
             return Task.CompletedTask;

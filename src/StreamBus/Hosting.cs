@@ -267,12 +267,10 @@ internal sealed class StreamBusConsumerStore
 
 internal static class TypedConsumerHandler
 {
-    public static Func<ConsumeContext, Task> Create(Type messageType, Type consumerType, IServiceScopeFactory scopes, IStreamSerializer serializer)
+    public static Func<ConsumeContext, Task> Create(Type messageType, Type consumerType)
     {
         ArgumentNullException.ThrowIfNull(messageType);
         ArgumentNullException.ThrowIfNull(consumerType);
-        ArgumentNullException.ThrowIfNull(scopes);
-        ArgumentNullException.ThrowIfNull(serializer);
         var open = typeof(TypedConsumerHandler).GetMethod(nameof(CreateTyped), BindingFlags.NonPublic | BindingFlags.Static)
             ?? throw new StreamBusConfigurationException("Typed consumer invoker is missing (internal error).");
         MethodInfo closed;
@@ -284,37 +282,21 @@ internal static class TypedConsumerHandler
         {
             throw new StreamBusConfigurationException($"Consumer {consumerType.FullName} cannot consume {messageType.FullName} (must implement IConsumer<{messageType.Name}>).");
         }
-        return (Func<ConsumeContext, Task>)closed.Invoke(null, new object[] { scopes, serializer })!;
+        return (Func<ConsumeContext, Task>)closed.Invoke(null, Array.Empty<object>())!;
     }
 
-    private static Func<ConsumeContext, Task> CreateTyped<T, TConsumer>(IServiceScopeFactory scopes, IStreamSerializer serializer)
+    private static Func<ConsumeContext, Task> CreateTyped<T, TConsumer>()
         where TConsumer : class, IConsumer<T>
-        => async raw =>
+        => async context =>
         {
-            var message = raw.TypedMessage is { } typed
-                ? (T)typed
-                : (T)TypedMessageDeserializer.Deserialize(serializer, typeof(T), raw);
-            var ownedScope = raw.Services is null ? scopes.CreateScope() : null;
-            try
+            if (context is not ConsumeContext<T> typed)
             {
-                var provider = raw.Services ?? ownedScope!.ServiceProvider;
-                var consumer = provider.GetRequiredService<TConsumer>();
-                await consumer.Consume(new ConsumeContext<T>
-                {
-                    Message = message,
-                    Stream = raw.Stream,
-                    Partition = raw.Partition,
-                    Offset = raw.Offset,
-                    RoutingValue = raw.RoutingValue,
-                    Body = raw.Body,
-                    Metadata = raw.Metadata,
-                    CancellationToken = raw.CancellationToken,
-                }, raw.CancellationToken).ConfigureAwait(false);
+                throw new StreamBusConfigurationException(
+                    $"Typed consumer {typeof(TConsumer).FullName} for {typeof(T).FullName} received a {context.GetType().FullName} context without a deserialized message (internal error).");
             }
-            finally
-            {
-                ownedScope?.Dispose();
-            }
+
+            var consumer = context.Services.GetRequiredService<TConsumer>();
+            await consumer.Consume(typed).ConfigureAwait(false);
         };
 }
 
@@ -726,7 +708,7 @@ internal sealed class StreamBusHostedService : IHostedService
             _logger.LogWarning(
                 "ReceiveEndpoint '{Stream}' sets both OnExhausted and a dead-letter destination '{Destination}'; the callback owns exhaustion and the destination is shadowed.",
                 reg.Stream, shadowed.Name);
-        var handler = TypedConsumerHandler.Create(reg.MessageType, reg.ConsumerType, _scopes, serializer);
+        var handler = TypedConsumerHandler.Create(reg.MessageType, reg.ConsumerType);
         var consumers = _registry is StreamBusRegistry concrete ? concrete.ConsumersFor(vhost) : null;
         await StreamRuntimeLoop.RetryUntilAsync(
             async attemptCt =>

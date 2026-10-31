@@ -95,7 +95,6 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
     // state and returns, and the attach loop observes the signal outside the callback,
     // closes the consumer, backs off, and recreates from the stored offset.
 
-    private const string RoutingKeyProperty = "streambus.routing-key";
     private const string PromotionFallbackBranch = "PromotionFailed";
 
     // Parity with the ConnectionSupervisor defaults (200 ms base, 30 s cap).
@@ -500,12 +499,16 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                 offset,
                 message.Properties?.CorrelationId?.ToString());
 
-            using var messageScope = _pipeline.Count > 0 && _scopes is not null ? _scopes.CreateScope() : null;
-            var services = messageScope?.ServiceProvider;
+            using var messageScope =
+                (_pipeline.Count > 0 || _options.MessageType is not null) && _scopes is not null
+                    ? _scopes.CreateScope()
+                    : null;
+            var services = messageScope?.ServiceProvider ?? EmptyServiceProvider.Instance;
+            var sendHeaders = new StreamSendHeaders(null, _serializer);
             ConsumeContext consumeContext;
             try
             {
-                consumeContext = BuildContext(offset, message, attach.LoopToken, services);
+                consumeContext = BuildContext(offset, message, attach.LoopToken, services, sendHeaders);
             }
             catch (Exception ex)
             {
@@ -514,13 +517,12 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                 return;
             }
 
-            HeaderWriter? lastHeaders = null;
             Interlocked.Increment(ref _state.Inflight);
             try
             {
                 if (_eo is not null)
                 {
-                    await DispatchEffectivelyOnceAsync(offset, consumeContext, attach, activity).ConfigureAwait(false);
+                    await DispatchEffectivelyOnceAsync(offset, consumeContext, sendHeaders, attach, activity).ConfigureAwait(false);
                     return;
                 }
                 // In-handler retry (FR-4.1): the attempt loop runs under the already-held
@@ -531,15 +533,11 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                 while (true)
                 {
                     attempts++;
+                    sendHeaders.Reset();
+                    consumeContext.ResetPayloads();
                     try
                     {
-                        var headers = _pipeline.Count > 0 ? new HeaderWriter() : null;
-                        lastHeaders = headers;
-                        await InvokeHandlerPipelineAsync(
-                            consumeContext,
-                            headers,
-                            services,
-                            attach.LoopToken).ConfigureAwait(false);
+                        await InvokeHandlerPipelineAsync(consumeContext).ConfigureAwait(false);
                         break;
                     }
                     catch (OperationCanceledException) when (attach.LoopToken.IsCancellationRequested)
@@ -566,7 +564,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                         {
                             Interlocked.Decrement(ref _state.Inflight);
                             Interlocked.Exchange(ref _state.RetryBlocked, 0);
-                            await ExhaustAsync(consumer, offset, consumeContext, attempts, ex, attach, lastHeaders?.Snapshot()).ConfigureAwait(false);
+                            await ExhaustAsync(consumer, offset, consumeContext, attempts, ex, attach, sendHeaders.Snapshot()).ConfigureAwait(false);
                             return;
                         }
                         Interlocked.Exchange(ref _state.RetryBlocked, 1);
@@ -619,44 +617,30 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
     // (so their exceptions use the existing retry/exhaustion machinery), while
     // the per-message DI scope is created once in DispatchAsync and shared with
     // the typed consumer.
-    private async Task InvokeHandlerPipelineAsync(
-        ConsumeContext consumeContext,
-        HeaderWriter? headers,
-        IServiceProvider? services,
-        CancellationToken ct)
+    private async Task InvokeHandlerPipelineAsync(ConsumeContext consumeContext)
     {
+        if (_options.MessageType is { } messageType)
+        {
+            var message = TypedMessageDeserializer.Deserialize(_serializer, messageType, consumeContext);
+            consumeContext = TypedConsumeContext.Create(messageType, consumeContext, message);
+        }
+
         if (_pipeline.Count == 0)
         {
             await _handler(consumeContext).ConfigureAwait(false);
             return;
         }
 
-        if (_pipeline.RequiresTypedMessage)
-        {
-            var messageType = _options.MessageType
-                ?? throw new StreamBusConfigurationException(
-                    "Typed consume filter attached without an endpoint message type (internal error).");
-            consumeContext = consumeContext with
-            {
-                TypedMessage = TypedMessageDeserializer.Deserialize(_serializer, messageType, consumeContext),
-            };
-        }
-
-        var pipelineContext = _pipeline.CreateContext(
-            consumeContext,
-            headers ?? new HeaderWriter(),
-            services ?? EmptyServiceProvider.Instance);
         await _pipeline.RunAsync(
-            pipelineContext,
-            () => _handler(consumeContext),
-            ct).ConfigureAwait(false);
+            consumeContext,
+            () => _handler(consumeContext)).ConfigureAwait(false);
     }
 
     // SkipAfterDeadline exhaustion: confirmed error-stream handoff first, single
     // advance-store second, observe-only hook third. Never throws into dispatch:
     // HandOffAsync's commit failure propagates to the dispatch safety net (attach
     // recycle + redeliver), never to a silent skip.
-    private async Task ExhaustAsync(IStreamConsumerHandle consumer, ulong offset, ConsumeContext consumeContext, int attempts, Exception lastError, AttachState attach, IReadOnlyDictionary<string, object?>? outputHeaders = null)
+    private async Task ExhaustAsync(IStreamConsumerHandle consumer, ulong offset, ConsumeContext consumeContext, int attempts, Exception lastError, AttachState attach, IReadOnlyDictionary<string, object?>? sendHeaders = null)
     {
         if (_options.ExhaustionCallback is { } owned)
         {
@@ -672,7 +656,10 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                 Partition = _partitionIndex,
                 Offset = offset,
                 Body = consumeContext.Body,
-                Metadata = consumeContext.Metadata,
+                MessageId = consumeContext.MessageId,
+                CorrelationId = consumeContext.CorrelationId,
+                SentTime = consumeContext.SentTime,
+                Headers = consumeContext.Headers,
                 Attempts = attempts,
                 Exception = lastError,
                 FailedAt = DateTimeOffset.UtcNow,
@@ -707,10 +694,11 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                 ExceptionStack = lastError.ToString(),
                 Attempts = attempts,
                 FailedAt = DateTimeOffset.UtcNow,
-                MessageId = consumeContext.Metadata.MessageId,
-                CorrelationId = consumeContext.Metadata.CorrelationId,
+                MessageId = consumeContext.MessageId,
+                CorrelationId = consumeContext.CorrelationId,
+                SentTime = consumeContext.SentTime,
                 RoutingValue = consumeContext.RoutingValue,
-                OutputHeaders = outputHeaders,
+                SendHeaders = sendHeaders,
             };
             _logger.LogWarning(lastError,
                 "Retry budget exhausted for stream {Stream} partition {Partition} offset {Offset} after {Attempts} attempts; handing off to error queue {ErrorQueue}.",
@@ -738,10 +726,11 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
             ExceptionStack = lastError.ToString(),
             Attempts = attempts,
             FailedAt = failedAt,
-            MessageId = consumeContext.Metadata.MessageId,
-            CorrelationId = consumeContext.Metadata.CorrelationId,
+            MessageId = consumeContext.MessageId,
+            CorrelationId = consumeContext.CorrelationId,
+            SentTime = consumeContext.SentTime,
             RoutingValue = consumeContext.RoutingValue,
-            OutputHeaders = outputHeaders,
+            SendHeaders = sendHeaders,
         };
         _logger.LogWarning(lastError,
             "Retry budget exhausted for stream {Stream} partition {Partition} offset {Offset} after {Attempts} attempts; handing off to error stream {ErrorStream}.",
@@ -806,16 +795,18 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
     // point). Runs under the dispatch gate, so one partition publishes under one
     // stable name sequentially (FR-6.3). A single finally owns the inflight
     // decrement + retry_blocked reset for every exit path below.
-    private async Task DispatchEffectivelyOnceAsync(ulong offset, ConsumeContext consumeContext, AttachState attach, Activity? activity)
+    private async Task DispatchEffectivelyOnceAsync(ulong offset, ConsumeContext consumeContext, StreamSendHeaders sendHeaders, AttachState attach, Activity? activity)
     {
         try
         {
             ReadOnlyMemory<byte> result;
-            IReadOnlyDictionary<string, object?>? outputHeaders = null;
+            IReadOnlyDictionary<string, object?>? outputHeaders;
             var attempts = 0;
             while (true)
             {
                 attempts++;
+                sendHeaders.Reset();
+                consumeContext.ResetPayloads();
                 try
                 {
                     if (_pipeline.Count == 0)
@@ -824,22 +815,16 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                     }
                     else
                     {
-                        var headers = new HeaderWriter();
-                        var pipelineContext = _pipeline.CreateContext(
-                            consumeContext,
-                            headers,
-                            consumeContext.Services ?? EmptyServiceProvider.Instance);
                         ReadOnlyMemory<byte> pipelineResult = default;
                         await _pipeline.RunAsync(
-                            pipelineContext,
+                            consumeContext,
                             async () =>
                             {
                                 pipelineResult = await _eo!.ResultHandler(consumeContext).ConfigureAwait(false);
-                            },
-                            attach.LoopToken).ConfigureAwait(false);
+                            }).ConfigureAwait(false);
                         result = pipelineResult;
-                        outputHeaders = headers.Snapshot();
                     }
+                    outputHeaders = sendHeaders.Snapshot();
                     break;
                 }
                 catch (OperationCanceledException) when (attach.LoopToken.IsCancellationRequested)
@@ -930,12 +915,14 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
         }
     }
 
-    private ConsumeContext BuildContext(ulong offset, Message message, CancellationToken ct, IServiceProvider? services = null)
+    private ConsumeContext BuildContext(ulong offset, Message message, CancellationToken ct, IServiceProvider services, StreamSendHeaders sendHeaders)
     {
         var body = message.Data.Contents.ToArray();
         IDictionary<string, object>? appProps = message.ApplicationProperties;
-        var metadata = MapMetadata(message.Properties, appProps, _serializer);
-        metadata.ApplicationProperties.TryGetValue(RoutingKeyProperty, out var routingObj);
+        var app = appProps is null
+            ? new Dictionary<string, object?>()
+            : appProps.ToDictionary(kv => kv.Key, kv => (object?)kv.Value);
+        app.TryGetValue(StreamHeaderKeys.RoutingKey, out var routingObj);
         return new ConsumeContext
         {
             Stream = _stream,
@@ -943,30 +930,13 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
             Offset = offset,
             RoutingValue = routingObj?.ToString(),
             Body = body,
-            Metadata = metadata,
-            CancellationToken = ct,
+            MessageId = StreamWire.ReadGuid(message.Properties?.MessageId),
+            CorrelationId = StreamWire.ReadGuid(message.Properties?.CorrelationId),
+            SentTime = StreamWire.ReadSentTime(message.Properties),
+            Headers = new StreamHeaders(app, _serializer),
+            SendHeaders = sendHeaders,
             Services = services,
-        };
-    }
-
-    private static MessageMetadata MapMetadata(
-        RabbitMQ.Stream.Client.AMQP.Properties? properties,
-        IDictionary<string, object>? applicationProperties,
-        IStreamSerializer serializer)
-    {
-        var app = applicationProperties is null
-            ? new Dictionary<string, object?>()
-            : applicationProperties.ToDictionary(kv => kv.Key, kv => (object?)kv.Value);
-        app.TryGetValue("streambus.routing-key", out var routingObj);
-        return new MessageMetadata
-        {
-            MessageId = properties?.MessageId?.ToString(),
-            CorrelationId = properties?.CorrelationId?.ToString(),
-            ApplicationProperties = app,
-            Timestamp = properties?.CreationTime is { } ct
-                ? new DateTimeOffset(DateTime.SpecifyKind(ct, DateTimeKind.Utc))
-                : null,
-            Serializer = serializer,
+            CancellationToken = ct,
         };
     }
 

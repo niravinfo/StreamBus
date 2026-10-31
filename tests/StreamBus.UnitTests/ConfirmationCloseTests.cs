@@ -34,7 +34,7 @@ file sealed class NeverConfirmedEnvelopeHandle : IStreamPlainProducerHandle
     public Task SendAsync(ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct)
         => throw new NotSupportedException("ConfirmationCloseTests only publish envelopes.");
 
-    public async Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, PublishOptions options, IReadOnlyDictionary<string, object?> applicationProperties, string? messageId, string? correlationId, CancellationToken ct)
+    public async Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, StreamMessageProperties properties, CancellationToken ct)
         => await Task.Delay(Timeout.InfiniteTimeSpan, ct).ConfigureAwait(false);
 
     public Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, PublishOptions options, CancellationToken ct)
@@ -54,7 +54,7 @@ file sealed class RecordingEnvelopeHandle : IStreamPlainProducerHandle
     public Task SendAsync(ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct)
         => throw new NotSupportedException("ConfirmationCloseTests only publish envelopes.");
 
-    public Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, PublishOptions options, IReadOnlyDictionary<string, object?> applicationProperties, string? messageId, string? correlationId, CancellationToken ct)
+    public Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, StreamMessageProperties properties, CancellationToken ct)
     {
         Sends++;
         return Task.CompletedTask;
@@ -114,10 +114,7 @@ public sealed class ConfirmationCloseTests
             registry.PublishEnvelopeAsync(
                 "errors",
                 new byte[] { 3 },
-                routingKey: null,
-                NoHeaders,
-                messageId: null,
-                correlationId: null,
+                new StreamMessageProperties { Headers = NoHeaders },
                 confirmTimeout: TimeSpan.FromMilliseconds(50),
                 TestContext.Current.CancellationToken));
 
@@ -129,10 +126,7 @@ public sealed class ConfirmationCloseTests
         await registry.PublishEnvelopeAsync(
             "errors",
             new byte[] { 4 },
-            routingKey: null,
-            NoHeaders,
-            messageId: null,
-            correlationId: null,
+            new StreamMessageProperties { Headers = NoHeaders },
             confirmTimeout: TimeSpan.FromSeconds(5),
             TestContext.Current.CancellationToken);
 

@@ -21,10 +21,15 @@ internal sealed class ErrorPublisher
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(errorStream);
         ArgumentNullException.ThrowIfNull(envelope);
-        LogOutputHeaderCollisions(envelope);
-        return _producers.PublishEnvelopeAsync(
-            errorStream, envelope.Body, routingKey: null,
-            envelope.ToApplicationProperties(), envelope.MessageId, envelope.CorrelationId, confirmTimeout, ct);
+        LogSendHeaderCollisions(envelope);
+        var properties = new StreamMessageProperties
+        {
+            MessageId = envelope.MessageId,
+            CorrelationId = envelope.CorrelationId,
+            SentTime = envelope.SentTime,
+            Headers = envelope.ToApplicationProperties(),
+        };
+        return _producers.PublishEnvelopeAsync(errorStream, envelope.Body, properties, confirmTimeout, ct);
     }
 
     public Task PublishQueueHandoffAsync(DeadLetterOptions queue, ErrorEnvelope envelope, CancellationToken ct)
@@ -33,16 +38,16 @@ internal sealed class ErrorPublisher
         ArgumentNullException.ThrowIfNull(envelope);
         if (_queues is null)
             throw new StreamBusConfigurationException("Queue dead-letter destinations require an error-queue transport (internal error).");
-        LogOutputHeaderCollisions(envelope);
+        LogSendHeaderCollisions(envelope);
         return _queues.PublishAsync(queue, envelope, ct);
     }
 
-    private void LogOutputHeaderCollisions(ErrorEnvelope envelope)
+    private void LogSendHeaderCollisions(ErrorEnvelope envelope)
     {
-        if (envelope.OutputHeaders is null)
+        if (envelope.SendHeaders is null)
             return;
         var envelopeKeys = envelope.EnvelopeApplicationProperties();
-        foreach (var key in envelope.OutputHeaders.Keys)
+        foreach (var key in envelope.SendHeaders.Keys)
         {
             if (envelopeKeys.ContainsKey(key))
             {

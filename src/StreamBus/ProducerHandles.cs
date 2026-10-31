@@ -19,10 +19,7 @@ public interface IStreamPlainProducerHandle : IStreamProducerHandle
 {
     Task SendEnvelopeAsync(
         ReadOnlyMemory<byte> body,
-        PublishOptions options,
-        IReadOnlyDictionary<string, object?> applicationProperties,
-        string? messageId,
-        string? correlationId,
+        StreamMessageProperties properties,
         CancellationToken ct);
 
     Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, PublishOptions options, CancellationToken ct);
@@ -206,22 +203,12 @@ internal sealed class StreamProducerHandle : IStreamPlainProducerHandle
         await _confirmations.PublishAsync(_producer, _stream, message, ct).ConfigureAwait(false);
     }
 
-    public async Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, PublishOptions options, IReadOnlyDictionary<string, object?> applicationProperties, string? messageId, string? correlationId, CancellationToken ct)
+    public async Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, StreamMessageProperties properties, CancellationToken ct)
     {
-        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(properties);
         ct.ThrowIfCancellationRequested();
-        ArgumentNullException.ThrowIfNull(applicationProperties);
         var message = new Message(body.ToArray());
-        if (messageId is not null || correlationId is not null)
-        {
-            message.Properties = new RabbitMQ.Stream.Client.AMQP.Properties { MessageId = messageId, CorrelationId = correlationId };
-        }
-        var app = new RabbitMQ.Stream.Client.AMQP.ApplicationProperties();
-        foreach (var kv in applicationProperties)
-        {
-            app[kv.Key] = kv.Value;
-        }
-        message.ApplicationProperties = app;
+        StreamMessageProperties.ApplyTo(message, properties);
         await _confirmations.PublishAsync(_producer, _stream, message, ct).ConfigureAwait(false);
     }
 
@@ -271,27 +258,13 @@ internal sealed class SuperStreamProducerHandle : IStreamSuperProducerHandle
 
     public Task SendEnvelopeAsync(
         ReadOnlyMemory<byte> body,
-        PublishOptions options,
-        IReadOnlyDictionary<string, object?> applicationProperties,
-        string? messageId,
-        string? correlationId,
+        StreamMessageProperties properties,
         CancellationToken ct)
     {
-        ArgumentNullException.ThrowIfNull(applicationProperties);
+        ArgumentNullException.ThrowIfNull(properties);
         var message = new Message(body.ToArray());
-        if (messageId is not null || correlationId is not null)
-        {
-            message.Properties = new RabbitMQ.Stream.Client.AMQP.Properties { MessageId = messageId, CorrelationId = correlationId };
-        }
-        var app = new RabbitMQ.Stream.Client.AMQP.ApplicationProperties();
-        foreach (var kv in applicationProperties)
-            app[kv.Key] = kv.Value;
-        message.ApplicationProperties = app;
-        return SendMessageAsync(
-            message,
-            options,
-            (outgoing, token) => _confirmations.PublishAsync(_producer, _stream, outgoing, token),
-            ct);
+        StreamMessageProperties.ApplyTo(message, properties);
+        return _confirmations.PublishAsync(_producer, _stream, message, ct);
     }
 
     public Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, PublishOptions options, CancellationToken ct)

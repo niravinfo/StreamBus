@@ -10,7 +10,7 @@ public sealed class TypedConsumerTests
     private sealed class OrderConsumer : IConsumer<OrderEvent>
     {
         public readonly List<OrderEvent> Got = new();
-        public Task Consume(ConsumeContext<OrderEvent> context, CancellationToken ct)
+        public Task Consume(ConsumeContext<OrderEvent> context)
         {
             lock (Got) Got.Add(context.Message);
             return Task.CompletedTask;
@@ -49,7 +49,7 @@ public sealed class TypedConsumerTests
 
     private sealed class OrderConsumerTests_Other : IConsumer<OrderEvent>
     {
-        public Task Consume(ConsumeContext<OrderEvent> context, CancellationToken ct) => Task.CompletedTask;
+        public Task Consume(ConsumeContext<OrderEvent> context) => Task.CompletedTask;
     }
 
     [Fact]
@@ -85,7 +85,7 @@ public sealed class TypedConsumerTests
             Interlocked.Increment(ref Constructions);
             _attempts = attempts;
         }
-        public Task Consume(ConsumeContext<OrderEvent> context, CancellationToken ct)
+        public Task Consume(ConsumeContext<OrderEvent> context)
         {
             var seq = context.Message.Seq;
             int attempt;
@@ -99,16 +99,26 @@ public sealed class TypedConsumerTests
         }
     }
 
-    private static ConsumeContext RawOf(string body) => new()
+    private static ConsumeContext RawOf(string body, IServiceProvider services) => new()
     {
         Stream = "orders",
         Partition = 0,
         Offset = 0,
         RoutingValue = null,
         Body = System.Text.Encoding.UTF8.GetBytes(body),
-        Metadata = new MessageMetadata(),
+        Headers = new StreamHeaders(new Dictionary<string, object?>(), SystemTextJsonStreamSerializer.Default),
+        SendHeaders = new StreamSendHeaders(null, SystemTextJsonStreamSerializer.Default),
+        Services = services,
         CancellationToken = TestContext.Current.CancellationToken,
     };
+
+    private static ConsumeContext OrderContext(string body, IServiceProvider services)
+    {
+        var raw = RawOf(body, services);
+        var message = TypedMessageDeserializer.Deserialize(
+            SystemTextJsonStreamSerializer.Default, typeof(OrderEvent), raw);
+        return TypedConsumeContext.Create(typeof(OrderEvent), raw, message);
+    }
 
     [Fact]
     public async Task Attempts_resolve_fresh_and_poison_translates()
@@ -118,19 +128,18 @@ public sealed class TypedConsumerTests
         services.AddSingleton(attempts);
         services.AddTransient<FlakyConsumer>();
         await using var sp = services.BuildServiceProvider();
-        var factory = sp.GetRequiredService<IServiceScopeFactory>();
         FlakyConsumer.Constructions = 0;
-        var handler = TypedConsumerHandler.Create(typeof(OrderEvent), typeof(FlakyConsumer), factory, SystemTextJsonStreamSerializer.Default);
+        var handler = TypedConsumerHandler.Create(typeof(OrderEvent), typeof(FlakyConsumer));
         var good = "{\"OrderId\":\"k\",\"Seq\":2}";
-        await Assert.ThrowsAsync<InvalidOperationException>(() => handler(RawOf(good)));
-        await Assert.ThrowsAsync<InvalidOperationException>(() => handler(RawOf(good)));
-        await handler(RawOf(good));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => handler(OrderContext(good, sp)));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => handler(OrderContext(good, sp)));
+        await handler(OrderContext(good, sp));
         Assert.Equal(3, FlakyConsumer.Constructions);
         Assert.Equal(3, attempts[2]);
-        var poison = await Assert.ThrowsAsync<StreamBusDeserializationException>(() => handler(RawOf("{bad json}")));
+        var poison = Assert.Throws<StreamBusDeserializationException>(() => OrderContext("{bad json}", sp));
         Assert.Equal("orders", poison.Stream);
         Assert.Equal(typeof(OrderEvent), poison.MessageType);
-        var nil = await Assert.ThrowsAsync<StreamBusDeserializationException>(() => handler(RawOf("null")));
+        var nil = Assert.Throws<StreamBusDeserializationException>(() => OrderContext("null", sp));
         Assert.Contains("null", nil.InnerException?.Message ?? nil.Message, StringComparison.OrdinalIgnoreCase);
     }
 
