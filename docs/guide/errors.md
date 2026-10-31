@@ -106,10 +106,13 @@ int requeued = await bus.RequeueErrorsAsync("orders", "orders-errors", ct);
 ```
 
 `BasicGet`-loops the queue and republishes bodies to the source stream as
-fresh messages (tail append, at-least-once), acknowledging only after the
-stream confirm. Malformed entries are acknowledged with a warning and
-skipped. Stream destinations replay with `ReplayErrorStreamAsync`
-instead.
+new offsets (tail append, at-least-once), acknowledging only after the
+stream confirm. The envelope's `MessageId`, `CorrelationId`, and `SentTime`
+are carried over; `content-type` and consume-added headers are not
+restored, so a requeued message may carry a body without the original
+property metadata. Malformed entries are acknowledged with a warning and
+skipped. Stream destinations replay with `ReplayErrorStreamAsync` instead
+and preserve the same identity fields.
 
 ## Full example
 

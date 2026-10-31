@@ -142,6 +142,21 @@ public sealed class HeadersTests
     }
 
     [Fact]
+    public void Set_after_remove_clears_the_tombstone()
+    {
+        var headers = new StreamSendHeaders(
+            new Dictionary<string, object?> { ["tenant"] = "seed" },
+            SystemTextJsonStreamSerializer.Default);
+
+        headers.Remove("tenant");
+        Assert.False(headers.Materialize(null)!.Headers.ContainsKey("tenant"));
+
+        headers.Set("tenant", "again");
+
+        Assert.Equal("again", headers.Materialize(null)!.Headers["tenant"]);
+    }
+
+    [Fact]
     public void All_includes_framework_and_user_keys()
     {
         var headers = new StreamHeaders(new Dictionary<string, object?>

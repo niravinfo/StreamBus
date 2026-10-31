@@ -223,9 +223,7 @@ internal abstract class StreamBusCore<TBus> : IStreamBus
     {
         var body = _serializer.Serialize(message);
         StreamBusActivity.SetSize(activity, body.Length);
-        var properties = (effective.Properties ?? new StreamMessageProperties())
-            with
-        { ContentType = _serializer.ContentType };
+        var properties = (effective.Properties ?? new StreamMessageProperties()) with { ContentType = _serializer.ContentType };
         await _producers.PublishAsync(stream, body, effective with { Properties = properties }, ct).ConfigureAwait(false);
     }
 
