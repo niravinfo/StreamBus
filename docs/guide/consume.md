@@ -125,7 +125,7 @@ for the lifetime of the context; `Headers` (read-only) and `SendHeaders`
 | `SentTime` | `DateTime?` | AMQP `creation-time`, UTC, millisecond precision |
 | `Headers` | `IStreamHeaders` | application properties as received, framework keys included |
 | `SendHeaders` | `IStreamSendHeaders` | headers carried on the error envelope or effectively-once result |
-| `Stream` / `Partition` / `Offset` / `RoutingValue` / `Body` / `Services` / `CancellationToken` | unchanged semantics | |
+| `Stream` / `Partition` / `Offset` / `RoutingValue` / `Body` / `Services` / `CancellationToken` | — | unchanged semantics |
 
 ### Typed consume filters
 

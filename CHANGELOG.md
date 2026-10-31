@@ -13,23 +13,30 @@
 - `MessageMetadata` is removed. Consume ids are `Guid?`
   (`MessageId`, `CorrelationId`), `SentTime` is a nullable `DateTime`, and
   `Headers` / `SendHeaders` expose the application properties.
+  `ExhaustedContext.Metadata` is likewise replaced by flat `MessageId`,
+  `CorrelationId`, `SentTime`, and `Headers` members.
 - `IConsumer<T>.Consume` and both filter interfaces drop the
   `CancellationToken` parameter; the token is on the context.
 - `IStreamHeaderWriter` is replaced by `IStreamSendHeaders`.
 - `ErrorEnvelope.MessageId` / `CorrelationId` are `Guid?`, and the
   envelope carries `SentTime`.
+- Typed endpoints now deserialize before any filter runs on every delivery
+  attempt, whether or not a typed filter is attached. A payload that fails
+  deserialization is retried and exhausted without running filters or the
+  consumer; a universal filter can no longer quarantine it first.
 - StreamBus writes `content-type` and `creation-time` (plus `message-id`
   when supplied or generated) to the AMQP properties section.
 - Super-stream publishes now write `streambus.routing-key` as an
   application property, so every partition consumer observes the routing
   key.
+- `IStreamSerializer` gains a `ContentType` member, so third-party
+  implementations must supply one.
 
 ### Added
 
 - Reserved-key guards reject `streambus.message-id`,
   `streambus.correlation-id`, `streambus.sent-time`, and
   `streambus.routing-key` from user headers.
-- `IStreamSerializer` exposes `ContentType`.
 
 ## 0.2.0
 
