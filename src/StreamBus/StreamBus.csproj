@@ -4,9 +4,9 @@
     <AssemblyName>StreamBus</AssemblyName>
     <IsPackable>true</IsPackable>
     <PackageId>StreamBus</PackageId>
-    <!-- 0.2.0 is the breaking V2 release (ADR-6); the published version comes
-         from the release tag. -->
-    <VersionPrefix>0.2.0</VersionPrefix>
+    <!-- 0.3.0 is the shared-message-context breaking release; the published
+         version comes from the release tag. -->
+    <VersionPrefix>0.3.0</VersionPrefix>
     <Authors>Nirav Patel</Authors>
     <Description>MassTransit-style client for RabbitMQ streams on .NET 10.</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
