@@ -623,12 +623,12 @@ public sealed class HostingTests
 
     private sealed class DerivedConsumer : IConsumer<DerivedEvent>
     {
-        public Task Consume(ConsumeContext<DerivedEvent> context, CancellationToken ct) => Task.CompletedTask;
+        public Task Consume(ConsumeContext<DerivedEvent> context) => Task.CompletedTask;
     }
 
     private sealed class OtherDerivedConsumer : IConsumer<DerivedEvent>
     {
-        public Task Consume(ConsumeContext<DerivedEvent> context, CancellationToken ct) => Task.CompletedTask;
+        public Task Consume(ConsumeContext<DerivedEvent> context) => Task.CompletedTask;
     }
 
     private static IReadOnlyList<DeclaredStream> DeclareSet(

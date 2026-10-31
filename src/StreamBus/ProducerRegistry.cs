@@ -63,10 +63,10 @@ internal sealed class StreamProducerRegistry
         }
     }
 
-    public async Task PublishEnvelopeAsync(string stream, ReadOnlyMemory<byte> body, string? routingKey, IReadOnlyDictionary<string, object?> applicationProperties, string? messageId, string? correlationId, TimeSpan confirmTimeout, CancellationToken ct = default)
+    public async Task PublishEnvelopeAsync(string stream, ReadOnlyMemory<byte> body, StreamMessageProperties properties, TimeSpan confirmTimeout, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(stream);
-        ArgumentNullException.ThrowIfNull(applicationProperties);
+        ArgumentNullException.ThrowIfNull(properties);
         if (confirmTimeout <= TimeSpan.Zero)
             throw new StreamBusConfigurationException("Error hand-off confirm timeout must be positive.");
         var readiness = await _supervisor.WaitUntilReadyAsync(ReadinessPolicy.FailFastPolicy, ct).ConfigureAwait(false);
@@ -83,10 +83,7 @@ internal sealed class StreamProducerRegistry
         {
             await plain.SendEnvelopeAsync(
                 body,
-                new PublishOptions { IsSuperStream = false, RoutingKey = routingKey },
-                applicationProperties,
-                messageId,
-                correlationId,
+                properties,
                 attemptCts.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested && attemptCts.IsCancellationRequested)

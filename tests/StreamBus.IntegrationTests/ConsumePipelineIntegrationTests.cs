@@ -18,10 +18,10 @@ internal sealed class ConsumePipelineTenantProbe
 
 internal sealed class ConsumePipelineTenantFilter : IStreamConsumeFilter
 {
-    public Task OnConsume(StreamConsumeFilterContext context, ConsumeDelegate next, CancellationToken ct)
+    public Task OnConsume(ConsumeContext context, ConsumeDelegate next)
     {
         var scope = (ConsumePipelineTenantScope)context.Services.GetRequiredService(typeof(ConsumePipelineTenantScope));
-        scope.Tenant = context.Raw.Metadata.ApplicationProperties.TryGetValue("tenant", out var value)
+        scope.Tenant = context.Headers.All.TryGetValue("tenant", out var value)
             ? value?.ToString()
             : null;
         context.SetPayload(scope.Tenant);
@@ -33,7 +33,7 @@ internal sealed class ConsumePipelineTenantConsumer(
     ConsumePipelineTenantScope scope,
     ConsumePipelineTenantProbe probe) : IConsumer<ConsumePipelineTenantMessage>
 {
-    public Task Consume(ConsumeContext<ConsumePipelineTenantMessage> context, CancellationToken ct)
+    public Task Consume(ConsumeContext<ConsumePipelineTenantMessage> context)
     {
         lock (probe.Seen) probe.Seen.Add(scope.Tenant);
         return Task.CompletedTask;
@@ -42,17 +42,17 @@ internal sealed class ConsumePipelineTenantConsumer(
 
 internal sealed class ConsumePipelineHeaderThrowingFilter : IStreamConsumeFilter
 {
-    public Task OnConsume(StreamConsumeFilterContext context, ConsumeDelegate next, CancellationToken ct)
+    public Task OnConsume(ConsumeContext context, ConsumeDelegate next)
     {
-        if (context.Raw.Metadata.ApplicationProperties.TryGetValue("tenant", out var tenant))
-            context.OutputHeaders.Set("tenant", tenant);
+        if (context.Headers.All.TryGetValue("tenant", out var tenant))
+            context.SendHeaders.Set("tenant", tenant);
         throw new InvalidOperationException("pipeline boom");
     }
 }
 
 internal sealed class ConsumePipelineFilteringFilter : IStreamConsumeFilter
 {
-    public Task OnConsume(StreamConsumeFilterContext context, ConsumeDelegate next, CancellationToken ct)
+    public Task OnConsume(ConsumeContext context, ConsumeDelegate next)
         => Task.CompletedTask;
 }
 

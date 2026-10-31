@@ -466,16 +466,15 @@ public sealed class TypedFilterRegistrationTests
 
     private sealed class RegistrationUniversalConsumeFilter : IStreamConsumeFilter
     {
-        public Task OnConsume(StreamConsumeFilterContext context, ConsumeDelegate next, CancellationToken ct)
+        public Task OnConsume(ConsumeContext context, ConsumeDelegate next)
             => next();
     }
 
     private sealed class RegistrationTypedConsumeFilter : IStreamConsumeFilter<RegistrationOrder>
     {
         public Task OnConsume(
-            StreamConsumeFilterContext<RegistrationOrder> context,
-            ConsumeDelegate next,
-            CancellationToken ct)
+            ConsumeContext<RegistrationOrder> context,
+            ConsumeDelegate next)
             => next();
     }
 
@@ -483,75 +482,70 @@ public sealed class TypedFilterRegistrationTests
         : IStreamConsumeFilter<RegistrationInvoice>, IStreamConsumeFilter<RegistrationOrder>
     {
         public Task OnConsume(
-            StreamConsumeFilterContext<RegistrationInvoice> context,
-            ConsumeDelegate next,
-            CancellationToken ct)
+            ConsumeContext<RegistrationInvoice> context,
+            ConsumeDelegate next)
             => next();
 
         public Task OnConsume(
-            StreamConsumeFilterContext<RegistrationOrder> context,
-            ConsumeDelegate next,
-            CancellationToken ct)
+            ConsumeContext<RegistrationOrder> context,
+            ConsumeDelegate next)
             => next();
     }
 
     private sealed class RegistrationOpenConsumeFilter<T> : IStreamConsumeFilter<T>
     {
-        public Task OnConsume(StreamConsumeFilterContext<T> context, ConsumeDelegate next, CancellationToken ct)
+        public Task OnConsume(ConsumeContext<T> context, ConsumeDelegate next)
             => next();
     }
 
     private sealed class RegistrationTwoArityConsumeFilter<T1, T2> : IStreamConsumeFilter<T1>
     {
-        public Task OnConsume(StreamConsumeFilterContext<T1> context, ConsumeDelegate next, CancellationToken ct)
+        public Task OnConsume(ConsumeContext<T1> context, ConsumeDelegate next)
             => next();
     }
 
     private sealed class RegistrationWrongParameterConsumeFilter<T> : IStreamConsumeFilter<string>
     {
-        public Task OnConsume(StreamConsumeFilterContext<string> context, ConsumeDelegate next, CancellationToken ct)
+        public Task OnConsume(ConsumeContext<string> context, ConsumeDelegate next)
             => next();
     }
 
     private sealed class RegistrationDualConsumeFilter
         : IStreamConsumeFilter, IStreamConsumeFilter<RegistrationOrder>
     {
-        public Task OnConsume(StreamConsumeFilterContext context, ConsumeDelegate next, CancellationToken ct)
+        public Task OnConsume(ConsumeContext context, ConsumeDelegate next)
             => next();
 
         public Task OnConsume(
-            StreamConsumeFilterContext<RegistrationOrder> context,
-            ConsumeDelegate next,
-            CancellationToken ct)
+            ConsumeContext<RegistrationOrder> context,
+            ConsumeDelegate next)
             => next();
     }
 
     private sealed class RegistrationUniversalOpenConsumeFilter<T> : IStreamConsumeFilter
     {
-        public Task OnConsume(StreamConsumeFilterContext context, ConsumeDelegate next, CancellationToken ct)
+        public Task OnConsume(ConsumeContext context, ConsumeDelegate next)
             => next();
     }
 
     private sealed class RegistrationInvoiceConsumeFilter : IStreamConsumeFilter<RegistrationInvoice>
     {
         public Task OnConsume(
-            StreamConsumeFilterContext<RegistrationInvoice> context,
-            ConsumeDelegate next,
-            CancellationToken ct)
+            ConsumeContext<RegistrationInvoice> context,
+            ConsumeDelegate next)
             => next();
     }
 
     private abstract class RegistrationAbstractConsumeFilter : IStreamConsumeFilter<RegistrationOrder>
     {
         public abstract Task OnConsume(
-            StreamConsumeFilterContext<RegistrationOrder> context,
-            ConsumeDelegate next,
-            CancellationToken ct);
+            ConsumeContext<RegistrationOrder> context,
+            ConsumeDelegate next);
     }
 
     private sealed class RegistrationConsumer : IConsumer<RegistrationOrder>
     {
-        public Task Consume(ConsumeContext<RegistrationOrder> context, CancellationToken cancellationToken)
+        public Task Consume(ConsumeContext<RegistrationOrder> context)
             => Task.CompletedTask;
     }
 }

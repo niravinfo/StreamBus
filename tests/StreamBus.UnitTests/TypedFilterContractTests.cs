@@ -33,7 +33,7 @@ public sealed class TypedFilterContractTests
         var adapter = new TypedConsumeFilterAdapter<ContractDerived>(filter);
         var context = NewTypedConsumeContext(new ContractDerived("d-1"));
 
-        await adapter.OnConsume(context, () => Task.CompletedTask, TestContext.Current.CancellationToken);
+        await adapter.OnConsume(context, () => Task.CompletedTask);
 
         Assert.Same(context, filter.SeenContext);
         Assert.Equal("d-1", filter.Seen!.Id);
@@ -42,23 +42,24 @@ public sealed class TypedFilterContractTests
     }
 
     [Fact]
-    public void Typed_contexts_share_headers_payloads_services_and_raw_context()
+    public void Typed_and_universal_consume_filters_share_one_instance()
     {
         var typedPublish = NewTypedPublishContext(new ContractDerived("d-1"));
         typedPublish.Headers.Set("shared", true);
         Assert.True(typedPublish.Headers.TryGet("shared", out _));
         Assert.Same(typedPublish.Payload, typedPublish.Message);
 
-        var typedConsume = NewTypedConsumeContext(new ContractDerived("d-1"));
-        StreamConsumeFilterContext universalConsume = typedConsume;
-        typedConsume.OutputHeaders.Set("shared", true);
-        typedConsume.SetPayload("payload");
-        Assert.True(universalConsume.OutputHeaders.TryGet("shared", out _));
-        Assert.Equal("payload", universalConsume.GetPayload<string>());
-        Assert.Equal(typeof(ContractDerived), universalConsume.MessageType);
-        Assert.Same(typedConsume.Raw, universalConsume.Raw);
-        Assert.Same(typedConsume.OutputHeaders, universalConsume.OutputHeaders);
-        Assert.Same(typedConsume.Services, universalConsume.Services);
+        var typed = NewTypedConsumeContext(new ContractDerived("d-1"));
+        ConsumeContext universal = typed;
+        typed.SendHeaders.Set("shared", true);
+        typed.SetPayload("payload");
+        Assert.True(universal.SendHeaders.TryGet("shared", out _));
+        Assert.Equal("payload", typed.GetPayload<string>());
+        Assert.Same(typed, universal);
+        Assert.Same(typed.Headers, universal.Headers);
+        Assert.Same(typed.SendHeaders, universal.SendHeaders);
+        Assert.Same(typed.Services, universal.Services);
+        Assert.Equal(typed.CancellationToken, universal.CancellationToken);
     }
 
     private static StreamPublishFilterContext NewPublishContext(object message, Type declared) => new()
@@ -91,30 +92,17 @@ public sealed class TypedFilterContractTests
         HeartbeatSeconds = 60,
     };
 
-    private static StreamConsumeFilterContext NewConsumeContext(object message) => new()
-    {
-        Raw = NewRawContext(),
-        MessageType = message.GetType(),
-        OutputHeaders = new HeaderWriter(),
-        Services = EmptyProvider.Instance,
-    };
-
-    private static StreamConsumeFilterContext<ContractDerived> NewTypedConsumeContext(ContractDerived message) => new()
-    {
-        Raw = NewRawContext(),
-        Message = message,
-        OutputHeaders = new HeaderWriter(),
-        Services = EmptyProvider.Instance,
-    };
-
-    private static ConsumeContext NewRawContext() => new()
+    private static ConsumeContext<ContractDerived> NewTypedConsumeContext(ContractDerived message) => new()
     {
         Stream = "contracts",
         Partition = 0,
         Offset = 0,
         RoutingValue = null,
         Body = ReadOnlyMemory<byte>.Empty,
-        Metadata = new MessageMetadata(),
+        Headers = new StreamHeaders(new Dictionary<string, object?>(), SystemTextJsonStreamSerializer.Default),
+        SendHeaders = new StreamSendHeaders(null, SystemTextJsonStreamSerializer.Default),
+        Message = message,
+        Services = EmptyProvider.Instance,
         CancellationToken = TestContext.Current.CancellationToken,
     };
 
@@ -142,12 +130,11 @@ public sealed class TypedFilterContractTests
     private sealed class ContractTypedConsumeFilter : IStreamConsumeFilter<ContractDerived>
     {
         public ContractDerived? Seen { get; private set; }
-        public StreamConsumeFilterContext<ContractDerived>? SeenContext { get; private set; }
+        public ConsumeContext<ContractDerived>? SeenContext { get; private set; }
 
         public Task OnConsume(
-            StreamConsumeFilterContext<ContractDerived> context,
-            ConsumeDelegate next,
-            CancellationToken ct)
+            ConsumeContext<ContractDerived> context,
+            ConsumeDelegate next)
         {
             SeenContext = context;
             Seen = context.Message;

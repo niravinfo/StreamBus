@@ -134,7 +134,7 @@ public sealed class RetryIntegrationTests : IAsyncDisposable
             new ConsumeOptions { Reference = "grp-r1-err", Offset = ConsumeOffset.AlwaysFirst },
             ctx =>
             {
-                var app = ctx.Metadata.ApplicationProperties.ToDictionary(kv => kv.Key, kv => kv.Value?.ToString());
+                var app = ctx.Headers.All.ToDictionary(kv => kv.Key, kv => kv.Value?.ToString());
                 lock (errors) errors.Add((System.Text.Encoding.UTF8.GetString(ctx.Body.Span), app));
                 return Task.CompletedTask;
             },
@@ -399,7 +399,7 @@ public sealed class RetryIntegrationTests : IAsyncDisposable
             new ConsumeOptions { Reference = "grp-re-read", Offset = ConsumeOffset.AlwaysFirst },
             ctx =>
             {
-                var app = ctx.Metadata.ApplicationProperties.ToDictionary(kv => kv.Key, kv => kv.Value?.ToString());
+                var app = ctx.Headers.All.ToDictionary(kv => kv.Key, kv => kv.Value?.ToString());
                 lock (errors) errors.Add((System.Text.Encoding.UTF8.GetString(ctx.Body.Span), app));
                 return Task.CompletedTask;
             },

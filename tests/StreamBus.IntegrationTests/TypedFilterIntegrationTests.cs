@@ -68,58 +68,59 @@ internal sealed class TypedFilterOrderConsumeFilter(TypedFilterProbe probe)
     : IStreamConsumeFilter<TypedFilterOrder>
 {
     public Task OnConsume(
-        StreamConsumeFilterContext<TypedFilterOrder> context,
-        ConsumeDelegate next,
-        CancellationToken ct)
+        ConsumeContext<TypedFilterOrder> context,
+        ConsumeDelegate next)
     {
         probe.Record(
             TypedFilterProbe.TypedConsume,
-            context.Raw.Stream,
+            context.Stream,
             typeof(TypedFilterOrder),
             context.Message,
-            context.Raw.Metadata.GetString(TypedFilterHeaders.Order));
+            context.Headers.GetString(TypedFilterHeaders.Order));
         return next();
     }
 }
 
 internal sealed class TypedFilterUniversalConsumeFilter(TypedFilterProbe probe) : IStreamConsumeFilter
 {
-    public Task OnConsume(StreamConsumeFilterContext context, ConsumeDelegate next, CancellationToken ct)
+    public Task OnConsume(ConsumeContext context, ConsumeDelegate next)
     {
         probe.Record(
             TypedFilterProbe.UniversalConsume,
-            context.Raw.Stream,
-            context.MessageType ?? typeof(object),
-            context.Raw.Body,
-            context.Raw.Metadata.GetString(TypedFilterHeaders.Order));
+            context.Stream,
+            context.GetType().IsGenericType
+                ? context.GetType().GetGenericArguments()[0]
+                : typeof(object),
+            context.Body,
+            context.Headers.GetString(TypedFilterHeaders.Order));
         return next();
     }
 }
 
 internal sealed class TypedFilterOrderConsumer(TypedFilterProbe probe) : IConsumer<TypedFilterOrder>
 {
-    public Task Consume(ConsumeContext<TypedFilterOrder> context, CancellationToken ct)
+    public Task Consume(ConsumeContext<TypedFilterOrder> context)
     {
         probe.Record(
             TypedFilterProbe.OrderConsumer,
             context.Stream,
             typeof(TypedFilterOrder),
             context.Message,
-            context.Metadata.GetString(TypedFilterHeaders.Order));
+            context.Headers.GetString(TypedFilterHeaders.Order));
         return Task.CompletedTask;
     }
 }
 
 internal sealed class TypedFilterInvoiceConsumer(TypedFilterProbe probe) : IConsumer<TypedFilterInvoice>
 {
-    public Task Consume(ConsumeContext<TypedFilterInvoice> context, CancellationToken ct)
+    public Task Consume(ConsumeContext<TypedFilterInvoice> context)
     {
         probe.Record(
             TypedFilterProbe.InvoiceConsumer,
             context.Stream,
             typeof(TypedFilterInvoice),
             context.Message,
-            context.Metadata.GetString(TypedFilterHeaders.Order));
+            context.Headers.GetString(TypedFilterHeaders.Order));
         return Task.CompletedTask;
     }
 }

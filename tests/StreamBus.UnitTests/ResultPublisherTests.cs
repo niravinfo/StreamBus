@@ -10,7 +10,7 @@ public sealed class ResultPublisherTests
         public int Calls;
         public FlakyHandle(int failures) => _failuresLeft = failures;
         public Task SendAsync(ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct) => throw new NotImplementedException();
-        public Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, PublishOptions options, IReadOnlyDictionary<string, object?> app, string? mid, string? cid, CancellationToken ct) => throw new NotImplementedException();
+        public Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, StreamMessageProperties properties, CancellationToken ct) => throw new NotImplementedException();
         public Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, PublishOptions options, CancellationToken ct) => Record();
         public Task PublishWithIdAsync(ulong publishingId, ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct) => Record();
         public Task PublishResultAsync(ReadOnlyMemory<byte> body, ulong publishingId, string? routingKey, CancellationToken ct) => Record();

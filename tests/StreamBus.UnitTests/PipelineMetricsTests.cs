@@ -57,23 +57,20 @@ public sealed class PipelineMetricsTests : IDisposable
     public async Task Consume_pipeline_duration_is_recorded_in_seconds_with_the_consume_kind()
     {
         var pipeline = new ConsumePipeline(new IStreamConsumeFilter[] { new NoopConsumeFilter() });
-        var context = new StreamConsumeFilterContext
+        var context = new ConsumeContext
         {
-            Raw = new ConsumeContext
-            {
-                Stream = "orders",
-                Partition = 0,
-                Offset = 0,
-                RoutingValue = null,
-                Body = ReadOnlyMemory<byte>.Empty,
-                Metadata = new MessageMetadata(),
-                CancellationToken = TestContext.Current.CancellationToken,
-            },
-            OutputHeaders = new HeaderWriter(),
+            Stream = "orders",
+            Partition = 0,
+            Offset = 0,
+            RoutingValue = null,
+            Body = ReadOnlyMemory<byte>.Empty,
+            Headers = new StreamHeaders(new Dictionary<string, object?>(), SystemTextJsonStreamSerializer.Default),
+            SendHeaders = new StreamSendHeaders(null, SystemTextJsonStreamSerializer.Default),
             Services = EmptyProvider.Instance,
+            CancellationToken = TestContext.Current.CancellationToken,
         };
 
-        await pipeline.RunAsync(context, () => Task.CompletedTask, TestContext.Current.CancellationToken);
+        await pipeline.RunAsync(context, () => Task.CompletedTask);
 
         var measurement = Assert.Single(_measurements, m =>
             m.Instrument == "streambus_pipeline_duration"
@@ -90,7 +87,7 @@ public sealed class PipelineMetricsTests : IDisposable
 
     private sealed class NoopConsumeFilter : IStreamConsumeFilter
     {
-        public Task OnConsume(StreamConsumeFilterContext context, ConsumeDelegate next, CancellationToken ct)
+        public Task OnConsume(ConsumeContext context, ConsumeDelegate next)
             => next();
     }
 

@@ -9,7 +9,7 @@ public sealed class RetryConfigurationTests
 
     private sealed class OrderConsumer : IConsumer<OrderEvent>
     {
-        public Task Consume(ConsumeContext<OrderEvent> context, CancellationToken ct) => Task.CompletedTask;
+        public Task Consume(ConsumeContext<OrderEvent> context) => Task.CompletedTask;
     }
 
     private static ConsumeOptions EndpointOptions(Action<IReceiveEndpointConfigurator> endpoint, Action<IStreamBusConfigurator>? bus = null)
@@ -225,7 +225,7 @@ public sealed class RetryConfigurationTests
         Partition = 0,
         Offset = 7,
         Body = new ReadOnlyMemory<byte>(new byte[] { 1 }),
-        Metadata = new MessageMetadata(),
+        Headers = new StreamHeaders(new Dictionary<string, object?>(), SystemTextJsonStreamSerializer.Default),
         Attempts = 3,
         Exception = new InvalidOperationException("boom"),
         FailedAt = DateTimeOffset.UtcNow,

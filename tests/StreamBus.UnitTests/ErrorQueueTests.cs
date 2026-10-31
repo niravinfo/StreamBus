@@ -17,8 +17,8 @@ public sealed class ErrorQueueTests
         ExceptionStack = "at Boom()",
         Attempts = 3,
         FailedAt = new DateTimeOffset(2026, 10, 15, 12, 0, 0, TimeSpan.Zero),
-        MessageId = "m-1",
-        CorrelationId = "c-1",
+        MessageId = Guid.Parse("0f8fad5b-d9cb-469f-a165-70867728950e"),
+        CorrelationId = Guid.Parse("6b1f5c1a-0d9e-4b6f-9a4e-1f2d3c4b5a69"),
         RoutingValue = "o-1",
     };
 
@@ -106,7 +106,7 @@ public sealed class ErrorQueueTests
 
     private sealed class WidgetConsumer : IConsumer<WidgetEvent>
     {
-        public Task Consume(ConsumeContext<WidgetEvent> context, CancellationToken ct) => Task.CompletedTask;
+        public Task Consume(ConsumeContext<WidgetEvent> context) => Task.CompletedTask;
     }
 
     private static TypedConsumerRegistration Registration(string stream, DeadLetterOptions? deadLetter, bool callback)

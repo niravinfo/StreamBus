@@ -57,7 +57,7 @@ public sealed class ErrorQueueIntegrationTests : IAsyncDisposable
 
     private sealed class FailingConsumer : IConsumer<OrderEvent>
     {
-        public Task Consume(ConsumeContext<OrderEvent> context, CancellationToken ct)
+        public Task Consume(ConsumeContext<OrderEvent> context)
             => Task.FromException(new InvalidOperationException($"poison {context.Message.Sequence}"));
     }
 

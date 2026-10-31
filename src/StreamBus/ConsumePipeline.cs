@@ -18,9 +18,8 @@ public interface IStreamConsumeFilter
     /// The continuation. Call it at most once; zero calls mark the delivery as
     /// handled and advance the offset without invoking the handler.
     /// </param>
-    /// <param name="ct">Cancellation token for the delivery.</param>
     /// <returns>A task that completes when the filter and any continuation finish.</returns>
-    Task OnConsume(StreamConsumeFilterContext context, ConsumeDelegate next, CancellationToken ct);
+    Task OnConsume(ConsumeContext context, ConsumeDelegate next);
 }
 
 /// <summary>
@@ -39,9 +38,8 @@ public interface IStreamConsumeFilter<T>
     /// The continuation. Call it at most once; zero calls mark the delivery as
     /// handled and advance the offset without invoking the handler.
     /// </param>
-    /// <param name="ct">Cancellation token for the delivery.</param>
     /// <returns>A task that completes when the filter and any continuation finish.</returns>
-    Task OnConsume(StreamConsumeFilterContext<T> context, ConsumeDelegate next, CancellationToken ct);
+    Task OnConsume(ConsumeContext<T> context, ConsumeDelegate next);
 }
 
 /// <summary>
@@ -49,60 +47,6 @@ public interface IStreamConsumeFilter<T>
 /// effectively-once pipelines require exactly one call.
 /// </summary>
 public delegate Task ConsumeDelegate();
-
-/// <summary>
-/// Shared context for one delivery. Universal and typed consume filters receive
-/// the same context instance.
-/// </summary>
-public class StreamConsumeFilterContext
-{
-    /// <summary>The raw delivery, including body and broker metadata.</summary>
-    public required ConsumeContext Raw { get; init; }
-
-    /// <summary>
-    /// Endpoint message type; null for raw and effectively-once pipelines.
-    /// </summary>
-    public virtual Type? MessageType { get; init; }
-
-    /// <summary>
-    /// Headers carried on the hand-off envelope or effectively-once result.
-    /// </summary>
-    public required IStreamHeaderWriter OutputHeaders { get; init; }
-
-    /// <summary>
-    /// Per-delivery service scope shared with the typed consumer.
-    /// </summary>
-    public required IServiceProvider Services { get; init; }
-
-    private readonly Dictionary<Type, object?> _payloads = new();
-
-    /// <summary>Gets a value stored by an earlier filter.</summary>
-    /// <typeparam name="T">Type used as the storage key.</typeparam>
-    /// <returns>The stored value, or the default value when absent.</returns>
-    public T? GetPayload<T>()
-        => _payloads.TryGetValue(typeof(T), out var value) && value is T typed
-            ? typed
-            : default;
-
-    /// <summary>Stores a value for later filters in this pipeline.</summary>
-    /// <typeparam name="T">Type used as the storage key.</typeparam>
-    /// <param name="value">The value to store.</param>
-    public void SetPayload<T>(T value) => _payloads[typeof(T)] = value;
-}
-
-/// <summary>
-/// Typed consume context for an endpoint message type. It derives from and is
-/// the same object as the universal <see cref="StreamConsumeFilterContext"/>.
-/// </summary>
-/// <typeparam name="T">The endpoint message type.</typeparam>
-public sealed class StreamConsumeFilterContext<T> : StreamConsumeFilterContext
-{
-    /// <summary>The deserialized endpoint message.</summary>
-    public required T Message { get; init; }
-
-    /// <inheritdoc />
-    public override Type? MessageType => typeof(T);
-}
 
 internal sealed class ConsumeFilterRegistration
 {
@@ -206,80 +150,33 @@ internal sealed class StreamBusConsumeFilterStore
 
 internal sealed class ConsumePipeline
 {
-    private static readonly ConcurrentDictionary<
-        Type,
-        Func<ConsumeContext, IStreamHeaderWriter, IServiceProvider, StreamConsumeFilterContext>> ContextFactories = new();
-
     private readonly IStreamConsumeFilter[] _filters;
-    private readonly Type? _endpointMessageType;
     private readonly bool _requiresContinuation;
 
     public ConsumePipeline(
         IReadOnlyList<IStreamConsumeFilter> filters,
-        Type? endpointMessageType = null,
-        bool requiresTypedMessage = false,
         bool requiresContinuation = false)
     {
         ArgumentNullException.ThrowIfNull(filters);
-        if (requiresTypedMessage && endpointMessageType is null)
-        {
-            throw new StreamBusConfigurationException(
-                "A consume pipeline with typed filters requires an endpoint message type.");
-        }
-
         _filters = filters.ToArray();
-        _endpointMessageType = endpointMessageType;
         _requiresContinuation = requiresContinuation;
-        RequiresTypedMessage = requiresTypedMessage;
     }
 
     public int Count => _filters.Length;
 
-    public bool RequiresTypedMessage { get; }
-
-    public StreamConsumeFilterContext CreateContext(
-        ConsumeContext raw,
-        IStreamHeaderWriter outputHeaders,
-        IServiceProvider services)
-    {
-        ArgumentNullException.ThrowIfNull(raw);
-        ArgumentNullException.ThrowIfNull(outputHeaders);
-        ArgumentNullException.ThrowIfNull(services);
-
-        if (!RequiresTypedMessage)
-        {
-            return new StreamConsumeFilterContext
-            {
-                Raw = raw,
-                MessageType = _endpointMessageType,
-                OutputHeaders = outputHeaders,
-                Services = services,
-            };
-        }
-
-        var factory = ContextFactories.GetOrAdd(_endpointMessageType!, CreateContextFactory);
-        return factory(raw, outputHeaders, services);
-    }
-
-    public Task RunAsync(
-        StreamConsumeFilterContext context,
-        ConsumeDelegate terminal,
-        CancellationToken ct)
+    public Task RunAsync(ConsumeContext context, ConsumeDelegate terminal)
     {
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(terminal);
-        return RunMeasuredAsync(context, terminal, ct);
+        return RunMeasuredAsync(context, terminal);
     }
 
-    private async Task RunMeasuredAsync(
-        StreamConsumeFilterContext context,
-        ConsumeDelegate terminal,
-        CancellationToken ct)
+    private async Task RunMeasuredAsync(ConsumeContext context, ConsumeDelegate terminal)
     {
         var started = Stopwatch.GetTimestamp();
         try
         {
-            await InvokeAsync(0, context, terminal, ct).ConfigureAwait(false);
+            await InvokeAsync(0, context, terminal).ConfigureAwait(false);
         }
         finally
         {
@@ -287,11 +184,7 @@ internal sealed class ConsumePipeline
         }
     }
 
-    private async Task InvokeAsync(
-        int index,
-        StreamConsumeFilterContext context,
-        ConsumeDelegate terminal,
-        CancellationToken ct)
+    private async Task InvokeAsync(int index, ConsumeContext context, ConsumeDelegate terminal)
     {
         if (index == _filters.Length)
         {
@@ -314,10 +207,10 @@ internal sealed class ConsumePipeline
                     : new StreamBusTransientException(message);
             }
 
-            return InvokeAsync(index + 1, context, terminal, ct);
+            return InvokeAsync(index + 1, context, terminal);
         }
 
-        await filter.OnConsume(context, Next, ct).ConfigureAwait(false);
+        await filter.OnConsume(context, Next).ConfigureAwait(false);
 
         var calls = Volatile.Read(ref nextCalls);
         if (calls == 0)
@@ -339,37 +232,49 @@ internal sealed class ConsumePipeline
                 : new StreamBusTransientException(message);
         }
     }
+}
 
-    private static Func<ConsumeContext, IStreamHeaderWriter, IServiceProvider, StreamConsumeFilterContext>
-        CreateContextFactory(Type messageType)
+internal static class TypedConsumeContext
+{
+    private static readonly ConcurrentDictionary<
+        Type,
+        Func<ConsumeContext, object, ConsumeContext>> Factories = new();
+
+    public static ConsumeContext Create(Type messageType, ConsumeContext delivery, object message)
     {
-        var method = typeof(ConsumePipeline).GetMethod(
-            nameof(CreateTypedContext),
+        ArgumentNullException.ThrowIfNull(messageType);
+        ArgumentNullException.ThrowIfNull(delivery);
+        ArgumentNullException.ThrowIfNull(message);
+        return Factories.GetOrAdd(messageType, CreateFactory)(delivery, message);
+    }
+
+    private static Func<ConsumeContext, object, ConsumeContext> CreateFactory(Type messageType)
+    {
+        var method = typeof(TypedConsumeContext).GetMethod(
+            nameof(CreateTyped),
             BindingFlags.NonPublic | BindingFlags.Static)!;
-        return (Func<ConsumeContext, IStreamHeaderWriter, IServiceProvider, StreamConsumeFilterContext>)
-            method.MakeGenericMethod(messageType).CreateDelegate(
-                typeof(Func<ConsumeContext, IStreamHeaderWriter, IServiceProvider, StreamConsumeFilterContext>));
+        return (Func<ConsumeContext, object, ConsumeContext>)method
+            .MakeGenericMethod(messageType)
+            .CreateDelegate(typeof(Func<ConsumeContext, object, ConsumeContext>));
     }
 
-    private static StreamConsumeFilterContext<T> CreateTypedContext<T>(
-        ConsumeContext raw,
-        IStreamHeaderWriter outputHeaders,
-        IServiceProvider services)
-    {
-        if (raw.TypedMessage is not T message)
+    private static ConsumeContext<T> CreateTyped<T>(ConsumeContext delivery, object message)
+        => new ConsumeContext<T>
         {
-            throw new StreamBusConfigurationException(
-                $"The consume pipeline for {typeof(T).FullName} received a message without a deserialized {typeof(T).FullName} payload (internal error).");
-        }
-
-        return new StreamConsumeFilterContext<T>
-        {
-            Raw = raw,
-            Message = message,
-            OutputHeaders = outputHeaders,
-            Services = services,
+            Stream = delivery.Stream,
+            Partition = delivery.Partition,
+            Offset = delivery.Offset,
+            RoutingValue = delivery.RoutingValue,
+            Body = delivery.Body,
+            MessageId = delivery.MessageId,
+            CorrelationId = delivery.CorrelationId,
+            SentTime = delivery.SentTime,
+            Headers = delivery.Headers,
+            SendHeaders = delivery.SendHeaders,
+            Services = delivery.Services,
+            CancellationToken = delivery.CancellationToken,
+            Message = (T)message,
         };
-    }
 }
 
 internal sealed class EmptyServiceProvider : IServiceProvider

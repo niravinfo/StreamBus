@@ -73,7 +73,7 @@ public sealed class AcceptanceTests : IDisposable
             Interlocked.Increment(ref SendCount);
             return Task.CompletedTask;
         }
-        public Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, PublishOptions options, IReadOnlyDictionary<string, object?> applicationProperties, string? messageId, string? correlationId, CancellationToken ct)
+        public Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, StreamMessageProperties properties, CancellationToken ct)
             => throw new NotImplementedException("Acceptance tests publish plain only.");
         public Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, PublishOptions options, CancellationToken ct)
             => throw new NotImplementedException("Acceptance tests publish plain only.");

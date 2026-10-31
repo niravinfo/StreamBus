@@ -27,13 +27,7 @@ internal sealed class RecordingProducer : IStreamPlainProducerHandle
     public Task SendAsync(ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct)
         => throw new NotSupportedException("Replay publishes through PublishReplayAsync.");
 
-    public Task SendEnvelopeAsync(
-        ReadOnlyMemory<byte> body,
-        PublishOptions options,
-        IReadOnlyDictionary<string, object?> applicationProperties,
-        string? messageId,
-        string? correlationId,
-        CancellationToken ct)
+    public Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, StreamMessageProperties properties, CancellationToken ct)
         => throw new NotSupportedException("Replay publishes through PublishReplayAsync.");
 
     public Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, PublishOptions options, CancellationToken ct)

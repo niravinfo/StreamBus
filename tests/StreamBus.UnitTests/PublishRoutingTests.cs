@@ -17,7 +17,7 @@ public sealed class PublishRoutingTests
             lock (Sent) Sent.Add((body.ToArray(), options.RoutingKey));
             return Task.CompletedTask;
         }
-        public Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, PublishOptions options, IReadOnlyDictionary<string, object?> applicationProperties, string? messageId, string? correlationId, CancellationToken ct)
+        public Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, StreamMessageProperties properties, CancellationToken ct)
             => throw new NotImplementedException("PublishRoutingTests never sends envelopes.");
         public Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, PublishOptions options, CancellationToken ct)
             => throw new NotImplementedException("PublishRoutingTests never replays.");

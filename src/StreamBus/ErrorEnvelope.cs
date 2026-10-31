@@ -15,14 +15,15 @@ public sealed record ErrorEnvelope
     public required string ExceptionStack { get; init; }
     public required int Attempts { get; init; }
     public required DateTimeOffset FailedAt { get; init; }
-    public required string? MessageId { get; init; }
-    public required string? CorrelationId { get; init; }
+    public required Guid? MessageId { get; init; }
+    public required Guid? CorrelationId { get; init; }
+    public DateTime? SentTime { get; init; }
     public required string? RoutingValue { get; init; }
 
     /// <summary>Headers added by the consume pipeline for the failed delivery.
     /// They are forwarded on top of the envelope's own fields; envelope fields
     /// win when a key collides.</summary>
-    public IReadOnlyDictionary<string, object?>? OutputHeaders { get; init; }
+    public IReadOnlyDictionary<string, object?>? SendHeaders { get; init; }
 
     private const string P = "streambus.error.";
 
@@ -37,17 +38,18 @@ public sealed record ErrorEnvelope
         [P + "exception-stack"] = ExceptionStack,
         [P + "attempts"] = Attempts.ToString(CultureInfo.InvariantCulture),
         [P + "failed-at"] = FailedAt.ToString("o", CultureInfo.InvariantCulture),
-        [P + "message-id"] = MessageId,
-        [P + "correlation-id"] = CorrelationId,
+        [P + "message-id"] = MessageId?.ToString("D"),
+        [P + "correlation-id"] = CorrelationId?.ToString("D"),
+        [P + "sent-time"] = SentTime?.ToString("o", CultureInfo.InvariantCulture),
         [P + "routing-value"] = RoutingValue,
     };
 
     public Dictionary<string, object?> ToApplicationProperties()
     {
         var properties = EnvelopeApplicationProperties();
-        if (OutputHeaders is not null)
+        if (SendHeaders is not null)
         {
-            foreach (var (key, value) in OutputHeaders)
+            foreach (var (key, value) in SendHeaders)
             {
                 if (!properties.ContainsKey(key))
                     properties[key] = value;
@@ -114,12 +116,21 @@ public sealed record ErrorEnvelope
             ExceptionStack = get("exception-stack") ?? string.Empty,
             Attempts = attempts,
             FailedAt = failedAt,
-            MessageId = get("message-id"),
-            CorrelationId = get("correlation-id"),
+            MessageId = ParseGuid(get("message-id")),
+            CorrelationId = ParseGuid(get("correlation-id")),
+            SentTime = ParseSentTime(get("sent-time")),
             RoutingValue = get("routing-value"),
         };
         return true;
     }
+
+    private static Guid? ParseGuid(string? raw)
+        => Guid.TryParse(raw, out var value) ? value : null;
+
+    private static DateTime? ParseSentTime(string? raw)
+        => DateTime.TryParse(raw, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var value)
+            ? DateTime.SpecifyKind(value, DateTimeKind.Utc)
+            : null;
 }
 
 internal static class ReplayNaming

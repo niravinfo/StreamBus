@@ -7,9 +7,9 @@ namespace StreamBus.IntegrationTests;
 
 internal sealed class EoAnnotatingFilter : IStreamConsumeFilter
 {
-    public Task OnConsume(StreamConsumeFilterContext context, ConsumeDelegate next, CancellationToken ct)
+    public Task OnConsume(ConsumeContext context, ConsumeDelegate next)
     {
-        context.OutputHeaders.Set("tenant", "acme");
+        context.SendHeaders.Set("tenant", "acme");
         return next();
     }
 }
@@ -447,7 +447,7 @@ public sealed class EffectivelyOnceIntegrationTests : IAsyncDisposable
             ctx =>
             {
                 var (_, seq) = Parse(ctx.Body);
-                var tenant = ctx.Metadata.ApplicationProperties.TryGetValue("tenant", out var value) ? value?.ToString() : null;
+                var tenant = ctx.Headers.All.TryGetValue("tenant", out var value) ? value?.ToString() : null;
                 lock (got) got.Add((seq, tenant));
                 return Task.CompletedTask;
             }, ct);

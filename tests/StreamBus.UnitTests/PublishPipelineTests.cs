@@ -737,15 +737,9 @@ public sealed class PublishPipelineTests
             return Task.CompletedTask;
         }
 
-        public Task SendEnvelopeAsync(
-            ReadOnlyMemory<byte> body,
-            PublishOptions options,
-            IReadOnlyDictionary<string, object?> applicationProperties,
-            string? messageId,
-            string? correlationId,
-            CancellationToken ct)
+        public Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, StreamMessageProperties properties, CancellationToken ct)
         {
-            system.Add(stream, body, options);
+            system.Add(stream, body, new PublishOptions());
             return Task.CompletedTask;
         }
 
