@@ -57,7 +57,6 @@ public interface IReceiveEndpointConfigurator
     void UseConsumeFilter(Type filterType);
     void UseConsumeFilter(Func<IServiceProvider, IStreamConsumeFilter> factory);
     void UseConsumeFilter(IStreamConsumeFilter instance);
-    void AllowPipelineSkip(bool enabled = true);
     void DeadLetterToStream(string name, Action<IStreamOptionsBuilder>? configure = null);
     void DeadLetterToStream(string name, StreamOptions spec);
     void DeadLetterToQueue(string name, DeadLetterQueueType type);
@@ -71,7 +70,7 @@ public interface IReceiveEndpointConfigurator
     void LeaderLocator(StreamLeaderLocator locator);
 }
 
-public sealed record ReceiveEndpointDescriptor
+internal sealed record ReceiveEndpointDescriptor
 {
     public required string Stream { get; init; }
     public required Type MessageType { get; init; }
@@ -92,7 +91,6 @@ public sealed record ReceiveEndpointDescriptor
     public Func<ExhaustedContext, CancellationToken, Task>? OnExhausted { get; init; }
     public ReadinessPolicy Readiness { get; init; } = ReadinessPolicy.FailFastPolicy;
     internal IReadOnlyList<ConsumeFilterRegistration> ConsumeFilters { get; init; } = Array.Empty<ConsumeFilterRegistration>();
-    internal bool AllowPipelineSkip { get; init; }
 
     internal void Validate()
         => StreamOptionsValidation.Validate(
@@ -109,7 +107,7 @@ public sealed record ReceiveEndpointDescriptor
             partitionsError: "super-stream partitions must be >= 1.");
 }
 
-public sealed class StreamBusEndpointStore
+internal sealed class StreamBusEndpointStore
 {
     private readonly List<(Type BusMarker, ReceiveEndpointDescriptor Descriptor)> _endpoints = new();
 
@@ -414,7 +412,6 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
         private Func<ExhaustedContext, CancellationToken, Task>? _onExhausted;
         private ReadinessPolicy _readiness = ReadinessPolicy.FailFastPolicy;
         private readonly List<ConsumeFilterRegistration> _consumeFilters = new();
-        private bool _allowPipelineSkip;
 
         public ReceiveEndpointConfigurator(string stream) => _stream = stream;
 
@@ -482,7 +479,6 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
             ArgumentNullException.ThrowIfNull(instance);
             AddConsumeFilter(ConsumeFilterRegistration.ForInstance(instance));
         }
-        public void AllowPipelineSkip(bool enabled = true) => _allowPipelineSkip = enabled;
         private void AddConsumeFilter(ConsumeFilterRegistration filter)
         {
             if (filter.FilterType is { } type && _consumeFilters.Any(existing => existing.FilterType == type))
@@ -595,7 +591,6 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
                 OnExhausted = _onExhausted,
                 Readiness = _readiness,
                 ConsumeFilters = _consumeFilters.ToArray(),
-                AllowPipelineSkip = _allowPipelineSkip,
             };
             descriptor.Validate();
             return descriptor;
@@ -684,7 +679,6 @@ public static class StreamBusConfiguratorExtensions
                 DeadLetter = derived.Kind == ExhaustionKind.QueueHandoff ? derived.Queue : null,
                 ShadowedDeadLetter = derived.DestinationShadowed ? descriptor.DeadLetter : null,
                 ConsumeFilters = descriptor.ConsumeFilters,
-                AllowPipelineSkip = descriptor.AllowPipelineSkip,
                 IsTypedEndpoint = true,
                 MessageType = descriptor.MessageType,
             });

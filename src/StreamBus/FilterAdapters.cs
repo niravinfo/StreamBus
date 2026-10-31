@@ -48,7 +48,12 @@ internal sealed class TypedPublishFilterAdapter<T> : IStreamPublishFilter, IType
     public Type FilterType { get; }
 
     public Task OnPublish(StreamPublishFilterContext context, PublishDelegate next, CancellationToken ct)
-        => _filter.OnPublish(new StreamPublishFilterContext<T> { Inner = context }, next, ct);
+        => _filter.OnPublish(
+            context as StreamPublishFilterContext<T>
+                ?? throw new StreamBusConfigurationException(
+                    $"Typed publish filter for {typeof(T).FullName} ran without a typed publish context (internal error)."),
+            next,
+            ct);
 }
 
 internal sealed class TypedConsumeFilterAdapter<T> : IStreamConsumeFilter, ITypedFilterAdapter
@@ -63,15 +68,11 @@ internal sealed class TypedConsumeFilterAdapter<T> : IStreamConsumeFilter, IType
 
     public Type FilterType { get; }
 
-    public bool CanSkip => _filter.CanSkip;
-
     public Task OnConsume(StreamConsumeFilterContext context, ConsumeDelegate next, CancellationToken ct)
-        => _filter.OnConsume(new StreamConsumeFilterContext<T>
-        {
-            Inner = context,
-            Message = context.TypedMessage is T message
-                ? message
-                : throw new StreamBusConfigurationException(
-                    $"Typed consume filter for {typeof(T).FullName} ran without a deserialized message (internal error)."),
-        }, next, ct);
+        => _filter.OnConsume(
+            context as StreamConsumeFilterContext<T>
+                ?? throw new StreamBusConfigurationException(
+                    $"Typed consume filter for {typeof(T).FullName} ran without a typed consume context (internal error)."),
+            next,
+            ct);
 }

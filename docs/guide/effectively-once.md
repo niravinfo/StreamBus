@@ -41,7 +41,9 @@ managed cycle only.
 `EffectivelyOnceOptions`: `SourceIsSuperStream` / `TargetIsSuperStream`
 for super endpoints, optional `Reference` (derived pipeline names apply
 when unset), `TargetRouting` (defaults to the incoming routing value),
-plus the usual `Retry` (Strict only) and `ReadinessPolicy`.
+plus unbounded `Retry` and `ReadinessPolicy`. Consume filters attached to
+an effectively-once pipeline must call `next()` exactly once; returning
+without it is a runtime contract error.
 
 ## Manual result publish
 
@@ -56,4 +58,5 @@ await bus.PublishResultAsync(
 
 `ProducerName` scopes idempotency: reuse one name per
 (source-partition, target) sequence and never share it across
-concurrent publishers.
+concurrent publishers. Result publishing retries until confirmed;
+configure delays through `PublishResultOptions.Retry`.

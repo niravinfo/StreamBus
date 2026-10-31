@@ -63,3 +63,20 @@ retry/exhaustion machinery on consume and as configuration errors on publish.
   payload flow, skip allow/deny, EO rejection, shared per-message scope)
 - `ConsumePipelineIntegrationTests` and `PublishPipelineIntegrationTests`
   (headers end to end, tenant filter, exhaustion envelope)
+
+## Amendment (2026-10-28)
+
+The skip mechanism described above was replaced by ordinary pipeline
+semantics. Universal and typed filters now share one context per publish or
+delivery, and the continuation is parameterless `PublishDelegate()` /
+`ConsumeDelegate()`. Typed contexts derive from the universal context and
+expose their message as `Message`; `context.Inner` and the wrapper context
+are gone.
+
+A normal consume filter calls `next()` zero or one time. Zero means the
+filter handled or filtered the delivery: the handler does not run and the
+offset advances. More than one call remains a contract violation. An
+effectively-once consume filter must call `next()` exactly once; zero calls
+is a runtime contract error rather than a configuration-time capability
+check. `CanSkip`, `SkipHandler`, and `AllowPipelineSkip` were removed.
+Publish filters still call `next()` exactly once.

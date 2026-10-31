@@ -6,7 +6,7 @@ public sealed record StreamBusConnectionOptions
     public int ConsumersPerConnection { get; init; } = 1;
     public TimeSpan MonitorInterval { get; init; } = TimeSpan.FromSeconds(5);
 
-    public IEnumerable<string> Validate()
+    internal IEnumerable<string> Validate()
     {
         if (ProducersPerConnection < 1)
             yield return "ProducersPerConnection must be >= 1.";
@@ -40,7 +40,7 @@ public sealed record StreamBusOptions
     /// the supervisor, and the connector all delegate here instead of
     /// re-implementing range or member checks.
     /// </summary>
-    public IEnumerable<string> Validate()
+    internal IEnumerable<string> Validate()
     {
         foreach (var error in ValidateCredentials())
             yield return error;

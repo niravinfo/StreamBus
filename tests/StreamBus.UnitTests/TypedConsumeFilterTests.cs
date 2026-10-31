@@ -11,17 +11,19 @@ internal sealed class TypedOrderProbe
     public List<TypedOrderMessage> FilterMessages { get; } = new();
     public List<TypedOrderMessage> ConsumerMessages { get; } = new();
     public List<StreamConsumeFilterContext> UniversalContexts { get; } = new();
+    public List<StreamConsumeFilterContext<TypedOrderMessage>> TypedContexts { get; } = new();
     public int InvoiceFilterCalls;
-    public int TypedSkipCalls;
-    public int UniversalSkipCalls;
+    public int TypedFilteredCalls;
+    public int UniversalFilteredCalls;
 }
 
 internal sealed class TypedOrderFilter(TypedOrderProbe probe) : IStreamConsumeFilter<TypedOrderMessage>
 {
     public Task OnConsume(StreamConsumeFilterContext<TypedOrderMessage> context, ConsumeDelegate next, CancellationToken ct)
     {
+        lock (probe.TypedContexts) probe.TypedContexts.Add(context);
         lock (probe.FilterMessages) probe.FilterMessages.Add(context.Message);
-        return next(context.Inner);
+        return next();
     }
 }
 
@@ -30,7 +32,7 @@ internal sealed class TypedInvoiceFilter(TypedOrderProbe probe) : IStreamConsume
     public Task OnConsume(StreamConsumeFilterContext<TypedInvoiceMessage> context, ConsumeDelegate next, CancellationToken ct)
     {
         Interlocked.Increment(ref probe.InvoiceFilterCalls);
-        return next(context.Inner);
+        return next();
     }
 }
 
@@ -53,19 +55,14 @@ internal sealed class TypedOpenFilter<T>(TypedOpenFilterProbe probe) : IStreamCo
     public Task OnConsume(StreamConsumeFilterContext<T> context, ConsumeDelegate next, CancellationToken ct)
     {
         lock (probe.Messages) probe.Messages.Add(context.Message!);
-        return next(context.Inner);
+        return next();
     }
 }
 
-internal sealed class TypedSkipFilter : IStreamConsumeFilter<TypedOrderMessage>
+internal sealed class TypedFilteringFilter : IStreamConsumeFilter<TypedOrderMessage>
 {
-    public bool CanSkip => true;
-
     public Task OnConsume(StreamConsumeFilterContext<TypedOrderMessage> context, ConsumeDelegate next, CancellationToken ct)
-    {
-        context.SkipHandler = true;
-        return Task.CompletedTask;
-    }
+        => Task.CompletedTask;
 }
 
 internal sealed class UniversalCaptureFilter(TypedOrderProbe probe) : IStreamConsumeFilter
@@ -73,30 +70,24 @@ internal sealed class UniversalCaptureFilter(TypedOrderProbe probe) : IStreamCon
     public Task OnConsume(StreamConsumeFilterContext context, ConsumeDelegate next, CancellationToken ct)
     {
         lock (probe.UniversalContexts) probe.UniversalContexts.Add(context);
-        return next(context);
+        return next();
     }
 }
 
-internal sealed class CountingTypedSkipFilter(TypedOrderProbe probe) : IStreamConsumeFilter<TypedOrderMessage>
+internal sealed class CountingTypedFilteringFilter(TypedOrderProbe probe) : IStreamConsumeFilter<TypedOrderMessage>
 {
-    public bool CanSkip => true;
-
     public Task OnConsume(StreamConsumeFilterContext<TypedOrderMessage> context, ConsumeDelegate next, CancellationToken ct)
     {
-        Interlocked.Increment(ref probe.TypedSkipCalls);
-        context.SkipHandler = true;
+        Interlocked.Increment(ref probe.TypedFilteredCalls);
         return Task.CompletedTask;
     }
 }
 
-internal sealed class CountingUniversalSkipFilter(TypedOrderProbe probe) : IStreamConsumeFilter
+internal sealed class CountingUniversalFilteringFilter(TypedOrderProbe probe) : IStreamConsumeFilter
 {
-    public bool CanSkip => true;
-
     public Task OnConsume(StreamConsumeFilterContext context, ConsumeDelegate next, CancellationToken ct)
     {
-        Interlocked.Increment(ref probe.UniversalSkipCalls);
-        context.SkipHandler = true;
+        Interlocked.Increment(ref probe.UniversalFilteredCalls);
         return Task.CompletedTask;
     }
 }
@@ -122,13 +113,13 @@ internal sealed class MultiMessageBusConsumeFilter : IStreamConsumeFilter<TypedO
     public Task OnConsume(StreamConsumeFilterContext<TypedOrderMessage> context, ConsumeDelegate next, CancellationToken ct)
     {
         Interlocked.Increment(ref _probe.Calls);
-        return next(context.Inner);
+        return next();
     }
 
     public Task OnConsume(StreamConsumeFilterContext<TypedInvoiceMessage> context, ConsumeDelegate next, CancellationToken ct)
     {
         Interlocked.Increment(ref _probe.Calls);
-        return next(context.Inner);
+        return next();
     }
 }
 
@@ -160,8 +151,8 @@ internal sealed class DoubleNextTypedFilter : IStreamConsumeFilter<TypedOrderMes
 {
     public async Task OnConsume(StreamConsumeFilterContext<TypedOrderMessage> context, ConsumeDelegate next, CancellationToken ct)
     {
-        await next(context.Inner);
-        await next(context.Inner);
+        await next();
+        await next();
     }
 }
 
@@ -170,7 +161,7 @@ internal sealed class LoggingUniversalFilter<TTag>(string name, List<string> log
     public async Task OnConsume(StreamConsumeFilterContext context, ConsumeDelegate next, CancellationToken ct)
     {
         lock (log) log.Add($"{name}-in");
-        await next(context);
+        await next();
         lock (log) log.Add($"{name}-out");
     }
 }
@@ -180,7 +171,7 @@ internal sealed class LoggingTypedFilter<TMessage, TTag>(string name, List<strin
     public async Task OnConsume(StreamConsumeFilterContext<TMessage> context, ConsumeDelegate next, CancellationToken ct)
     {
         lock (log) log.Add($"{name}-in");
-        await next(context.Inner);
+        await next();
         lock (log) log.Add($"{name}-out");
     }
 }
@@ -490,7 +481,7 @@ public sealed class TypedConsumeFilterTests
     }
 
     [Fact]
-    public async Task Universal_filter_sees_raw_context_and_typed_message_slot()
+    public async Task Universal_filter_sees_raw_context_and_declared_message_type()
     {
         var probe = new TypedOrderProbe();
         var filters = new StreamBusConsumeFilterStore();
@@ -518,13 +509,50 @@ public sealed class TypedConsumeFilterTests
         await harness.DeliverAsync(0, Serializer.Serialize(new TypedOrderMessage("one")));
 
         var captured = Assert.Single(probe.UniversalContexts);
-        Assert.Equal(typeof(ConsumeContext), captured.Message.GetType());
-        Assert.False(captured.Message.Body.IsEmpty);
+        Assert.Equal(typeof(ConsumeContext), captured.Raw.GetType());
+        Assert.False(captured.Raw.Body.IsEmpty);
         Assert.Equal(typeof(TypedOrderMessage), captured.MessageType);
-        var typedMessage = Assert.IsType<TypedOrderMessage>(captured.TypedMessage);
         var filterMessage = Assert.Single(probe.FilterMessages);
-        Assert.Same(filterMessage, typedMessage);
-        Assert.Same(typedMessage, captured.Message.TypedMessage);
+        var consumerMessage = Assert.Single(probe.ConsumerMessages);
+        Assert.Same(filterMessage, consumerMessage);
+    }
+
+    [Fact]
+    public async Task Universal_and_typed_consume_filters_share_one_context_instance()
+    {
+        var probe = new TypedOrderProbe();
+        var filters = new StreamBusConsumeFilterStore();
+        filters.AddFilter(typeof(DefaultBus), ConsumeFilterRegistration.ForType(typeof(UniversalCaptureFilter)));
+        filters.AddFilter(typeof(DefaultBus), ConsumeFilterRegistration.ForType(typeof(TypedOrderFilter)));
+        await using var harness = await PipelineSemanticsTests.Harness.CreateAsync(filters, services =>
+        {
+            services.AddSingleton(probe);
+            services.AddTransient<UniversalCaptureFilter>();
+            services.AddTransient<TypedOrderFilter>();
+            services.AddTransient<TypedOrderConsumer>();
+        });
+
+        harness.Consumer = await harness.Registry.ConsumeAsync(
+            typeof(DefaultBus),
+            "orders",
+            TypedOptions(typeof(TypedOrderMessage)),
+            TypedConsumerHandler.Create(
+                typeof(TypedOrderMessage),
+                typeof(TypedOrderConsumer),
+                harness.ScopeFactory,
+                Serializer),
+            TestContext.Current.CancellationToken);
+
+        await harness.DeliverAsync(0, Serializer.Serialize(new TypedOrderMessage("one")));
+
+        var universal = Assert.Single(probe.UniversalContexts);
+        var typed = Assert.Single(probe.TypedContexts);
+        Assert.Same(universal, typed);
+        Assert.Same(universal.Raw, typed.Raw);
+        Assert.Same(universal.OutputHeaders, typed.OutputHeaders);
+        Assert.Same(universal.Services, typed.Services);
+        Assert.Equal("one", typed.Message.Id);
+        Assert.Equal(typeof(TypedOrderMessage), universal.MessageType);
     }
 
     [Fact]
@@ -565,19 +593,18 @@ public sealed class TypedConsumeFilterTests
     }
 
     [Fact]
-    public async Task Typed_skip_does_not_avoid_deserialization()
+    public async Task Typed_zero_next_still_deserializes_but_skips_handler()
     {
         var probe = new TypedOrderProbe();
         await using var harness = await PipelineSemanticsTests.Harness.CreateAsync(configureServices: services =>
         {
             services.AddSingleton(probe);
-            services.AddTransient<CountingTypedSkipFilter>();
+            services.AddTransient<CountingTypedFilteringFilter>();
         });
 
         var options = TypedOptions(
             typeof(TypedOrderMessage),
-            endpointFilters: new[] { ConsumeFilterRegistration.ForType(typeof(CountingTypedSkipFilter)) },
-            allowSkip: true,
+            endpointFilters: new[] { ConsumeFilterRegistration.ForType(typeof(CountingTypedFilteringFilter)) },
             maxAttempts: 1,
             errorStream: "errors");
         var handlerCalls = 0;
@@ -594,7 +621,7 @@ public sealed class TypedConsumeFilterTests
 
         await harness.DeliverAsync(0, "{bad json");
 
-        Assert.Equal(0, Volatile.Read(ref probe.TypedSkipCalls));
+        Assert.Equal(0, Volatile.Read(ref probe.TypedFilteredCalls));
         Assert.Equal(0, handlerCalls);
         var envelope = Assert.Single(harness.System.Envelopes);
         Assert.Equal("1", envelope.Properties["streambus.error.attempts"]?.ToString());
@@ -605,20 +632,19 @@ public sealed class TypedConsumeFilterTests
     }
 
     [Fact]
-    public async Task Universal_only_skip_still_avoids_deserialization()
+    public async Task Universal_only_zero_next_still_avoids_deserialization()
     {
         var probe = new TypedOrderProbe();
         await using var harness = await PipelineSemanticsTests.Harness.CreateAsync(configureServices: services =>
         {
             services.AddSingleton(probe);
-            services.AddTransient<CountingUniversalSkipFilter>();
+            services.AddTransient<CountingUniversalFilteringFilter>();
             services.AddTransient<TypedOrderConsumer>();
         });
 
         var options = TypedOptions(
             typeof(TypedOrderMessage),
-            endpointFilters: new[] { ConsumeFilterRegistration.ForType(typeof(CountingUniversalSkipFilter)) },
-            allowSkip: true);
+            endpointFilters: new[] { ConsumeFilterRegistration.ForType(typeof(CountingUniversalFilteringFilter)) });
         harness.Consumer = await harness.Registry.ConsumeAsync(
             typeof(DefaultBus),
             "orders",
@@ -632,7 +658,7 @@ public sealed class TypedConsumeFilterTests
 
         await harness.DeliverAsync(0, "{bad json");
 
-        Assert.Equal(1, Volatile.Read(ref probe.UniversalSkipCalls));
+        Assert.Equal(1, Volatile.Read(ref probe.UniversalFilteredCalls));
         Assert.Empty(probe.ConsumerMessages);
         Assert.Equal(new ulong[] { 0 }, harness.Factory.Current.StoredOffsets);
         Assert.Empty(harness.System.Envelopes);
@@ -683,44 +709,52 @@ public sealed class TypedConsumeFilterTests
     }
 
     [Fact]
-    public async Task Typed_can_skip_filter_on_a_typed_endpoint_without_AllowPipelineSkip_is_rejected()
+    public async Task Zero_next_on_a_typed_endpoint_advances_the_offset_once()
     {
         await using var harness = await PipelineSemanticsTests.Harness.CreateAsync(configureServices: services =>
         {
-            services.AddTransient<TypedSkipFilter>();
+            services.AddTransient<TypedFilteringFilter>();
         });
 
         var options = TypedOptions(
             typeof(TypedOrderMessage),
-            endpointFilters: new[] { ConsumeFilterRegistration.ForType(typeof(TypedSkipFilter)) },
-            allowSkip: false);
+            endpointFilters: new[] { ConsumeFilterRegistration.ForType(typeof(TypedFilteringFilter)) },
+            maxAttempts: 1,
+            errorStream: "errors");
+        var handlerCalls = 0;
+        harness.Consumer = await harness.Registry.ConsumeAsync(
+            typeof(DefaultBus),
+            "orders",
+            options,
+            _ =>
+            {
+                Interlocked.Increment(ref handlerCalls);
+                return Task.CompletedTask;
+            },
+            TestContext.Current.CancellationToken);
 
-        var ex = await Assert.ThrowsAsync<StreamBusConfigurationException>(() =>
-            harness.Registry.ConsumeAsync(
-                typeof(DefaultBus),
-                "orders",
-                options,
-                _ => Task.CompletedTask,
-                TestContext.Current.CancellationToken));
+        await harness.DeliverAsync(9, Serializer.Serialize(new TypedOrderMessage("one")));
 
-        Assert.Contains(nameof(TypedSkipFilter), ex.Message, StringComparison.Ordinal);
-        Assert.Contains("AllowPipelineSkip", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(0, handlerCalls);
+        Assert.Equal(new ulong[] { 9 }, harness.Factory.Current.StoredOffsets);
+        Assert.Empty(harness.System.Envelopes);
     }
 
     [Fact]
-    public async Task Typed_filter_zero_next_error_names_the_user_filter_not_the_adapter()
+    public async Task Effectively_once_typed_filter_zero_next_names_the_user_filter_not_the_adapter()
     {
-        var pipeline = new ConsumePipeline(new IStreamConsumeFilter[]
-        {
-            new TypedConsumeFilterAdapter<TypedOrderMessage>(new NoNextTypedFilter()),
-        });
+        var pipeline = new ConsumePipeline(
+            new IStreamConsumeFilter[]
+            {
+                new TypedConsumeFilterAdapter<TypedOrderMessage>(new NoNextTypedFilter()),
+            },
+            requiresContinuation: true);
 
-        var ex = await Assert.ThrowsAsync<StreamBusTransientException>(() =>
+        var ex = await Assert.ThrowsAsync<StreamBusFilterContractException>(() =>
             pipeline.RunAsync(
                 PipelineContext(),
-                _ => Task.CompletedTask,
-                TestContext.Current.CancellationToken,
-                allowSkip: false));
+                () => Task.CompletedTask,
+                TestContext.Current.CancellationToken));
 
         Assert.Contains(nameof(NoNextTypedFilter), ex.Message, StringComparison.Ordinal);
         Assert.Contains("returned without calling next", ex.Message, StringComparison.Ordinal);
@@ -738,21 +772,20 @@ public sealed class TypedConsumeFilterTests
         var ex = await Assert.ThrowsAsync<StreamBusTransientException>(() =>
             pipeline.RunAsync(
                 PipelineContext(),
-                _ => Task.CompletedTask,
-                TestContext.Current.CancellationToken,
-                allowSkip: false));
+                () => Task.CompletedTask,
+                TestContext.Current.CancellationToken));
 
         Assert.Contains(nameof(DoubleNextTypedFilter), ex.Message, StringComparison.Ordinal);
         Assert.Contains("invoked next 2 times", ex.Message, StringComparison.Ordinal);
         Assert.DoesNotContain("TypedConsumeFilterAdapter", ex.Message, StringComparison.Ordinal);
     }
 
-    private static StreamConsumeFilterContext PipelineContext()
+    private static StreamConsumeFilterContext<TypedOrderMessage> PipelineContext()
     {
         var message = new TypedOrderMessage("one");
-        return new StreamConsumeFilterContext
+        return new StreamConsumeFilterContext<TypedOrderMessage>
         {
-            Message = new ConsumeContext
+            Raw = new ConsumeContext
             {
                 Stream = "orders",
                 Partition = 0,
@@ -763,8 +796,7 @@ public sealed class TypedConsumeFilterTests
                 CancellationToken = TestContext.Current.CancellationToken,
                 TypedMessage = message,
             },
-            MessageType = typeof(TypedOrderMessage),
-            TypedMessage = message,
+            Message = message,
             OutputHeaders = new HeaderWriter(),
             Services = EmptyProvider.Instance,
         };
@@ -773,7 +805,6 @@ public sealed class TypedConsumeFilterTests
     private static ConsumeOptions TypedOptions(
         Type messageType,
         IReadOnlyList<ConsumeFilterRegistration>? endpointFilters = null,
-        bool allowSkip = false,
         int maxAttempts = 1,
         string? errorStream = null) => new()
     {
@@ -784,7 +815,6 @@ public sealed class TypedConsumeFilterTests
         Retry = errorStream is null
             ? new RetryPolicy
             {
-                FailureMode = FailureMode.Strict,
                 MaxAttempts = null,
                 BaseDelay = TimeSpan.FromMilliseconds(1),
                 MaxDelay = TimeSpan.FromMilliseconds(2),
@@ -793,7 +823,6 @@ public sealed class TypedConsumeFilterTests
             }
             : new RetryPolicy
             {
-                FailureMode = FailureMode.SkipAfterDeadline,
                 MaxAttempts = maxAttempts,
                 BaseDelay = TimeSpan.FromMilliseconds(1),
                 MaxDelay = TimeSpan.FromMilliseconds(2),
@@ -803,7 +832,6 @@ public sealed class TypedConsumeFilterTests
         ErrorStream = errorStream is null ? null : new ErrorStreamOptions { Stream = errorStream },
         ConsumeFilters = endpointFilters ?? Array.Empty<ConsumeFilterRegistration>(),
         IsTypedEndpoint = true,
-        AllowPipelineSkip = allowSkip,
         MessageType = messageType,
     };
 

@@ -24,10 +24,10 @@ internal sealed class ResultPublisher
     // Retry-forever (FR-6.5): a confirmed publish until it lands or ct fires.
     // There is deliberately no timeout and no silent skip. Injectable delay keeps
     // this unit-testable without a broker.
-    public async Task PublishForeverAsync(ResultWork work, Func<int, TimeSpan> delayFor, CancellationToken ct)
+    public async Task PublishForeverAsync(ResultWork work, RetryPolicy retry, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(work);
-        ArgumentNullException.ThrowIfNull(delayFor);
+        ArgumentNullException.ThrowIfNull(retry);
         var attempt = 0;
         while (true)
         {
@@ -52,17 +52,7 @@ internal sealed class ResultPublisher
                     _logger.LogDebug(ex,
                         "Effectively-once publish failed for target {Target} source offset {Offset} (attempt {Attempt}); retrying without advancing.",
                         work.TargetStream, work.SourceOffset, attempt);
-                TimeSpan delay;
-                try
-                {
-                    delay = delayFor(attempt);
-                }
-                catch (Exception dex)
-                {
-                    _logger.LogWarning(dex, "Effectively-once delay function threw for attempt {Attempt}; using zero delay.", attempt);
-                    delay = TimeSpan.Zero;
-                }
-                if (delay < TimeSpan.Zero) delay = TimeSpan.Zero;
+                var delay = RetryDelays.ResolveDelay(retry, attempt, ex, _logger);
                 await Task.Delay(delay, ct).ConfigureAwait(false);
             }
         }

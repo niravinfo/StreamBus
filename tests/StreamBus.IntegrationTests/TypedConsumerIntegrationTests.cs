@@ -281,7 +281,7 @@ public sealed class TypedConsumerIntegrationTests : IAsyncDisposable
             cfg => cfg.ReceiveEndpoint(stream, e =>
             {
                 e.Consumer<OrderConsumer>("poison-group");
-                e.UseRetry(new RetryPolicy { FailureMode = FailureMode.SkipAfterDeadline, MaxAttempts = 2, BaseDelay = TimeSpan.FromMilliseconds(10), MaxJitter = TimeSpan.Zero });
+                e.UseRetry(new RetryPolicy { MaxAttempts = 2, BaseDelay = TimeSpan.FromMilliseconds(10), MaxJitter = TimeSpan.Zero });
                 e.DeadLetterToStream(error);
             }));
         await using var pub = await BusInstance.StartAsync();
@@ -387,7 +387,7 @@ public sealed class TypedConsumerIntegrationTests : IAsyncDisposable
             cfg => cfg.ReceiveEndpoint(stream, e =>
             {
                 e.Consumer<OrderConsumer>("mismatch-group");
-                e.UseRetry(new RetryPolicy { FailureMode = FailureMode.SkipAfterDeadline, MaxAttempts = 1, BaseDelay = TimeSpan.FromMilliseconds(10), MaxJitter = TimeSpan.Zero });
+                e.UseRetry(new RetryPolicy { MaxAttempts = 1, BaseDelay = TimeSpan.FromMilliseconds(10), MaxJitter = TimeSpan.Zero });
                 e.DeadLetterToStream(error);
             }));
         await using var pub = await BusInstance.StartAsync();

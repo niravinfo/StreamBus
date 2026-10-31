@@ -58,6 +58,16 @@ public sealed class TypedFilterRegistrationTests
     }
 
     [Fact]
+    public void Open_generic_universal_publish_filter_is_rejected()
+    {
+        var ex = Assert.Throws<StreamBusConfigurationException>(() =>
+            Configure(cfg => cfg.UsePublishFilter(typeof(RegistrationUniversalOpenPublishFilter<>))));
+
+        Assert.Contains("open generic universal filter", ex.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("both", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void Open_generic_publish_filter_for_a_different_parameter_is_rejected()
     {
         var ex = Assert.Throws<StreamBusConfigurationException>(() =>
@@ -117,6 +127,16 @@ public sealed class TypedFilterRegistrationTests
             Configure(cfg => cfg.UseConsumeFilter<RegistrationDualConsumeFilter>()));
 
         Assert.Contains("both", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Open_generic_universal_consume_filter_is_rejected()
+    {
+        var ex = Assert.Throws<StreamBusConfigurationException>(() =>
+            Configure(cfg => cfg.UseConsumeFilter(typeof(RegistrationUniversalOpenConsumeFilter<>))));
+
+        Assert.Contains("open generic universal filter", ex.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("both", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -361,7 +381,7 @@ public sealed class TypedFilterRegistrationTests
     private sealed class RegistrationUniversalPublishFilter : IStreamPublishFilter
     {
         public Task OnPublish(StreamPublishFilterContext context, PublishDelegate next, CancellationToken ct)
-            => next(context);
+            => next();
     }
 
     private sealed class RegistrationTypedPublishFilter : IStreamPublishFilter<RegistrationOrder>
@@ -370,7 +390,7 @@ public sealed class TypedFilterRegistrationTests
             StreamPublishFilterContext<RegistrationOrder> context,
             PublishDelegate next,
             CancellationToken ct)
-            => next(context.Inner);
+            => next();
     }
 
     private sealed class RegistrationMultiPublishFilter
@@ -380,54 +400,60 @@ public sealed class TypedFilterRegistrationTests
             StreamPublishFilterContext<RegistrationOrder> context,
             PublishDelegate next,
             CancellationToken ct)
-            => next(context.Inner);
+            => next();
 
         public Task OnPublish(
             StreamPublishFilterContext<RegistrationInvoice> context,
             PublishDelegate next,
             CancellationToken ct)
-            => next(context.Inner);
+            => next();
     }
 
     private sealed class RegistrationOpenPublishFilter<T> : IStreamPublishFilter<T>
     {
         public Task OnPublish(StreamPublishFilterContext<T> context, PublishDelegate next, CancellationToken ct)
-            => next(context.Inner);
+            => next();
     }
 
     private sealed class RegistrationTwoArityPublishFilter<T1, T2> : IStreamPublishFilter<T1>
     {
         public Task OnPublish(StreamPublishFilterContext<T1> context, PublishDelegate next, CancellationToken ct)
-            => next(context.Inner);
+            => next();
     }
 
     private sealed class RegistrationWrongParameterPublishFilter<T> : IStreamPublishFilter<string>
     {
         public Task OnPublish(StreamPublishFilterContext<string> context, PublishDelegate next, CancellationToken ct)
-            => next(context.Inner);
+            => next();
     }
 
     private sealed class RegistrationDualPublishFilter
         : IStreamPublishFilter, IStreamPublishFilter<RegistrationOrder>
     {
         public Task OnPublish(StreamPublishFilterContext context, PublishDelegate next, CancellationToken ct)
-            => next(context);
+            => next();
 
         public Task OnPublish(
             StreamPublishFilterContext<RegistrationOrder> context,
             PublishDelegate next,
             CancellationToken ct)
-            => next(context.Inner);
+            => next();
     }
 
     private sealed class RegistrationDualOpenPublishFilter<T>
         : IStreamPublishFilter, IStreamPublishFilter<T>
     {
         public Task OnPublish(StreamPublishFilterContext context, PublishDelegate next, CancellationToken ct)
-            => next(context);
+            => next();
 
         public Task OnPublish(StreamPublishFilterContext<T> context, PublishDelegate next, CancellationToken ct)
-            => next(context.Inner);
+            => next();
+    }
+
+    private sealed class RegistrationUniversalOpenPublishFilter<T> : IStreamPublishFilter
+    {
+        public Task OnPublish(StreamPublishFilterContext context, PublishDelegate next, CancellationToken ct)
+            => next();
     }
 
     private abstract class RegistrationAbstractPublishFilter : IStreamPublishFilter<RegistrationOrder>
@@ -441,7 +467,7 @@ public sealed class TypedFilterRegistrationTests
     private sealed class RegistrationUniversalConsumeFilter : IStreamConsumeFilter
     {
         public Task OnConsume(StreamConsumeFilterContext context, ConsumeDelegate next, CancellationToken ct)
-            => next(context);
+            => next();
     }
 
     private sealed class RegistrationTypedConsumeFilter : IStreamConsumeFilter<RegistrationOrder>
@@ -450,7 +476,7 @@ public sealed class TypedFilterRegistrationTests
             StreamConsumeFilterContext<RegistrationOrder> context,
             ConsumeDelegate next,
             CancellationToken ct)
-            => next(context.Inner);
+            => next();
     }
 
     private sealed class RegistrationMultiConsumeFilter
@@ -460,44 +486,50 @@ public sealed class TypedFilterRegistrationTests
             StreamConsumeFilterContext<RegistrationInvoice> context,
             ConsumeDelegate next,
             CancellationToken ct)
-            => next(context.Inner);
+            => next();
 
         public Task OnConsume(
             StreamConsumeFilterContext<RegistrationOrder> context,
             ConsumeDelegate next,
             CancellationToken ct)
-            => next(context.Inner);
+            => next();
     }
 
     private sealed class RegistrationOpenConsumeFilter<T> : IStreamConsumeFilter<T>
     {
         public Task OnConsume(StreamConsumeFilterContext<T> context, ConsumeDelegate next, CancellationToken ct)
-            => next(context.Inner);
+            => next();
     }
 
     private sealed class RegistrationTwoArityConsumeFilter<T1, T2> : IStreamConsumeFilter<T1>
     {
         public Task OnConsume(StreamConsumeFilterContext<T1> context, ConsumeDelegate next, CancellationToken ct)
-            => next(context.Inner);
+            => next();
     }
 
     private sealed class RegistrationWrongParameterConsumeFilter<T> : IStreamConsumeFilter<string>
     {
         public Task OnConsume(StreamConsumeFilterContext<string> context, ConsumeDelegate next, CancellationToken ct)
-            => next(context.Inner);
+            => next();
     }
 
     private sealed class RegistrationDualConsumeFilter
         : IStreamConsumeFilter, IStreamConsumeFilter<RegistrationOrder>
     {
         public Task OnConsume(StreamConsumeFilterContext context, ConsumeDelegate next, CancellationToken ct)
-            => next(context);
+            => next();
 
         public Task OnConsume(
             StreamConsumeFilterContext<RegistrationOrder> context,
             ConsumeDelegate next,
             CancellationToken ct)
-            => next(context.Inner);
+            => next();
+    }
+
+    private sealed class RegistrationUniversalOpenConsumeFilter<T> : IStreamConsumeFilter
+    {
+        public Task OnConsume(StreamConsumeFilterContext context, ConsumeDelegate next, CancellationToken ct)
+            => next();
     }
 
     private sealed class RegistrationInvoiceConsumeFilter : IStreamConsumeFilter<RegistrationInvoice>
@@ -506,7 +538,7 @@ public sealed class TypedFilterRegistrationTests
             StreamConsumeFilterContext<RegistrationInvoice> context,
             ConsumeDelegate next,
             CancellationToken ct)
-            => next(context.Inner);
+            => next();
     }
 
     private abstract class RegistrationAbstractConsumeFilter : IStreamConsumeFilter<RegistrationOrder>

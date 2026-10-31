@@ -15,89 +15,107 @@ public sealed class TypedFilterContractTests
     {
         var filter = new ContractTypedPublishFilter();
         var adapter = new TypedPublishFilterAdapter<ContractDerived>(filter);
-        var inner = NewPublishContext(new ContractDerived("d-1"), declared: typeof(ContractDerived));
+        var context = NewTypedPublishContext(new ContractDerived("d-1"));
 
-        await adapter.OnPublish(inner, _ => Task.CompletedTask, TestContext.Current.CancellationToken);
+        await adapter.OnPublish(context, () => Task.CompletedTask, TestContext.Current.CancellationToken);
 
+        Assert.Same(context, filter.SeenContext);
         Assert.Equal("d-1", filter.Seen!.Id);
         Assert.Equal(typeof(ContractTypedPublishFilter), FilterIdentity.TypeOf(adapter));
-        Assert.True(inner.Headers.TryGet("typed", out var value));
+        Assert.True(context.Headers.TryGet("typed", out var value));
         Assert.Equal("d-1", value);
     }
 
     [Fact]
-    public async Task Typed_consume_adapter_forwards_skip_payload_and_typed_message()
+    public async Task Typed_consume_adapter_forwards_payload_and_typed_message()
     {
         var filter = new ContractTypedConsumeFilter();
         var adapter = new TypedConsumeFilterAdapter<ContractDerived>(filter);
-        var inner = NewConsumeContext(new ContractDerived("d-1"));
+        var context = NewTypedConsumeContext(new ContractDerived("d-1"));
 
-        await adapter.OnConsume(inner, _ => Task.CompletedTask, TestContext.Current.CancellationToken);
+        await adapter.OnConsume(context, () => Task.CompletedTask, TestContext.Current.CancellationToken);
 
+        Assert.Same(context, filter.SeenContext);
         Assert.Equal("d-1", filter.Seen!.Id);
-        Assert.True(adapter.CanSkip);
-        Assert.True(inner.SkipHandler);
-        Assert.Equal("typed", inner.GetPayload<string>());
+        Assert.Equal("typed", context.GetPayload<string>());
         Assert.Equal(typeof(ContractTypedConsumeFilter), FilterIdentity.TypeOf(adapter));
     }
 
     [Fact]
-    public void Typed_contexts_share_headers_payloads_skip_and_raw_context()
+    public void Typed_contexts_share_headers_payloads_services_and_raw_context()
     {
-        var innerPublish = NewPublishContext(new ContractDerived("d-1"), declared: typeof(ContractDerived));
-        var typedPublish = new StreamPublishFilterContext<ContractDerived> { Inner = innerPublish };
+        var typedPublish = NewTypedPublishContext(new ContractDerived("d-1"));
         typedPublish.Headers.Set("shared", true);
-        Assert.True(innerPublish.Headers.TryGet("shared", out _));
-        Assert.Same(innerPublish.Message, typedPublish.Message);
+        Assert.True(typedPublish.Headers.TryGet("shared", out _));
+        Assert.Same(typedPublish.Payload, typedPublish.Message);
 
-        var innerConsume = NewConsumeContext(new ContractDerived("d-1"));
-        var typedConsume = new StreamConsumeFilterContext<ContractDerived>
-        {
-            Inner = innerConsume,
-            Message = new ContractDerived("d-1"),
-        };
+        var typedConsume = NewTypedConsumeContext(new ContractDerived("d-1"));
+        StreamConsumeFilterContext universalConsume = typedConsume;
+        typedConsume.OutputHeaders.Set("shared", true);
         typedConsume.SetPayload("payload");
-        typedConsume.SkipHandler = true;
-        Assert.Equal("payload", innerConsume.GetPayload<string>());
-        Assert.True(innerConsume.SkipHandler);
-        Assert.Same(innerConsume.Message, typedConsume.Raw);
-        Assert.Same(innerConsume.OutputHeaders, typedConsume.OutputHeaders);
+        Assert.True(universalConsume.OutputHeaders.TryGet("shared", out _));
+        Assert.Equal("payload", universalConsume.GetPayload<string>());
+        Assert.Equal(typeof(ContractDerived), universalConsume.MessageType);
+        Assert.Same(typedConsume.Raw, universalConsume.Raw);
+        Assert.Same(typedConsume.OutputHeaders, universalConsume.OutputHeaders);
+        Assert.Same(typedConsume.Services, universalConsume.Services);
     }
 
     private static StreamPublishFilterContext NewPublishContext(object message, Type declared) => new()
     {
         Stream = "contracts",
         RoutingKey = null,
-        Message = message,
+        Payload = message,
         MessageType = declared,
         Headers = new HeaderWriter(),
-        Bus = new StreamBusRegistrationView
-        {
-            Vhost = "/",
-            Host = "localhost",
-            StreamPort = 5552,
-            AmqpPort = 5672,
-            HeartbeatSeconds = 60,
-        },
+        Bus = NewBusView(),
         Services = EmptyProvider.Instance,
+    };
+
+    private static StreamPublishFilterContext<ContractDerived> NewTypedPublishContext(ContractDerived message) => new()
+    {
+        Stream = "contracts",
+        RoutingKey = null,
+        Payload = message,
+        Headers = new HeaderWriter(),
+        Bus = NewBusView(),
+        Services = EmptyProvider.Instance,
+    };
+
+    private static StreamBusRegistrationView NewBusView() => new()
+    {
+        Vhost = "/",
+        Host = "localhost",
+        StreamPort = 5552,
+        AmqpPort = 5672,
+        HeartbeatSeconds = 60,
     };
 
     private static StreamConsumeFilterContext NewConsumeContext(object message) => new()
     {
-        Message = new ConsumeContext
-        {
-            Stream = "contracts",
-            Partition = 0,
-            Offset = 0,
-            RoutingValue = null,
-            Body = ReadOnlyMemory<byte>.Empty,
-            Metadata = new MessageMetadata(),
-            CancellationToken = TestContext.Current.CancellationToken,
-        },
+        Raw = NewRawContext(),
         MessageType = message.GetType(),
-        TypedMessage = message,
         OutputHeaders = new HeaderWriter(),
         Services = EmptyProvider.Instance,
+    };
+
+    private static StreamConsumeFilterContext<ContractDerived> NewTypedConsumeContext(ContractDerived message) => new()
+    {
+        Raw = NewRawContext(),
+        Message = message,
+        OutputHeaders = new HeaderWriter(),
+        Services = EmptyProvider.Instance,
+    };
+
+    private static ConsumeContext NewRawContext() => new()
+    {
+        Stream = "contracts",
+        Partition = 0,
+        Offset = 0,
+        RoutingValue = null,
+        Body = ReadOnlyMemory<byte>.Empty,
+        Metadata = new MessageMetadata(),
+        CancellationToken = TestContext.Current.CancellationToken,
     };
 
     private record ContractBase(string Id);
@@ -107,33 +125,34 @@ public sealed class TypedFilterContractTests
     private sealed class ContractTypedPublishFilter : IStreamPublishFilter<ContractDerived>
     {
         public ContractDerived? Seen { get; private set; }
+        public StreamPublishFilterContext<ContractDerived>? SeenContext { get; private set; }
 
         public Task OnPublish(
             StreamPublishFilterContext<ContractDerived> context,
             PublishDelegate next,
             CancellationToken ct)
         {
+            SeenContext = context;
             Seen = context.Message;
             context.Headers.Set("typed", context.Message.Id);
-            return next(context.Inner);
+            return next();
         }
     }
 
     private sealed class ContractTypedConsumeFilter : IStreamConsumeFilter<ContractDerived>
     {
         public ContractDerived? Seen { get; private set; }
-
-        public bool CanSkip => true;
+        public StreamConsumeFilterContext<ContractDerived>? SeenContext { get; private set; }
 
         public Task OnConsume(
             StreamConsumeFilterContext<ContractDerived> context,
             ConsumeDelegate next,
             CancellationToken ct)
         {
+            SeenContext = context;
             Seen = context.Message;
             context.SetPayload("typed");
-            context.SkipHandler = true;
-            return next(context.Inner);
+            return next();
         }
     }
 

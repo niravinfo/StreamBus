@@ -225,7 +225,6 @@ public sealed class ReplayAndEffectivelyOnceReattachTests
             MessageId = null,
             CorrelationId = null,
             RoutingValue = null,
-            ErrorRoutingValue = "0",
         };
 
     private static Task DeliverAsync(RawConsumerConfig config, ulong offset, ErrorEnvelope envelope)

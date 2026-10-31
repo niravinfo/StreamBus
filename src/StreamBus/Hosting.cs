@@ -17,14 +17,23 @@ namespace StreamBus;
 /// </summary>
 public sealed record StreamBusRegistrationView
 {
+    /// <summary>Virtual host for the registration.</summary>
     public required string Vhost { get; init; }
+
+    /// <summary>RabbitMQ host name.</summary>
     public required string Host { get; init; }
+
+    /// <summary>Stream protocol port.</summary>
     public required int StreamPort { get; init; }
+
+    /// <summary>AMQP protocol port.</summary>
     public required int AmqpPort { get; init; }
+
+    /// <summary>Configured connection heartbeat in seconds.</summary>
     public required double HeartbeatSeconds { get; init; }
 }
 
-public sealed class StreamBusConfigStore
+internal sealed class StreamBusConfigStore
 {
     private readonly HashSet<Type> _busTypes = new();
     private readonly Dictionary<string, StreamBusOptions> _byVhost = new();
@@ -52,7 +61,7 @@ public sealed class StreamBusConfigStore
             && a.Heartbeat == b.Heartbeat
             && a.Connection == b.Connection;
 
-    public StreamBusOptions ForVhost(string vhost)
+    internal StreamBusOptions ForVhost(string vhost)
     {
         if (_byVhost.TryGetValue(vhost, out var options))
             return options;
@@ -191,7 +200,7 @@ public sealed record StreamBusHostingOptions
     public TimeSpan? StartupTimeout { get; init; }
 }
 
-public sealed class StreamBusHostingStore
+internal sealed class StreamBusHostingStore
 {
     internal StreamBusHostingStore(StreamBusHostingOptions options)
     {
@@ -227,7 +236,7 @@ public sealed class StreamBusHostingOptionsBuilder
     };
 }
 
-public sealed record TypedConsumerRegistration
+internal sealed record TypedConsumerRegistration
 {
     public required Type BusMarker { get; init; }
     public required Type MessageType { get; init; }
@@ -236,7 +245,7 @@ public sealed record TypedConsumerRegistration
     public required ConsumeOptions Options { get; init; }
 }
 
-public sealed class StreamBusConsumerStore
+internal sealed class StreamBusConsumerStore
 {
     private readonly List<TypedConsumerRegistration> _registrations = new();
 

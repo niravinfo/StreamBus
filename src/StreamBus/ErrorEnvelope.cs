@@ -18,7 +18,6 @@ public sealed record ErrorEnvelope
     public required string? MessageId { get; init; }
     public required string? CorrelationId { get; init; }
     public required string? RoutingValue { get; init; }
-    public required string ErrorRoutingValue { get; init; }
 
     /// <summary>Headers added by the consume pipeline for the failed delivery.
     /// They are forwarded on top of the envelope's own fields; envelope fields
@@ -41,7 +40,6 @@ public sealed record ErrorEnvelope
         [P + "message-id"] = MessageId,
         [P + "correlation-id"] = CorrelationId,
         [P + "routing-value"] = RoutingValue,
-        [P + "error-routing-value"] = ErrorRoutingValue,
     };
 
     public Dictionary<string, object?> ToApplicationProperties()
@@ -101,8 +99,7 @@ public sealed record ErrorEnvelope
             || get("source-partition") is not { } partRaw || !int.TryParse(partRaw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var partition)
             || get("source-offset") is not { } offsetRaw || !ulong.TryParse(offsetRaw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var offset)
             || get("attempts") is not { } attemptsRaw || !int.TryParse(attemptsRaw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var attempts)
-            || get("failed-at") is not { } failedRaw || !DateTimeOffset.TryParse(failedRaw, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var failedAt)
-            || get("error-routing-value") is not { } routing || string.IsNullOrWhiteSpace(routing))
+            || get("failed-at") is not { } failedRaw || !DateTimeOffset.TryParse(failedRaw, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var failedAt))
             return false;
         envelope = new ErrorEnvelope
         {
@@ -120,7 +117,6 @@ public sealed record ErrorEnvelope
             MessageId = get("message-id"),
             CorrelationId = get("correlation-id"),
             RoutingValue = get("routing-value"),
-            ErrorRoutingValue = routing,
         };
         return true;
     }

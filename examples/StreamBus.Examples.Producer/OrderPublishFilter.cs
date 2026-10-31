@@ -12,8 +12,8 @@ public sealed class OrderPublishFilter : IStreamPublishFilter<OrderEvent>
         // Typed access: context.Message is OrderEvent, no casting.
         context.Headers.Set("x-order-id", context.Message.OrderId);
 
-        // The typed context wraps the shared universal context; the
-        // pipeline continues through it.
-        return next(context.Inner);
+        // Universal and typed filters share this one context; the pipeline
+        // continues through it.
+        return next();
     }
 }

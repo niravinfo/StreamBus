@@ -2,62 +2,113 @@ using System.Diagnostics;
 
 namespace StreamBus;
 
+/// <summary>
+/// Universal publish filter that runs for every typed publish on the bus.
+/// </summary>
 public interface IStreamPublishFilter
 {
+    /// <summary>
+    /// Runs before the publish is serialized and sent.
+    /// </summary>
+    /// <param name="context">The shared publish context for this message.</param>
+    /// <param name="next">The continuation; call it exactly once.</param>
+    /// <param name="ct">Cancellation token for the publish.</param>
+    /// <returns>A task that completes when the filter and its continuation finish.</returns>
     Task OnPublish(StreamPublishFilterContext context, PublishDelegate next, CancellationToken ct);
 }
 
+/// <summary>
+/// Publish filter that runs only for publishes whose declared pipe type is
+/// <typeparamref name="T"/>.
+/// </summary>
+/// <typeparam name="T">The declared message type.</typeparam>
 public interface IStreamPublishFilter<T>
 {
+    /// <summary>
+    /// Runs before the publish is serialized and sent.
+    /// </summary>
+    /// <param name="context">The typed publish context for this message.</param>
+    /// <param name="next">The continuation; call it exactly once.</param>
+    /// <param name="ct">Cancellation token for the publish.</param>
+    /// <returns>A task that completes when the filter and its continuation finish.</returns>
     Task OnPublish(StreamPublishFilterContext<T> context, PublishDelegate next, CancellationToken ct);
 }
 
-public delegate Task PublishDelegate(StreamPublishFilterContext context);
+/// <summary>
+/// Continues a publish pipeline. Publish filters must invoke it exactly once.
+/// </summary>
+public delegate Task PublishDelegate();
 
-public sealed class StreamPublishFilterContext
+/// <summary>
+/// Shared context for one typed publish. Universal and typed publish filters
+/// receive the same context instance.
+/// </summary>
+public class StreamPublishFilterContext
 {
+    /// <summary>Target stream resolved by the publish call.</summary>
     public required string Stream { get; init; }
+
+    /// <summary>Routing key for a super-stream publish; null for a plain stream.</summary>
     public required string? RoutingKey { get; init; }
-    public required object Message { get; init; }
+
+    /// <summary>
+    /// Published payload. Universal filters can observe it; publish filters
+    /// cannot replace the body.
+    /// </summary>
+    public required object Payload { get; init; }
 
     /// <summary>
     /// Declared pipe type (<c>typeof(T)</c> at the publish call site); null only
     /// for a context constructed directly outside the bus.
     /// </summary>
-    public Type? MessageType { get; init; }
+    public virtual Type? MessageType { get; init; }
 
-    public Type RuntimeMessageType => Message.GetType();
+    /// <summary>Runtime type of <see cref="Payload"/>.</summary>
+    public Type RuntimeMessageType => Payload.GetType();
 
+    /// <summary>Headers that are sent with the publish.</summary>
     public required IStreamHeaderWriter Headers { get; init; }
+
+    /// <summary>Credential-free registration view for the current bus.</summary>
     public required StreamBusRegistrationView Bus { get; init; }
+
+    /// <summary>Per-publish service scope.</summary>
     public required IServiceProvider Services { get; init; }
 }
 
-public sealed class StreamPublishFilterContext<T>
+/// <summary>
+/// Typed publish context for a declared message type. It derives from and is
+/// the same object as the universal <see cref="StreamPublishFilterContext"/>.
+/// </summary>
+/// <typeparam name="T">The declared message type.</typeparam>
+public sealed class StreamPublishFilterContext<T> : StreamPublishFilterContext
 {
-    public required StreamPublishFilterContext Inner { get; init; }
+    /// <summary>The published payload as <typeparamref name="T"/>.</summary>
+    public T Message => (T)Payload;
 
-    public T Message => (T)Inner.Message;
-
-    public Type MessageType => typeof(T);
-
-    public Type RuntimeMessageType => Inner.RuntimeMessageType;
-
-    public string Stream => Inner.Stream;
-
-    public string? RoutingKey => Inner.RoutingKey;
-
-    public IStreamHeaderWriter Headers => Inner.Headers;
-
-    public StreamBusRegistrationView Bus => Inner.Bus;
-
-    public IServiceProvider Services => Inner.Services;
+    /// <inheritdoc />
+    public override Type MessageType => typeof(T);
 }
 
+/// <summary>
+/// Mutable header collection exposed to publish and consume filters.
+/// </summary>
 public interface IStreamHeaderWriter
 {
+    /// <summary>Sets a header, replacing any existing value.</summary>
+    /// <param name="key">Non-empty header key.</param>
+    /// <param name="value">Header value; must be a supported primitive or null.</param>
     void Set(string key, object? value);
+
+    /// <summary>Reads a header without removing it.</summary>
+    /// <param name="key">Header key.</param>
+    /// <param name="value">The stored value when found.</param>
+    /// <returns><see langword="true"/> when the header exists.</returns>
     bool TryGet(string key, out object? value);
+
+    /// <summary>Removes a header.</summary>
+    /// <param name="key">Header key.</param>
+    /// <returns><see langword="true"/> when a header was removed.</returns>
     bool Remove(string key);
 }
 
@@ -154,7 +205,7 @@ internal sealed class PublishPipeline
     {
         if (index == _filters.Length)
         {
-            await terminal(context).ConfigureAwait(false);
+            await terminal().ConfigureAwait(false);
             return;
         }
 
@@ -162,7 +213,7 @@ internal sealed class PublishPipeline
         var filterType = FilterIdentity.TypeOf(filter);
         var filterName = filterType.FullName ?? filterType.Name;
         var nextCalls = 0;
-        Task Next(StreamPublishFilterContext _)
+        Task Next()
         {
             var call = Interlocked.Increment(ref nextCalls);
             if (call > 1)
@@ -171,7 +222,7 @@ internal sealed class PublishPipeline
                     $"Publish filter {filterName} invoked next {call} times; exactly one continuation is allowed.");
             }
 
-            // Stream, routing key, message, bus view and services are resolved
+            // Stream, routing key, payload, bus view and services are resolved
             // before the pipeline; a filter can only mutate Headers in place.
             return InvokeAsync(index + 1, context, terminal, ct);
         }

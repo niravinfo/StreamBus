@@ -7,10 +7,13 @@ namespace StreamBus.UnitTests;
 
 public sealed record ActivityMessage(string Value);
 
-internal sealed class ActivityZeroNextFilter : IStreamConsumeFilter
+internal sealed class ActivityDoubleNextFilter : IStreamConsumeFilter
 {
-    public Task OnConsume(StreamConsumeFilterContext context, ConsumeDelegate next, CancellationToken ct)
-        => Task.CompletedTask;
+    public async Task OnConsume(StreamConsumeFilterContext context, ConsumeDelegate next, CancellationToken ct)
+    {
+        await next();
+        await next();
+    }
 }
 
 public sealed class ActivityTests
@@ -133,7 +136,6 @@ public sealed class ActivityTests
             OffsetStore = new OffsetStoreOptions { EveryMessages = 1 },
             Retry = new RetryPolicy
             {
-                FailureMode = FailureMode.SkipAfterDeadline,
                 MaxAttempts = 1,
                 BaseDelay = TimeSpan.FromMilliseconds(1),
                 MaxDelay = TimeSpan.FromMilliseconds(2),
@@ -141,7 +143,7 @@ public sealed class ActivityTests
                 MaxJitter = TimeSpan.Zero,
             },
             ErrorStream = new ErrorStreamOptions { Stream = "errors" },
-            ConsumeFilters = new[] { ConsumeFilterRegistration.ForInstance(new ActivityZeroNextFilter()) },
+            ConsumeFilters = new[] { ConsumeFilterRegistration.ForInstance(new ActivityDoubleNextFilter()) },
         };
         harness.Consumer = await harness.Registry.ConsumeAsync(
             typeof(DefaultBus), "activity-consume-error", options, _ => Task.CompletedTask,

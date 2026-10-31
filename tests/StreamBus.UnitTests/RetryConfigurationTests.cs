@@ -44,7 +44,6 @@ public sealed class RetryConfigurationTests
             e.UseMessageRetry(r => r.Intervals(TimeSpan.FromMilliseconds(200), TimeSpan.FromSeconds(2)));
             e.DeadLetterToStream("audit-errors");
         });
-        Assert.Equal(FailureMode.SkipAfterDeadline, options.Retry.FailureMode);
         Assert.Equal(3, options.Retry.MaxAttempts);
         Assert.Equal("audit-errors", options.ErrorStream?.Stream);
         Assert.Null(options.DeadLetter);
@@ -74,7 +73,6 @@ public sealed class RetryConfigurationTests
             e.Consumer<OrderConsumer>("grp");
             e.UseMessageRetry(r => r.Interval(3, TimeSpan.FromMilliseconds(100)));
         });
-        Assert.Equal(FailureMode.SkipAfterDeadline, options.Retry.FailureMode);
         Assert.Equal(4, options.Retry.MaxAttempts);
         Assert.Null(options.ErrorStream);
         Assert.NotNull(options.DeadLetter);
@@ -86,7 +84,6 @@ public sealed class RetryConfigurationTests
     public void Unbounded_default_is_strict_forever()
     {
         var options = EndpointOptions(e => e.Consumer<OrderConsumer>("grp"));
-        Assert.Equal(FailureMode.Strict, options.Retry.FailureMode);
         Assert.Null(options.Retry.MaxAttempts);
         Assert.Null(options.ErrorStream);
         Assert.Null(options.DeadLetter);

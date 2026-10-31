@@ -85,10 +85,12 @@
   the first registered filter is outermost (first in, last out). Consume
   filters registered on the bus run before endpoint filters. Duplicate
   filter types within one scope are configuration errors. Publish filters
-  must call `next` exactly once and cannot short-circuit; consume filters
-  may skip only when `CanSkip` is true; typed endpoints must also call
-  `AllowPipelineSkip()`, raw endpoints skip without opt-in, and
-  effectively-once pipelines reject skippable filters at attach.
+  must call `next()` exactly once and cannot short-circuit. A normal consume
+  filter may call `next()` zero or one time; zero filters the delivery
+  (handler skipped, offset advances) and more than one is retried then
+  exhausted. Effectively-once pipelines require exactly one `next()`.
+  Universal and typed filters share one context; typed filters expose
+  `Message` and do not pass a wrapper to `next`.
 - Effectively-once (`ConsumeEffectivelyOnceAsync`) stores no source
   offsets and publishes results with `publishing-id = source offset`.
   Resume is recomputed from the target; one pipeline per (source, target)

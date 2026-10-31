@@ -91,7 +91,6 @@ internal sealed class RetryConfigurator : IRetryConfigurator
         ArgumentOutOfRangeException.ThrowIfNegative(retries);
         _pending = new RetryPolicy
         {
-            FailureMode = FailureMode.SkipAfterDeadline,
             MaxAttempts = retries + 1,
             DelayCalculator = static (_, _) => TimeSpan.Zero,
         };
@@ -104,7 +103,6 @@ internal sealed class RetryConfigurator : IRetryConfigurator
             throw new StreamBusConfigurationException("Interval delay must be non-negative.");
         _pending = new RetryPolicy
         {
-            FailureMode = FailureMode.SkipAfterDeadline,
             MaxAttempts = retries + 1,
             DelayCalculator = (_, _) => delay,
         };
@@ -120,7 +118,6 @@ internal sealed class RetryConfigurator : IRetryConfigurator
         var table = delays.ToArray();
         _pending = new RetryPolicy
         {
-            FailureMode = FailureMode.SkipAfterDeadline,
             MaxAttempts = table.Length + 1,
             DelayCalculator = (attempt, _) => table[Math.Min(attempt - 1, table.Length - 1)],
         };
@@ -137,7 +134,6 @@ internal sealed class RetryConfigurator : IRetryConfigurator
             throw new StreamBusConfigurationException("Exponential multiplier must be a finite number >= 1.");
         _pending = new RetryPolicy
         {
-            FailureMode = FailureMode.SkipAfterDeadline,
             MaxAttempts = retryCount + 1,
             BaseDelay = baseDelay,
             MaxDelay = maxDelay,
@@ -150,7 +146,6 @@ internal sealed class RetryConfigurator : IRetryConfigurator
     {
         _pending = new RetryPolicy
         {
-            FailureMode = FailureMode.SkipAfterDeadline,
             MaxAttempts = 1,
             DelayCalculator = static (_, _) => TimeSpan.Zero,
         };

@@ -37,8 +37,15 @@ internal static class FilterTypeInspector
 
             if (universalInterface.IsAssignableFrom(filterType))
             {
+                var typedMessageTypesForUniversal = TypedMessageTypes(filterType, typedInterfaceDefinition);
+                if (typedMessageTypesForUniversal.Count > 0)
+                {
+                    throw new StreamBusConfigurationException(
+                        $"{family} filter type '{filterType}' implements both {Describe(universalInterface)} and {Describe(typedInterfaceDefinition)}; register universal and typed filters separately.");
+                }
+
                 throw new StreamBusConfigurationException(
-                    $"{family} filter type '{filterType}' implements both {Describe(universalInterface)} and {Describe(typedInterfaceDefinition)}; register universal and typed filters separately.");
+                    $"{family} filter type '{filterType}' is an open generic universal filter implementing only {Describe(universalInterface)}; open generic registration supports only {Describe(typedInterfaceDefinition)}, so a closed universal filter must be registered.");
             }
 
             var parameter = parameters[0];

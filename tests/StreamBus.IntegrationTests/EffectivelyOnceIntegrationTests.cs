@@ -10,7 +10,7 @@ internal sealed class EoAnnotatingFilter : IStreamConsumeFilter
     public Task OnConsume(StreamConsumeFilterContext context, ConsumeDelegate next, CancellationToken ct)
     {
         context.OutputHeaders.Set("tenant", "acme");
-        return next(context);
+        return next();
     }
 }
 

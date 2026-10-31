@@ -11,7 +11,7 @@ public sealed class PipelineTenantFilter : IStreamPublishFilter
     public Task OnPublish(StreamPublishFilterContext context, PublishDelegate next, CancellationToken ct)
     {
         context.Headers.Set("tenant", "acme");
-        return next(context);
+        return next();
     }
 }
 

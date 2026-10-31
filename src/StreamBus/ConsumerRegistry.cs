@@ -125,8 +125,6 @@ internal sealed class StreamConsumerRegistry
         string stream,
         IReadOnlyList<ConsumeFilterRegistration> endpointFilters,
         bool effectivelyOnce,
-        bool typedEndpoint,
-        bool allowSkip,
         Type? messageType)
     {
         var busFilters = _consumeFilterStore?.FiltersFor(busType) ?? Array.Empty<ConsumeFilterRegistration>();
@@ -142,20 +140,11 @@ internal sealed class StreamConsumerRegistry
         AddFilters(busFilters, filters, "bus", endpointScope: false);
         AddFilters(endpointFilters, filters, "endpoint", endpointScope: true);
 
-        foreach (var filter in filters)
-        {
-            if (effectivelyOnce && filter.CanSkip)
-            {
-                throw new StreamBusConfigurationException(
-                    $"Consume filter '{FilterIdentity.TypeOf(filter).Name}' can skip messages (CanSkip), but effectively-once pipelines must never skip: a skipped source message would publish no result and replay forever.");
-            }
-            if (typedEndpoint && !allowSkip && filter.CanSkip)
-            {
-                throw new StreamBusConfigurationException(
-                    $"Consume filter '{FilterIdentity.TypeOf(filter).Name}' can skip messages (CanSkip), but typed endpoint '{stream}' has not called AllowPipelineSkip(); a skipped message would advance the offset without invoking the consumer.");
-            }
-        }
-        return new ConsumePipeline(filters, filters.Any(f => f is ITypedFilterAdapter));
+        return new ConsumePipeline(
+            filters,
+            messageType,
+            filters.Any(f => f is ITypedFilterAdapter),
+            effectivelyOnce);
 
         void AddFilters(IReadOnlyList<ConsumeFilterRegistration> registrations, List<IStreamConsumeFilter> target, string scope, bool endpointScope)
         {
@@ -224,13 +213,21 @@ internal sealed class StreamConsumerRegistry
         {
             throw new StreamBusConfigurationException("ConsumeOptions.Retry.MaxAttempts must be >= 1 when set.");
         }
-        if (retry.FailureMode == FailureMode.Strict && retry.MaxAttempts is not null)
+        var hasHandoff = options.ErrorStream is not null
+            || options.DeadLetter is not null
+            || options.ExhaustionCallback is not null;
+        if (retry.MaxAttempts is null)
         {
-            throw new StreamBusConfigurationException("ConsumeOptions.Retry.MaxAttempts must be null with FailureMode.Strict (unbounded retry).");
+            if (hasHandoff)
+            {
+                throw new StreamBusConfigurationException(
+                    "ConsumeOptions.Retry is unbounded (MaxAttempts is null); a hand-off destination (ErrorStream/DeadLetter/OnExhausted) cannot fire. Set MaxAttempts or remove the destination.");
+            }
         }
-        if (retry.FailureMode == FailureMode.SkipAfterDeadline && retry.MaxAttempts is null)
+        else if (!hasHandoff)
         {
-            throw new StreamBusConfigurationException("ConsumeOptions.Retry.MaxAttempts is required with FailureMode.SkipAfterDeadline.");
+            throw new StreamBusConfigurationException(
+                "ConsumeOptions.Retry.MaxAttempts is bounded, but no hand-off destination is configured; configure ErrorStream, a DeadLetter destination, or an OnExhausted callback.");
         }
         if (retry.BaseDelay <= TimeSpan.Zero)
         {
@@ -247,14 +244,6 @@ internal sealed class StreamConsumerRegistry
         if (retry.MaxJitter < TimeSpan.Zero)
         {
             throw new StreamBusConfigurationException("ConsumeOptions.Retry.MaxJitter must be non-negative.");
-        }
-        if (retry.FailureMode == FailureMode.Strict && (options.ErrorStream is not null || options.DeadLetter is not null))
-        {
-            throw new StreamBusConfigurationException("Retry policy Strict never exhausts; a hand-off destination (ErrorStream/DeadLetter) cannot fire. Remove the destination or use a bounded retry schedule.");
-        }
-        if (retry.FailureMode == FailureMode.SkipAfterDeadline && options.ErrorStream is null && options.DeadLetter is null && options.ExhaustionCallback is null)
-        {
-            throw new StreamBusConfigurationException("ConsumeOptions.ErrorStream is required with FailureMode.SkipAfterDeadline (or a queue DeadLetter destination / OnExhausted callback).");
         }
         if (options.ErrorStream is { } errorOptions)
         {
@@ -328,7 +317,7 @@ internal sealed class StreamConsumerRegistry
         if (tracker is not null) healthCallback = tracker.Update;
         var family = new CancellationTokenSource();
         var errors = new ErrorPublisher(_producers, _loggerFactory.CreateLogger<ErrorPublisher>(), _queues);
-        var pipeline = BuildPipeline(busType, stream, options.ConsumeFilters, false, options.IsTypedEndpoint, options.AllowPipelineSkip, options.MessageType);
+        var pipeline = BuildPipeline(busType, stream, options.ConsumeFilters, false, options.MessageType);
         var loops = new List<(StreamPartitionConsumer Loop, Task RunTask)>(partitionStreams.Length);
         var scopes = new List<IDisposable>(partitionStreams.Length);
         try
@@ -448,7 +437,7 @@ internal sealed class StreamConsumerRegistry
         if (tracker is not null) healthCallback = tracker.Update;
         var family = new CancellationTokenSource();
         var errors = new ErrorPublisher(_producers, _loggerFactory.CreateLogger<ErrorPublisher>(), _queues);
-        var pipeline = BuildPipeline(busType, sourceStream, Array.Empty<ConsumeFilterRegistration>(), true, false, false, null);
+        var pipeline = BuildPipeline(busType, sourceStream, Array.Empty<ConsumeFilterRegistration>(), true, null);
         var targetRouting = options.TargetRouting ?? (static ctx => ctx.RoutingValue);
         var loops = new List<(StreamPartitionConsumer Loop, Task RunTask)>(sourcePartitions.Length);
         var scopes = new List<IDisposable>(sourcePartitions.Length);
@@ -721,7 +710,7 @@ internal sealed class StreamConsumerRegistry
                 RoutingKey = options.RoutingKey,
                 ProducerName = options.ProducerName,
             },
-            attempt => StreamBusDelays.ExponentialCapped(attempt, options.BaseDelay, options.MaxDelay, options.Multiplier, options.MaxJitter),
+            options.Retry,
             ct).ConfigureAwait(false);
     }
 

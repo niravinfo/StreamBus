@@ -8,7 +8,10 @@ public sealed record EffectivelyOnceOptions
     public bool TargetIsSuperStream { get; init; }
     public string? Reference { get; init; }
     public Func<ConsumeContext, string?>? TargetRouting { get; init; }
+
+    /// <summary>Unbounded retry policy used while the result is confirmed.</summary>
     public RetryPolicy Retry { get; init; } = new();
+
     public ReadinessPolicy ReadinessPolicy { get; init; } = ReadinessPolicy.FailFastPolicy;
 }
 
@@ -17,10 +20,9 @@ public sealed record PublishResultOptions
     public required string ProducerName { get; init; }
     public bool IsSuperStream { get; init; }
     public string? RoutingKey { get; init; }
-    public TimeSpan BaseDelay { get; init; } = TimeSpan.FromMilliseconds(200);
-    public double Multiplier { get; init; } = 2.0;
-    public TimeSpan MaxDelay { get; init; } = TimeSpan.FromSeconds(30);
-    public TimeSpan MaxJitter { get; init; } = TimeSpan.FromSeconds(1);
+
+    /// <summary>Unbounded retry policy used until the result publish is confirmed.</summary>
+    public RetryPolicy Retry { get; init; } = new();
 }
 
 internal sealed record ResultWork
@@ -81,8 +83,6 @@ internal static class EffectivelyOnceValidation
     public static void ValidateConsume(RetryPolicy retry, string prefix = "EffectivelyOnceOptions.Retry")
     {
         ArgumentNullException.ThrowIfNull(retry);
-        if (retry.FailureMode != FailureMode.Strict)
-            throw new StreamBusConfigurationException($"{prefix}.FailureMode must be Strict for effectively-once (SkipAfterDeadline has no offset to advance; the source stores nothing).");
         if (retry.MaxAttempts is not null)
             throw new StreamBusConfigurationException($"{prefix}.MaxAttempts must be null for effectively-once (unbounded retry; the publish is retried until confirmed).");
         ValidateKnobs(retry.BaseDelay, retry.MaxDelay, retry.Multiplier, retry.MaxJitter, prefix);
@@ -96,7 +96,7 @@ internal static class EffectivelyOnceValidation
             throw new StreamBusConfigurationException("PublishResultOptions.ProducerName exceeds the broker's 255-byte limit.");
         if (options.IsSuperStream && string.IsNullOrWhiteSpace(options.RoutingKey))
             throw new StreamBusConfigurationException("PublishResultOptions.RoutingKey is required for a super-stream result target.");
-        ValidateKnobs(options.BaseDelay, options.MaxDelay, options.Multiplier, options.MaxJitter, "PublishResultOptions");
+        ValidateConsume(options.Retry, "PublishResultOptions.Retry");
     }
 
     public static void ValidateKnobs(TimeSpan baseDelay, TimeSpan maxDelay, double multiplier, TimeSpan maxJitter, string prefix)

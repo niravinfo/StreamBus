@@ -27,7 +27,7 @@ internal sealed class BusEntry
     public required IReadOnlyDictionary<string, DeclaredStream> Declarations { get; init; }
 }
 
-public sealed class StreamBusRegistry : IStreamBusRegistry
+internal sealed class StreamBusRegistry : IStreamBusRegistry
 {
     private readonly ConcurrentDictionary<(Type BusType, string Vhost), BusEntry> _entries = new();
     private readonly Func<string, StreamBusOptions> _resolveOptions;

@@ -32,7 +32,7 @@ internal sealed class StreamBusMetrics
         _ = _meter.CreateObservableUpDownCounter("streambus_partition_inflight",
             () => ObservePartitions(s => s.Inflight));
         _ = _meter.CreateObservableUpDownCounter("streambus_partition_retry_blocked",
-            () => ObservePartitions(s => s.RetryBlocked, includeFailureMode: true),
+            () => ObservePartitions(s => s.RetryBlocked),
             unit: null, description: null);
         _ = _meter.CreateObservableUpDownCounter<int>("streambus_connection_state",
             () => _connections.Select(kv => new Measurement<int>((int)kv.Value(),
@@ -74,8 +74,7 @@ internal sealed class StreamBusMetrics
     public void RecordFallback(string vhost, string bus, string stream, int partition, string reference, string branch)
         => Fallback.Add(1, BuildTags(vhost, bus, stream, partition, reference, ("branch", branch)));
 
-    private IEnumerable<Measurement<long>> ObservePartitions(
-        Func<PartitionState, long> select, bool includeFailureMode = false)
+    private IEnumerable<Measurement<long>> ObservePartitions(Func<PartitionState, long> select)
     {
         foreach (var kv in _partitions)
         {
@@ -87,10 +86,6 @@ internal sealed class StreamBusMetrics
                 { "partition", kv.Key.Partition },
                 { "reference", kv.Key.Reference },
             };
-            if (includeFailureMode)
-            {
-                tags.Add("failure_mode", "strict");
-            }
             yield return new Measurement<long>(select(kv.Value), tags);
         }
     }

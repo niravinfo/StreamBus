@@ -167,22 +167,18 @@ internal abstract class StreamBusCore<TBus> : IStreamBus
                 "Publish filters are configured, but no IServiceScopeFactory is available (internal error).");
         await using var publishScope = scopeFactory.CreateAsyncScope();
         var headerWriter = new HeaderWriter(effective.Properties?.Headers);
-        var context = new StreamPublishFilterContext
-        {
-            Stream = stream,
-            RoutingKey = routingKey,
-            Message = message!,
-            MessageType = typeof(T),
-            Headers = headerWriter,
-            Bus = _busView,
-            Services = publishScope.ServiceProvider,
-        };
+        var context = CreatePublishContext(
+            message,
+            stream,
+            routingKey,
+            headerWriter,
+            publishScope.ServiceProvider);
 
         try
         {
             await pipeline.RunAsync(
                 context,
-                _ => SendTypedAsync(
+                () => SendTypedAsync(
                     stream,
                     message,
                     effective with { Properties = headerWriter.Materialize(effective.Properties) },
@@ -212,6 +208,22 @@ internal abstract class StreamBusCore<TBus> : IStreamBus
                 ex);
         }
     }
+
+    private StreamPublishFilterContext<T> CreatePublishContext<T>(
+        T message,
+        string stream,
+        string? routingKey,
+        IStreamHeaderWriter headers,
+        IServiceProvider services)
+        => new()
+        {
+            Stream = stream,
+            RoutingKey = routingKey,
+            Payload = message!,
+            Headers = headers,
+            Bus = _busView,
+            Services = services,
+        };
 
     private async Task SendTypedAsync<T>(
         string stream,

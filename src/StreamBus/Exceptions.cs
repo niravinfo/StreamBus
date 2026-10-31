@@ -16,6 +16,15 @@ internal sealed class StreamBusTransientException : StreamBusException
         : base(message, inner) { }
 }
 
+// Internal contract violation in an effectively-once filter pipeline. It is
+// rethrown past the EO in-handler retry catch so a programming error is not
+// misclassified as a transient handler failure.
+internal sealed class StreamBusFilterContractException : StreamBusException
+{
+    public StreamBusFilterContractException(string message)
+        : base(message) { }
+}
+
 public sealed class StreamBusFatalException : StreamBusException
 {
     public StreamBusFatalException(string message, Exception? inner = null)

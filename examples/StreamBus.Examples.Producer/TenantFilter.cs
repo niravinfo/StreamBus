@@ -13,6 +13,6 @@ public sealed class TenantFilter(TenantScope ambient) : IStreamPublishFilter
     public Task OnPublish(StreamPublishFilterContext context, PublishDelegate next, CancellationToken ct)
     {
         context.Headers.Set("x-tenant", ambient.Tenant);
-        return next(context);
+        return next();
     }
 }
