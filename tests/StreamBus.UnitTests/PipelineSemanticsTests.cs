@@ -478,12 +478,12 @@ public sealed class PipelineSemanticsTests
         int maxAttempts = 1,
         string? errorStream = null,
         Type? messageType = null) => new()
-    {
-        Reference = "grp",
-        SingleActiveConsumer = false,
-        Offset = ConsumeOffset.AlwaysFirst,
-        OffsetStore = new OffsetStoreOptions { EveryMessages = 1 },
-        Retry = errorStream is null
+        {
+            Reference = "grp",
+            SingleActiveConsumer = false,
+            Offset = ConsumeOffset.AlwaysFirst,
+            OffsetStore = new OffsetStoreOptions { EveryMessages = 1 },
+            Retry = errorStream is null
             ? new RetryPolicy
             {
                 MaxAttempts = null,
@@ -500,11 +500,11 @@ public sealed class PipelineSemanticsTests
                 Multiplier = 1.0,
                 MaxJitter = TimeSpan.Zero,
             },
-        ErrorStream = errorStream is null ? null : new ErrorStreamOptions { Stream = errorStream },
-        ConsumeFilters = endpointFilters ?? Array.Empty<ConsumeFilterRegistration>(),
-        IsTypedEndpoint = typedEndpoint,
-        MessageType = messageType,
-    };
+            ErrorStream = errorStream is null ? null : new ErrorStreamOptions { Stream = errorStream },
+            ConsumeFilters = endpointFilters ?? Array.Empty<ConsumeFilterRegistration>(),
+            IsTypedEndpoint = typedEndpoint,
+            MessageType = messageType,
+        };
 
     private static ErrorEnvelope NewEnvelope(IReadOnlyDictionary<string, object?>? outputHeaders = null) => new()
     {

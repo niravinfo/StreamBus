@@ -629,7 +629,7 @@ internal sealed class StreamConsumerRegistry
                     await producer.PublishReplayAsync(
                         envelope.Body,
                         ReplayNaming.PublishingId(envelope.SourceOffset),
-                        new PublishOptions(),
+                        envelope.ToReplayOptions(),
                         ct).ConfigureAwait(false);
                     Interlocked.Increment(ref replayed);
                     Interlocked.Exchange(ref lastTicks, DateTimeOffset.UtcNow.UtcTicks);

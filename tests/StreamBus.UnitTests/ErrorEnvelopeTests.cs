@@ -1,3 +1,5 @@
+using System.Globalization;
+
 namespace StreamBus.UnitTests;
 
 public sealed class ErrorEnvelopeTests
@@ -17,6 +19,7 @@ public sealed class ErrorEnvelopeTests
         FailedAt = new DateTimeOffset(2026, 10, 13, 12, 0, 0, TimeSpan.Zero),
         MessageId = Guid.Parse("0f8fad5b-d9cb-469f-a165-70867728950e"),
         CorrelationId = Guid.Parse("6b1f5c1a-0d9e-4b6f-9a4e-1f2d3c4b5a69"),
+        SentTime = new DateTime(2026, 10, 31, 9, 12, 3, 284, DateTimeKind.Utc),
         RoutingValue = "k1",
     };
 
@@ -48,6 +51,31 @@ public sealed class ErrorEnvelopeTests
         var app = Sample().ToApplicationProperties();
         app["streambus.error.source-offset"] = "not-a-number";
         Assert.False(ErrorEnvelope.TryParse("e", new byte[] { 9 }, app, out _));
+    }
+
+    [Fact]
+    public void Replay_options_preserve_message_identity()
+    {
+        var sample = Sample();
+
+        var options = sample.ToReplayOptions();
+
+        Assert.Equal(sample.MessageId, options.Properties!.MessageId);
+        Assert.Equal(sample.CorrelationId, options.Properties.CorrelationId);
+        Assert.Equal(sample.SentTime, options.Properties.SentTime);
+    }
+
+    [Fact]
+    public void Sent_time_with_an_offset_is_normalized_to_the_same_instant()
+    {
+        var instant = new DateTimeOffset(2026, 10, 31, 9, 12, 3, 284, TimeSpan.FromHours(2));
+        var app = Sample().ToApplicationProperties();
+        app["streambus.error.sent-time"] = instant.ToString("o", CultureInfo.InvariantCulture);
+
+        Assert.True(ErrorEnvelope.TryParse("e", new byte[] { 9 }, app, out var parsed));
+
+        Assert.Equal(instant.UtcDateTime, parsed!.SentTime);
+        Assert.Equal(DateTimeKind.Utc, parsed.SentTime!.Value.Kind);
     }
 
     [Fact]

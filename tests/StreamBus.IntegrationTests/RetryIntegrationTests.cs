@@ -310,10 +310,17 @@ public sealed class RetryIntegrationTests : IAsyncDisposable
         await admin.CreateStream(ErrorSpec(error));
         _streams.Add(error);
         await using var pub = await BusInstance.StartAsync("pub");
+        var replayedId = Guid.NewGuid();
+        var replayedSentTime = new DateTime(2026, 10, 31, 9, 12, 3, 284, DateTimeKind.Utc);
         try
         {
             foreach (var seq in Enumerable.Range(0, 3))
-                await pub.Bus.PublishRawAsync(stream, Body($"k:{seq}"), new PublishOptions(), TestContext.Current.CancellationToken);
+                await pub.Bus.PublishRawAsync(stream, Body($"k:{seq}"), new PublishOptions
+                {
+                    Properties = seq == 1
+                        ? new StreamMessageProperties { MessageId = replayedId, SentTime = replayedSentTime }
+                        : new StreamMessageProperties(),
+                }, TestContext.Current.CancellationToken);
         }
         finally { await pub.DisposeAsync(); }
         await using var inst = await BusInstance.StartAsync("i");
@@ -337,21 +344,28 @@ public sealed class RetryIntegrationTests : IAsyncDisposable
             await Task.Delay(100, TestContext.Current.CancellationToken);
         }
         await c.DisposeAsync();
-        var read = new List<string>();
+        var read = new List<ConsumeContext>();
         var rc = await inst.Bus.ConsumeAsync(stream,
             new ConsumeOptions { Reference = "grp-rd-read", Offset = ConsumeOffset.AlwaysFirst },
-            ctx => { lock (read) read.Add(System.Text.Encoding.UTF8.GetString(ctx.Body.Span)); return Task.CompletedTask; },
+            ctx => { lock (read) read.Add(ctx); return Task.CompletedTask; },
             TestContext.Current.CancellationToken);
         Assert.Equal(1, await inst.Bus.ReplayErrorStreamAsync(error, null, TestContext.Current.CancellationToken));
         await WaitForAsync(() => Count(read) == 4, TimeSpan.FromSeconds(60), "replayed read");
-        Assert.Equal(new[] { "k:0", "k:1", "k:2", "k:1" }, read);
+        Assert.Equal(new[] { "k:0", "k:1", "k:2", "k:1" },
+            read.Select(ctx => System.Text.Encoding.UTF8.GetString(ctx.Body.Span)).ToArray());
+        Assert.All(read.Where(ctx => System.Text.Encoding.UTF8.GetString(ctx.Body.Span) == "k:1"), ctx =>
+        {
+            Assert.Equal(replayedId, ctx.MessageId);
+            Assert.Equal(replayedSentTime, ctx.SentTime);
+        });
         // Garbage on the error stream is skipped without throwing; the real envelope
         // replays again but broker dedup (stable name + id = source offset) stores nothing new.
         await inst.Bus.PublishRawAsync(error, Body("not-an-envelope"), new PublishOptions(), TestContext.Current.CancellationToken);
         Assert.Equal(1, await inst.Bus.ReplayErrorStreamAsync(error, null, TestContext.Current.CancellationToken));
         await Task.Delay(TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken);
         await rc.DisposeAsync();
-        Assert.Equal(new[] { "k:0", "k:1", "k:2", "k:1" }, read);
+        Assert.Equal(new[] { "k:0", "k:1", "k:2", "k:1" },
+            read.Select(ctx => System.Text.Encoding.UTF8.GetString(ctx.Body.Span)).ToArray());
     }
 
     [Fact]
