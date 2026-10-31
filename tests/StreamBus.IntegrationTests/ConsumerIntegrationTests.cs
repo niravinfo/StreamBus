@@ -459,10 +459,12 @@ public sealed class ConsumerIntegrationTests : IAsyncDisposable
         _streams.Add(stream);
         _superStreams.Add(super);
 
+        var messageId = Guid.Parse("0f8fad5b-d9cb-469f-a165-70867728950e");
+        var correlationId = Guid.Parse("6b1f5c1a-0d9e-4b6f-9a4e-1f2d3c4b5a69");
         var properties = new StreamMessageProperties
         {
-            MessageId = "m-props",
-            CorrelationId = "c-props",
+            MessageId = messageId,
+            CorrelationId = correlationId,
             Headers = new Dictionary<string, object?>
             {
                 ["tenant"] = "acme",
@@ -512,8 +514,8 @@ public sealed class ConsumerIntegrationTests : IAsyncDisposable
         Assert.Contains(seen, x => x.Kind == "super");
         foreach (var (_, context) in seen)
         {
-            Assert.Equal("m-props", context.Metadata.MessageId);
-            Assert.Equal("c-props", context.Metadata.CorrelationId);
+            Assert.Equal(messageId.ToString("D"), context.Metadata.MessageId);
+            Assert.Equal(correlationId.ToString("D"), context.Metadata.CorrelationId);
             Assert.Equal("acme", context.Metadata.GetString("tenant"));
             Assert.Equal(3, context.Metadata.GetInt("attempt"));
             Assert.Equal(9_000_000_000L, context.Metadata.GetLong("sequence"));
