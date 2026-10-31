@@ -33,6 +33,10 @@ internal sealed record ResultWork
     public required ulong SourceOffset { get; init; }
     public required string? RoutingKey { get; init; }
     public required string ProducerName { get; init; }
+    // Assigned once per logical result so retries of the same publish keep
+    // the same AMQP identity instead of minting a new one per attempt.
+    public required Guid MessageId { get; init; }
+    public required DateTime SentTime { get; init; }
 }
 
 internal sealed record EffectivelyOnceConfig

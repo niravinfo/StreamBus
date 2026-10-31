@@ -705,6 +705,8 @@ internal sealed class StreamConsumerRegistry
                 SourceOffset = sourceOffset,
                 RoutingKey = options.RoutingKey,
                 ProducerName = options.ProducerName,
+                MessageId = Guid.NewGuid(),
+                SentTime = StreamWire.NormalizeSentTime(DateTime.UtcNow),
             },
             options.Retry,
             ct).ConfigureAwait(false);

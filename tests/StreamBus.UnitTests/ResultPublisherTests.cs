@@ -8,15 +8,17 @@ public sealed class ResultPublisherTests
     {
         private int _failuresLeft;
         public int Calls;
+        public List<(Guid? MessageId, DateTime? SentTime)> Identities { get; } = new();
         public FlakyHandle(int failures) => _failuresLeft = failures;
         public Task SendAsync(ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct) => throw new NotImplementedException();
         public Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, StreamMessageProperties properties, CancellationToken ct) => throw new NotImplementedException();
-        public Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, PublishOptions options, CancellationToken ct) => Record();
-        public Task PublishWithIdAsync(ulong publishingId, ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct) => Record();
-        public Task PublishResultAsync(ReadOnlyMemory<byte> body, ulong publishingId, string? routingKey, CancellationToken ct) => Record();
-        private Task Record()
+        public Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, PublishOptions options, CancellationToken ct) => Record(options);
+        public Task PublishWithIdAsync(ulong publishingId, ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct) => Record(options);
+        public Task PublishResultAsync(ReadOnlyMemory<byte> body, ulong publishingId, string? routingKey, CancellationToken ct) => Record(null);
+        private Task Record(PublishOptions? options)
         {
             Calls++;
+            Identities.Add((options?.Properties?.MessageId, options?.Properties?.SentTime));
             if (Interlocked.Decrement(ref _failuresLeft) >= 0)
                 throw new StreamBusPublishTransientException("flaky");
             return Task.CompletedTask;
@@ -29,6 +31,7 @@ public sealed class ResultPublisherTests
         private readonly FlakyHandle _handle;
         public FlakySystem(int failures) => _handle = new FlakyHandle(failures);
         public int Calls => _handle.Calls;
+        public IReadOnlyList<(Guid? MessageId, DateTime? SentTime)> Identities => _handle.Identities;
         public bool IsClosed => false;
         public Task<IStreamPlainProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct) => throw new NotImplementedException();
         public Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct) => Task.FromResult<IStreamPlainProducerHandle>(_handle);
@@ -70,7 +73,26 @@ public sealed class ResultPublisherTests
         SourceOffset = 9,
         RoutingKey = null,
         ProducerName = "grp",
+        MessageId = Guid.NewGuid(),
+        SentTime = new DateTime(2026, 10, 31, 9, 12, 3, 284, DateTimeKind.Utc),
     };
+
+    [Fact]
+    public async Task Retries_reuse_the_same_message_identity()
+    {
+        var (publisher, system) = Create(failures: 2);
+        var retry = new RetryPolicy { DelayCalculator = static (_, _) => TimeSpan.Zero };
+        var work = Work();
+
+        await publisher.PublishForeverAsync(work, retry, TestContext.Current.CancellationToken);
+
+        Assert.Equal(3, system.Identities.Count);
+        Assert.All(system.Identities, identity =>
+        {
+            Assert.Equal(work.MessageId, identity.MessageId);
+            Assert.Equal(work.SentTime, identity.SentTime);
+        });
+    }
 
     [Fact]
     public async Task Fail_twice_then_confirms_three_publishes_one_return()
