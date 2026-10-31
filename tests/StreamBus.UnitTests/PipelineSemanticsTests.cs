@@ -391,7 +391,6 @@ public sealed class PipelineSemanticsTests
             typeof(TenantProbeConsumer));
         var options = DispatchOptions(
             endpointFilters: new[] { ConsumeFilterRegistration.ForInstance(new TenantProbeFilter(probe)) },
-            typedEndpoint: true,
             messageType: typeof(TenantMessage));
         harness.Consumer = await harness.Registry.ConsumeAsync(
             typeof(DefaultBus), "orders", options, handler, TestContext.Current.CancellationToken);
@@ -474,7 +473,6 @@ public sealed class PipelineSemanticsTests
 
     private static ConsumeOptions DispatchOptions(
         IReadOnlyList<ConsumeFilterRegistration>? endpointFilters = null,
-        bool typedEndpoint = false,
         int maxAttempts = 1,
         string? errorStream = null,
         Type? messageType = null) => new()
@@ -502,7 +500,6 @@ public sealed class PipelineSemanticsTests
             },
             ErrorStream = errorStream is null ? null : new ErrorStreamOptions { Stream = errorStream },
             ConsumeFilters = endpointFilters ?? Array.Empty<ConsumeFilterRegistration>(),
-            IsTypedEndpoint = typedEndpoint,
             MessageType = messageType,
         };
 

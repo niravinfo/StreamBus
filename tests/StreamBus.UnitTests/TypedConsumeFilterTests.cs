@@ -795,7 +795,6 @@ public sealed class TypedConsumeFilterTests
             },
             ErrorStream = errorStream is null ? null : new ErrorStreamOptions { Stream = errorStream },
             ConsumeFilters = endpointFilters ?? Array.Empty<ConsumeFilterRegistration>(),
-            IsTypedEndpoint = true,
             MessageType = messageType,
         };
 
