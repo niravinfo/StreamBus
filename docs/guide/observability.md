@@ -56,10 +56,10 @@ available and costs nothing when no listener samples it.
 | `streambus.consume` | Consumer | `streambus.stream`, `streambus.partition`, `streambus.offset` |
 
 Consume spans add an `exception` event with `exception.type` and
-`exception.message` when a delivery fails. If
-`MessageMetadata.CorrelationId` is a valid W3C `traceparent`, the consume
-span carries it as an `ActivityLink`; malformed values are ignored rather
-than thrown.
+`exception.message` when a delivery fails. Consume spans carry an
+`ActivityLink` when the AMQP `correlation-id` holds a valid W3C
+`traceparent`; ids produced by StreamBus are Guids, so the link applies to
+foreign producers only. Malformed values are ignored rather than thrown.
 
 ## Logs
 

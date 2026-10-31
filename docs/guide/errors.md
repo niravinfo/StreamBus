@@ -94,9 +94,10 @@ lost confirmation wedge the partition:
   duplicate.
 
 `OnExhausted` runs with the full `ExhaustedContext` (stream, partition,
-offset, body, metadata, attempts, exception, services). Returning
-advances past the message; throwing recycles the attach (redeliver,
-never skip). Use `ctx.GetService<T>()` for buses and other services.
+offset, body, message id, correlation id, sent time, headers, attempts,
+exception, services). Returning advances past the message; throwing
+recycles the attach (redeliver, never skip). Use `ctx.GetService<T>()` for
+buses and other services.
 
 ## Requeue
 
