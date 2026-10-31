@@ -35,6 +35,5 @@ public sealed record ConsumeOptions
     internal DeadLetterOptions? DeadLetter { get; init; }
     internal DeadLetterOptions? ShadowedDeadLetter { get; init; }
     internal IReadOnlyList<ConsumeFilterRegistration> ConsumeFilters { get; init; } = Array.Empty<ConsumeFilterRegistration>();
-    internal bool IsTypedEndpoint { get; init; }
     internal Type? MessageType { get; init; }
 }

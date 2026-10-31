@@ -679,7 +679,6 @@ public static class StreamBusConfiguratorExtensions
                 DeadLetter = derived.Kind == ExhaustionKind.QueueHandoff ? derived.Queue : null,
                 ShadowedDeadLetter = derived.DestinationShadowed ? descriptor.DeadLetter : null,
                 ConsumeFilters = descriptor.ConsumeFilters,
-                IsTypedEndpoint = true,
                 MessageType = descriptor.MessageType,
             });
         }
