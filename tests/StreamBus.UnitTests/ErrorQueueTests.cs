@@ -20,7 +20,6 @@ public sealed class ErrorQueueTests
         MessageId = "m-1",
         CorrelationId = "c-1",
         RoutingValue = "o-1",
-        ErrorRoutingValue = "orders",
     };
 
     private sealed class NeverConnectFactory : IErrorQueueConnectionFactory
@@ -63,7 +62,6 @@ public sealed class ErrorQueueTests
         Assert.Equal(envelope.MessageId, parsed.MessageId);
         Assert.Equal(envelope.CorrelationId, parsed.CorrelationId);
         Assert.Equal(envelope.RoutingValue, parsed.RoutingValue);
-        Assert.Equal(envelope.ErrorRoutingValue, parsed.ErrorRoutingValue);
         Assert.Equal(envelope.Body, parsed.Body);
     }
 
@@ -121,7 +119,7 @@ public sealed class ErrorQueueTests
             Options = new ConsumeOptions
             {
                 Reference = "grp",
-                Retry = new RetryPolicy { FailureMode = FailureMode.SkipAfterDeadline, MaxAttempts = 2 },
+                Retry = new RetryPolicy { MaxAttempts = 2 },
                 ErrorStream = deadLetter is { IsStream: true } ? new ErrorStreamOptions { Stream = deadLetter.Name } : null,
                 DeadLetter = deadLetter is { IsStream: false } ? deadLetter : null,
                 ExhaustionCallback = callback ? (_, _) => Task.CompletedTask : null,

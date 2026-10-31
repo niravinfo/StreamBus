@@ -52,22 +52,14 @@ public sealed class EffectivelyOnceTests
     public void Publishing_id_equals_source_offset() => Assert.Equal(41UL, ResultNaming.PublishingId(41));
 
     [Fact]
-    public void Consume_rejects_skip_mode()
-    {
-        var ex = Assert.Throws<StreamBusConfigurationException>(() =>
-            EffectivelyOnceValidation.ValidateConsume(new RetryPolicy { FailureMode = FailureMode.SkipAfterDeadline, MaxAttempts = 3 }));
-        Assert.Contains("Strict", ex.Message);
-    }
-
-    [Fact]
-    public void Consume_rejects_bounded_strict()
+    public void Consume_rejects_bounded()
     {
         Assert.Throws<StreamBusConfigurationException>(() =>
-            EffectivelyOnceValidation.ValidateConsume(new RetryPolicy { FailureMode = FailureMode.Strict, MaxAttempts = 3 }));
+            EffectivelyOnceValidation.ValidateConsume(new RetryPolicy { MaxAttempts = 3 }));
     }
 
     [Fact]
-    public void Consume_accepts_default_strict_unbounded()
+    public void Consume_accepts_default_unbounded()
     {
         EffectivelyOnceValidation.ValidateConsume(new RetryPolicy());
     }
@@ -100,6 +92,18 @@ public sealed class EffectivelyOnceTests
         var ex = Assert.Throws<StreamBusConfigurationException>(() =>
             EffectivelyOnceValidation.ValidatePublishResult(new PublishResultOptions { ProducerName = "n", IsSuperStream = true }));
         Assert.Contains("RoutingKey", ex.Message);
+    }
+
+    [Fact]
+    public void Publish_result_rejects_bounded_retry()
+    {
+        var ex = Assert.Throws<StreamBusConfigurationException>(() =>
+            EffectivelyOnceValidation.ValidatePublishResult(new PublishResultOptions
+            {
+                ProducerName = "n",
+                Retry = new RetryPolicy { MaxAttempts = 3 },
+            }));
+        Assert.Contains("MaxAttempts", ex.Message);
     }
 
     [Fact]

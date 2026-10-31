@@ -31,7 +31,7 @@ public sealed class PipelineMetricsTests : IDisposable
         {
             Stream = "orders",
             RoutingKey = null,
-            Message = new object(),
+            Payload = new object(),
             Headers = new HeaderWriter(),
             Bus = new StreamBusRegistrationView
             {
@@ -44,7 +44,7 @@ public sealed class PipelineMetricsTests : IDisposable
             Services = EmptyProvider.Instance,
         };
 
-        await pipeline.RunAsync(context, _ => Task.CompletedTask, TestContext.Current.CancellationToken);
+        await pipeline.RunAsync(context, () => Task.CompletedTask, TestContext.Current.CancellationToken);
 
         var measurement = Assert.Single(_measurements, m =>
             m.Instrument == "streambus_pipeline_duration"
@@ -59,7 +59,7 @@ public sealed class PipelineMetricsTests : IDisposable
         var pipeline = new ConsumePipeline(new IStreamConsumeFilter[] { new NoopConsumeFilter() });
         var context = new StreamConsumeFilterContext
         {
-            Message = new ConsumeContext
+            Raw = new ConsumeContext
             {
                 Stream = "orders",
                 Partition = 0,
@@ -73,7 +73,7 @@ public sealed class PipelineMetricsTests : IDisposable
             Services = EmptyProvider.Instance,
         };
 
-        await pipeline.RunAsync(context, _ => Task.CompletedTask, TestContext.Current.CancellationToken, allowSkip: false);
+        await pipeline.RunAsync(context, () => Task.CompletedTask, TestContext.Current.CancellationToken);
 
         var measurement = Assert.Single(_measurements, m =>
             m.Instrument == "streambus_pipeline_duration"
@@ -85,13 +85,13 @@ public sealed class PipelineMetricsTests : IDisposable
     private sealed class NoopPublishFilter : IStreamPublishFilter
     {
         public Task OnPublish(StreamPublishFilterContext context, PublishDelegate next, CancellationToken ct)
-            => next(context);
+            => next();
     }
 
     private sealed class NoopConsumeFilter : IStreamConsumeFilter
     {
         public Task OnConsume(StreamConsumeFilterContext context, ConsumeDelegate next, CancellationToken ct)
-            => next(context);
+            => next();
     }
 
     private sealed class EmptyProvider : IServiceProvider

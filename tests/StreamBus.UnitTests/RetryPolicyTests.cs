@@ -22,57 +22,42 @@ public sealed class RetryPolicyTests
     }
 
     [Fact]
-    public async Task Strict_with_max_attempts_throws()
-    {
-        var ex = await Assert.ThrowsAsync<StreamBusConfigurationException>(() =>
-            Consume(new ConsumeOptions { Retry = new RetryPolicy { MaxAttempts = 3 } }));
-        Assert.Contains("Strict", ex.Message);
-    }
-
-    [Fact]
-    public async Task Strict_with_error_stream_throws()
+    public async Task Unbounded_with_error_stream_throws()
     {
         var ex = await Assert.ThrowsAsync<StreamBusConfigurationException>(() =>
             Consume(new ConsumeOptions { ErrorStream = new ErrorStreamOptions { Stream = "e" } }));
-        Assert.Equal(
-            "Retry policy Strict never exhausts; a hand-off destination (ErrorStream/DeadLetter) cannot fire. Remove the destination or use a bounded retry schedule.",
-            ex.Message);
+        Assert.Contains("unbounded", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public async Task Strict_with_dead_letter_throws()
+    public async Task Unbounded_with_dead_letter_throws()
     {
         var ex = await Assert.ThrowsAsync<StreamBusConfigurationException>(() =>
             Consume(new ConsumeOptions
             {
                 DeadLetter = new DeadLetterOptions { Name = "e", QueueType = DeadLetterQueueType.ClassicQueue },
             }));
-        Assert.Equal(
-            "Retry policy Strict never exhausts; a hand-off destination (ErrorStream/DeadLetter) cannot fire. Remove the destination or use a bounded retry schedule.",
-            ex.Message);
+        Assert.Contains("unbounded", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public async Task Skip_without_max_attempts_throws()
+    public async Task Bounded_without_error_stream_or_dead_letter_throws()
     {
         var ex = await Assert.ThrowsAsync<StreamBusConfigurationException>(() =>
+            Consume(new ConsumeOptions { Retry = new RetryPolicy { MaxAttempts = 3 } }));
+        Assert.Contains("ErrorStream", ex.Message);
+    }
+
+    [Fact]
+    public async Task Bounded_with_max_attempts_and_error_stream_is_accepted()
+    {
+        await Assert.ThrowsAsync<StreamBusNotReadyException>(() =>
             Consume(new ConsumeOptions
             {
-                Retry = new RetryPolicy { FailureMode = FailureMode.SkipAfterDeadline },
+                Reference = "grp",
+                Retry = new RetryPolicy { MaxAttempts = 3 },
                 ErrorStream = new ErrorStreamOptions { Stream = "e" },
             }));
-        Assert.Contains("MaxAttempts", ex.Message);
-    }
-
-    [Fact]
-    public async Task Skip_without_error_stream_throws()
-    {
-        var ex = await Assert.ThrowsAsync<StreamBusConfigurationException>(() =>
-            Consume(new ConsumeOptions
-            {
-                Retry = new RetryPolicy { FailureMode = FailureMode.SkipAfterDeadline, MaxAttempts = 3 },
-            }));
-        Assert.Contains("ErrorStream", ex.Message);
     }
 
     [Theory]
@@ -83,7 +68,7 @@ public sealed class RetryPolicyTests
         await Assert.ThrowsAsync<StreamBusConfigurationException>(() =>
             Consume(new ConsumeOptions
             {
-                Retry = new RetryPolicy { FailureMode = FailureMode.SkipAfterDeadline, MaxAttempts = max },
+                Retry = new RetryPolicy { MaxAttempts = max },
                 ErrorStream = new ErrorStreamOptions { Stream = "e" },
             }));
     }

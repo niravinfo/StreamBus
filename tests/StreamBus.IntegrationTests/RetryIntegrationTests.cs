@@ -112,7 +112,7 @@ public sealed class RetryIntegrationTests : IAsyncDisposable
             new ConsumeOptions
             {
                 Reference = "grp-r1",
-                Retry = new RetryPolicy { FailureMode = FailureMode.SkipAfterDeadline, MaxAttempts = maxAttempts },
+                Retry = new RetryPolicy { MaxAttempts = maxAttempts },
                 ErrorStream = new ErrorStreamOptions { Stream = error },
             },
             ctx =>
@@ -151,7 +151,6 @@ public sealed class RetryIntegrationTests : IAsyncDisposable
         Assert.Equal("poison 2", Env(eApp, "exception-message"));
         Assert.False(string.IsNullOrWhiteSpace(Env(eApp, "exception-stack")));
         Assert.False(string.IsNullOrWhiteSpace(Env(eApp, "failed-at")));
-        Assert.Equal(stream, Env(eApp, "error-routing-value"));
     }
 
     [Fact]
@@ -322,7 +321,7 @@ public sealed class RetryIntegrationTests : IAsyncDisposable
             new ConsumeOptions
             {
                 Reference = "grp-rd",
-                Retry = new RetryPolicy { FailureMode = FailureMode.SkipAfterDeadline, MaxAttempts = 2 },
+                Retry = new RetryPolicy { MaxAttempts = 2 },
                 ErrorStream = new ErrorStreamOptions { Stream = error },
             },
             ctx =>
@@ -381,7 +380,7 @@ public sealed class RetryIntegrationTests : IAsyncDisposable
             new ConsumeOptions
             {
                 Reference = "grp-re1",
-                Retry = new RetryPolicy { FailureMode = FailureMode.SkipAfterDeadline, MaxAttempts = 2 },
+                Retry = new RetryPolicy { MaxAttempts = 2 },
                 ErrorStream = new ErrorStreamOptions { Stream = shared },
             },
             _ => throw new InvalidOperationException("poison a"),
@@ -390,8 +389,8 @@ public sealed class RetryIntegrationTests : IAsyncDisposable
             new ConsumeOptions
             {
                 Reference = "grp-re2",
-                Retry = new RetryPolicy { FailureMode = FailureMode.SkipAfterDeadline, MaxAttempts = 2 },
-                ErrorStream = new ErrorStreamOptions { Stream = shared, RoutingValue = "custom-2" },
+                Retry = new RetryPolicy { MaxAttempts = 2 },
+                ErrorStream = new ErrorStreamOptions { Stream = shared },
             },
             _ => throw new InvalidOperationException("poison b"),
             TestContext.Current.CancellationToken);
@@ -409,10 +408,9 @@ public sealed class RetryIntegrationTests : IAsyncDisposable
         await c1.DisposeAsync();
         await c2.DisposeAsync();
         await ec.DisposeAsync();
-        Assert.Equal(2, errors.Select(e => e.Body).Distinct().Count());
-        var byRouting = errors.ToDictionary(e => Env(e.App, "error-routing-value"), e => e.Body);
-        Assert.Equal("a:0", byRouting[s1]);
-        Assert.Equal("b:0", byRouting["custom-2"]);
+        Assert.Equal(
+            new[] { "a:0", "b:0" },
+            errors.Select(e => e.Body).OrderBy(static body => body, StringComparer.Ordinal));
     }
 
     [Fact]
@@ -460,7 +458,7 @@ public sealed class RetryIntegrationTests : IAsyncDisposable
             new ConsumeOptions
             {
                 Reference = "grp-rf-k",
-                Retry = new RetryPolicy { FailureMode = FailureMode.SkipAfterDeadline, MaxAttempts = 2 },
+                Retry = new RetryPolicy { MaxAttempts = 2 },
                 ErrorStream = new ErrorStreamOptions { Stream = error },
             },
             ctx =>

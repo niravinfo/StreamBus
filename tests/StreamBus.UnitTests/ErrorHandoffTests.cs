@@ -18,7 +18,6 @@ public sealed class ErrorHandoffTests
         MessageId = null,
         CorrelationId = null,
         RoutingValue = null,
-        ErrorRoutingValue = "s",
     };
 
     private sealed class NeverReadyConnector : IStreamSystemConnector

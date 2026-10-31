@@ -27,7 +27,6 @@ public sealed class ErrorQueueTransportTests
         MessageId = "m-1",
         CorrelationId = "c-1",
         RoutingValue = "o-1",
-        ErrorRoutingValue = "orders",
     };
 
     private static DeadLetterOptions Queue(string name, TimeSpan? confirmTimeout = null) => new()

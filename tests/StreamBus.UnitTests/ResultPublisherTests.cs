@@ -72,7 +72,8 @@ public sealed class ResultPublisherTests
     public async Task Fail_twice_then_confirms_three_publishes_one_return()
     {
         var (publisher, system) = Create(failures: 2);
-        await publisher.PublishForeverAsync(Work(), _ => TimeSpan.Zero, TestContext.Current.CancellationToken);
+        var retry = new RetryPolicy { DelayCalculator = static (_, _) => TimeSpan.Zero };
+        await publisher.PublishForeverAsync(Work(), retry, TestContext.Current.CancellationToken);
         Assert.Equal(3, system.Calls);
     }
 
@@ -81,8 +82,9 @@ public sealed class ResultPublisherTests
     {
         var (publisher, system) = Create(failures: int.MaxValue);
         using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
+        var retry = new RetryPolicy { DelayCalculator = static (_, _) => TimeSpan.FromMilliseconds(50) };
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
-            publisher.PublishForeverAsync(Work(), _ => TimeSpan.FromMilliseconds(50), cts.Token));
+            publisher.PublishForeverAsync(Work(), retry, cts.Token));
         Assert.True(system.Calls >= 1);
     }
 
@@ -90,15 +92,24 @@ public sealed class ResultPublisherTests
     public async Task Negative_delay_clamps_to_zero()
     {
         var (publisher, system) = Create(failures: 1);
-        await publisher.PublishForeverAsync(Work(), _ => TimeSpan.FromMilliseconds(-5), TestContext.Current.CancellationToken);
+        var retry = new RetryPolicy { DelayCalculator = static (_, _) => TimeSpan.FromMilliseconds(-5) };
+        await publisher.PublishForeverAsync(Work(), retry, TestContext.Current.CancellationToken);
         Assert.Equal(2, system.Calls);
     }
 
     [Fact]
-    public async Task Throwing_delay_falls_back_to_zero()
+    public async Task Throwing_calculator_falls_back_to_exponential_policy()
     {
         var (publisher, system) = Create(failures: 1);
-        await publisher.PublishForeverAsync(Work(), _ => throw new InvalidOperationException("hostile"), TestContext.Current.CancellationToken);
+        var retry = new RetryPolicy
+        {
+            BaseDelay = TimeSpan.FromMilliseconds(1),
+            MaxDelay = TimeSpan.FromMilliseconds(1),
+            Multiplier = 1.0,
+            MaxJitter = TimeSpan.Zero,
+            DelayCalculator = static (_, _) => throw new InvalidOperationException("hostile"),
+        };
+        await publisher.PublishForeverAsync(Work(), retry, TestContext.Current.CancellationToken);
         Assert.Equal(2, system.Calls);
     }
 }

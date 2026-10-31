@@ -93,9 +93,9 @@ public sealed class TenantFilter : IStreamConsumeFilter
     public Task OnConsume(StreamConsumeFilterContext context, ConsumeDelegate next, CancellationToken ct)
     {
         var scope = (TenantScope)context.Services.GetRequiredService(typeof(TenantScope));
-        scope.Tenant = context.Message.Metadata.GetString("x-tenant");
+        scope.Tenant = context.Raw.Metadata.GetString("x-tenant");
         context.SetPayload(scope.Tenant);
-        return next(context);
+        return next();
     }
 }
 ```
@@ -103,16 +103,15 @@ public sealed class TenantFilter : IStreamConsumeFilter
 One DI scope is created per delivered message and shared by the pipeline
 and the typed consumer, so scoped services resolve to the same instance in
 filters and consumer constructors. `SetPayload<T>` carries values between
-filters in the pipeline. Filters are singletons per bus. A filter must
-call `next` exactly once; zero without `SkipHandler`, or more than once,
-is retried and then
-exhausted rather than silently advancing the offset. Skipping requires
-`CanSkip => true`; raw endpoints skip freely, typed endpoints must opt in
-with `e.AllowPipelineSkip()`, and effectively-once pipelines reject
-skippable filters at attach. Headers written through
-`context.OutputHeaders` are carried on the exhaustion envelope and on
-effectively-once result publishes. Complete sample:
-`examples/StreamBus.Examples.Consumer/TenantFilter.cs`.
+filters in the pipeline. Filters are singletons per bus. A normal consume
+filter may call `next` zero or one time: zero means the filter handled or
+filtered the delivery, the consumer handler is not invoked, and the offset
+still advances. More than one `next` call is retried and then exhausted
+rather than silently duplicating work. Effectively-once pipelines require
+exactly one `next`; a zero-`next` filter there is a runtime contract error.
+Headers written through `context.OutputHeaders` are carried on the
+exhaustion envelope and on effectively-once result publishes. Complete
+sample: `examples/StreamBus.Examples.Consumer/TenantFilter.cs`.
 
 ### Typed consume filters
 
@@ -136,23 +135,22 @@ public sealed class OrderEnrichmentFilter : IStreamConsumeFilter<OrderEvent>
     public Task OnConsume(StreamConsumeFilterContext<OrderEvent> context, ConsumeDelegate next, CancellationToken ct)
     {
         context.SetPayload(context.Message.OrderId); // typed value for later filters
-        return next(context.Inner);
+        return next();
     }
 }
 ```
 
 A typed context exposes `context.Message` as `T` and `context.Raw` as the
-underlying `ConsumeContext`; headers, payloads, services, and
-`SkipHandler` delegate to `Inner`, the shared context that `next`
-expects. Deserialization timing changes as soon as one typed filter
-attaches: the message is deserialized before the pipeline on every
-delivery attempt, a deserialization failure is retried and exhausted
-without running filters or the consumer, and the consumer receives the
-same instance — no second deserialization. A pipeline of universal
-filters only keeps the lazy path, so a `CanSkip` filter that skips still
-avoids deserialization; a typed-filter pipeline deserializes before the
-skip. Raw and effectively-once pipelines never attach typed filters and
-retain the `CanSkip` rules above. Complete sample:
+underlying `ConsumeContext`; headers, payloads, services, and the
+continuation are the same shared context that universal filters receive.
+Deserialization timing changes as soon as one typed filter attaches: the
+message is deserialized before the pipeline on every delivery attempt, a
+deserialization failure is retried and exhausted without running filters
+or the consumer, and the consumer receives the same instance — no second
+deserialization. A pipeline of universal filters only keeps the lazy path,
+so a filter can filter a delivery without deserializing it; a typed-filter
+pipeline deserializes before the filter runs. Raw and effectively-once
+pipelines never attach typed filters. Complete sample:
 `examples/StreamBus.Examples.Consumer/OrderEventFilter.cs`.
 
 ## Full example

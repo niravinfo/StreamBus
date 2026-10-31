@@ -10,6 +10,6 @@ public sealed class CorrelationIdFilter : IStreamPublishFilter
     {
         var correlationId = Activity.Current?.TraceId.ToString() ?? Guid.NewGuid().ToString("N");
         context.Headers.Set("x-correlation-id", correlationId);
-        return next(context);
+        return next();
     }
 }

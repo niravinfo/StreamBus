@@ -79,7 +79,7 @@ public sealed class TenantFilter(TenantScope ambient) : IStreamPublishFilter
     public Task OnPublish(StreamPublishFilterContext context, PublishDelegate next, CancellationToken ct)
     {
         context.Headers.Set("x-tenant", ambient.Tenant);
-        return next(context);
+        return next();
     }
 }
 ```
@@ -107,7 +107,7 @@ public sealed class OrderPublishFilter : IStreamPublishFilter<OrderEvent>
     public Task OnPublish(StreamPublishFilterContext<OrderEvent> context, PublishDelegate next, CancellationToken ct)
     {
         context.Headers.Set("x-order-id", context.Message.OrderId);
-        return next(context.Inner); // continue the shared pipeline
+        return next();
     }
 }
 
@@ -116,7 +116,7 @@ public sealed class TenantFilter<T> : IStreamPublishFilter<T> // open generic
     public Task OnPublish(StreamPublishFilterContext<T> context, PublishDelegate next, CancellationToken ct)
     {
         context.Headers.Set("x-message-type", typeof(T).Name);
-        return next(context.Inner);
+        return next();
     }
 }
 
@@ -124,8 +124,10 @@ cfg.UsePublishFilter<OrderPublishFilter>();    // attaches to OrderEvent publish
 cfg.UsePublishFilter(typeof(TenantFilter<>));  // closes once per message type
 ```
 
-A typed context adds `context.Message` as `T`; every other member
-delegates to `Inner`, the shared universal context that `next` expects.
+A typed context adds `context.Message` as `T` to the shared universal context,
+which exposes the same payload as `context.Payload`. Every other member is the
+same object that universal filters receive. `next` is parameterless because
+there is no separate wrapper context to pass forward.
 Attachment is by declared type, not runtime type: `context.MessageType`
 is the `typeof(T)` at the publish call site (a typed context always
 reports its own `T`), while `context.RuntimeMessageType` is the payload's

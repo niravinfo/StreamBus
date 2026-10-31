@@ -7,7 +7,7 @@ internal enum DeclaredStreamSource
     DeadLetter,
 }
 
-public sealed record DeclaredStream
+internal sealed record DeclaredStream
 {
     public required string Name { get; init; }
     public required bool IsSuper { get; init; }

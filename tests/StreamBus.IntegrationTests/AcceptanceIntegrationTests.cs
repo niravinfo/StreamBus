@@ -128,7 +128,7 @@ public sealed class AcceptanceIntegrationTests : IAsyncDisposable
             new ConsumeOptions
             {
                 Reference = Unique("grp-acc"),
-                Retry = new RetryPolicy { FailureMode = FailureMode.SkipAfterDeadline, MaxAttempts = 2, BaseDelay = TimeSpan.FromMilliseconds(10), MaxJitter = TimeSpan.Zero },
+                Retry = new RetryPolicy { MaxAttempts = 2, BaseDelay = TimeSpan.FromMilliseconds(10), MaxJitter = TimeSpan.Zero },
                 ErrorStream = new ErrorStreamOptions { Stream = error },
                 OnRetryExhausted = h =>
                 {

@@ -18,7 +18,6 @@ public sealed class ErrorEnvelopeTests
         MessageId = "m-1",
         CorrelationId = "c-1",
         RoutingValue = "k1",
-        ErrorRoutingValue = "orders",
     };
 
     [Fact]
@@ -36,7 +35,6 @@ public sealed class ErrorEnvelopeTests
     [InlineData("exception-type")]
     [InlineData("source-offset")]
     [InlineData("attempts")]
-    [InlineData("error-routing-value")]
     public void Missing_required_key_fails_parse(string key)
     {
         var app = Sample().ToApplicationProperties();

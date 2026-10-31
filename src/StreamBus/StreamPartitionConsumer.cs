@@ -527,7 +527,6 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                 // dispatch gate, so a retry sleep stalls exactly this partition and order
                 // is preserved by construction. `attempts` counts completed handler
                 // attempts (initial = 1), matching MaxAttempts semantics.
-                var allowSkip = !_options.IsTypedEndpoint || _options.AllowPipelineSkip;
                 var attempts = 0;
                 while (true)
                 {
@@ -540,7 +539,6 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                             consumeContext,
                             headers,
                             services,
-                            allowSkip,
                             attach.LoopToken).ConfigureAwait(false);
                         break;
                     }
@@ -553,16 +551,17 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                     catch (Exception ex)
                     {
                         StreamBusActivity.RecordException(activity, ex);
-                        var strict = _options.Retry.FailureMode == FailureMode.Strict;
-                        var exhausted = !strict && attempts >= (_options.Retry.MaxAttempts ?? int.MaxValue);
+                        var unbounded = _options.Retry.MaxAttempts is null;
+                        var exhausted = !unbounded && attempts >= _options.Retry.MaxAttempts!.Value;
+                        var mode = unbounded ? "unbounded" : "bounded";
                         if (RetryDelays.ShouldLogRetryWarning(attempts))
                             _logger.LogWarning(ex,
                                 "Consume handler failed for stream {Stream} partition {Partition} offset {Offset} (attempt {Attempt}, mode {Mode}); retrying in-handler.",
-                                _stream, _partitionIndex, offset, attempts, _options.Retry.FailureMode);
+                                _stream, _partitionIndex, offset, attempts, mode);
                         else
                             _logger.LogDebug(ex,
                                 "Consume handler failed for stream {Stream} partition {Partition} offset {Offset} (attempt {Attempt}, mode {Mode}); retrying in-handler.",
-                                _stream, _partitionIndex, offset, attempts, _options.Retry.FailureMode);
+                                _stream, _partitionIndex, offset, attempts, mode);
                         if (exhausted)
                         {
                             Interlocked.Decrement(ref _state.Inflight);
@@ -624,7 +623,6 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
         ConsumeContext consumeContext,
         HeaderWriter? headers,
         IServiceProvider? services,
-        bool allowSkip,
         CancellationToken ct)
     {
         if (_pipeline.Count == 0)
@@ -644,21 +642,14 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
             };
         }
 
-        var pipelineContext = new StreamConsumeFilterContext
-        {
-            Message = consumeContext,
-            MessageType = _options.MessageType,
-            TypedMessage = consumeContext.TypedMessage,
-            OutputHeaders = headers ?? new HeaderWriter(),
-            Services = services ?? EmptyServiceProvider.Instance,
-        };
+        var pipelineContext = _pipeline.CreateContext(
+            consumeContext,
+            headers ?? new HeaderWriter(),
+            services ?? EmptyServiceProvider.Instance);
         await _pipeline.RunAsync(
             pipelineContext,
-            context => allowSkip && context.SkipHandler
-                ? Task.CompletedTask
-                : _handler(consumeContext),
-            ct,
-            allowSkip).ConfigureAwait(false);
+            () => _handler(consumeContext),
+            ct).ConfigureAwait(false);
     }
 
     // SkipAfterDeadline exhaustion: confirmed error-stream handoff first, single
@@ -719,7 +710,6 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                 MessageId = consumeContext.Metadata.MessageId,
                 CorrelationId = consumeContext.Metadata.CorrelationId,
                 RoutingValue = consumeContext.RoutingValue,
-                ErrorRoutingValue = _stream,
                 OutputHeaders = outputHeaders,
             };
             _logger.LogWarning(lastError,
@@ -751,7 +741,6 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
             MessageId = consumeContext.Metadata.MessageId,
             CorrelationId = consumeContext.Metadata.CorrelationId,
             RoutingValue = consumeContext.RoutingValue,
-            ErrorRoutingValue = _options.ErrorStream.RoutingValue ?? _stream,
             OutputHeaders = outputHeaders,
         };
         _logger.LogWarning(lastError,
@@ -811,7 +800,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
     }
 
     // Effectively-once dispatch (FR-6): Strict-unbounded compute retry (EO
-    // validation forces FailureMode.Strict + null MaxAttempts, so this loop never
+    // validation forces unbounded retry (null MaxAttempts), so this loop never
     // exhausts), then publish-forever with id = source offset (FR-6.1/FR-6.5),
     // then return WITHOUT storing (FR-10.14 — the publishing id is the resume
     // point). Runs under the dispatch gate, so one partition publishes under one
@@ -836,21 +825,18 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                     else
                     {
                         var headers = new HeaderWriter();
-                        var pipelineContext = new StreamConsumeFilterContext
-                        {
-                            Message = consumeContext,
-                            OutputHeaders = headers,
-                            Services = consumeContext.Services ?? EmptyServiceProvider.Instance,
-                        };
+                        var pipelineContext = _pipeline.CreateContext(
+                            consumeContext,
+                            headers,
+                            consumeContext.Services ?? EmptyServiceProvider.Instance);
                         ReadOnlyMemory<byte> pipelineResult = default;
                         await _pipeline.RunAsync(
                             pipelineContext,
-                            async _ =>
+                            async () =>
                             {
                                 pipelineResult = await _eo!.ResultHandler(consumeContext).ConfigureAwait(false);
                             },
-                            attach.LoopToken,
-                            allowSkip: false).ConfigureAwait(false);
+                            attach.LoopToken).ConfigureAwait(false);
                         result = pipelineResult;
                         outputHeaders = headers.Snapshot();
                     }
@@ -859,6 +845,10 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                 catch (OperationCanceledException) when (attach.LoopToken.IsCancellationRequested)
                 {
                     return;
+                }
+                catch (StreamBusFilterContractException)
+                {
+                    throw;
                 }
                 catch (Exception ex)
                 {

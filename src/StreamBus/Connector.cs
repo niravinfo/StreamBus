@@ -29,7 +29,7 @@ public interface IStreamSystemConnector
     Task<IStreamSystemHandle> ConnectAsync(StreamBusOptions options, CancellationToken ct);
 }
 
-public sealed class StreamSystemHandle : IStreamSystemHandle
+internal sealed class StreamSystemHandle : IStreamSystemHandle
 {
     private readonly StreamSystem _system;
     private readonly ILoggerFactory _factory;
@@ -197,7 +197,7 @@ public sealed class StreamSystemHandle : IStreamSystemHandle
     }
 }
 
-public sealed class StreamSystemConnector : IStreamSystemConnector
+internal sealed class StreamSystemConnector : IStreamSystemConnector
 {
     private readonly ILoggerFactory _factory;
     public StreamSystemConnector(ILoggerFactory? loggerFactory = null) =>

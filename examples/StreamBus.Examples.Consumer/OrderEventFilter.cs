@@ -16,8 +16,8 @@ public sealed class OrderEventFilter : IStreamConsumeFilter<OrderEvent>
                 $"Order event rejected: OrderId is blank (stream '{context.Raw.Stream}', offset {context.Raw.Offset}).");
         }
 
-        // The typed context wraps the shared universal context; the
-        // pipeline (and then the consumer) continues through it.
-        return next(context.Inner);
+        // Universal and typed filters share this one context; the pipeline
+        // (and then the consumer) continues through it.
+        return next();
     }
 }

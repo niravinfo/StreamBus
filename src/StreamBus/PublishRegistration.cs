@@ -1,6 +1,6 @@
 namespace StreamBus;
 
-public sealed record PublishRegistration
+internal sealed record PublishRegistration
 {
     public required Type BusMarker { get; init; }
     public required Type MessageType { get; init; }
@@ -78,7 +78,7 @@ internal sealed class PublishFilterRegistration
     }
 }
 
-public sealed class StreamBusPublishStore
+internal sealed class StreamBusPublishStore
 {
     private readonly List<PublishRegistration> _registrations = new();
     private readonly Dictionary<Type, List<PublishFilterRegistration>> _filters = new();
@@ -138,7 +138,7 @@ public sealed class StreamBusPublishStore
     public IReadOnlyList<PublishRegistration> Registrations => _registrations;
 }
 
-public sealed class StreamPublishRouter
+internal sealed class StreamPublishRouter
 {
     private readonly StreamBusPublishStore _store;
 

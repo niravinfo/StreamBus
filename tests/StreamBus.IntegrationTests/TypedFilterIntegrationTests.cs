@@ -60,7 +60,7 @@ internal sealed class TypedFilterOrderPublishFilter : IStreamPublishFilter<Typed
         CancellationToken ct)
     {
         context.Headers.Set(TypedFilterHeaders.Order, context.Message.Id);
-        return next(context.Inner);
+        return next();
     }
 }
 
@@ -78,7 +78,7 @@ internal sealed class TypedFilterOrderConsumeFilter(TypedFilterProbe probe)
             typeof(TypedFilterOrder),
             context.Message,
             context.Raw.Metadata.GetString(TypedFilterHeaders.Order));
-        return next(context.Inner);
+        return next();
     }
 }
 
@@ -88,11 +88,11 @@ internal sealed class TypedFilterUniversalConsumeFilter(TypedFilterProbe probe) 
     {
         probe.Record(
             TypedFilterProbe.UniversalConsume,
-            context.Message.Stream,
+            context.Raw.Stream,
             context.MessageType ?? typeof(object),
-            context.Message,
-            context.Message.Metadata.GetString(TypedFilterHeaders.Order));
-        return next(context);
+            context.Raw.Body,
+            context.Raw.Metadata.GetString(TypedFilterHeaders.Order));
+        return next();
     }
 }
 

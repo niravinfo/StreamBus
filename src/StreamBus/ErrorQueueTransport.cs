@@ -6,7 +6,7 @@ using RabbitMQ.Client.Exceptions;
 
 namespace StreamBus;
 
-public interface IErrorQueueConnectionFactory
+internal interface IErrorQueueConnectionFactory
 {
     Task<IConnection> ConnectAsync(StreamBusOptions options, CancellationToken ct);
 }
@@ -213,7 +213,7 @@ internal sealed class AmqpControlChannel : IErrorQueueControlChannel
         => await _channel.DisposeAsync().ConfigureAwait(false);
 }
 
-public sealed class ErrorQueueTransport : IAsyncDisposable
+internal sealed class ErrorQueueTransport : IAsyncDisposable
 {
     private static readonly TimeSpan DrainIdle = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan DrainPoll = TimeSpan.FromMilliseconds(200);

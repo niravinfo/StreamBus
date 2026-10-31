@@ -4,6 +4,30 @@
 
 ### Breaking
 
+- Universal and typed filters now share one context per publish or
+  delivery. `PublishDelegate` and `ConsumeDelegate` are parameterless;
+  typed filters call `next()`. `context.Inner` and the wrapper context are
+  removed, the universal publish context renames `Message` to `Payload`,
+  and the universal consume context renames `Message` to `Raw`. Typed
+  contexts continue to expose `Message`.
+- Removed `CanSkip`, `SkipHandler`, and `AllowPipelineSkip`. A normal or
+  raw consume filter now filters a delivery by returning without calling
+  `next()`; the handler is skipped and the offset advances. More than one
+  `next()` remains a contract error, and effectively-once pipelines require
+  exactly one call (zero is a runtime contract error).
+- Removed `RetryPolicy.FailureMode`; retry strictness is derived from
+  `MaxAttempts` (`null` is unbounded). An unbounded policy cannot target an
+  error stream, dead-letter queue, or exhaustion callback, and a bounded
+  policy must configure one.
+- Consolidated `PublishResultOptions` retry knobs into a single
+  `RetryPolicy Retry`.
+- Removed the unused `ErrorStreamOptions.RoutingValue` and
+  `ErrorEnvelope.ErrorRoutingValue` surface.
+- Implementation plumbing is internal (`StreamBusConfigStore`,
+  registration stores and descriptors, the publish router, the registry,
+  connection supervisor, system connector/handle implementations, and the
+  error-queue transport). Configure through the public builders and
+  accessors.
 - Registration-store `Add` methods are internal; use the public
   `AddStreamBus` / `ReceiveEndpoint` configurators. Public read accessors
   remain.

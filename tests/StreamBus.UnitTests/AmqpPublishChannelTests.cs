@@ -45,7 +45,6 @@ public sealed class AmqpPublishChannelTests
         MessageId = "m-1",
         CorrelationId = "c-1",
         RoutingValue = "o-1",
-        ErrorRoutingValue = "orders",
     };
 
     [Fact]

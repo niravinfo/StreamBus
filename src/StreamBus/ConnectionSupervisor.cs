@@ -1,6 +1,6 @@
 namespace StreamBus;
 
-public sealed class StreamBusConnectionSupervisor : IAsyncDisposable
+internal sealed class StreamBusConnectionSupervisor : IAsyncDisposable
 {
     private readonly StreamBusOptions _options;
     private readonly IStreamSystemConnector _connector;
