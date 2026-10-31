@@ -2,6 +2,12 @@ using System.Diagnostics.Metrics;
 
 namespace StreamBus.UnitTests;
 
+// MeterListener observes process-wide instruments, so these tests must not
+// overlap with any other test that can run a pipeline.
+[CollectionDefinition(nameof(PipelineMetricsCollection), DisableParallelization = true)]
+public sealed class PipelineMetricsCollection;
+
+[Collection(nameof(PipelineMetricsCollection))]
 public sealed class PipelineMetricsTests : IDisposable
 {
     private readonly MeterListener _listener = new();
