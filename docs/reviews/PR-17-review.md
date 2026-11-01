@@ -1,0 +1,1508 @@
+# Code Review — PR #17 (`nirav/feature/SteamBusV2_Fixes` vs `origin/main`)
+
+**Totals:** 8 Critical · 23 Important · 27 Minor — 58 items
+
+- All findings verified against the actual code on the branch, compared directly against `origin/main`
+  (not the PR target branch, per the single-commit merge plan).
+- Item IDs: `INF-` = infrastructure/hosting/errors, `CON-` = consume path, `PUB-` = publish path,
+  `FLT-` = typed filters/middleware, `DOC-` = docs/packaging/naming/test hygiene.
+- Verification notes: the "typed consume context payload loss" claim from an earlier round was
+  **refuted** (the typed context is created before the pipeline runs each attempt, so all filters
+  share one instance) and is therefore not included. The two claimed `_state.Inflight` leak paths
+  were also refuted, but the structural fragility is kept as CON-3.
+
+## Suggested execution order
+
+1. **Before merge (Critical):** INF-1, INF-3, INF-4, CON-1, CON-2, PUB-1, FLT-1.
+2. **Same PR, second commit (Important correctness):** PUB-2, PUB-3, PUB-4, PUB-5, CON-3, CON-4,
+   CON-5, CON-6, CON-7, CON-11, CON-13, INF-2, INF-5, INF-6, INF-7, FLT-2, FLT-3, FLT-4, FLT-5.
+3. **Polish batch:** DOC-1, DOC-2, DOC-3, DOC-5, DOC-7, DOC-8, DOC-12, and all minors.
+
+---
+
+# 🔴 CRITICAL
+
+---
+
+**[INF-1] Confirm channel: publish TCS completed by any ack/nack event, no delivery-tag match; cancellation path escapes without channel reset**
+- **Severity:** CRITICAL
+- **File:** src\StreamBus\ErrorQueueTransport.cs (lines 120–129, 150–162; caller 332–350)
+- **Problem:** The cached publish channel is reused across publishes, but each `PublishAsync` call subscribes fresh `BasicAcks/Nacks` handlers that complete a per-call TCS on the *first* event, with no check that the event's `DeliveryTag` belongs to this publish. A duplicated, broker-replayed, or late ack from a previous publish on the same channel can resolve the next publish's TCS — reporting a dead-letter as confirmed when it wasn't (an at-least-once violation). Additionally, when the caller's token cancels, `OperationCanceledException` exits without resetting the outcome-unknown channel — the exact hazard the timeout comment warns about — leaving a stray in-flight delivery whose late ack can hit the next publish's handlers.
+```csharp
+// ErrorQueueTransport.cs:126-129 + 150-162
+AsyncEventHandler<BasicAckEventArgs> onAck = (_, _) => { Complete(null); return Task.CompletedTask; };
+...
+catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+{
+    throw new StreamBusTimeoutException($"Publish to error queue '{queue}' was not confirmed within {confirmTimeout} (outcome unknown).");
+}
+
+// caller, ErrorQueueTransport.cs:332-350 — no OperationCanceledException arm
+try
+{
+    await channel.PublishAsync(queue.Name, envelope, confirmTimeout, ct).ConfigureAwait(false);
+}
+catch (StreamBusTimeoutException)
+{
+    // The confirm outcome is unknown; a late ack must not be
+    // mistaken for the next publish on this channel.
+    await ResetPublishChannelAsync().ConfigureAwait(false);
+    throw;
+}
+```
+- **Solution:** (1) Capture the delivery tag returned by `BasicPublishAsync` and only complete the TCS on a matching tag; treat unmatched ack/nack events as unknown-outcome and reset. (2) Add an `OperationCanceledException` arm in `ErrorQueueTransport.PublishAsync` that resets the publish channel before rethrowing.
+```csharp
+// AmqpPublishChannel.PublishAsync
+var tag = await _channel.BasicPublishAsync(
+    exchange: string.Empty, routingKey: queue, mandatory: true,
+    basicProperties: properties, body: envelope.Body,
+    cancellationToken: linked.Token).ConfigureAwait(false);
+AsyncEventHandler<BasicAckEventArgs> onAck = (_, e) =>
+{
+    if (e.DeliveryTag == tag) Complete(null);
+    return Task.CompletedTask;
+};
+
+// ErrorQueueTransport.PublishAsync
+catch (OperationCanceledException)
+{
+    // Outcome unknown: a late ack must not be mistaken for the next publish.
+    await ResetPublishChannelAsync().ConfigureAwait(false);
+    throw;
+}
+```
+
+---
+
+**[INF-3] Per-vhost `ErrorQueueTransport` instances (with live AMQP connections) are never disposed**
+- **Severity:** CRITICAL
+- **File:** src\StreamBus\Registry.cs (lines 85, 89–93); src\StreamBus\Hosting.cs (lines 755–785)
+- **Problem:** `StreamBusRegistry` lazily creates an `ErrorQueueTransport` per vhost (each owning an AMQP `IConnection`), but neither the registry (no `IAsyncDisposable`) nor `StreamBusHostedService.StopAsync` ever disposes them. `StopAsync` disposes only consumers and supervisors. Every vhost that ever touched a queue dead-letter or `DrainAsync` leaves an open AMQP connection and cached channel at shutdown; the graceful `CloseAsync(200, ...)` path is unreachable in normal host shutdown.
+```csharp
+// Registry.cs:89-93
+internal ErrorQueueTransport ErrorQueuesFor(string vhost)
+    => _errorQueues.GetOrAdd(vhost, _ => new ErrorQueueTransport(
+        _resolveOptions(vhost),
+        null,
+        _loggerFactory.CreateLogger<ErrorQueueTransport>()));
+
+// Hosting.cs:779-784 — StopAsync ends here; no transport disposal
+foreach (var (vhost, supervisor) in copy)
+{
+    try { await supervisor.DisposeAsync().ConfigureAwait(false); }
+    catch (Exception ex) { _logger.LogWarning(ex, "..."); }
+    finally { _registry.RemoveSupervisor(vhost); }
+}
+```
+- **Solution:** Make `StreamBusRegistry` implement `IAsyncDisposable` that drains and disposes `_errorQueues`, and have `StreamBusHostedService.StopAsync` dispose the registry after the supervisor loop.
+```csharp
+// StreamBusRegistry
+internal sealed class StreamBusRegistry : IStreamBusRegistry, IAsyncDisposable
+{
+    public async ValueTask DisposeAsync()
+    {
+        foreach (var (_, transport) in _errorQueues)
+        {
+            try { await transport.DisposeAsync().ConfigureAwait(false); }
+            catch { }
+        }
+        _errorQueues.Clear();
+    }
+}
+
+// StreamBusHostedService.StopAsync, after the supervisor loop:
+await _registry.DisposeAsync().ConfigureAwait(false);
+```
+
+---
+
+**[INF-4] Failed-start supervisors are never added to `_started` — never disposed or deregistered on StopAsync**
+- **Severity:** CRITICAL
+- **File:** src\StreamBus\Hosting.cs (lines 736–753, 755–785)
+- **Problem:** `StartSupervisorAsync` catches the start exception and returns it, so on failure the supervisor never enters `_started`. The supervisor's `RunLoopAsync` keeps retrying in the background by design, but `StopAsync` iterates only `_started`, so its `DisposeAsync` is never called and `_registry.RemoveSupervisor(vhost)` never runs. Cleanup only works by the incidental fact that `Host` passes a shutdown-linked token — an implementation detail the library shouldn't rely on.
+```csharp
+// Hosting.cs:736-753
+private async Task<Exception?> StartSupervisorAsync(
+    string vhost, StreamBusConnectionSupervisor supervisor, CancellationToken ct)
+{
+    try
+    {
+        await supervisor.StartAsync(ct).ConfigureAwait(false);
+        lock (_gate) _started.Add((vhost, supervisor));
+        return null;
+    }
+    catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+    catch (Exception ex) { return ex; }   // supervisor NOT recorded
+}
+```
+- **Solution:** Track every supervisor created during `StartAsync` regardless of first-attempt outcome (a background retry loop is still an owned resource), and dispose/deregister all of them in `StopAsync`.
+```csharp
+// StartAsync, when building supervisors:
+var supervisor = _registry.SupervisorFor(vhost);
+lock (_gate) _started.Add((vhost, supervisor));   // record before start
+startTasks.Add(StartSupervisorAsync(vhost, supervisor, ct));
+```
+
+---
+
+**[CON-1] Foreign-token `OperationCanceledException` is retried as a generic failure; unbounded default retry wedges the partition forever**
+- **Severity:** CRITICAL
+- **File:** src\StreamBus\StreamPartitionConsumer.cs (lines 543–548) + src\StreamBus\RetryPolicy.cs (lines 15–24)
+- **Problem:** The dispatch retry loop only exits quietly on `OperationCanceledException` when *the loop token* is cancelled. A handler that throws OCE from its own token (per-delivery token, DB timeout wrapped as OCE, HTTP `TaskCanceledException`) falls into the generic catch and is retried. The default `RetryPolicy` has `MaxAttempts = null` (unbounded) and registry validation permits unbounded retry with no handoff destination, so this case retries forever inside the dispatch gate: back-pressure freezes credit for that partition and the message never dead-letters. In-handler retry is also invisible to health monitoring.
+```csharp
+catch (OperationCanceledException) when (attach.LoopToken.IsCancellationRequested)
+{
+    Interlocked.Decrement(ref _state.Inflight);
+    Interlocked.Exchange(ref _state.RetryBlocked, 0);
+    return;
+}
+```
+```csharp
+// RetryPolicy.cs — default is unbounded
+public int? MaxAttempts { get; init; }
+public TimeSpan BaseDelay { get; init; } = TimeSpan.FromMilliseconds(200);
+```
+- **Solution:** (1) Classify OCE: only treat as shutdown when `attach.LoopToken.IsCancellationRequested`; otherwise count it toward `MaxAttempts` exactly like any handler failure, with a visible recycle. (2) Document on `RetryPolicy.MaxAttempts` that `null` means "the partition halts on any persistent handler failure" (see also CON-5).
+```csharp
+catch (OperationCanceledException) when (attach.LoopToken.IsCancellationRequested)
+{
+    ... return; // shutdown only
+}
+catch (OperationCanceledException ex) // foreign token: a real handler failure
+{
+    Interlocked.Decrement(ref _state.Inflight);
+    FailAttach(attach, offset, ex, "Consume handler cancelled without shutdown");
+    return;
+}
+```
+
+---
+
+**[CON-2] `OffsetStorer` mutates fields on the dispatch thread while the timer thread reads them — no synchronization, tearing possible on 32-bit**
+- **Severity:** CRITICAL
+- **File:** src\StreamBus\StreamPartitionConsumer.cs (lines 35–82, 945–955, 1085–1116)
+- **Problem:** `ShouldStoreOnSuccess`/`Stored` mutate `_lastSuccess`, `_sinceLastStore`, `_lastStored` on the dispatch path; `TickAsync` reads `HasSuccess`/`LastSuccess`/`IsStored` on the timer task with no lock, no `Volatile`, and `ulong` fields that can tear on 32-bit targets. A stale `LastSuccess` snapshot can cause the timer to admit and store an offset for a *stale/possibly-closed* handle, advancing the watermark so the current dispatch's cadence store of the same offset is then rejected — the store silently no-ops.
+```csharp
+// fields (35-44): mutated on dispatch path only
+private int _sinceLastStore;
+private ulong _lastSuccess;
+private bool _hasSuccess;
+private ulong _lastStored;
+private bool _hasStored;
+```
+```csharp
+// TickAsync (1091-1099): timer thread
+if (!_storer.HasSuccess) { continue; }
+var offset = _storer.LastSuccess;
+if (_storer.IsStored(offset)) { continue; }
+```
+- **Solution:** Guard all `OffsetStorer` mutation and reads with the existing `_storeGate` (or a dedicated lock): `ShouldStoreOnSuccess`, `Stored`, `IsStored`, and `LastSuccess`/`HasSuccess` access take the gate, and `TickAsync` snapshots `LastSuccess` under the same lock before calling `StoreAndTrackAsync`.
+```csharp
+public ulong LastSuccess { get { lock (_gate) return _lastSuccess; } }
+public bool ShouldStoreOnSuccess(ulong offset) { lock (_gate) { ... } }
+// TickAsync:
+ulong offset;
+lock (_gate)
+{
+    if (!_storer.HasSuccess) continue;
+    offset = _storer.LastSuccess;
+}
+```
+
+---
+
+**[PUB-1] Filter `Set` loses to call-level header values in `Materialize`**
+- **Severity:** CRITICAL
+- **File:** src\StreamBus\Headers.cs (lines 185–198; seeded at src\StreamBus\Bus.cs line 169)
+- **Problem:** `StreamSendHeaders` is constructed with the caller's `PublishOptions.Properties.Headers` as its initial values, so a filter's `Set` correctly overrides them in `_values`. But `Materialize` then re-merges `callLevel.Headers` *over* `_values`, so any header the caller also supplied silently defeats the filter's `Set`. `Remove` intentionally wins over call-level values (per its doc comment), so the two mutations have opposite, contradictory precedence. A middleware filter that overrides a user-supplied `x-tenant` header is silently ignored — filters must be the last writer in a pipeline.
+```csharp
+var merged = new Dictionary<string, object?>(_values, StringComparer.Ordinal);
+if (callLevel is not null)
+{
+    foreach (var (key, value) in callLevel.Headers)
+        merged[key] = value;
+}
+```
+- **Solution:** Delete the `callLevel` merge loop — `_values` already contains those entries because the bag is seeded from `effective.Properties?.Headers` at `Bus.cs:169`. Keep the `_removed` loop so a filter `Remove` still wins. Add a doc comment on `Set` stating that filter mutations take precedence over call-site headers, consistent with `Remove`.
+```csharp
+internal StreamMessageProperties Materialize(StreamMessageProperties? callLevel)
+{
+    // _values was seeded from the call-level headers at construction, so filter
+    // Set/Remove mutations already reflect the correct precedence: filters win.
+    var merged = new Dictionary<string, object?>(_values, StringComparer.Ordinal);
+
+    foreach (var key in _removed)
+        merged.Remove(key);
+
+    return (callLevel ?? new StreamMessageProperties()) with { Headers = merged };
+}
+```
+
+---
+
+**[FLT-1] Typed filter machinery is entirely reflection-based with no AOT/trimming story**
+- **Severity:** CRITICAL
+- **File:** src\StreamBus\FilterAdapters.cs (lines 23–35); src\StreamBus\ConsumePipeline.cs (lines 251–259); src\StreamBus\TypedMessageDeserializer.cs (lines 37–46)
+- **Problem:** Every typed filter/context/deserialization path uses `MakeGenericType` + `Activator.CreateInstance`, `MakeGenericMethod` on a `NonPublic` method found by name, and `Expression.Compile`. There are no `[RequiresUnreferencedCode]`/`[DynamicallyAccessedMembers]` annotations and the csproj sets no AOT/trimming lane. Under a trimmed or NativeAOT publish these calls fail at runtime — silently, one message-type-cache-miss after deployment — and the `!` on `GetMethod` turns a simple rename of `CreateTyped` into a delivery-time crash on every bus.
+```csharp
+// FilterAdapters.cs 23-25
+return (IStreamPublishFilter)Activator.CreateInstance(
+    typeof(TypedPublishFilterAdapter<>).MakeGenericType(messageType),
+    filter)!;
+
+// ConsumePipeline.cs 253-258
+var method = typeof(TypedConsumeContext).GetMethod(
+    nameof(CreateTyped),
+    BindingFlags.NonPublic | BindingFlags.Static)!;
+return (Func<ConsumeContext, object, ConsumeContext>)method
+    .MakeGenericMethod(messageType)
+    .CreateDelegate(typeof(Func<ConsumeContext, object, ConsumeContext>));
+
+// TypedMessageDeserializer.cs 39-41
+var closed = typeof(IStreamSerializer)
+    .GetMethod(nameof(IStreamSerializer.Deserialize))!
+    .MakeGenericMethod(messageType);
+```
+- **Solution:** (1) Add compile-time-closable registration overloads so the common path needs no runtime closing: `UseConsumeFilter<TFilter, TMessage>()` constructs `TypedConsumeFilterAdapter<TMessage>` directly at the call site (the ASP.NET Core `UseMiddleware<T>` pattern). (2) Replace the string-based `GetMethod` with a static generic cache class that is closed via `MakeGenericType` once, with annotations. (3) Annotate the remaining dynamic paths with `[RequiresUnreferencedCode]` and document that type-name-based registration is not trimming-safe.
+```csharp
+// New public API, closed at the call site — no MakeGenericType
+public void UseConsumeFilter<TFilter, TMessage>()
+    where TFilter : class, IStreamConsumeFilter<TMessage>
+{
+    AddConsumeFilter(ConsumeFilterRegistration.ForInstance(
+        TypedConsumeFilterAdapter<TMessage>.Wrap(this)));
+}
+
+// Typed context factory via generic cache class, not GetMethod by name
+internal static class TypedConsumeContextFactory<T>
+{
+    public static ConsumeContext Create(ConsumeContext delivery, object message)
+        => new ConsumeContext<T> { /* ...copy fields... */ Message = (T)message };
+}
+```
+
+---
+
+# 🟠 IMPORTANT
+
+---
+
+**[PUB-2] Publish filters resolved once from the root provider create captive dependencies**
+- **Severity:** IMPORTANT
+- **File:** src\StreamBus\PublishPipelineCache.cs (lines 34–49 and 76–82)
+- **Problem:** The cache constructor eagerly resolves every universal filter from `_rootProvider` and caches the instance for the bus's lifetime; typed filters are likewise resolved from `_rootProvider!`. If a user registers a scoped (or transient) filter type, it is silently promoted to singleton: any scoped service it captures (e.g., a `DbContext`) lives for the whole application. Meanwhile `Bus.cs:168` creates a per-publish DI scope and hands it to filters via `context.Services`, advertising scoped semantics that the cache's own resolution contradicts. Nothing validates the lifetime.
+```csharp
+var filter = registration.CreateUniversal(rootProvider);
+```
+```csharp
+var instance = _typedInstances.GetOrAdd(
+    closedFilterType,
+    type => registration.ResolveTyped(type, _rootProvider!));
+```
+- **Solution:** Either resolve each filter from the per-publish scope at publish time, or — if singleton caching is kept for performance — validate at seal time that registered filter types resolve as singletons and throw `StreamBusConfigurationException` otherwise. Document the singleton contract on `IStreamPublishFilter`. Apply the same fix on the consume side (see FLT-4).
+```csharp
+// At seal time, for each registered filter type:
+var descriptor = services.FirstOrDefault(d => d.ServiceType == registration.FilterType);
+if (descriptor is { Lifetime: ServiceLifetime.Scoped or ServiceLifetime.Transient })
+    throw new StreamBusConfigurationException(
+        $"Publish filter '{registration.FilterType}' is registered as {descriptor.Lifetime}; publish filters must be singletons. Resolve per-publish scoped services from PublishContext.Services.");
+```
+
+---
+
+**[PUB-3] Pipeline catch-all wraps foreign exceptions as transient; fast path records nothing on the activity**
+- **Severity:** IMPORTANT
+- **File:** src\StreamBus\Bus.cs (lines 158–215)
+- **Problem:** The zero-filter fast path (159–163) has no try/catch: raw exceptions propagate unwrapped and `StreamBusActivity.RecordException` is never called, so tracing differs depending on whether filters are configured. The filtered path catches every non-fatal, non-`StreamBusException` exception — including a user-filter `NullReferenceException` and a foreign `OperationCanceledException` with an untriggered caller token — and wraps it in `StreamBusPublishTransientException`. Callers that retry on transient exceptions will retry a deterministically broken filter forever.
+```csharp
+if (pipeline.Count == 0)
+{
+    await SendTypedAsync(stream, message, effective, ct, activity).ConfigureAwait(false);
+    return;
+}
+```
+```csharp
+catch (OperationCanceledException) when (ct.IsCancellationRequested)
+{
+    throw;
+}
+catch (Exception ex)
+{
+    StreamBusActivity.RecordException(activity, ex);
+    throw new StreamBusPublishTransientException(
+        $"Publish to stream '{stream}' failed transiently in the publish pipeline.",
+        ex);
+}
+```
+- **Solution:** Hoist one `try/catch` around both branches so both paths get identical treatment. Reorder the cancellation filter so foreign-token OCE never gets wrapped as transient. Keep the transient wrapper for genuine transport failures only — user-filter failures surface unwrapped (the registry already classifies transport errors as transient).
+```csharp
+var pipeline = _publishPipelines.GetOrCreate(typeof(T));
+try
+{
+    if (pipeline.Count == 0)
+    {
+        await SendTypedAsync(stream, message, effective, ct, activity).ConfigureAwait(false);
+        return;
+    }
+    // ... scope, context, pipeline.RunAsync(...) unchanged ...
+}
+catch (StreamBusException ex)
+{
+    StreamBusActivity.RecordException(activity, ex);
+    throw;
+}
+catch (OperationCanceledException)
+{
+    // Never wrap cancellation as a transient publish failure.
+    throw;
+}
+catch (Exception ex)
+{
+    // User-filter failures are deterministic; surface them unwrapped so
+    // callers don't retry-burn on their own bugs.
+    StreamBusActivity.RecordException(activity, ex);
+    throw;
+}
+```
+
+---
+
+**[PUB-4] Requeued/replayed messages lose user headers and ContentType**
+- **Severity:** IMPORTANT
+- **File:** src\StreamBus\ErrorEnvelope.cs (lines 61–73; consumer at src\StreamBus\Bus.cs line 242)
+- **Problem:** When a failed message is requeued, the drain path parses only the `streambus.error.*` properties — the original user application headers (`SendHeaders`) are dropped at parse time. `ToReplayOptions` then rebuilds `StreamMessageProperties` from just `MessageId`/`CorrelationId`/`SentTime`, so the republished message carries no `x-tenant`-style headers on the wire and no `ContentType`. Downstream consumers receive a semantically different message than the one that failed.
+```csharp
+internal PublishOptions ToReplayOptions() => new()
+{
+    Properties = new StreamMessageProperties
+    {
+        MessageId = MessageId,
+        CorrelationId = CorrelationId,
+        SentTime = SentTime,
+    },
+};
+```
+- **Solution:** Persist the original user headers inside the envelope under a reserved key (e.g., `streambus.error.user-headers`), parse them back into a new `UserHeaders` property on the envelope, and include them in `ToReplayOptions()`. Preserve `ContentType` the same way, or stamp `_serializer.ContentType` on the requeue call the way `SendTypedAsync` does.
+```csharp
+internal PublishOptions ToReplayOptions() => new()
+{
+    Properties = new StreamMessageProperties
+    {
+        MessageId = MessageId,
+        CorrelationId = CorrelationId,
+        SentTime = SentTime,
+        Headers = UserHeaders ?? new Dictionary<string, object?>(),
+    },
+};
+```
+
+---
+
+**[PUB-5] Super handle implements `SendEnvelopeAsync` without routing — throws `KeyNotFoundException` mid-send**
+- **Severity:** IMPORTANT
+- **File:** src\StreamBus\ProducerHandles.cs (interface at lines 18–32; implementation at lines 259–268)
+- **Problem:** `IStreamSuperProducerHandle` inherits `IStreamPlainProducerHandle`, so `SendEnvelopeAsync` is part of the super handle's public surface. Its implementation never calls `_routing.Stamp(message, ...)` (no routing key registered in the routing table), but the client's `Routing` callback fires during send and throws `KeyNotFoundException` — a non-`StreamBusException`, so it ends up misclassified as "transient". The interface doc claims the split "keeps transport-specific members off the wrong surface"; this method violates that. It is internally unreachable today only because the error hand-off always fetches the plain-slot handle, but it is a public interface.
+```csharp
+public interface IStreamSuperProducerHandle : IStreamPlainProducerHandle { ... }
+```
+```csharp
+public Task SendEnvelopeAsync(
+    ReadOnlyMemory<byte> body,
+    StreamMessageProperties properties,
+    CancellationToken ct)
+{
+    ArgumentNullException.ThrowIfNull(properties);
+    var message = new Message(body.ToArray());
+    StreamMessageProperties.ApplyTo(message, properties);
+    return _confirmations.PublishAsync(_producer, _stream, message, ct);
+}
+```
+- **Solution:** Do not derive `IStreamSuperProducerHandle` from `IStreamPlainProducerHandle`; derive both from `IStreamProducerHandle` and place `SendEnvelopeAsync` only where routing is genuinely supported. Alternatively, route this method through `SendMessageAsync` like every other send on the class.
+```csharp
+public interface IStreamSuperProducerHandle : IStreamProducerHandle
+{
+    Task PublishWithIdAsync(ulong publishingId, ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct);
+    Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, PublishOptions options, CancellationToken ct);
+}
+```
+
+---
+
+**[CON-3] Non-EO dispatch maintains `_state.Inflight` decrements in five hand-placed spots — fragile, with future leak risk**
+- **Severity:** IMPORTANT
+- **File:** src\StreamBus\StreamPartitionConsumer.cs (lines 520–601 vs 913–917)
+- **Problem:** `DispatchEffectivelyOnceAsync` correctly owns the decrement in a single `finally` (913–917). The non-EO path instead decrements at 545, 565, 578, 590 individually, and the shutdown catch at 585–589 returns after the 520 increment without decrementing. Any future branch added to the region (e.g., the fix for CON-1!) reintroduces the leak.
+```csharp
+// 585-589: returns after the increment at 520
+catch (OperationCanceledException) when (attach.LoopToken.IsCancellationRequested)
+{
+    // Shutdown raced dispatch; exit quietly without signalling failure.
+    return;
+}
+Interlocked.Decrement(ref _state.Inflight);
+Interlocked.Exchange(ref _state.RetryBlocked, 0);
+```
+- **Solution:** Restructure the non-EO path exactly like the EO one: increment at the top, then wrap the attempt loop, exhaustion, and store in one `try` whose `finally` does the decrement/reset. Delete all five scattered decrement sites.
+```csharp
+Interlocked.Increment(ref _state.Inflight);
+try
+{
+    ...attempt loop / ExhaustAsync / store...
+}
+finally
+{
+    Interlocked.Decrement(ref _state.Inflight);
+    Interlocked.Exchange(ref _state.RetryBlocked, 0);
+}
+```
+
+---
+
+**[CON-4] Two competing exhaustion callbacks: `OnRetryExhausted` only fires on the ErrorStream branch**
+- **Severity:** IMPORTANT
+- **File:** src\StreamBus\RetryPolicy.cs (lines 45–54) + src\StreamBus\Configuration\RetryConfiguration.cs (lines 57–75) + src\StreamBus\StreamPartitionConsumer.cs (lines 643–789)
+- **Problem:** Two exhaustion hooks exist with different shapes: `ErrorHandoff` + `OnRetryExhausted` (no `CancellationToken`) and `ExhaustedContext` + `ExhaustionCallback` (with token and `Services`). `ExhaustAsync` dispatches to the callback branch, the dead-letter branch, or the error-stream branch — and `OnRetryExhausted` only executes inside the ErrorStream branch. A user who registers `OnRetryExhausted` with a queue dead-letter or callback destination is never notified about exhausted messages at all.
+```csharp
+// RetryPolicy.cs
+public Func<ErrorHandoff, Task>? OnRetryExhausted { get; init; }
+// StreamPartitionConsumer.cs 748: only inside the ErrorStream branch
+if (_options.OnRetryExhausted is { } hook)
+```
+- **Solution:** Keep one callback. `ExhaustedContext`/`ExhaustionCallback` is the better shape (has `CancellationToken`, `Services`, `Attempts`). Delete `OnRetryExhausted`/`ErrorHandoff` (or at minimum fire it on every exhaustion path); port any payload it provides into `ExhaustedContext`.
+
+---
+
+**[CON-5] Registry validation leaves unbounded-forever-retry as the implicit default**
+- **Severity:** IMPORTANT
+- **File:** src\StreamBus\ConsumerRegistry.cs (lines 212–227)
+- **Problem:** The validation demands that bounded retry have a handoff and unbounded retry have none — but `new RetryPolicy()` (the `ConsumeOptions` default) already has `MaxAttempts = null`, so a user who touches nothing gets a policy where a persistent handler failure halts the partition indefinitely with no dead-letter escape. Configurator users always get bounded policies via `IRetryConfigurator`; raw `ConsumeOptions` users get silently different, dangerous semantics.
+```csharp
+if (retry.MaxAttempts is null)
+{
+    if (hasHandoff)
+    {
+        throw new StreamBusConfigurationException(
+            "ConsumeOptions.Retry is unbounded (MaxAttempts is null); a hand-off destination (ErrorStream/DeadLetter/OnExhausted) cannot fire. Set MaxAttempts or remove the destination.");
+    }
+}
+```
+- **Solution:** Require an explicit choice: reject a default-constructed unbounded policy unless the user opts in (e.g., `RetryPolicy.StrictForever()`), or at minimum document on `ConsumeOptions.Retry` and `RetryPolicy.MaxAttempts` that the default means "the partition halts on any persistent handler failure".
+
+---
+
+**[CON-6] Duplicated readiness checks and duplicated teardown catch blocks**
+- **Severity:** IMPORTANT
+- **File:** src\StreamBus\ConsumerRegistry.cs (lines 250–260 vs 390–400; 339–361 vs 476–497)
+- **Problem:** `ConsumeAsync` and `ConsumeEffectivelyOnceAsync` contain identical readiness-probe code, and each contains a line-for-line duplicate of the same teardown `catch` block (cancel family, await loops, dispose loops/scopes/tracker, rethrow). `EnsureReadyAsync` already exists but isn't reused. Copy-pasted teardown is exactly where a future fix lands in one copy and not the other.
+```csharp
+// 250-260 (ConsumeAsync) is identical to 390-400 (ConsumeEffectivelyOnceAsync)
+var readiness = await _supervisor.WaitUntilReadyAsync(options.ReadinessPolicy, ct).ConfigureAwait(false);
+if (readiness == BusReadiness.Fatal)
+{
+    throw new StreamBusFatalException($"StreamBus for vhost '{_vhost}' is in Fatal state; consume of '{stream}' refused.");
+}
+```
+- **Solution:** Extract `private Task<IStreamSystemHandle> RequireReadyAsync(ReadinessPolicy policy, string operation, CancellationToken ct)` and `private async Task TearDownAsync(CancellationTokenSource family, List<(StreamPartitionConsumer, Task)> loops, List<IDisposable> scopes, RegistrationTracker? tracker)`; call both from the two catch blocks.
+
+---
+
+**[CON-7] `ExhaustedContext.GetService<T>` throws a configuration exception for a runtime lookup miss**
+- **Severity:** IMPORTANT
+- **File:** src\StreamBus\Configuration\RetryConfiguration.cs (lines 72–74)
+- **Problem:** A missing DI registration at message-exhaustion time is a runtime resolution failure, but this throws `StreamBusConfigurationException`, misleading callers into thinking their *bus configuration* is invalid and polluting configuration-exception handling.
+```csharp
+public T GetService<T>() where T : notnull
+    => (T)(Services.GetService(typeof(T))
+        ?? throw new StreamBusConfigurationException($"ExhaustedContext has no service of type {typeof(T).FullName} registered."));
+```
+- **Solution:** Delegate to standard required-service semantics, which throw `InvalidOperationException`:
+```csharp
+public T GetService<T>() where T : notnull
+    => Services.GetRequiredService<T>();
+```
+
+---
+
+**[CON-11] Naming drift: "ReceiveEndpoint" in errors with no such type; three consumer type names; inconsistent health registration schemes**
+- **Severity:** IMPORTANT
+- **File:** src\StreamBus\ConsumerRegistry.cs (lines 160, 431, 790–794) + src\StreamBus\Configuration\StreamBusConfigurator.cs (lines 564, 571)
+- **Problem:** Error messages say `ReceiveEndpoint '{stream}'` but the public types are `IStreamConsumer`/`StreamConsumerRegistration`/`StreamPartitionConsumer` — a user reading the message has no type to grep for. Health rows additionally mix identity schemes: `eo:{sourceStream}` for effectively-once, `raw:{stream}` for unnamed registrations, and `busType.FullName` for markers. Three names for one concept plus inconsistent telemetry identity is classic generated-code drift.
+```csharp
+// ConsumerRegistry.cs 160
+$"ReceiveEndpoint '{stream}': consume filter '{registration.FilterType}' does not implement IStreamConsumeFilter<{messageType.Name}> for this endpoint's message type.");
+// 431 vs 790-794
+new RegistrationTracker(_health, _vhost, $"eo:{sourceStream}", sourcePartitions.Length);
+return sequence == 1 ? $"raw:{stream}" : $"raw:{stream}:{sequence}";
+```
+- **Solution:** Pick one term ("consumer" or "endpoint") and use it in errors, type names, and health rows. Unify health registration names with a single helper (e.g., `$"consumer:{busName}:{stream}"` / `$"consumer:eo:{busName}:{sourceStream}"`).
+
+---
+
+**[CON-13] `_inflight` tracks only the latest dispatch; earlier queued dispatches can run after `DisposeAsync` completes**
+- **Severity:** IMPORTANT
+- **File:** src\StreamBus\StreamPartitionConsumer.cs (lines 264–273, 434–480)
+- **Problem:** Each delivery assigns `_inflight = dispatch` (latest wins) while earlier dispatch tasks can still be queued on `_dispatchGate` (the gate serializes but does not cancel queued waiters). `DisposeAsync` awaits only the single tracked task, so a queued dispatch released after dispose runs the handler against a torn-down attach state, touching disposed objects (`_loopCts` disposed at 473).
+```csharp
+MessageHandler = (c, context, message) =>
+{
+    var tracked = _consumerHandle.Current ?? new RawConsumerHandle(c);
+    var dispatch = DispatchAsync(tracked, context, message, attach);
+    lock (_life)
+    {
+        _inflight = dispatch;
+    }
+    return AwaitTrackedAsync(dispatch);
+},
+```
+- **Solution:** Replace `_inflight` with a counted set: increment a counter on queueing, decrement in `DispatchAsync`'s finally, and have `DisposeAsync` await a `TaskCompletionSource` that completes when the count reaches zero. Ensure queued dispatches observe the disposed/drained state and exit before touching state.
+```csharp
+// in message handler:
+Interlocked.Increment(ref _inflightCount);
+var dispatch = DispatchAsync(...);
+lock (_life) { _trackedDispatches.Add(dispatch); }
+_ = dispatch.ContinueWith(
+    _ => { Interlocked.Decrement(ref _inflightCount); if (_inflightCount == 0) _drainedTcs.TrySetResult(); },
+    TaskScheduler.Default);
+// DisposeAsync: await _drainedTcs.Task (with timeout)
+```
+
+---
+
+**[INF-2] `HandOffAsync` retries every exception forever, including fatal ones — partition wedges permanently**
+- **Severity:** IMPORTANT
+- **File:** src\StreamBus\ErrorPublisher.cs (lines 64–101)
+- **Problem:** The handoff retry loop is `while (true)` with a bare `catch (Exception ex)`; only cancellation escapes. Fatal, non-recoverable errors — a missing error stream, an auth failure, `StreamBusFatalException` — spin forever at the caller-supplied delay. This loop runs on the error-handoff path of a partition dispatch loop whose contract is "never advances past an unconfirmed handoff", so one permanently broken error destination wedges that partition for the process lifetime with only warning logs. Every other retry loop in the codebase classifies fatal vs transient; this one doesn't.
+```csharp
+var attempt = 0;
+while (true)
+{
+    ct.ThrowIfCancellationRequested();
+    attempt++;
+    try
+    {
+        await publish(envelope, ct).ConfigureAwait(false);
+        break;
+    }
+    catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+    catch (Exception ex)
+    {
+        _logger.LogWarning(ex, "...; retrying without advancing.", ...);
+        var delay = delayFor(attempt, ex);
+        if (delay < TimeSpan.Zero) delay = TimeSpan.Zero;
+        await Task.Delay(delay, ct).ConfigureAwait(false);
+    }
+}
+```
+- **Solution:** Add a fatal classifier (defaulting to `StreamBusErrorClassification.IsFatal`); on fatal, throw immediately so the existing exhaustion/dispatch machinery handles it visibly instead of silently wedging the partition.
+```csharp
+catch (Exception ex)
+{
+    if (ex is StreamBusFatalException || StreamBusErrorClassification.IsFatal(ex))
+        throw;   // let the visible recycle/exhaustion path own permanent failures
+    ...
+}
+```
+
+---
+
+**[INF-5] `TopologyRegistry._declared` cache never invalidated across reconnect or broker-side deletion**
+- **Severity:** IMPORTANT
+- **File:** src\StreamBus\TopologyRegistry.cs (lines 14–15, 83–88, 101)
+- **Problem:** After a successful declare, the fingerprint is cached in `_declared` keyed only by stream name. The fast path then returns success without any probe for the rest of the process lifetime — across supervisor reconnects, broker restarts, and streams deleted externally. `EnsureStreamAsync` then reports success while publishing fails with `StreamBusStreamNotFoundException`, and the cache can never recover because nothing clears it.
+```csharp
+if (_declared.TryGetValue(name, out var known) && known == fingerprint)
+    return;
+...
+    await create(handle, declaration, ct).ConfigureAwait(false);
+    _declared[name] = fingerprint;
+    return;
+```
+- **Solution:** Subscribe to the supervisor's `StateChanged` and clear `_declared` whenever the connection leaves `Ready`; the next `Ensure` call re-establishes truth via the normal probe/create/compare path.
+```csharp
+// constructor
+_supervisor.StateChanged += state =>
+{
+    if (state != BusConnectionState.Ready)
+        _declared.Clear();
+};
+```
+
+---
+
+**[INF-6] Publish channel/connection stored as two separate torn `Interlocked` writes**
+- **Severity:** IMPORTANT
+- **File:** src\StreamBus\ErrorQueueTransport.cs (lines 226–228, 375–395, 504–518)
+- **Problem:** `_publishChannel` and `_publishChannelConnection` are written and exchanged as two independent fields. `ResetPublishChannelAsync` (called from `DisposeAsync` **without** holding `_publishGate`) exchanges the channel first, then the connection; a concurrent `GetPublishChannelAsync` can observe a torn pair — a new channel paired with the *previous* connection, or a channel created on a connection `DisposeAsync` is concurrently disposing. Correctness then relies on downstream `ObjectDisposedException` catches.
+```csharp
+// ErrorQueueTransport.cs:379-385
+private async Task<IErrorQueuePublishChannel> GetPublishChannelAsync(
+    IErrorQueueConnection connection, CancellationToken ct)
+{
+    if (_publishChannel is { IsOpen: true } channel && ReferenceEquals(_publishChannelConnection, connection))
+        return channel;
+    await ResetPublishChannelAsync().ConfigureAwait(false);
+    var created = await connection.CreatePublishChannelAsync(ct).ConfigureAwait(false);
+    _publishChannel = created;
+    _publishChannelConnection = connection;
+    return created;
+}
+```
+- **Solution:** Pair the two in one immutable holder swapped with a single write, and have `DisposeAsync` take `_publishGate` before reset so it cannot interleave with an in-flight publish/channel swap.
+```csharp
+private sealed record PublishChannelState(IErrorQueuePublishChannel? Channel, IErrorQueueConnection? Connection);
+private PublishChannelState? _publishState;
+
+private async Task<IErrorQueuePublishChannel> GetPublishChannelAsync(IErrorQueueConnection connection, CancellationToken ct)
+{
+    var state = Volatile.Read(ref _publishState);
+    if (state is { Channel: { IsOpen: true } ch } && ReferenceEquals(state.Connection, connection))
+        return ch;
+    await ResetPublishChannelAsync().ConfigureAwait(false);
+    var created = await connection.CreatePublishChannelAsync(ct).ConfigureAwait(false);
+    Volatile.Write(ref _publishState, new PublishChannelState(created, connection));
+    return created;
+}
+```
+
+---
+
+**[INF-7] `BlockUntilConsumersAttached` treats `rows.Count == 0` as success — startup can pass with zero consumers**
+- **Severity:** IMPORTANT
+- **File:** src\StreamBus\Hosting.cs (lines 538–561)
+- **Problem:** The attach-wait loop polls the health snapshot and breaks when `rows.Count == 0`. Health rows for consumers are only upserted from inside `StreamConsumerRegistry.ConsumeAsync`, which the just-launched start tasks reach seconds later. If the loop snapshots health before any consumer has registered, `StartAsync` completes believing all consumers are attached while none exist — the exact failure the option exists to prevent.
+```csharp
+var failed = rows.FirstOrDefault(r => r.State is BusRegistrationState.FailedRetrying or BusRegistrationState.Stopped);
+if (failed is not null)
+    throw new StreamBusStartupBlockedException(...);
+if (rows.Count == 0 || rows.All(r => r.State == BusRegistrationState.Attached))
+    break;
+```
+- **Solution:** Compare against the expected registration count derived from `starters`, not zero:
+```csharp
+int expected = starters.Sum(s => /* per-registration expected partition rows, or 1 */ 1);
+...
+if (rows.Count >= expected && rows.All(r => r.State == BusRegistrationState.Attached))
+    break;
+```
+
+---
+
+**[FLT-2] Publish zero/double-`next` misclassified as a configuration exception**
+- **Severity:** IMPORTANT
+- **File:** src\StreamBus\PublishPipeline.cs (lines 137–139, 151–157)
+- **Problem:** A publish filter calling `next()` twice or zero times is a user runtime bug at publish time, but `PublishPipeline` throws `StreamBusConfigurationException` — the public exception whose meaning elsewhere is "the bus was configured wrong at construction". Consume classifies the identical violation as `StreamBusFilterContractException`. Callers catching `StreamBusConfigurationException` to surface setup diagnostics will also intercept publish filter bugs on every publish, hiding them.
+```csharp
+if (call > 1)
+{
+    throw new StreamBusConfigurationException(
+        $"Publish filter {filterName} invoked next {call} times; exactly one continuation is allowed.");
+}
+```
+```csharp
+if (calls == 0)
+{
+    throw new StreamBusConfigurationException(
+        $"Publish filter '{filterName}' returned without calling next; the message would have been silently dropped.");
+}
+```
+- **Solution:** Make `StreamBusFilterContractException` public (or add a public derived type), throw it from `PublishPipeline`, and reserve `StreamBusConfigurationException` strictly for configuration-time failures.
+```csharp
+// Exceptions.cs
+public sealed class StreamBusFilterContractException(string message, Exception? inner = null)
+    : StreamBusException(message, inner);
+
+// PublishPipeline.cs — both throw sites
+throw new StreamBusFilterContractException(...);
+```
+
+---
+
+**[FLT-3] Effectively-once contract violations wedge the partition with no poison guard**
+- **Severity:** IMPORTANT
+- **File:** src\StreamBus\ConsumePipeline.cs (lines 205–233); src\StreamBus\StreamPartitionConsumer.cs (lines 830–837)
+- **Problem:** EO pipelines raise `StreamBusFilterContractException` for zero/double `next`, and the EO retry catch deliberately rethrows it — but the only landing spot is the dispatch safety net (`FailAttach` → close + backoff + reattach → redeliver the same offset). A single double-call bug in a filter turns that partition into an infinite crashloop: no retry budget consumed, no error-stream envelope, and the health surface shows broker flapping rather than a poison delivery.
+```csharp
+// StreamPartitionConsumer.cs 834-837
+catch (StreamBusFilterContractException)
+{
+    throw;
+}
+```
+- **Solution:** Track contract-violation count for the current offset; on the Nth occurrence (N = 1 or configurable), route the delivery through the same exhaustion machinery used for retry budget exhaustion, with the contract exception on the envelope and an explicit critical log / health event.
+```csharp
+catch (StreamBusFilterContractException fex)
+{
+    if (state.ContractViolationsFor(offset) >= MaxContractViolations)
+    {
+        _logger.LogCritical(fex,
+            "Effectively-once filter contract violated {Count} times for offset {Offset}; handing off as poison.",
+            count, offset);
+        await ExhaustAsync(consumer, offset, consumeContext, count, fex, attach, sendHeaders)
+            .ConfigureAwait(false);
+        return;
+    }
+    state.RecordContractViolation(offset);
+    throw; // existing safety-net recycle on the first occurrence
+}
+```
+
+---
+
+**[FLT-4] Consume-side filter caches resolve once from the root provider — captive dependency risk, undocumented singleton contract**
+- **Severity:** IMPORTANT
+- **File:** src\StreamBus\ConsumerRegistry.cs (lines 91–93, 163–174)
+- **Problem:** `BuildPipeline` resolves both universal and typed filters via `GetOrAdd` from `_rootProvider` and caches them for the process lifetime — yet the registration tests register typed filter types as *transient* services. A user who registers a filter (or one of its constructor dependencies) as `Scoped` gets a captive dependency silently resolved at the root; the "transient" registration is effectively a singleton. Contrast the handler path, which correctly resolves `TConsumer` from the per-delivery scope (`context.Services`). The publish side has the same defect (PUB-2) and shares the fix direction.
+```csharp
+// ConsumerRegistry.cs 163-168
+var instance = _typedFilterInstances.GetOrAdd(
+    (busType, closedType),
+    _ => registration.ResolveTyped(closedType, _rootProvider!));
+var filter = _typedFilterAdapters.GetOrAdd(
+    (busType, closedType, messageType),
+    _ => ConsumeFilterRegistration.CreateTypedAdapter(messageType, instance));
+
+// 172-174
+filter = _filterInstances.GetOrAdd(
+    (busType, registration),
+    _ => registration.CreateUniversal(_rootProvider!));
+```
+- **Solution:** Pick one contract and enforce it on both sides: (a) resolve filters per delivery from `context.Services` (MassTransit-style, honors user lifetimes), or (b) keep the singleton cache but register filter types as singletons at `AddStreamBus` time and document the contract in the XML docs on `IStreamConsumeFilter`/`IStreamPublishFilter`.
+```csharp
+// Option (a): resolve per delivery, honoring user lifetime
+internal sealed class ScopedConsumeFilter(Type filterType) : IStreamConsumeFilter
+{
+    public Task OnConsume(ConsumeContext context, ConsumeDelegate next)
+    {
+        var filter = (IStreamConsumeFilter)context.Services.GetRequiredService(filterType);
+        return filter.OnConsume(context, next);
+    }
+}
+```
+
+---
+
+**[FLT-5] PublishPipelineCache grows unbounded for explicit-stream publishes and leaks typed filters across pipes**
+- **Severity:** IMPORTANT
+- **File:** src\StreamBus\Bus.cs (lines 111–118, 158); src\StreamBus\PublishPipelineCache.cs (lines 52–96)
+- **Problem:** `PublishThroughPipelineAsync` keys the pipeline cache on `typeof(T)` of the call site — including the unregistered `PublishAsync<T>(string stream, T message, ...)` overloads. A caller (or a reflection-driven outbox replayer) publishing with many distinct generic instantiations grows `_pipelines`, `_typedInstances`, and `_typed` forever. Worse, `Build(messageType)` eagerly closes every open-generic typed registration against that arbitrary `typeof(T)`, so a filter registered with the declared pipe `OrderEvent` also runs on an explicit `PublishAsync("raw-stream", orderEvent)` call it was never registered for — a semantics leak, not just a memory issue.
+```csharp
+// Bus.cs 158
+var pipeline = _publishPipelines.GetOrCreate(typeof(T));
+
+// PublishPipelineCache.cs 71-74
+var closedFilterType = registration.ClosedFilterType(messageType);
+if (closedFilterType is null)
+    continue;
+```
+- **Solution:** Distinguish declared pipes from explicit-stream publishes: only consult `GetOrCreate(typeof(T))` for declared pipes; for explicit-stream publishes, use a cached universal-only pipeline (typed filters are a declared-pipe concept by definition).
+```csharp
+// Bus.cs PublishAsync<T>(string stream, ...) — universal filters only
+var pipeline = _publishPipelines.GetOrCreateUniversal();
+return PublishThroughPipelineAsync(stream, routingKey: null, message, effective, ct, pipeline);
+```
+```csharp
+// PublishPipelineCache.cs
+private readonly PublishPipeline _universalOnly;
+public PublishPipeline GetOrCreateUniversal() => _universalOnly ?? BuildUniversalOnly();
+// BuildUniversalOnly: include only registrations where !registration.IsTyped
+```
+
+---
+
+**[DOC-1] IStreamBus public surface is mostly undocumented; stale Topology doc; CS1591 suppression hides the gap**
+- **Severity:** IMPORTANT
+- **File:** src\StreamBus\Bus.cs (lines 6–55); src\StreamBus\StreamBus.csproj (lines 21–24)
+- **Problem:** Of the 27 public members of `IStreamBus`, only three carry XML docs. The `Topology` doc is also stale: it says "these methods cover explicit/operator-driven declaration anytime," but the interface only exposes the property — the declaration methods were removed by this same changeset. Meanwhile `<NoWarn>$(NoWarn);1591</NoWarn>` suppresses the missing-doc warning, so the build stays green while the package ships an undocumented API reference. Biggest single polish win available.
+```text
+/// Declares streams and super streams idempotently (FR-7). Startup
+/// declarations configured via topology are declared automatically;
+/// these methods cover explicit/operator-driven declaration anytime.
+/// </summary>
+IStreamTopology Topology { get; }
+```
+- **Solution:** Add `<summary>` (plus `<param>`/`<returns>`/`<exception>` where useful) to every public member of `IStreamBus`, rewrite the `Topology` doc to describe the property actually present, and remove the `NoWarn` 1591 suppression so CI enforces documentation for future public members.
+```text
+/// <summary>Virtual host this bus connects to.</summary>
+string Vhost { get; }
+/// <summary>Lifecycle state of the underlying broker connections.</summary>
+BusConnectionState State { get; }
+/// <summary>Waits until the bus satisfies <paramref name="policy"/> or the token is cancelled.</summary>
+Task<BusReadiness> WaitUntilReadyAsync(ReadinessPolicy policy, CancellationToken cancellationToken = default);
+```
+
+---
+
+**[DOC-2] Public `CancellationToken` parameters named `ct` violate .NET naming guidelines**
+- **Severity:** IMPORTANT
+- **File:** src\StreamBus\Bus.cs (lines 10–48, all IStreamBus members)
+- **Problem:** .NET guidelines require `CancellationToken` parameters to be named `cancellationToken`, not `ct`. Every public `IStreamBus` signature uses `ct`, which shows up verbatim in IntelliSense and public docs; user code using named arguments (`cancellationToken: token`) written against the current name will break on any later rename. Placement is uniformly last (good); only the name is wrong.
+```text
+Task<BusReadiness> WaitUntilReadyAsync(ReadinessPolicy policy, CancellationToken ct = default);
+Task PublishAsync<T>(T message, PublishOptions? options = null, CancellationToken ct = default);
+```
+- **Solution:** Rename to `cancellationToken` on every public member. Pre-1.0 breaking rename — batch it with the other 0.2.0/0.3.0 breaking changes already in this PR.
+```text
+Task<BusReadiness> WaitUntilReadyAsync(ReadinessPolicy policy, CancellationToken cancellationToken = default);
+Task PublishAsync<T>(T message, PublishOptions? options = null, CancellationToken cancellationToken = default);
+```
+
+---
+
+**[DOC-3] README still advertises the removed "explicit consume skip" feature**
+- **Severity:** IMPORTANT
+- **File:** README.md (line 98)
+- **Problem:** The README feature list still mentions "explicit consume skip," but `AllowPipelineSkip`/`SkipHandler`/`CanSkip` were removed by this same PR — skipping is now implicit (a filter that returns without calling `next()` filters the delivery). Every other doc states the new rule correctly; the README is the one stale claim, and it misleads users evaluating the middleware contract.
+```text
+- Middleware: ordered publish/consume filters, explicit consume skip, telemetry (`docs/guide/publish.md`, `docs/guide/consume.md`)
+```
+- **Solution:** Drop "explicit consume skip" from the bullet.
+```text
+- Middleware: ordered publish/consume filters, telemetry (`docs/guide/publish.md`, `docs/guide/consume.md`)
+```
+
+---
+
+**[DOC-5] No SourceLink — snupkg contains untraceable PDBs**
+- **Severity:** IMPORTANT
+- **File:** src\StreamBus\StreamBus.csproj (lines 18–24)
+- **Problem:** The project emits a symbol package and publishes the repository URL, but has no `Microsoft.SourceLink.GitHub` reference and no `EmbedUntrackedSources`/`DeterministicSourcePaths`. The PDBs ship without source-path mapping or commit hash, so debugger source-indexing never works for consumers and there is no tamper-evident link between the binary and the GitHub commit.
+```text
+<IncludeSymbols>true</IncludeSymbols>
+<SymbolPackageFormat>snupkg</SymbolPackageFormat>
+<PublishRepositoryUrl>true</PublishRepositoryUrl>
+```
+- **Solution:** Add the SourceLink package reference and the determinism properties; verify the snupkg PDB contains GitHub source-link JSON.
+```text
+<PropertyGroup>
+  <EmbedUntrackedSources>true</EmbedUntrackedSources>
+  <DeterministicSourcePaths>true</DeterministicSourcePaths>
+</PropertyGroup>
+<ItemGroup>
+  <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="All" />
+</ItemGroup>
+```
+
+---
+
+**[DOC-7] `StreamConfigurationConflictException` breaks the `StreamBus*` prefix convention**
+- **Severity:** IMPORTANT
+- **File:** src\StreamBus\Exceptions.cs (lines 46–59); src\StreamBus\DeclareSet.cs (lines 145–195, seven throw sites)
+- **Problem:** Every other public exception is prefixed `StreamBus*` (`StreamBusException`, `StreamBusFatalException`, `StreamBusConfigurationException`, `StreamBusStartupBlockedException`); ADR-5's stated purpose for the base type is "catch the whole library surface with one type." `StreamConfigurationConflictException` is the lone outlier — the kind of naming drift this review set out to catch. Renaming before release is cheap; after publish it becomes API-breaking.
+```text
+public sealed class StreamConfigurationConflictException : StreamBusException
+{
+    public StreamConfigurationConflictException(string stream, string expected, string actual)
+        : base($"Stream '{stream}' already exists with a conflicting spec ...")
+```
+- **Solution:** Rename the class, constructor, and all seven throw sites to `StreamBusStreamConfigurationConflictException` (or merge under `StreamBusConfigurationException` with a `Conflict` property). Update `docs/guide/topology.md` references.
+
+---
+
+**[DOC-8] Duplicate test class names across suites and missing `*IntegrationTests` suffix**
+- **Severity:** IMPORTANT
+- **File:** tests\StreamBus.UnitTests\ConsumerDeathTests.cs (line 77) vs tests\StreamBus.IntegrationTests\ConsumerDeathTests.cs (line 10); tests\StreamBus.IntegrationTests\BrokerRestartTests.cs (line 11)
+- **Problem:** `ConsumerDeathTests` is declared in both assemblies; CI dashboards and retries that key on the class name collide, making failures ambiguous. Meanwhile every other integration class follows the `*IntegrationTests` suffix — `BrokerRestartTests` breaks the convention (ADR-1 and ADR-3 also cite the old names).
+```text
+// UnitTests\ConsumerDeathTests.cs:77
+public sealed class ConsumerDeathTests
+// IntegrationTests\ConsumerDeathTests.cs:10
+public sealed class ConsumerDeathTests : IAsyncDisposable
+// IntegrationTests\BrokerRestartTests.cs:11
+public sealed class BrokerRestartTests : IAsyncDisposable
+```
+- **Solution:** Rename the integration classes (and files) to `ConsumerDeathIntegrationTests` and `BrokerRestartIntegrationTests`; update the ADR references.
+
+---
+
+**[DOC-12] `ConsumeContext`/`PublishContext` are unsealed public classes with no pin on construction**
+- **Severity:** IMPORTANT
+- **File:** src\StreamBus\ConsumeContext.cs (lines 7–77); src\StreamBus\PublishPipeline.cs (lines 40–75)
+- **Problem:** Both types have an implicit public parameterless constructor, so any user can subclass and hand instances to the bus or place user-derived contexts in pipelines. The library is not designed for this: user-crafted contexts can't round-trip through the framework, and the internal `ResetPayloads()` hook would never be honored by foreign instances — logic that appears to work but silently loses per-delivery payload reset.
+```csharp
+// ConsumeContext.cs:7
+public class ConsumeContext
+{
+    internal void ResetPayloads() => _payloads.Clear();  // line 76
+```
+- **Solution:** Declare an explicit `protected internal` constructor on both classes so construction is pinned to library code (tests still work via `InternalsVisibleTo`), and add an XML doc stating that filters receive and enrich but never construct contexts.
+```csharp
+public class ConsumeContext
+{
+    protected internal ConsumeContext() { }
+    ...
+}
+```
+
+---
+
+# 🟡 MINOR
+
+---
+
+**[PUB-6] `ProducerSlot.Failed` is a write-only field**
+- **Severity:** MINOR
+- **File:** src\StreamBus\ProducerRegistry.cs (line 17; written at 168, 185, 195)
+- **Problem:** `Failed` is assigned in three places and never read for any decision. Readers of the lock section must reason about a third state that has no effect, obscuring the slot state machine.
+```csharp
+private sealed class ProducerSlot
+{
+    public readonly object Gate = new();
+    public TaskCompletionSource<IStreamProducerHandle>? Pending;
+    public TaskCompletionSource<IStreamProducerHandle>? Success;
+    public bool Failed;
+}
+```
+- **Solution:** Delete the field and its three assignments. Failure recovery already works: the catch block clears `Pending`, so the next owner retries creation.
+```csharp
+private sealed class ProducerSlot
+{
+    public readonly object Gate = new();
+    public TaskCompletionSource<IStreamProducerHandle>? Pending;
+    public TaskCompletionSource<IStreamProducerHandle>? Success;
+}
+```
+
+---
+
+**[PUB-7] `PublishResultAsync` on the super handle interface has no callers**
+- **Severity:** MINOR
+- **File:** src\StreamBus\ProducerHandles.cs (declaration line 31; implementation 284–289)
+- **Problem:** After this PR, `ResultProducerRegistry` routes result publishes through `PublishWithIdAsync`/`PublishReplayAsync` directly, so `IStreamSuperProducerHandle.PublishResultAsync` has no internal callers — a leftover pre-PR interface shape on a *public* interface, where every member becomes a permanent compatibility commitment.
+```csharp
+public Task PublishResultAsync(ReadOnlyMemory<byte> body, ulong publishingId, string? routingKey, CancellationToken ct)
+    => PublishWithIdAsync(
+        publishingId,
+        body,
+        new PublishOptions { IsSuperStream = true, RoutingKey = routingKey },
+        ct);
+```
+- **Solution:** Remove `PublishResultAsync` from the interface and delete the implementation (remove before the package ships; if already shipped, `[Obsolete]` for one release then remove).
+
+---
+
+**[PUB-8] `PublishContext<T>.Message` re-casts `Payload` on every access**
+- **Severity:** MINOR
+- **File:** src\StreamBus\PublishPipeline.cs (lines 82–86)
+- **Problem:** `Message` performs `(T)Payload` on each property access. Filters commonly read `context.Message` multiple times, and the cast is an unboxing operation for value types paid on every access — although the context is immutable.
+```csharp
+public sealed class PublishContext<T> : PublishContext
+{
+    /// <summary>The published payload as <typeparamref name="T"/>.</summary>
+    public T Message => (T)Payload;
+}
+```
+- **Solution:** Capture the typed value once at construction — stash the typed reference via a private field assigned by the only construction site (Bus.cs ~line 170), e.g. `internal T TypedPayload { get; init; }` with `public T Message => TypedPayload;`.
+
+---
+
+**[PUB-9] `PublishPipelineCache` keeps two parallel typed-filter caches**
+- **Severity:** MINOR
+- **File:** src\StreamBus\PublishPipelineCache.cs (lines 10–12 and 76–82)
+- **Problem:** `Build` looks up the resolved filter instance in `_typedInstances` (keyed `Type`) and then a second dictionary `_typed` (keyed `(Type, Type)`) to cache the cheap adapter wrapper. Two lookups, tuple allocations per miss, and two dictionaries that grow in lockstep.
+```csharp
+private readonly ConcurrentDictionary<Type, object> _typedInstances = new();
+private readonly ConcurrentDictionary<(Type ClosedFilterType, Type MessageType), IStreamPublishFilter> _typed = new();
+```
+- **Solution:** Delete `_typed` and wrap the instance directly — `Build` already runs exactly once per message type because `_pipelines` is the outer cache.
+```csharp
+var instance = _typedInstances.GetOrAdd(
+    closedFilterType,
+    type => registration.ResolveTyped(type, _rootProvider!));
+
+filter = PublishFilterRegistration.CreateTypedAdapter(messageType, instance);
+```
+
+---
+
+**[PUB-10] `GetJson<T>` only catches `JsonException`; custom serializers escape uncaught**
+- **Severity:** MINOR
+- **File:** src\StreamBus\Headers.cs (lines 103–113)
+- **Problem:** `IStreamSerializer` is a public extension point (custom protobuf/other serializers), yet only the built-in `JsonException` is handled — any other deserializer's parse exception propagates raw out of a "read a header" API, and the friendly `ArgumentException` path is never taken.
+```csharp
+try
+{
+    return Serializer.Deserialize<T>(Encoding.UTF8.GetBytes(json));
+}
+catch (System.Text.Json.JsonException ex)
+{
+    throw new ArgumentException(
+        $"Header '{key}' is not valid JSON for {typeof(T).FullName}.",
+        nameof(key),
+        ex);
+}
+```
+- **Solution:** Catch the broad deserialization surface of the pluggable serializer (plain broad catch is acceptable for a synchronous deserialize).
+```csharp
+try
+{
+    return Serializer.Deserialize<T>(Encoding.UTF8.GetBytes(json));
+}
+catch (Exception ex)
+{
+    throw new ArgumentException(
+        $"Header '{key}' could not be deserialized to {typeof(T).FullName} using {Serializer.GetType().Name}.",
+        nameof(key),
+        ex);
+}
+```
+
+---
+
+**[PUB-11] `RecordException` omits the standard `exception.stacktrace` tag**
+- **Severity:** MINOR
+- **File:** src\StreamBus\StreamBusActivity.cs (lines 48–57)
+- **Problem:** The exception event writes `exception.type` and `exception.message` only. OpenTelemetry semantic conventions expect `exception.stacktrace`; without it, exporters and dashboards show the failure type and message but not the failure site.
+```csharp
+activity.AddEvent(new ActivityEvent("exception", tags: new ActivityTagsCollection
+{
+    ["exception.type"] = exception.GetType().FullName,
+    ["exception.message"] = exception.Message,
+}));
+```
+- **Solution:**
+```csharp
+activity.AddEvent(new ActivityEvent("exception", tags: new ActivityTagsCollection
+{
+    ["exception.type"] = exception.GetType().FullName,
+    ["exception.message"] = exception.Message,
+    ["exception.stacktrace"] = exception.ToString(),
+}));
+```
+
+---
+
+**[PUB-12] Duplicate-filter check in `Build` is near-unreachable and runs lazily**
+- **Severity:** MINOR
+- **File:** src\StreamBus\PublishPipelineCache.cs (lines 85–90)
+- **Problem:** `StreamBusPublishStore.AddFilter` already rejects duplicate registrations, so the `seen` check inside `Build` guards a nearly-impossible state — and because `Build` runs lazily from `GetOrCreate`, any conflicting registration that slips past surfaces at the *first publish* of that message type rather than at configuration time. Confusing, delayed, per-type failure.
+```csharp
+var filterType = FilterIdentity.TypeOf(filter);
+if (!seen.Add(filterType))
+{
+    throw new StreamBusConfigurationException(
+        $"Publish filter '{filterType}' is already registered on this bus; duplicate registration would run it twice.");
+}
+```
+- **Solution:** Move validation to seal time: in the `PublishPipelineCache` constructor, eagerly `GetOrAdd` every registered typed message type so config errors surface at build time; `Build` becomes a pure assembly step.
+
+---
+
+**[CON-8] Sync-over-async `DisposeAsync().AsTask().GetAwaiter().GetResult()` in `ReplayAsync` producer disposal**
+- **Severity:** MINOR
+- **File:** src\StreamBus\ConsumerRegistry.cs (lines 571–585)
+- **Problem:** Replay producers are disposed with a blocking `.GetAwaiter().GetResult()` inside a `finally` of an async method — a thread-pool blocking call that adds no value where `await` is available.
+```csharp
+void DisposeProducers()
+{
+    foreach (var (_, producer) in producers)
+    {
+        try
+        {
+            producer.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        }
+```
+- **Solution:** Convert to `async Task DisposeProducersAsync()` and `await producer.DisposeAsync()` in a try/catch, then await it in the outer `finally`.
+
+---
+
+**[CON-9] Replay's 5 s idle termination silently truncates a stalled backlog and is unconfigurable**
+- **Severity:** MINOR
+- **File:** src\StreamBus\ConsumerRegistry.cs (lines 645–654)
+- **Problem:** Replay terminates on "5 s with no delivery and nothing in flight" because no usable broker end offset exists. A broker stall longer than the hardcoded 5 s (throttled stream, network hiccup) makes `ReplayAsync` return a short count with no error — silently incomplete replay treated as success.
+```csharp
+// No usable broker end offset exists (Phase 5 Round 2), so replay
+// terminates on idle: 5 s with no delivery and nothing in flight.
+var idle = TimeSpan.FromSeconds(5);
+```
+- **Solution:** Expose the idle window (internal constant at minimum, ideally a `ReplayOptions.IdleTimeout`), and log a warning on idle termination stating the replay may be incomplete for slow trickle backlogs.
+
+---
+
+**[CON-10] `ConsumePipeline` tolerates fire-and-forget `next()` — unawaited continuation escapes the exactly-once counter**
+- **Severity:** MINOR
+- **File:** src\StreamBus\ConsumePipeline.cs (lines 198–233)
+- **Problem:** A filter that calls `next()` but doesn't await it increments the call counter (so the zero-call check passes) and the pipeline returns while the continuation is still running. The offset then advances concurrently with a live handler, and a faulted continuation goes unobserved.
+```csharp
+var nextCalls = 0;
+Task Next()
+{
+    var call = Interlocked.Increment(ref nextCalls);
+    if (call > 1) { ... throw ... }
+    return InvokeAsync(index + 1, context, terminal);
+}
+
+await filter.OnConsume(context, Next).ConfigureAwait(false);
+```
+- **Solution:** Have `Next()` record the returned task; after `OnConsume` returns with `calls == 1`, throw if the continuation hasn't completed. Also document "await `next` exactly once".
+```csharp
+Task? nextTask = null;
+Task Next()
+{
+    ...
+    nextTask = InvokeAsync(index + 1, context, terminal);
+    return nextTask;
+}
+await filter.OnConsume(context, Next).ConfigureAwait(false);
+var calls = Volatile.Read(ref nextCalls);
+if (calls == 1 && nextTask is { IsCompleted: false })
+    throw new StreamBusFilterContractException(
+        $"Consume filter '{filterName}' returned before its continuation completed; await next().");
+```
+
+---
+
+**[CON-12] `EmptyServiceProvider` is misplaced in `ConsumePipeline.cs` and surprises raw `GetService` callers**
+- **Severity:** MINOR
+- **File:** src\StreamBus\ConsumePipeline.cs (lines 280–285)
+- **Problem:** A generic infrastructure type is defined at the bottom of the pipeline file, making it undiscoverable. It returns `null` for every service type — permitted, but filter authors calling raw `context.Services.GetService` get silent nulls on untyped/no-scope endpoints instead of the standard required-service exception.
+```csharp
+internal sealed class EmptyServiceProvider : IServiceProvider
+{
+    public static readonly EmptyServiceProvider Instance = new();
+
+    public object? GetService(Type serviceType) => null;
+}
+```
+- **Solution:** Move it to its own small infrastructure file (e.g., next to `Registry.cs`), and guide `GetRequiredService` usage in `ConsumeContext.Services` docs.
+
+---
+
+**[CON-14] `CreateScope()` used instead of `CreateAsyncScope()` for per-message scopes**
+- **Severity:** MINOR
+- **File:** src\StreamBus\StreamPartitionConsumer.cs (lines 502–505)
+- **Problem:** The dispatch path creates per-delivery service scopes synchronously with `CreateScope()` and disposes via sync `Dispose`. `CreateAsyncScope()` exists precisely so scoped services implementing `IAsyncDisposable` (EF `DbContext` etc.) are disposed asynchronously; the sync path forces sync disposal of async resources on the dispatch thread.
+```csharp
+using var messageScope =
+    (_pipeline.Count > 0 || _options.MessageType is not null) && _scopes is not null
+        ? _scopes.CreateScope()
+        : null;
+```
+- **Solution:**
+```csharp
+await using var messageScope =
+    (_pipeline.Count > 0 || _options.MessageType is not null) && _scopes is not null
+        ? _scopes.CreateAsyncScope()
+        : null;
+```
+
+---
+
+**[INF-8] `StopAsync` disposes the startup CTS that `StartAsync` and its continuations still reference**
+- **Severity:** MINOR
+- **File:** src\StreamBus\Hosting.cs (lines 384–390, 404/431/451, 499–511, 762–772)
+- **Problem:** `StopAsync` nulls and disposes `_startupCts` while `StartAsync` may still be mid-flight. The `ContinueWith` `.Cancel()` calls guard `ObjectDisposedException`, but the plain `startupCts.Token` dereferences when launching tasks do not — reading `.Token` on a disposed CTS throws uncaught if `StopAsync` is invoked before `StartAsync` completes, which the `IHostedService` contract permits.
+```csharp
+lock (_gate)
+{
+    startupCts = _startupCts;
+    _startupCts = null;
+}
+if (startupCts is not null)
+{
+    try { startupCts.Cancel(); }
+    finally { startupCts.Dispose(); }   // disposed while StartAsync still references it
+}
+```
+- **Solution:** Don't dispose the CTS in `StopAsync` — cancel and null the field only; ownership of disposal stays with `StartAsync` after its launched tasks complete.
+
+---
+
+**[INF-9] Dead-letter-queue cohort logic duplicated in `Hosting` while `CollectQueueDeclarations` is dead code**
+- **Severity:** MINOR
+- **File:** src\StreamBus\Hosting.cs (lines 422–428); src\StreamBus\ErrorQueueTransport.cs (lines 270–278)
+- **Problem:** `StartAsync` re-implements the "which queue dead-letters need declaring" filter, while `CollectQueueDeclarations` — written for precisely this — is referenced nowhere and has already drifted structurally (it drops the vhost grouping `Hosting` needs). Two paths that must agree will diverge on the next change.
+```csharp
+// Hosting.cs:422-427
+var queuesByVhost = starters
+    .Where(s => s.Reg.Options.DeadLetter is not null && s.Reg.Options.ExhaustionCallback is null)
+    .GroupBy(s => s.Vhost, StringComparer.Ordinal)
+    .ToDictionary(...);
+
+// ErrorQueueTransport.cs:271-277 — unused twin
+internal static IReadOnlyList<DeadLetterOptions> CollectQueueDeclarations(...)
+```
+- **Solution:** Keep one owner: have `Hosting` group starters by vhost and call `CollectQueueDeclarations(groupMembers)`; delete the inline filter.
+
+---
+
+**[INF-10] `StreamBusCredentialValidator` is dead public API**
+- **Severity:** MINOR
+- **File:** src\StreamBus\CredentialValidation.cs (lines 1–11)
+- **Problem:** The whole file is a public static wrapper around `options.ValidateCredentials()`, called nowhere. It contradicts `StreamBusOptions.Validate`'s documented contract ("the single validation boundary") and invites users to call a partial validation entry point.
+```csharp
+public static class StreamBusCredentialValidator
+{
+    public static void Validate(StreamBusOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        foreach (var error in options.ValidateCredentials())
+            throw new StreamBusConfigurationException(error);
+    }
+}
+```
+- **Solution:** Delete the file before it ships in the package and becomes an obligation (the supervisor/connector paths already call `options.Validate()`).
+
+---
+
+**[INF-11] Health-check data dictionary can throw on a key collision between bus-marker and registration names**
+- **Severity:** MINOR
+- **File:** src\StreamBus\Hosting.cs (lines 798–813)
+- **Problem:** `CheckHealthAsync` builds `data` from two key namespaces sharing the format `$"{x}|{y}"`, and the row loop uses an indexer add which throws `ArgumentException` on duplicate keys. A free-form registration name colliding with a bus marker makes the health check itself throw — surfacing as a failed check with a stack trace instead of real health data.
+```csharp
+var data = states.ToDictionary(
+    r => $"{r.Vhost}|{r.BusType}",
+    r => (object)r.State.ToString());
+foreach (var row in rows)
+    data[$"{row.Vhost}|{row.Registration}"] = $"...";
+```
+- **Solution:** Prefix the two namespaces: `"bus:{r.Vhost}|{r.BusType}"` and `"reg:{row.Vhost}|{row.Registration}"`.
+
+---
+
+**[INF-12] `declareExhausted` derived from `FailedRetrying` — one enum state, two meanings**
+- **Severity:** MINOR
+- **File:** src\StreamBus\HealthAggregator.cs (lines 5, 51–60)
+- **Problem:** `BusRegistrationState.FailedRetrying` means both "temporarily failing, retrying" (consumers) and "declaration in a fatal-conflict state that never recovers" (declares). `Compute()` names the flag `declareExhausted`, but nothing ever exhausts — declares retry with `int.MaxValue`. Overloaded states make health semantics hard to audit.
+```csharp
+bool declareExhausted = declares.Any(d => d.State == BusRegistrationState.FailedRetrying);
+...
+if (connection == BusConnectionState.Fatal || declareExhausted || allConsumersFailed)
+    return HealthStatus.Unhealthy;
+```
+- **Solution:** Rename the local to `anyDeclareFailed`; longer term split the enum into `Failed` (terminal) vs `Retrying` so `Compute()` maps them without `All()` heuristics.
+
+---
+
+**[INF-13] `CreateRawConsumerAsync` blind cast to `RawConsumer`**
+- **Severity:** MINOR
+- **File:** src\StreamBus\Connector.cs (lines 155–165)
+- **Problem:** The raw client implementation is returned with an unguarded `(RawConsumer)consumer`. If a future RabbitMQ.Stream.Client version returns a different concrete type, users get an opaque `InvalidCastException` from deep inside the partition attach loop, far from the cause.
+```csharp
+var consumer = await _system.CreateRawConsumer(config, _factory.CreateLogger<RawConsumer>()).ConfigureAwait(false);
+ct.ThrowIfCancellationRequested();
+return (RawConsumer)consumer;
+```
+- **Solution:** Guard with a type pattern and fail fast with an actionable message:
+```csharp
+return consumer as RawConsumer
+    ?? throw new StreamBusConfigurationException(
+        $"The stream client returned '{consumer.GetType().FullName}' where a RawConsumer was required (client/library version mismatch).");
+```
+
+---
+
+**[INF-14] `AmqpErrorQueueConnection.DisposeAsync` falls back to synchronous `Dispose()`**
+- **Severity:** MINOR
+- **File:** src\StreamBus\ErrorQueueTransport.cs (lines 103–107)
+- **Problem:** The class is part of an `IAsyncDisposable` seam whose purpose is clean async lifecycle, but disposal delegates to the synchronous `IConnection.Dispose()`, bypassing the graceful close the client v7 offers.
+```csharp
+public ValueTask DisposeAsync()
+{
+    _connection.Dispose();
+    return ValueTask.CompletedTask;
+}
+```
+- **Solution:**
+```csharp
+public async ValueTask DisposeAsync()
+    => await _connection.DisposeAsync().ConfigureAwait(false);
+```
+
+---
+
+**[INF-15] Metric `streambus_partition_lag` doesn't measure lag**
+- **Severity:** MINOR
+- **File:** src\StreamBus\StreamBusMetrics.cs (lines 27–31)
+- **Problem:** The counter named `streambus_partition_lag` publishes only the consumer-local `delivered - stored` backlog; "lag" has an industry-standard meaning (broker last offset − consumer offset). Users polling the metrics surface will misread it and make capacity decisions on the wrong number.
+```csharp
+_ = _meter.CreateObservableUpDownCounter("streambus_partition_lag",
+    () => ObservePartitions(s => Math.Max(0, s.LastDelivered - s.LastStored)),
+    description: "Consumer-held unprocessed backlog max(0, delivered - stored), not broker-total backlog.");
+```
+- **Solution:** Rename to `streambus_partition_backlog` (ship with the 0.2.0/0.3.0 breaking release that already rewrites the metrics surface).
+
+---
+
+**[INF-16] `timeouts` single-element list built only to call `Max()`**
+- **Severity:** MINOR
+- **File:** src\StreamBus\Hosting.cs (lines 470–474)
+- **Problem:** A `List<TimeSpan>` is allocated, given at most one element, then reduced with `.Max()` to feed `CancelAfter` — maximal generality for a one-case problem that obscures the actual rule.
+```csharp
+var timeouts = new List<TimeSpan>();
+if (_hosting is { BlockStartupUntilReady: true, StartupTimeout: not null })
+    timeouts.Add(_hosting.StartupTimeout!.Value);
+using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+if (timeouts.Count > 0) cts.CancelAfter(timeouts.Max());
+```
+- **Solution:**
+```csharp
+using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+if (_hosting is { BlockStartupUntilReady: true, StartupTimeout: { } startupTimeout })
+    cts.CancelAfter(startupTimeout);
+```
+
+---
+
+**[INF-17] `LogSendHeaderCollisions` allocates the envelope header dictionary before the log-enabled check**
+- **Severity:** MINOR
+- **File:** src\StreamBus\ErrorPublisher.cs (lines 45–59)
+- **Problem:** The method allocates a 13-entry dictionary and prefixes each key on every error send — a hot path in the partition dispatch loop — regardless of whether any Warning sink is attached.
+```csharp
+private void LogSendHeaderCollisions(ErrorEnvelope envelope)
+{
+    if (envelope.SendHeaders is null)
+        return;
+    var envelopeKeys = envelope.EnvelopeApplicationProperties();
+```
+- **Solution:**
+```csharp
+private void LogSendHeaderCollisions(ErrorEnvelope envelope)
+{
+    if (envelope.SendHeaders is null || !_logger.IsEnabled(LogLevel.Warning))
+        return;
+    ...
+}
+```
+
+---
+
+**[FLT-6] Duplicated retry knobs: `UseMessageRetry` vs `UseRetry`**
+- **Severity:** MINOR
+- **File:** src\StreamBus\Configuration\StreamBusConfigurator.cs (lines 243–255 and 451–462)
+- **Problem:** The same policy is configured through two differently-named members duplicated at both bus scope and endpoint scope. Users can't tell which is canonical, IntelliSense shows four near-identical retry members, and docs must always explain the pair.
+```csharp
+public void UseMessageRetry(Action<IRetryConfigurator> configure)
+{
+    ArgumentNullException.ThrowIfNull(configure);
+    var retry = new RetryConfigurator();
+    configure(retry);
+    _globalRetry = ((IRetryConfigurator)retry).BuildPolicy();
+}
+
+public void UseRetry(RetryPolicy policy)
+{
+    ArgumentNullException.ThrowIfNull(policy);
+    _globalRetry = policy;
+}
+```
+- **Solution:** Keep one verb with two overloads; mark `UseMessageRetry` `[Obsolete("Use UseRetry")]` for one release then remove.
+
+---
+
+**[FLT-7] Factory/instance filter registrations escape duplicate-type detection**
+- **Severity:** MINOR
+- **File:** src\StreamBus\FilterRegistrationSupport.cs (lines 22–28); src\StreamBus\ConsumerRegistry.cs (lines 135–139, 176–181); src\StreamBus\PublishPipelineCache.cs (lines 84–90)
+- **Problem:** Configuration-time duplicate guards key on `FilterType`, but factory registrations have `FilterType == null`, so the same universal filter registered twice through two factories (a common dev-config mistake) passes silently and is caught only later — with a different error message per site.
+```csharp
+var type = filter.FilterType;
+if (type is not null && _consumeFilters.Any(existing => existing.FilterType == type))
+{
+    throw new StreamBusConfigurationException("...");
+}
+```
+- **Solution:** At seal/bus-build time, resolve factory and instance registrations once and dedupe by `FilterIdentity.TypeOf(resolvedFilter)` with one canonical error message; the ad-hoc `seen` checks in `Build`/`BuildPipeline` then become redundant.
+
+---
+
+**[FLT-8] `Interlocked`/`Volatile` on `nextCalls` pays for a guarantee the code doesn't deliver**
+- **Severity:** MINOR
+- **File:** src\StreamBus\ConsumePipeline.cs (lines 197–211); src\StreamBus\PublishPipeline.cs (lines 131–139)
+- **Problem:** `nextCalls` is a closure local consumed only by `Next()` and the post-await check, yet uses `Interlocked.Increment`/`Volatile.Read` — machinery that only matters if a filter calls `next()` concurrently from another thread, a case the pipeline doesn't actually guarantee anything for (the unawaited-next contract hole is CON-10). The atomics add cost and an implicit thread-safety suggestion without delivering one.
+```csharp
+var nextCalls = 0;
+Task Next()
+{
+    var call = Interlocked.Increment(ref nextCalls);
+    if (call > 1) { ... throw ... }
+    return InvokeAsync(index + 1, context, terminal);
+}
+```
+- **Solution:** Once CON-10 pins the "next must complete within the filter's returned task" contract, concurrent invocation is impossible — simplify to plain integer arithmetic with the same post-return checks, mirrored in `PublishPipeline`.
+
+---
+
+**[FLT-9] Typed endpoints deserialize eagerly even when a filter short-circuits**
+- **Severity:** MINOR
+- **File:** src\StreamBus\StreamPartitionConsumer.cs (lines 620–632)
+- **Problem:** On a typed endpoint the message is deserialized *before* the pipeline runs, so every delivery — including ones a universal filter drops via zero-`next`, and every retry attempt — pays full deserialization even when neither a typed filter nor the handler touches `Message`. Pinned by tests ("Typed_zero_next_still_deserializes_but_skips_handler"), so it's contractual, not accidental.
+```csharp
+private async Task InvokeHandlerPipelineAsync(ConsumeContext consumeContext)
+{
+    if (_options.MessageType is { } messageType)
+    {
+        var message = TypedMessageDeserializer.Deserialize(_serializer, messageType, consumeContext);
+        consumeContext = TypedConsumeContext.Create(messageType, consumeContext, message);
+    }
+    ...
+}
+```
+- **Solution:** Make `ConsumeContext<T>.Message` lazy: construct the typed context with a deserialize-once `Lazy<T>` built from `Body`, so the payload decodes only on first read. Deserialization failures surface at first materialization — still inside the pipeline, so existing retry/exhaustion classification applies unchanged.
+
+---
+
+**[DOC-4] Directory.Build.props CA1711 suppression rationale references now-internal `DeclaredStream`**
+- **Severity:** MINOR
+- **File:** Directory.Build.props (lines 20–23)
+- **Problem:** The comment justifying the `CA1711` suppression claims `DeclaredStream` is public API, but it's now `internal` (`DeclareSet.cs:10`) — CA1711 only targets externally visible types, so the suppression (and its rationale) is dead documentation.
+```text
+CA1711: DeclaredStream is public API and models
+a declaration, not System.IO.Stream. ... -->
+<NoWarn>$(NoWarn);CA1001;CA1068;CA1711;CA1716;CA1848;CA1873</NoWarn>
+```
+- **Solution:** Remove `CA1711` from the `NoWarn` list, delete its rationale sentence, and build to confirm no warning appears.
+
+---
+
+**[DOC-6] ActivitySource version "2.0.0" contradicts package version 0.2.0**
+- **Severity:** MINOR
+- **File:** src\StreamBus\StreamBusActivity.cs (line 7); docs\guide\observability.md (line 50)
+- **Problem:** The `ActivitySource` is constructed with version "2.0.0" while `VersionPrefix` is 0.2.0 and ADR-6 commits to 0.x versioning. Telemetry tooling filtering on source version sees a number matching no released package, implying a stability the ADR explicitly rejected.
+```csharp
+internal static readonly ActivitySource Source = new("StreamBus", "2.0.0");
+```
+- **Solution:** Prefer generating the version from the MSBuild `$(Version)` property so it can never drift; at minimum hardcode "0.2.0" and update `observability.md:50` to match.
+
+---
+
+**[DOC-9] Duplicated header-bag test assertions across HeaderCarrierTests and HeadersTests**
+- **Severity:** MINOR
+- **File:** tests\StreamBus.UnitTests\HeaderCarrierTests.cs (lines 106–134, 136–146) vs HeadersTests.cs (lines 7–30, 47–55)
+- **Problem:** `Header_accessors_read_the_legal_value_set` and `GetJson_invalid_json_names_the_key_and_keeps_the_json_exception` are copy-pasted verbatim in both files, testing the same `StreamHeaders` type with no distinct coverage — duplicated maintenance cost.
+- **Solution:** Keep exactly one legal-value-set test and one invalid-JSON test in `HeadersTests.cs`; keep only the serializer-usage assertion in `HeaderCarrierTests` as a narrow test (e.g., `GetJson_deserializes_via_the_context_serializer`).
+
+---
+
+**[DOC-10] Hand-rolled `IStreamSystemHandle` fakes copy-pasted across ~15 unit test files (18 private declarations)**
+- **Severity:** MINOR
+- **File:** tests\StreamBus.UnitTests\AcceptanceTests.cs (line 87), ActivityTests.cs (line 204), ConsumerDeathTests.cs (line 44), EffectivelyOnceTests.cs (line 155), HostingTests.cs (lines 15, 57), PublishRoutingTests.cs (lines 31, 220), and 9 more files
+- **Problem:** Each file contains a private hand-rolled implementation of the fourteen-member interface, almost all `Task.CompletedTask`/`NotImplementedException` boilerplate except one or two scripted behaviors. Duplicated, unreviewed code silently rots each time the interface grows — several hundred duplicated lines.
+- **Solution:** Create one shared `Fakes\RecordingSystemHandle.cs` with virtual no-op members and recording lists; express per-test behavior by subclassing and overriding one member. Replace the 18 private duplicates.
+
+---
+
+**[DOC-11] Options.cs validation message typo "Host host must be supplied."**
+- **Severity:** MINOR
+- **File:** src\StreamBus\Options.cs (lines 47–48)
+- **Problem:** The validation error for a missing host reads like a copy-paste slip and is surfaced verbatim to configuring users.
+```text
+if (string.IsNullOrWhiteSpace(Host))
+    yield return "Host host must be supplied.";
+```
+- **Solution:** `yield return "Host must be supplied.";` and update any tests comparing the text.
+
+---
+
+**[DOC-13] `StreamMessageProperties` is public with an all-internal contract undocumented**
+- **Severity:** MINOR
+- **File:** src\StreamBus\MessageProperties.cs (lines 3–19)
+- **Problem:** The public record carries no XML docs at all, while its behavior — reserved-key rejection, value-type limits (`string|bool|int|long`), AMQP property mapping — is entirely internal. Users constructing `PublishOptions.Properties` see a bare data shape with zero explanation of constraints that throw at publish time.
+```csharp
+public sealed record StreamMessageProperties
+{
+    public Guid? MessageId { get; init; }
+    public Guid? CorrelationId { get; init; }
+    public DateTime? SentTime { get; init; }
+    internal string? ContentType { get; init; }
+    public IReadOnlyDictionary<string, object?> Headers { get; init; } = new Dictionary<string, object?>();
+```
+- **Solution:** Add a `<summary>` explaining the AMQP mapping, value restrictions, and reserved-key rejection; document each public property; link from `docs/guide/publish.md`.
