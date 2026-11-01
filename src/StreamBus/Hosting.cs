@@ -782,6 +782,9 @@ internal sealed class StreamBusHostedService : IHostedService
             catch (Exception ex) { _logger.LogWarning(ex, "Supervisor dispose did not complete cleanly during StopAsync for vhost '{Vhost}'.", vhost); }
             finally { _registry.RemoveSupervisor(vhost); }
         }
+        // Error-queue transports own live AMQP connections; dispose them last,
+        // after supervisors, so in-flight dead-letter hand-offs finish first.
+        await _registry.DisposeAsync().ConfigureAwait(false);
     }
 }
 

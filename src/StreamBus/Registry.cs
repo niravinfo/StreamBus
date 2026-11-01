@@ -18,6 +18,7 @@ public interface IStreamBusRegistry
     internal ErrorQueueTransport ErrorQueuesFor(string vhost);
     internal IReadOnlyCollection<StreamBusHealthAggregator> HealthAggregators { get; }
     internal IReadOnlyCollection<IStreamConsumer> ActiveConsumers { get; }
+    internal ValueTask DisposeAsync();
 }
 
 internal sealed class BusEntry
@@ -27,7 +28,7 @@ internal sealed class BusEntry
     public required IReadOnlyDictionary<string, DeclaredStream> Declarations { get; init; }
 }
 
-internal sealed class StreamBusRegistry : IStreamBusRegistry
+internal sealed class StreamBusRegistry : IStreamBusRegistry, IAsyncDisposable
 {
     private readonly ConcurrentDictionary<(Type BusType, string Vhost), BusEntry> _entries = new();
     private readonly Func<string, StreamBusOptions> _resolveOptions;
@@ -89,7 +90,7 @@ internal sealed class StreamBusRegistry : IStreamBusRegistry
     internal ErrorQueueTransport ErrorQueuesFor(string vhost)
         => _errorQueues.GetOrAdd(vhost, _ => new ErrorQueueTransport(
             _resolveOptions(vhost),
-            null,
+            connector: null,
             _loggerFactory.CreateLogger<ErrorQueueTransport>()));
 
     ErrorQueueTransport IStreamBusRegistry.ErrorQueuesFor(string vhost) => ErrorQueuesFor(vhost);
@@ -148,6 +149,25 @@ internal sealed class StreamBusRegistry : IStreamBusRegistry
         }
         return supervisor;
     }
+
+    private int _disposed;
+
+    public async ValueTask DisposeAsync()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) == 1) return;
+        var logger = _loggerFactory.CreateLogger<StreamBusRegistry>();
+        foreach (var (_, transport) in _errorQueues)
+        {
+            try { await transport.DisposeAsync().ConfigureAwait(false); }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Error queue transport dispose did not complete cleanly during registry disposal.");
+            }
+        }
+        _errorQueues.Clear();
+    }
+
+    ValueTask IStreamBusRegistry.DisposeAsync() => DisposeAsync();
 
     internal BusEntry GetOrCreateCore(Type busType, string vhost)
     {
