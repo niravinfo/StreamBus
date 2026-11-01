@@ -34,6 +34,13 @@ internal sealed class RawConsumerHandle : IStreamConsumerHandle
 
 internal sealed class OffsetStorer
 {
+    // Mutated on the dispatch thread (ShouldStoreOnSuccess/Stored), snapshot-read
+    // by the offset timer thread (TryGetPendingStore). A dedicated lock keeps the
+    // pair (last success, stored-ness) atomic: unlocked ulong fields can tear on
+    // 32-bit targets, and a torn/stale read could admit a stale offset for a
+    // possibly-closed handle, advancing the watermark with the current dispatch's
+    // own store then rejected as a non-forward candidate.
+    private readonly object _gate = new();
     private readonly int _every;
     private readonly MonotonicOffsetGuard _guard;
     private readonly string _waterKey;
@@ -52,26 +59,45 @@ internal sealed class OffsetStorer
         _onRejected = onRejected;
     }
 
-    public ulong LastSuccess => _lastSuccess;
-    public bool HasSuccess => _hasSuccess;
-
     public bool ShouldStoreOnSuccess(ulong offset)
     {
-        _lastSuccess = offset;
-        _hasSuccess = true;
-        _sinceLastStore++;
-        return _sinceLastStore >= _every;
+        lock (_gate)
+        {
+            _lastSuccess = offset;
+            _hasSuccess = true;
+            _sinceLastStore++;
+            return _sinceLastStore >= _every;
+        }
     }
 
     public void Stored(ulong offset)
     {
-        _sinceLastStore = 0;
-        _lastSuccess = offset;
-        _lastStored = offset;
-        _hasStored = true;
+        lock (_gate)
+        {
+            _sinceLastStore = 0;
+            _lastSuccess = offset;
+            _lastStored = offset;
+            _hasStored = true;
+        }
     }
 
-    public bool IsStored(ulong offset) => _hasStored && _lastStored == offset;
+    /// <summary>
+    /// Atomic snapshot for the offset timer: reports the latest successful
+    /// offset only when it has not already been stored.
+    /// </summary>
+    public bool TryGetPendingStore(out ulong offset)
+    {
+        lock (_gate)
+        {
+            if (!_hasSuccess || (_hasStored && _lastStored == _lastSuccess))
+            {
+                offset = 0;
+                return false;
+            }
+            offset = _lastSuccess;
+            return true;
+        }
+    }
 
     public bool TryAdmit(ulong candidate)
     {
@@ -544,6 +570,17 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                     {
                         Interlocked.Decrement(ref _state.Inflight);
                         Interlocked.Exchange(ref _state.RetryBlocked, 0);
+                        return;
+                    }
+                    catch (OperationCanceledException ex)
+                    {
+                        // Foreign token (per-delivery CTS, DB timeout wrapped as OCE):
+                        // a handler failure, not shutdown. Fail the attach visibly
+                        // (close + backoff + recreate + redeliver) instead of silently
+                        // retrying forever inside the dispatch gate.
+                        Interlocked.Decrement(ref _state.Inflight);
+                        Interlocked.Exchange(ref _state.RetryBlocked, 0);
+                        FailAttach(attach, offset, ex, "Consume handler cancelled without shutdown");
                         return;
                     }
                     catch (Exception ex)
@@ -1088,12 +1125,10 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
         {
             while (await timer.WaitForNextTickAsync(tickCt).ConfigureAwait(false))
             {
-                if (!_storer.HasSuccess)
-                {
-                    continue;
-                }
-                var offset = _storer.LastSuccess;
-                if (_storer.IsStored(offset))
+                // Atomic snapshot: the (latest success, stored-ness) pair must not
+                // interleave with a dispatch-path mutation that could admit a stale
+                // offset for a possibly-closed handle.
+                if (!_storer.TryGetPendingStore(out var offset))
                 {
                     continue;
                 }

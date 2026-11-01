@@ -39,10 +39,10 @@ public sealed class OffsetCadenceTests
         // emulate the loop's timer tick body:
         while (await timer.WaitForNextTickAsync(cts.Token))
         {
-            if (storer.HasSuccess && storer.TryAdmit(storer.LastSuccess))
+            if (storer.TryGetPendingStore(out var pending) && storer.TryAdmit(pending))
             {
-                stored.Add(storer.LastSuccess);
-                storer.Stored(storer.LastSuccess);
+                stored.Add(pending);
+                storer.Stored(pending);
                 break;
             }
         }
