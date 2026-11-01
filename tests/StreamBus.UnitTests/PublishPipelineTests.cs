@@ -221,6 +221,18 @@ public sealed class RemoveTenantPublishFilter : IStreamPublishFilter
     }
 }
 
+public sealed class ScopedPublishFilter : IStreamPublishFilter
+{
+    public Task OnPublish(PublishContext context, PublishDelegate next)
+        => next();
+}
+
+public sealed class ScopedTypedPublishFilter : IStreamPublishFilter<PipelineOrder>
+{
+    public Task OnPublish(PublishContext<PipelineOrder> context, PublishDelegate next)
+        => next();
+}
+
 public sealed class BlankContentTypeSerializer : IStreamSerializer
 {
     public string ContentType => " ";
@@ -691,6 +703,75 @@ public sealed class PublishPipelineTests
                 afterAddStreamBus: services => services.RemoveAll<TenantPublishFilter>()));
 
         Assert.Contains("could not be resolved from the root service provider", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Publish_filter_types_are_registered_as_singletons()
+    {
+        var services = new ServiceCollection();
+        services.AddStreamBus((_, cfg) =>
+        {
+            cfg.Host("localhost", "/", h => h.Credentials("app", "secret"));
+            cfg.Publish<PipelineOrder>("orders");
+            cfg.UsePublishFilter<TenantPublishFilter>();
+            cfg.UsePublishFilter<OrderOnlyPublishFilter, PipelineOrder>();
+        });
+
+        var universal = services.Single(d => d.ServiceType == typeof(TenantPublishFilter));
+        var typed = services.Single(d => d.ServiceType == typeof(OrderOnlyPublishFilter));
+        Assert.Equal(ServiceLifetime.Singleton, universal.Lifetime);
+        Assert.Equal(ServiceLifetime.Singleton, typed.Lifetime);
+    }
+
+    [Fact]
+    public async Task Scoped_publish_filter_is_rejected_at_bus_construction()
+    {
+        var ex = await Assert.ThrowsAsync<StreamBusConfigurationException>(() =>
+            TestBus.StartAsync(
+                cfg =>
+                {
+                    cfg.Publish<PipelineOrder>("orders");
+                    cfg.UsePublishFilter<ScopedPublishFilter>();
+                },
+                TestContext.Current.CancellationToken,
+                configureServices: services => services.AddScoped<ScopedPublishFilter>()));
+
+        Assert.Contains(nameof(ScopedPublishFilter), ex.Message, StringComparison.Ordinal);
+        Assert.Contains("singleton", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Transient_publish_filter_is_rejected_at_bus_construction()
+    {
+        var ex = await Assert.ThrowsAsync<StreamBusConfigurationException>(() =>
+            TestBus.StartAsync(
+                cfg =>
+                {
+                    cfg.Publish<PipelineOrder>("orders");
+                    cfg.UsePublishFilter<TenantPublishFilter>();
+                },
+                TestContext.Current.CancellationToken,
+                configureServices: services => services.AddTransient<TenantPublishFilter>()));
+
+        Assert.Contains(nameof(TenantPublishFilter), ex.Message, StringComparison.Ordinal);
+        Assert.Contains("singleton", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Scoped_typed_publish_filter_is_rejected_at_bus_construction()
+    {
+        var ex = await Assert.ThrowsAsync<StreamBusConfigurationException>(() =>
+            TestBus.StartAsync(
+                cfg =>
+                {
+                    cfg.Publish<PipelineOrder>("orders");
+                    cfg.UsePublishFilter<ScopedTypedPublishFilter, PipelineOrder>();
+                },
+                TestContext.Current.CancellationToken,
+                configureServices: services => services.AddScoped<ScopedTypedPublishFilter>()));
+
+        Assert.Contains(nameof(ScopedTypedPublishFilter), ex.Message, StringComparison.Ordinal);
+        Assert.Contains("singleton", ex.Message, StringComparison.Ordinal);
     }
 
     private static PublishContext NewContext() => new()

@@ -37,6 +37,14 @@ internal sealed class PublishPipelineCache
             if (registration.IsTyped)
                 continue;
 
+            if (registration.Instance is null)
+            {
+                FilterRegistrationSupport.EnsureSingletonLifetime(
+                    rootProvider,
+                    registration.FilterType,
+                    "Publish");
+            }
+
             var filter = registration.CreateUniversal(rootProvider);
             var filterType = FilterIdentity.TypeOf(filter);
             if (!seen.Add(filterType))
@@ -75,7 +83,14 @@ internal sealed class PublishPipelineCache
 
                 var instance = _typedInstances.GetOrAdd(
                     closedFilterType,
-                    type => registration.ResolveTyped(type, _rootProvider!));
+                    type =>
+                    {
+                        FilterRegistrationSupport.EnsureSingletonLifetime(
+                            _rootProvider!,
+                            type,
+                            "Publish");
+                        return registration.ResolveTyped(type, _rootProvider!);
+                    });
 
                 filter = _typed.GetOrAdd(
                     (closedFilterType, messageType),
