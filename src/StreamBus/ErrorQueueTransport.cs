@@ -123,8 +123,22 @@ internal sealed class AmqpPublishChannel : IErrorQueuePublishChannel
             if (error is null) confirmed.TrySetResult(true);
             else confirmed.TrySetException(error);
         }
-        AsyncEventHandler<BasicAckEventArgs> onAck = (_, _) => { Complete(null); return Task.CompletedTask; };
-        AsyncEventHandler<BasicNackEventArgs> onNack = (_, e) => { Complete(new StreamBusPublishException($"Error queue '{queue}' negatively confirmed the handoff (delivery tag {e.DeliveryTag}).")); return Task.CompletedTask; };
+        
+        // Confirms are pending per delivery tag on this channel; a late ack or
+        // nack from an earlier unknown-outcome publish must not resolve this
+        // publish's confirm. Publishes are serialized by the transport gate,
+        // so the next sequence number read here is this publish's own tag.
+        var deliveryTag = await _channel.GetNextPublishSequenceNumberAsync(ct).ConfigureAwait(false);
+        void CompleteIfOwn(ulong tag, bool multiple, Exception? error)
+        {
+            // An ack/nack with multiple=true covers every tag up to DeliveryTag.
+            if (tag != deliveryTag && !(multiple && tag > deliveryTag))
+                return;
+            Complete(error);
+        }
+        
+        AsyncEventHandler<BasicAckEventArgs> onAck = (_, e) => { CompleteIfOwn(e.DeliveryTag, e.Multiple, null); return Task.CompletedTask; };
+        AsyncEventHandler<BasicNackEventArgs> onNack = (_, e) => { CompleteIfOwn(e.DeliveryTag, e.Multiple, new StreamBusPublishException($"Error queue '{queue}' negatively confirmed the handoff (delivery tag {e.DeliveryTag}).")); return Task.CompletedTask; };
         AsyncEventHandler<BasicReturnEventArgs> onReturn = (_, e) => { Complete(new StreamBusPublishException($"Error queue '{queue}' returned the handoff as unroutable (reply {e.ReplyCode} {e.ReplyText}).")); return Task.CompletedTask; };
         AsyncEventHandler<ShutdownEventArgs> onShutdown = (_, e) => { Complete(new StreamBusTimeoutException($"Publish to error queue '{queue}' ended with an unknown confirm outcome (channel closed: {e.ReplyText}).")); return Task.CompletedTask; };
         _channel.BasicAcksAsync += onAck;
@@ -335,6 +349,13 @@ internal sealed class ErrorQueueTransport : IAsyncDisposable
                 {
                     // The confirm outcome is unknown; a late ack must not be
                     // mistaken for the next publish on this channel.
+                    await ResetPublishChannelAsync().ConfigureAwait(false);
+                    throw;
+                }
+                catch (OperationCanceledException)
+                {
+                    // Caller cancelled mid-send: the confirmation outcome is
+                    // unknown, so this channel must not be reused either.
                     await ResetPublishChannelAsync().ConfigureAwait(false);
                     throw;
                 }
