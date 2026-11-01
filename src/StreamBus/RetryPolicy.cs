@@ -12,6 +12,12 @@ public sealed record RetryPolicy
     /// Total attempts including the initial one. <see langword="null"/> is
     /// unbounded; <c>1</c> means no retry.
     /// </summary>
+    /// <remarks>
+    /// Unbounded retry has no hand-off destination: a persistent handler failure
+    /// halts the partition for as long as it persists (back-pressure, no
+    /// dead-letter). Prefer a bounded policy with an ErrorStream, dead-letter,
+    /// or OnExhausted hand-off.
+    /// </remarks>
     public int? MaxAttempts { get; init; }
 
     /// <summary>Base delay for the exponential schedule.</summary>
