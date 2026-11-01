@@ -89,11 +89,14 @@ public sealed class HeadersTests
         Assert.True(headers.Remove("tenant"));
         Assert.False(headers.TryGet("tenant", out _));
         headers.Reset();
-        Assert.Empty(headers.All);
+        // Reset restores the seeded (pre-filter) state so a retry attempt
+        // starts from the original delivery headers.
+        Assert.DoesNotContain("tenant", headers.All.Keys);
+        Assert.Equal(1, headers.All["seed"]);
     }
 
     [Fact]
-    public void Materialize_lets_call_level_headers_win()
+    public void Materialize_lets_filter_set_win_over_call_level_headers()
     {
         var callLevel = new StreamMessageProperties
         {
@@ -104,7 +107,7 @@ public sealed class HeadersTests
         headers.Set("filter-only", 7);
 
         var merged = headers.Materialize(callLevel)!;
-        Assert.Equal("call-level", merged.Headers["tenant"]);
+        Assert.Equal("filter-level", merged.Headers["tenant"]);
         Assert.Equal(true, merged.Headers["call-only"]);
         Assert.Equal(7, merged.Headers["filter-only"]);
     }

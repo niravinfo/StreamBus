@@ -239,8 +239,8 @@ lock (_gate)
 
 ---
 
-**[PUB-1] Filter `Set` loses to call-level header values in `Materialize`**
-- **Severity:** CRITICAL
+**[PUB-1] Filter `Set` loses to call-level header values in `Materialize` — VALID, fixed (2026-11-01)**
+- **Severity:** CRITICAL → resolved
 - **File:** src\StreamBus\Headers.cs (lines 185–198; seeded at src\StreamBus\Bus.cs line 169)
 - **Problem:** `StreamSendHeaders` is constructed with the caller's `PublishOptions.Properties.Headers` as its initial values, so a filter's `Set` correctly overrides them in `_values`. But `Materialize` then re-merges `callLevel.Headers` *over* `_values`, so any header the caller also supplied silently defeats the filter's `Set`. `Remove` intentionally wins over call-level values (per its doc comment), so the two mutations have opposite, contradictory precedence. A middleware filter that overrides a user-supplied `x-tenant` header is silently ignored — filters must be the last writer in a pipeline.
 ```csharp
@@ -252,6 +252,23 @@ if (callLevel is not null)
 }
 ```
 - **Solution:** Delete the `callLevel` merge loop — `_values` already contains those entries because the bag is seeded from `effective.Properties?.Headers` at `Bus.cs:169`. Keep the `_removed` loop so a filter `Remove` still wins. Add a doc comment on `Set` stating that filter mutations take precedence over call-site headers, consistent with `Remove`.
+
+- **Verification & resolution (2026-11-01):** Confirmed against MassTransit's pipeline: it uses one mutable header
+  bag, no re-merge; caller initializer *data* lands on the context before middleware, and configured filters are the
+  last writer (only a per-call *delegate* — a concept StreamBus doesn't have — outranks middleware). The StreamBus
+  fix applied the same model:
+  1. Deleted the `callLevel` re-merge loop in `Materialize` (`Headers.cs`) — filters are now the last writer.
+  2. `Reset()` restored to the *seeded* state instead of clearing everything: the old re-merge loop was silently
+     what re-seeded call-level headers after `Reset()` between consume retry attempts
+     (`StreamPartitionConsumer.cs:562, 845`). `StreamSendHeaders` now keeps an `_initial` snapshot and `Reset()`
+     restores it, so each retry attempt starts from the delivery's original headers.
+  3. Docs updated: `IStreamSendHeaders.Set` now states filter mutations take precedence over call-site values
+     (symmetric with `Remove`'s existing doc); `Reset()` documents the restore-to-seed contract.
+  4. Tests updated (TDD — watched both fail before the fix): the two "call level wins" pinning tests were inverted
+     to assert filter-wins (`HeadersTests.Materialize_lets_filter_set_win_over_call_level_headers`,
+     `PublishPipelineTests.Header_writer_merges_call_level_properties_and_filter_set_wins`), and
+     `Send_headers_support_set_get_remove` now pins restore-to-seed on `Reset()`. Full suite green:
+     UnitTests 441/441, IntegrationTests 70/70 (2 pre-existing skips).
 ```csharp
 internal StreamMessageProperties Materialize(StreamMessageProperties? callLevel)
 {
