@@ -85,13 +85,15 @@ public sealed class TenantFilter(TenantScope ambient) : IStreamPublishFilter
 ```
 
 Filters are singletons per bus and must be thread-safe; each publish gets
-its own DI scope through `context.Services`. A filter must call `next`
-exactly once - zero or double continuations throw
+its own DI scope through `context.Services`. `UsePublishFilter<TFilter>()`
+registers the filter type as a singleton; registering the same filter type
+yourself with a scoped or transient lifetime is rejected when the bus is
+built, because the filter is resolved once and cached. A filter must call
+`next` exactly once - zero or double continuations throw
 `StreamBusConfigurationException` (a second call is rejected before the
-duplicate send). Call-level
-`PublishOptions.Properties` win over filter headers on key conflicts.
-`PublishRawAsync` bypasses the pipeline. Complete samples:
-`examples/StreamBus.Examples.Producer/TenantFilter.cs` and
+duplicate send). Filter header mutations take precedence over call-level
+`PublishOptions.Properties` headers. `PublishRawAsync` bypasses the pipeline. Complete
+samples: `examples/StreamBus.Examples.Producer/TenantFilter.cs` and
 `CorrelationIdFilter.cs`.
 
 ### Typed publish filters

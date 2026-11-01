@@ -38,7 +38,9 @@ public interface IStreamBusConfigurator
     /// Registers a publish filter, discovering its typed message interfaces at
     /// runtime. Use
     /// <see cref="UsePublishFilter{TFilter,TMessage}()"/> to avoid closing the
-    /// adapter at runtime.
+    /// adapter at runtime. The filter type is registered as a singleton because
+    /// publish filters are resolved once per bus and cached; register the type
+    /// as a singleton yourself if you add it before this call.
     /// </summary>
     [RequiresUnreferencedCode(RuntimeGeneric.TrimMessage)]
     [RequiresDynamicCode(RuntimeGeneric.AotMessage)]
@@ -49,13 +51,27 @@ public interface IStreamBusConfigurator
     /// adapter at the call site and therefore avoids closing a generic type at
     /// runtime. It removes one trim/AOT hazard; it does not by itself make
     /// trimming or NativeAOT publish supported (the default serializer and
-    /// type-based configuration are still reflection-based).
+    /// type-based configuration are still reflection-based). The filter type is
+    /// registered as a singleton because publish filters are resolved once per
+    /// bus and cached.
     /// </summary>
     void UsePublishFilter<[DynamicallyAccessedMembers(RuntimeGeneric.FilterMembers)] TFilter, TMessage>() where TFilter : class, IStreamPublishFilter<TMessage>;
+    /// <summary>
+    /// Registers a publish filter by type. The type is registered as a
+    /// singleton because publish filters are resolved once per bus and cached.
+    /// </summary>
     [RequiresUnreferencedCode(RuntimeGeneric.TrimMessage)]
     [RequiresDynamicCode(RuntimeGeneric.AotMessage)]
     void UsePublishFilter([DynamicallyAccessedMembers(RuntimeGeneric.FilterMembers)] Type filterType);
+    /// <summary>
+    /// Registers a publish filter created by <paramref name="factory"/>. The
+    /// factory runs once per bus; its result is cached for the bus lifetime.
+    /// </summary>
     void UsePublishFilter(Func<IServiceProvider, IStreamPublishFilter> factory);
+    /// <summary>
+    /// Registers an existing publish filter instance, which is used for every
+    /// publish on the bus.
+    /// </summary>
     void UsePublishFilter(IStreamPublishFilter instance);
     [RequiresUnreferencedCode(RuntimeGeneric.TrimMessage)]
     [RequiresDynamicCode(RuntimeGeneric.AotMessage)]
@@ -709,8 +725,12 @@ public static class StreamBusConfiguratorExtensions
         foreach (var filter in configurator.PublishFilters)
         {
             publishStore.AddFilter(busType, filter);
+            // Publish filters are resolved once when the bus is built and
+            // cached for the bus lifetime (PublishPipelineCache). Registering
+            // them as singletons makes that contract explicit; the cache
+            // rejects scoped/transient registrations at bus construction.
             if (filter.FilterType is { } filterType && filter.Instance is null)
-                services.TryAddTransient(filterType, filterType);
+                services.TryAddSingleton(filterType, filterType);
         }
         publishStore.Seal(busType);
         var consumeFilterStore = ServiceCollectionExtensions.GetOrCreateConsumeFilterStore(services);

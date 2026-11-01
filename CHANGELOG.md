@@ -91,6 +91,11 @@
 - `IStreamSerializer` gains a `ContentType` member, so third-party
   implementations must supply one. A null or blank content type is rejected
   when the bus is constructed.
+- Publish filter types are now registered as singletons (previously
+  transient). A filter instance is resolved once when the bus is built and
+  cached for the bus lifetime; a scoped or transient registration of a publish
+  filter type is rejected at bus construction instead of silently becoming a
+  captive dependency. Resolve scoped services from `PublishContext.Services`.
 
 ### Added
 

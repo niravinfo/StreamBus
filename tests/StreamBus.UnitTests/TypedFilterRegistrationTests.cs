@@ -330,7 +330,7 @@ public sealed class TypedFilterRegistrationTests
     public async Task Explicit_publish_registration_builds_only_its_message_pipeline()
     {
         var services = new ServiceCollection();
-        services.AddTransient<CountingPublishFilter<RegistrationOrder>>();
+        services.AddSingleton<CountingPublishFilter<RegistrationOrder>>();
         using var provider = services.BuildServiceProvider();
 
         var cache = new PublishPipelineCache(
@@ -362,7 +362,7 @@ public sealed class TypedFilterRegistrationTests
     public async Task Disjoint_publish_registrations_of_one_filter_build_one_pipeline_each()
     {
         var services = new ServiceCollection();
-        services.AddTransient<RegistrationMultiPublishFilter>();
+        services.AddSingleton<RegistrationMultiPublishFilter>();
         using var provider = services.BuildServiceProvider();
 
         var cache = new PublishPipelineCache(

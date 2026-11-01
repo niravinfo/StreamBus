@@ -379,7 +379,7 @@ internal static class TypedConsumeContextFactory<T>
 
 ---
 
-**[PUB-2] Publish filters resolved once from the root provider create captive dependencies**
+**[PUB-2] Publish filters resolved once from the root provider create captive dependencies — VALID, fixed (2026-11-01)**
 - **Severity:** IMPORTANT
 - **File:** src\StreamBus\PublishPipelineCache.cs (lines 34–49 and 76–82)
 - **Problem:** The cache constructor eagerly resolves every universal filter from `_rootProvider` and caches the instance for the bus's lifetime; typed filters are likewise resolved from `_rootProvider!`. If a user registers a scoped (or transient) filter type, it is silently promoted to singleton: any scoped service it captures (e.g., a `DbContext`) lives for the whole application. Meanwhile `Bus.cs:168` creates a per-publish DI scope and hands it to filters via `context.Services`, advertising scoped semantics that the cache's own resolution contradicts. Nothing validates the lifetime.
@@ -399,6 +399,39 @@ if (descriptor is { Lifetime: ServiceLifetime.Scoped or ServiceLifetime.Transien
     throw new StreamBusConfigurationException(
         $"Publish filter '{registration.FilterType}' is registered as {descriptor.Lifetime}; publish filters must be singletons. Resolve per-publish scoped services from PublishContext.Services.");
 ```
+
+- **Verification & resolution (2026-11-01):** Confirmed genuine, but the defect is a contract mismatch rather than the
+  cache itself. `docs/guide/publish.md` already states "Filters are singletons per bus and must be thread-safe; each
+  publish gets its own DI scope through `context.Services`", and the consume side pins the same model (filters are
+  singleton/instance; scoped dependencies come from `context.Services`). The code contradicted that in two ways:
+  1. `AddStreamBus` registered every type-based publish filter with `TryAddTransient`
+     (`StreamBusConfiguratorExtensions.AddCore`), while `PublishPipelineCache` resolved it from the root provider
+     exactly once and cached it for the bus lifetime — a transient registration silently behaved as a singleton.
+  2. Nothing rejected a user-supplied scoped/transient registration. A `Scoped` filter resolved from the root is a
+     captive dependency; with ASP.NET Core's scope validation enabled it instead fails at publish time with a raw
+     `InvalidOperationException`.
+
+  The per-publish scope is not intended to construct filters (MassTransit uses the same model); it exists so
+  singleton filters can resolve scoped services per publish through `context.Services`. Resolving filters per publish
+  would have changed the documented and consume-side design and added a DI resolve on every publish, so the
+  singleton contract was made explicit and enforced instead:
+  1. Type-based publish filters are registered with `TryAddSingleton` (`AddCore`).
+  2. `FilterRegistrationSupport.EnsureSingletonLifetime` compares the root and per-scope resolution of a filter type
+     and throws `StreamBusConfigurationException` for scoped/transient (or root-unresolvable) registrations. It is
+     applied to universal registrations in the cache constructor and to typed registrations when a pipeline is built,
+     so declared pipes fail at bus construction and other types fail on first use. Instance registrations
+     (`UsePublishFilter(IStreamPublishFilter)`) and factory registrations are singleton-by-construction and skipped.
+     Consume-side lifetime validation remains part of FLT-4.
+  3. The singleton/thread-safety contract and the `context.Services` guidance are documented on
+     `IStreamPublishFilter`, `IStreamPublishFilter<T>`, `PublishContext.Services`, the `UsePublishFilter` overloads,
+     `docs/guide/publish.md`, and CHANGELOG (`### Breaking`).
+  4. Tests (TDD — all four failed before the fix): `Publish_filter_types_are_registered_as_singletons`,
+     `Scoped_publish_filter_is_rejected_at_bus_construction`,
+     `Transient_publish_filter_is_rejected_at_bus_construction`, and
+     `Scoped_typed_publish_filter_is_rejected_at_bus_construction`. The two `TypedFilterRegistrationTests` that
+     construct the cache directly now register their probe filters as singletons (they test pipeline composition, not
+     DI lifetime). UnitTests 462/462; the brokered integration suite could not run in this environment because no
+     RabbitMQ broker is listening (every test times out at connect).
 
 ---
 

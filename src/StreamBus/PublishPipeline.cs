@@ -5,6 +5,13 @@ namespace StreamBus;
 /// <summary>
 /// Universal publish filter that runs for every typed publish on the bus.
 /// </summary>
+/// <remarks>
+/// Filter instances are resolved once when the bus is built and cached for the
+/// bus lifetime, so a filter must be thread-safe. Register filter types with a
+/// singleton lifetime: a scoped or transient registration is rejected when the
+/// bus is built. Scoped services are available through
+/// <see cref="PublishContext.Services"/>.
+/// </remarks>
 public interface IStreamPublishFilter
 {
     /// <summary>
@@ -21,6 +28,13 @@ public interface IStreamPublishFilter
 /// <typeparamref name="T"/>.
 /// </summary>
 /// <typeparam name="T">The declared message type.</typeparam>
+/// <remarks>
+/// Filter instances are resolved once when the bus is built and cached for the
+/// bus lifetime, so a filter must be thread-safe. Register filter types with a
+/// singleton lifetime: a scoped or transient registration is rejected when the
+/// bus is built. Scoped services are available through
+/// <see cref="PublishContext.Services"/>.
+/// </remarks>
 public interface IStreamPublishFilter<T>
 {
     /// <summary>
@@ -67,7 +81,10 @@ public class PublishContext
     /// <summary>Headers that are sent with the publish.</summary>
     public required IStreamSendHeaders Headers { get; init; }
 
-    /// <summary>Per-publish service scope.</summary>
+    /// <summary>
+    /// Per-publish service scope. Publish filters are singletons, so scoped
+    /// services must be resolved here rather than injected into a filter.
+    /// </summary>
     public required IServiceProvider Services { get; init; }
 
     /// <summary>Cancellation token for the publish.</summary>
