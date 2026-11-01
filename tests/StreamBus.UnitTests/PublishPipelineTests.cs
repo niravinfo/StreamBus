@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
@@ -351,21 +352,84 @@ public sealed class PublishPipelineTests
     }
 
     [Fact]
-    public async Task Filter_exception_is_classified_as_a_publish_transient_failure()
+    public async Task Filter_exception_surfaces_unwrapped_and_is_recorded_on_activity()
     {
         var filter = new ThrowingFilter();
-        await using var bus = await TestBus.StartAsync(cfg =>
+        using var capture = StartCapturingPublishActivities("orders");
+        try
         {
-            cfg.Publish<PipelineOrder>("orders");
-            cfg.UsePublishFilter(filter);
-        }, TestContext.Current.CancellationToken);
+            await using var bus = await TestBus.StartAsync(cfg =>
+            {
+                cfg.Publish<PipelineOrder>("orders");
+                cfg.UsePublishFilter(filter);
+            }, TestContext.Current.CancellationToken);
 
-        var ex = await Assert.ThrowsAsync<StreamBusPublishTransientException>(() =>
-            bus.Bus.PublishAsync(new PipelineOrder("1"), TestContext.Current.CancellationToken));
+            var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                bus.Bus.PublishAsync(new PipelineOrder("1"), TestContext.Current.CancellationToken));
 
-        Assert.IsType<InvalidOperationException>(ex.InnerException);
-        Assert.Equal(1, filter.Calls);
-        Assert.Empty(bus.System.Publishes);
+            Assert.Equal("filter boom", ex.Message);
+            Assert.Null(ex.InnerException);
+            Assert.Equal(1, filter.Calls);
+            Assert.Empty(bus.System.Publishes);
+            AssertPublishActivityHasExceptionEvent(capture, typeof(InvalidOperationException).FullName!);
+        }
+        finally
+        {
+            capture.Dispose();
+        }
+    }
+
+    [Fact]
+    public async Task Foreign_cancelled_exception_from_filter_is_not_wrapped_as_transient()
+    {
+        using var filter = new ForeignCancelFilter();
+        using var capture = StartCapturingPublishActivities("orders");
+        try
+        {
+            await using var bus = await TestBus.StartAsync(cfg =>
+            {
+                cfg.Publish<PipelineOrder>("orders");
+                cfg.UsePublishFilter(filter);
+            }, TestContext.Current.CancellationToken);
+
+            var ex = await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+                bus.Bus.PublishAsync(new PipelineOrder("1"), TestContext.Current.CancellationToken));
+
+            Assert.IsNotType<StreamBusPublishTransientException>(ex);
+            Assert.Equal(filter.Own.Token, ex.CancellationToken);
+            Assert.Empty(bus.System.Publishes);
+            // Cancellation is never recorded as a failure on the publish activity.
+            Assert.Null(GetPublishExceptionEvent(capture));
+        }
+        finally
+        {
+            capture.Dispose();
+        }
+    }
+
+    [Fact]
+    public async Task Transport_failure_without_filters_is_recorded_on_publish_activity()
+    {
+        using var capture = StartCapturingPublishActivities("orders");
+        try
+        {
+            await using var bus = await TestBus.StartAsync(cfg =>
+            {
+                cfg.Publish<PipelineOrder>("orders");
+            }, TestContext.Current.CancellationToken);
+            bus.System.SendFailure = new IOException("transport boom");
+
+            var ex = await Assert.ThrowsAsync<StreamBusPublishTransientException>(() =>
+                bus.Bus.PublishAsync(new PipelineOrder("1"), TestContext.Current.CancellationToken));
+
+            Assert.IsType<IOException>(ex.InnerException);
+            AssertPublishActivityHasExceptionEvent(
+                capture, typeof(StreamBusPublishTransientException).FullName!);
+        }
+        finally
+        {
+            capture.Dispose();
+        }
     }
 
     [Fact]
@@ -822,6 +886,74 @@ public sealed class PublishPipelineTests
         }
     }
 
+    private sealed class ForeignCancelFilter : IStreamPublishFilter, IDisposable
+    {
+        public CancellationTokenSource Own { get; } = new();
+
+        public Task OnPublish(PublishContext context, PublishDelegate next)
+        {
+            Own.Cancel();
+            Own.Token.ThrowIfCancellationRequested();
+            return Task.CompletedTask;
+        }
+
+        public void Dispose() => Own.Dispose();
+    }
+
+    private sealed record PublishActivityCapture(
+        List<Activity> Activities,
+        string Stream,
+        ActivityListener Listener) : IDisposable
+    {
+        public void Dispose() => Listener.Dispose();
+    }
+
+    private static PublishActivityCapture StartCapturingPublishActivities(string stream)
+    {
+        var activities = new List<Activity>();
+        var source = StreamBusActivity.Source;
+        var listener = new ActivityListener
+        {
+            ShouldListenTo = s => ReferenceEquals(s, source),
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
+            ActivityStopped = activity => { lock (activities) activities.Add(activity); },
+        };
+        ActivitySource.AddActivityListener(listener);
+        return new PublishActivityCapture(activities, stream, listener);
+    }
+
+    private static ActivityEvent? GetPublishExceptionEvent(PublishActivityCapture capture)
+    {
+        lock (capture.Activities)
+        {
+            // Scoped to this test's stream so unrelated publish activities
+            // (startup, other test classes) cannot pollute the assertion.
+            var publish = capture.Activities
+                .LastOrDefault(a =>
+                    a.OperationName == "streambus.publish"
+                    && a.GetTagItem("streambus.stream") as string == capture.Stream);
+            if (publish is null)
+                return null;
+            foreach (var e in publish.Events)
+            {
+                if (e.Name == "exception")
+                    return e;
+            }
+            return null;
+        }
+    }
+
+    private static void AssertPublishActivityHasExceptionEvent(
+        PublishActivityCapture capture,
+        string exceptionTypeName)
+    {
+        var exceptionEvent = GetPublishExceptionEvent(capture);
+        Assert.NotNull(exceptionEvent);
+        Assert.Equal(
+            exceptionTypeName,
+            exceptionEvent!.Value.Tags.FirstOrDefault(t => t.Key == "exception.type").Value as string);
+    }
+
     private sealed class CountingFilter : IStreamPublishFilter
     {
         public int Calls { get; private set; }
@@ -907,6 +1039,7 @@ public sealed class PublishPipelineTests
     {
         public readonly List<CapturedPublish> Publishes = new();
         public PublishPipelineLog? Log { get; set; }
+        public Exception? SendFailure { get; set; }
 
         public bool IsClosed => false;
 
@@ -946,6 +1079,8 @@ public sealed class PublishPipelineTests
     {
         public Task SendAsync(ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct)
         {
+            if (system.SendFailure is { } failure)
+                return Task.FromException(failure);
             system.Add(stream, body, options);
             return Task.CompletedTask;
         }
