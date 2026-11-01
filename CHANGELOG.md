@@ -68,6 +68,16 @@
   instance with the typed consumer and typed filters. A payload that fails
   deserialization is retried and exhausted without running filters or the
   consumer; a universal filter can no longer quarantine it first.
+- `UsePublishFilter<TFilter>()`, `UseConsumeFilter<TFilter>()`, and their
+  `Type` overloads now carry `[RequiresUnreferencedCode]` /
+  `[RequiresDynamicCode]`. Call sites that treat trim/AOT analyzer warnings as
+  errors must suppress them or switch to the new
+  `UsePublishFilter<TFilter, TMessage>()` / `UseConsumeFilter<TFilter, TMessage>()`
+  overloads.
+- `IStreamBusConfigurator` and `IReceiveEndpointConfigurator` gain the
+  two-type-parameter `UsePublishFilter<TFilter, TMessage>()` /
+  `UseConsumeFilter<TFilter, TMessage>()` members. Third-party implementations
+  of these interfaces must add them.
 - Endpoint-scoped concrete typed consume filters that do not match the
   endpoint message type now fail during `AddStreamBus` instead of being
   skipped.
@@ -113,6 +123,14 @@
   type, with open generic closure through the `Type` overloads. Typed consume
   endpoints deserialize eagerly and share one message instance with the
   consumer.
+- `UsePublishFilter<TFilter, TMessage>()` and
+  `UseConsumeFilter<TFilter, TMessage>()` construct the typed filter adapter at
+  the call site, so typed filters avoid a runtime generic closure. The
+  interface-derived and `Type` registrations are annotated
+  `[RequiresUnreferencedCode]` / `[RequiresDynamicCode]` and the dynamic paths
+  carry `[DynamicallyAccessedMembers]`. Trimming and NativeAOT remain
+  unsupported end to end (the default serializer is reflection-based and typed
+  consume still closes generics from runtime types).
 
 ### Fixed
 
@@ -152,6 +170,10 @@
 - Header removal takes precedence over call-site values, so a key removed
   through `IStreamSendHeaders.Remove` is not resurrected by the publish
   options.
+- Typed filter/context/consumer plumbing no longer looks members up by name or
+  compiles expression trees. A rename can no longer turn into a delivery-time
+  crash, and the deserialization path no longer pays `Expression.Compile`
+  startup cost.
 
 ### Validation
 

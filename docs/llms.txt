@@ -83,14 +83,24 @@
 - Pipelines: `UsePublishFilter` and `UseConsumeFilter` are additive and
   repeatable, with no cap; execution is exactly registration order and
   the first registered filter is outermost (first in, last out). Consume
-  filters registered on the bus run before endpoint filters. Duplicate
-  filter types within one scope are configuration errors. Publish filters
+  filters registered on the bus run before endpoint filters. Registering the
+  same filter type twice in one scope is a configuration error unless each
+  registration is pinned to a disjoint message type through
+  `UsePublishFilter<TFilter, TMessage>()` / `UseConsumeFilter<TFilter, TMessage>()`.
+  Publish filters
   must call `next()` exactly once and cannot short-circuit. A normal consume
   filter may call `next()` zero or one time; zero filters the delivery
   (handler skipped, offset advances) and more than one is retried then
   exhausted. Effectively-once pipelines require exactly one `next()`.
   Universal and typed filters share one context; typed filters expose
-  `Message` and do not pass a wrapper to `next`.
+  `Message` and do not pass a wrapper to `next`. Typed filters registered
+  through `UsePublishFilter<TFilter, TMessage>()` /
+  `UseConsumeFilter<TFilter, TMessage>()` close their adapter at the call
+  site; the single-type-parameter and `Type` overloads close at runtime and
+  are annotated `[RequiresUnreferencedCode]` / `[RequiresDynamicCode]`.
+  Trimming and NativeAOT are not supported end to end (the default serializer
+  is reflection-based and typed consume still closes generics from runtime
+  types); the annotations mark the dynamic paths.
 - Effectively-once (`ConsumeEffectivelyOnceAsync`) stores no source
   offsets and publishes results with `publishing-id = source offset`.
   Resume is recomputed from the target; one pipeline per (source, target)

@@ -231,6 +231,286 @@ public sealed class TypedFilterRegistrationTests
     }
 
     [Fact]
+    public void Explicit_message_type_publish_filter_is_accepted()
+        => Configure(cfg => cfg.UsePublishFilter<RegistrationTypedPublishFilter, RegistrationOrder>());
+
+    [Fact]
+    public void Explicit_message_type_consume_filter_is_accepted()
+        => Configure(cfg => cfg.UseConsumeFilter<RegistrationTypedConsumeFilter, RegistrationOrder>());
+
+    [Fact]
+    public void Endpoint_explicit_message_type_consume_filter_is_accepted()
+        => Configure(cfg => cfg.ReceiveEndpoint("orders", e =>
+        {
+            e.Consumer<RegistrationConsumer>("grp");
+            e.UseConsumeFilter<RegistrationTypedConsumeFilter, RegistrationOrder>();
+        }));
+
+    [Fact]
+    public void Explicit_message_type_publish_registration_is_closed_to_its_message_type()
+    {
+        var registration = PublishFilterRegistration.ForTyped<RegistrationTypedPublishFilter, RegistrationOrder>();
+
+        Assert.Equal(FilterRegistrationKind.ConcreteTyped, registration.Kind);
+        Assert.Equal(typeof(RegistrationTypedPublishFilter), registration.ClosedFilterType(typeof(RegistrationOrder)));
+        Assert.Null(registration.ClosedFilterType(typeof(RegistrationInvoice)));
+        Assert.NotNull(registration.TypedAdapterFactory);
+    }
+
+    [Fact]
+    public void Explicit_message_type_consume_registration_is_closed_to_its_message_type()
+    {
+        var registration = ConsumeFilterRegistration.ForTyped<RegistrationTypedConsumeFilter, RegistrationOrder>();
+
+        Assert.Equal(FilterRegistrationKind.ConcreteTyped, registration.Kind);
+        Assert.Equal(typeof(RegistrationTypedConsumeFilter), registration.ClosedFilterType(typeof(RegistrationOrder)));
+        Assert.Null(registration.ClosedFilterType(typeof(RegistrationInvoice)));
+        Assert.NotNull(registration.TypedAdapterFactory);
+    }
+
+    [Fact]
+    public void Explicit_message_type_publish_filter_that_also_implements_the_universal_interface_is_rejected()
+    {
+        var ex = Assert.Throws<StreamBusConfigurationException>(() =>
+            Configure(cfg => cfg.UsePublishFilter<RegistrationDualPublishFilter, RegistrationOrder>()));
+
+        Assert.Contains("both", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Explicit_message_type_consume_filter_that_also_implements_the_universal_interface_is_rejected()
+    {
+        var ex = Assert.Throws<StreamBusConfigurationException>(() =>
+            Configure(cfg => cfg.UseConsumeFilter<RegistrationDualConsumeFilter, RegistrationOrder>()));
+
+        Assert.Contains("both", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Multi_interface_publish_filter_can_be_pinned_to_each_message_type_separately()
+        => Configure(cfg =>
+        {
+            cfg.UsePublishFilter<RegistrationMultiPublishFilter, RegistrationOrder>();
+            cfg.UsePublishFilter<RegistrationMultiPublishFilter, RegistrationInvoice>();
+        });
+
+    [Fact]
+    public void Multi_interface_consume_filter_can_be_pinned_to_each_message_type_separately()
+        => Configure(cfg =>
+        {
+            cfg.UseConsumeFilter<RegistrationMultiConsumeFilter, RegistrationOrder>();
+            cfg.UseConsumeFilter<RegistrationMultiConsumeFilter, RegistrationInvoice>();
+        });
+
+    [Fact]
+    public void Same_typed_publish_filter_pinned_to_the_same_message_type_twice_is_rejected()
+    {
+        var ex = Assert.Throws<StreamBusConfigurationException>(() => Configure(cfg =>
+        {
+            cfg.UsePublishFilter<RegistrationMultiPublishFilter, RegistrationOrder>();
+            cfg.UsePublishFilter<RegistrationMultiPublishFilter, RegistrationOrder>();
+        }));
+
+        Assert.Contains("already registered", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Discovered_publish_registration_conflicts_with_an_explicit_registration_for_one_of_its_message_types()
+    {
+        var ex = Assert.Throws<StreamBusConfigurationException>(() => Configure(cfg =>
+        {
+            cfg.UsePublishFilter<RegistrationMultiPublishFilter>();
+            cfg.UsePublishFilter<RegistrationMultiPublishFilter, RegistrationInvoice>();
+        }));
+
+        Assert.Contains("already registered", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Explicit_publish_registration_builds_only_its_message_pipeline()
+    {
+        var services = new ServiceCollection();
+        services.AddTransient<CountingPublishFilter<RegistrationOrder>>();
+        using var provider = services.BuildServiceProvider();
+
+        var cache = new PublishPipelineCache(
+            typeof(RegistrationBus),
+            new[]
+            {
+                PublishFilterRegistration.ForTyped<CountingPublishFilter<RegistrationOrder>, RegistrationOrder>(),
+            },
+            provider);
+
+        CountingPublishFilter<RegistrationOrder>.Invocations = 0;
+        Assert.Equal(1, cache.GetOrCreate(typeof(RegistrationOrder)).Count);
+        Assert.Equal(0, cache.GetOrCreate(typeof(RegistrationInvoice)).Count);
+
+        var terminalRan = false;
+        await cache.GetOrCreate(typeof(RegistrationOrder)).RunAsync(
+            NewTypedPublishContext(),
+            () =>
+            {
+                terminalRan = true;
+                return Task.CompletedTask;
+            });
+
+        Assert.True(terminalRan);
+        Assert.Equal(1, CountingPublishFilter<RegistrationOrder>.Invocations);
+    }
+
+    [Fact]
+    public async Task Disjoint_publish_registrations_of_one_filter_build_one_pipeline_each()
+    {
+        var services = new ServiceCollection();
+        services.AddTransient<RegistrationMultiPublishFilter>();
+        using var provider = services.BuildServiceProvider();
+
+        var cache = new PublishPipelineCache(
+            typeof(RegistrationBus),
+            new[]
+            {
+                PublishFilterRegistration.ForTyped<RegistrationMultiPublishFilter, RegistrationOrder>(),
+                PublishFilterRegistration.ForTyped<RegistrationMultiPublishFilter, RegistrationInvoice>(),
+            },
+            provider);
+
+        var orderPipeline = cache.GetOrCreate(typeof(RegistrationOrder));
+        var invoicePipeline = cache.GetOrCreate(typeof(RegistrationInvoice));
+
+        Assert.Equal(1, orderPipeline.Count);
+        Assert.Equal(1, invoicePipeline.Count);
+
+        // Each pipeline must hold the adapter pinned to its own message type;
+        // a mismatched adapter would throw when it receives the typed context.
+        var orderTerminalRan = false;
+        await orderPipeline.RunAsync(NewTypedPublishContext(), () =>
+        {
+            orderTerminalRan = true;
+            return Task.CompletedTask;
+        });
+
+        var invoiceTerminalRan = false;
+        await invoicePipeline.RunAsync(NewTypedInvoicePublishContext(), () =>
+        {
+            invoiceTerminalRan = true;
+            return Task.CompletedTask;
+        });
+
+        Assert.True(orderTerminalRan);
+        Assert.True(invoiceTerminalRan);
+    }
+
+    [Fact]
+    public void WrapTyped_rejects_a_message_type_the_registration_was_not_pinned_to()
+    {
+        var registration = PublishFilterRegistration.ForTyped<RegistrationTypedPublishFilter, RegistrationOrder>();
+
+        var ex = Assert.Throws<StreamBusConfigurationException>(() =>
+            registration.WrapTyped(typeof(RegistrationInvoice), new RegistrationTypedPublishFilter()));
+
+        Assert.Contains("pinned", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void WrapTyped_rejects_a_message_type_the_consume_registration_was_not_pinned_to()
+    {
+        var registration = ConsumeFilterRegistration.ForTyped<RegistrationTypedConsumeFilter, RegistrationOrder>();
+
+        var ex = Assert.Throws<StreamBusConfigurationException>(() =>
+            registration.WrapTyped(typeof(RegistrationInvoice), new RegistrationTypedConsumeFilter()));
+
+        Assert.Contains("pinned", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Explicit_typed_publish_registration_wraps_with_the_compile_time_adapter()
+    {
+        var registration = PublishFilterRegistration.ForTyped<RegistrationTypedPublishFilter, RegistrationOrder>();
+        var adapter = registration.WrapTyped(typeof(RegistrationOrder), new RegistrationTypedPublishFilter());
+
+        var ran = false;
+        await adapter.OnPublish(
+            new PublishContext<RegistrationOrder>
+            {
+                Stream = "orders",
+                RoutingKey = null,
+                Payload = new RegistrationOrder("o-1"),
+                MessageId = Guid.NewGuid(),
+                SentTime = DateTime.UtcNow,
+                Headers = new StreamSendHeaders(null, SystemTextJsonStreamSerializer.Default),
+                Services = new ServiceCollection().BuildServiceProvider(),
+                CancellationToken = TestContext.Current.CancellationToken,
+            },
+            () =>
+            {
+                ran = true;
+                return Task.CompletedTask;
+            });
+
+        Assert.True(ran);
+        Assert.Equal(typeof(RegistrationTypedPublishFilter), FilterIdentity.TypeOf(adapter));
+    }
+
+    [Fact]
+    public async Task Explicit_typed_consume_registration_wraps_with_the_compile_time_adapter()
+    {
+        var registration = ConsumeFilterRegistration.ForTyped<RegistrationTypedConsumeFilter, RegistrationOrder>();
+        var adapter = registration.WrapTyped(typeof(RegistrationOrder), new RegistrationTypedConsumeFilter());
+
+        var ran = false;
+        await adapter.OnConsume(
+            TypedConsumeContext.Create(
+                typeof(RegistrationOrder),
+                NewRawConsumeContext(),
+                new RegistrationOrder("o-1")),
+            () =>
+            {
+                ran = true;
+                return Task.CompletedTask;
+            });
+
+        Assert.True(ran);
+        Assert.Equal(typeof(RegistrationTypedConsumeFilter), FilterIdentity.TypeOf(adapter));
+    }
+
+    private static ConsumeContext NewRawConsumeContext() => new()
+    {
+        Stream = "orders",
+        Partition = 0,
+        Offset = 0,
+        RoutingValue = null,
+        Body = System.Text.Encoding.UTF8.GetBytes("{}"),
+        Headers = new StreamHeaders(new Dictionary<string, object?>(), SystemTextJsonStreamSerializer.Default),
+        SendHeaders = new StreamSendHeaders(null, SystemTextJsonStreamSerializer.Default),
+        Services = new ServiceCollection().BuildServiceProvider(),
+        CancellationToken = CancellationToken.None,
+    };
+
+    private static PublishContext<RegistrationOrder> NewTypedPublishContext() => new()
+    {
+        Stream = "orders",
+        RoutingKey = null,
+        Payload = new RegistrationOrder("o-1"),
+        MessageId = Guid.NewGuid(),
+        SentTime = DateTime.UtcNow,
+        Headers = new StreamSendHeaders(null, SystemTextJsonStreamSerializer.Default),
+        Services = new ServiceCollection().BuildServiceProvider(),
+        CancellationToken = CancellationToken.None,
+    };
+
+    private static PublishContext<RegistrationInvoice> NewTypedInvoicePublishContext() => new()
+    {
+        Stream = "invoices",
+        RoutingKey = null,
+        Payload = new RegistrationInvoice("i-1"),
+        MessageId = Guid.NewGuid(),
+        SentTime = DateTime.UtcNow,
+        Headers = new StreamSendHeaders(null, SystemTextJsonStreamSerializer.Default),
+        Services = new ServiceCollection().BuildServiceProvider(),
+        CancellationToken = CancellationToken.None,
+    };
+
+    [Fact]
     public void Classify_returns_each_typed_message_type_for_a_multi_interface_filter()
     {
         var result = FilterTypeInspector.Classify(
@@ -295,7 +575,7 @@ public sealed class TypedFilterRegistrationTests
     }
 
     [Fact]
-    public void CreateTyped_wraps_the_resolved_publish_filter_with_the_user_filter_identity()
+    public void WrapTyped_wraps_the_resolved_publish_filter_with_the_user_filter_identity()
     {
         var services = new ServiceCollection();
         services.AddTransient<RegistrationTypedPublishFilter>();
@@ -305,13 +585,15 @@ public sealed class TypedFilterRegistrationTests
         var closedFilterType = registration.ClosedFilterType(typeof(RegistrationOrder));
         Assert.NotNull(closedFilterType);
 
-        var adapter = registration.CreateTyped(closedFilterType, typeof(RegistrationOrder), provider);
+        var adapter = registration.WrapTyped(
+            typeof(RegistrationOrder),
+            registration.ResolveTyped(closedFilterType, provider));
 
         Assert.Equal(typeof(RegistrationTypedPublishFilter), FilterIdentity.TypeOf(adapter));
     }
 
     [Fact]
-    public void CreateTyped_wraps_the_resolved_open_generic_publish_filter_with_the_closed_user_filter_identity()
+    public void WrapTyped_wraps_the_resolved_open_generic_publish_filter_with_the_closed_user_filter_identity()
     {
         var services = new ServiceCollection();
         services.AddTransient(typeof(RegistrationOpenPublishFilter<>));
@@ -321,13 +603,15 @@ public sealed class TypedFilterRegistrationTests
         var closedFilterType = registration.ClosedFilterType(typeof(RegistrationOrder));
         Assert.NotNull(closedFilterType);
 
-        var adapter = registration.CreateTyped(closedFilterType, typeof(RegistrationOrder), provider);
+        var adapter = registration.WrapTyped(
+            typeof(RegistrationOrder),
+            registration.ResolveTyped(closedFilterType, provider));
 
         Assert.Equal(typeof(RegistrationOpenPublishFilter<RegistrationOrder>), FilterIdentity.TypeOf(adapter));
     }
 
     [Fact]
-    public void CreateTyped_wraps_the_resolved_consume_filter_with_the_user_filter_identity()
+    public void WrapTyped_wraps_the_resolved_consume_filter_with_the_user_filter_identity()
     {
         var services = new ServiceCollection();
         services.AddTransient<RegistrationTypedConsumeFilter>();
@@ -337,13 +621,15 @@ public sealed class TypedFilterRegistrationTests
         var closedFilterType = registration.ClosedFilterType(typeof(RegistrationOrder));
         Assert.NotNull(closedFilterType);
 
-        var adapter = registration.CreateTyped(closedFilterType, typeof(RegistrationOrder), provider);
+        var adapter = registration.WrapTyped(
+            typeof(RegistrationOrder),
+            registration.ResolveTyped(closedFilterType, provider));
 
         Assert.Equal(typeof(RegistrationTypedConsumeFilter), FilterIdentity.TypeOf(adapter));
     }
 
     [Fact]
-    public void CreateTyped_wraps_a_multi_interface_publish_filter_for_each_requested_message_type()
+    public void WrapTyped_wraps_a_multi_interface_publish_filter_for_each_requested_message_type()
     {
         var services = new ServiceCollection();
         services.AddTransient<RegistrationMultiPublishFilter>();
@@ -355,21 +641,27 @@ public sealed class TypedFilterRegistrationTests
         Assert.NotNull(orderFilterType);
         Assert.NotNull(invoiceFilterType);
 
-        var orderAdapter = registration.CreateTyped(orderFilterType, typeof(RegistrationOrder), provider);
-        var invoiceAdapter = registration.CreateTyped(invoiceFilterType, typeof(RegistrationInvoice), provider);
+        var orderAdapter = registration.WrapTyped(
+            typeof(RegistrationOrder),
+            registration.ResolveTyped(orderFilterType, provider));
+        var invoiceAdapter = registration.WrapTyped(
+            typeof(RegistrationInvoice),
+            registration.ResolveTyped(invoiceFilterType, provider));
 
         Assert.Equal(typeof(RegistrationMultiPublishFilter), FilterIdentity.TypeOf(orderAdapter));
         Assert.Equal(typeof(RegistrationMultiPublishFilter), FilterIdentity.TypeOf(invoiceAdapter));
     }
 
     [Fact]
-    public void CreateTyped_reports_a_missing_service_with_the_existing_resolution_message()
+    public void WrapTyped_reports_a_missing_service_with_the_existing_resolution_message()
     {
         using var provider = new ServiceCollection().BuildServiceProvider();
         var registration = PublishFilterRegistration.ForType(typeof(RegistrationTypedPublishFilter));
 
         var ex = Assert.Throws<StreamBusConfigurationException>(() =>
-            registration.CreateTyped(typeof(RegistrationTypedPublishFilter), typeof(RegistrationOrder), provider));
+            registration.WrapTyped(
+                typeof(RegistrationOrder),
+                registration.ResolveTyped(typeof(RegistrationTypedPublishFilter), provider)));
 
         Assert.Contains("could not be resolved from the root service provider", ex.Message, StringComparison.Ordinal);
     }
@@ -377,6 +669,19 @@ public sealed class TypedFilterRegistrationTests
     private sealed record RegistrationOrder(string Id);
 
     private sealed record RegistrationInvoice(string Id);
+
+    private sealed class RegistrationBus;
+
+    private sealed class CountingPublishFilter<T> : IStreamPublishFilter<T>
+    {
+        public static int Invocations;
+
+        public Task OnPublish(PublishContext<T> context, PublishDelegate next)
+        {
+            Invocations++;
+            return next();
+        }
+    }
 
     private sealed class RegistrationUniversalPublishFilter : IStreamPublishFilter
     {

@@ -79,7 +79,7 @@ internal sealed class PublishPipelineCache
 
                 filter = _typed.GetOrAdd(
                     (closedFilterType, messageType),
-                    key => PublishFilterRegistration.CreateTypedAdapter(key.MessageType, instance));
+                    key => registration.WrapTyped(key.MessageType, instance));
             }
 
             var filterType = FilterIdentity.TypeOf(filter);

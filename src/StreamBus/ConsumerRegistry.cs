@@ -165,7 +165,7 @@ internal sealed class StreamConsumerRegistry
                         _ => registration.ResolveTyped(closedType, _rootProvider!));
                     filter = _typedFilterAdapters.GetOrAdd(
                         (busType, closedType, messageType),
-                        _ => ConsumeFilterRegistration.CreateTypedAdapter(messageType, instance));
+                        _ => registration.WrapTyped(messageType, instance));
                 }
                 else
                 {

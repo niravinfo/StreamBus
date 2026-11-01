@@ -124,6 +124,30 @@ cfg.UsePublishFilter<OrderPublishFilter>();    // attaches to OrderEvent publish
 cfg.UsePublishFilter(typeof(TenantFilter<>));  // closes once per message type
 ```
 
+`UsePublishFilter<TFilter, TMessage>()` pins the declared pipe type at the
+call site and builds the typed adapter directly:
+
+```csharp
+cfg.UsePublishFilter<OrderPublishFilter, OrderEvent>();
+```
+
+Use it to construct the typed adapter at the call site and avoid closing a
+generic type at runtime. The single-type-parameter overload discovers the
+filter's typed interfaces at configuration time and closes the adapter at
+runtime, so it is annotated `[RequiresUnreferencedCode]` /
+`[RequiresDynamicCode]`. Open-generic registration through a `Type`
+(`typeof(TenantFilter<>)`) also closes at runtime. Universal filters registered
+as an instance or a factory need no runtime closing either.
+
+Avoiding runtime closure removes one trim/AOT hazard, but StreamBus does not
+support trimming or NativeAOT end to end today: the default
+`SystemTextJsonStreamSerializer` is reflection-based and type-based
+configuration uses runtime DI construction. Treat the annotations as a map of
+the dynamic paths, not as a trimming-support guarantee.
+
+A filter that implements several typed interfaces can be pinned once per
+message type; each registration runs only for its own type.
+
 A typed context adds `context.Message` as `T` to the shared universal context,
 which exposes the same payload as `context.Payload`. Every other member is the
 same object that universal filters receive. `next` is parameterless because
