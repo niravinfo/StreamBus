@@ -30,7 +30,11 @@ public interface IStreamHeaders
 /// <summary>Writable headers carried on a publish or on a consume result.</summary>
 public interface IStreamSendHeaders : IStreamHeaders
 {
-    /// <summary>Sets a header value.</summary>
+    /// <summary>
+    /// Sets a header value. Filter mutations take precedence over values
+    /// supplied at the call site: <see cref="Set"/> overwrites a call-site
+    /// value for the same key.
+    /// </summary>
     void Set(string key, object? value);
 
     /// <summary>
@@ -146,14 +150,18 @@ internal sealed class StreamHeaders : StreamHeaderBag
 
 internal sealed class StreamSendHeaders : StreamHeaderBag, IStreamSendHeaders
 {
+    private readonly Dictionary<string, object?> _initial;
     private readonly Dictionary<string, object?> _values;
     private readonly HashSet<string> _removed = new(StringComparer.Ordinal);
 
     public StreamSendHeaders(IReadOnlyDictionary<string, object?>? initial, IStreamSerializer serializer)
         : base(serializer)
-        => _values = initial is null
+    {
+        _initial = initial is null
             ? new Dictionary<string, object?>(StringComparer.Ordinal)
             : new Dictionary<string, object?>(initial, StringComparer.Ordinal);
+        _values = new Dictionary<string, object?>(_initial, StringComparer.Ordinal);
+    }
 
     protected override IReadOnlyDictionary<string, object?> Values => _values;
 
@@ -173,9 +181,16 @@ internal sealed class StreamSendHeaders : StreamHeaderBag, IStreamSendHeaders
         return _values.Remove(key);
     }
 
+    /// <summary>
+    /// Restores the pre-filter state: seeded call-site headers return,
+    /// filter Set/Remove mutations and removal tombstones are cleared.
+    /// Called between retry attempts so each attempt sees the original values.
+    /// </summary>
     internal void Reset()
     {
         _values.Clear();
+        foreach (var (key, value) in _initial)
+            _values[key] = value;
         _removed.Clear();
     }
 
@@ -184,12 +199,10 @@ internal sealed class StreamSendHeaders : StreamHeaderBag, IStreamSendHeaders
 
     internal StreamMessageProperties Materialize(StreamMessageProperties? callLevel)
     {
+        // _values was seeded from the call-level headers at construction, so
+        // filter Set/Remove mutations already reflect the correct precedence:
+        // filters are the last writer on the send pipeline.
         var merged = new Dictionary<string, object?>(_values, StringComparer.Ordinal);
-        if (callLevel is not null)
-        {
-            foreach (var (key, value) in callLevel.Headers)
-                merged[key] = value;
-        }
 
         foreach (var key in _removed)
             merged.Remove(key);

@@ -299,7 +299,7 @@ public sealed class PublishPipelineTests
     }
 
     [Fact]
-    public void Header_writer_merges_call_level_properties_and_call_level_wins()
+    public void Header_writer_merges_call_level_properties_and_filter_set_wins()
     {
         var callLevel = new StreamMessageProperties
         {
@@ -317,7 +317,7 @@ public sealed class PublishPipelineTests
         var merged = writer.Materialize(callLevel);
         Assert.NotNull(merged);
         Assert.Equal(callLevel.MessageId, merged.MessageId);
-        Assert.Equal("call-level", merged.Headers["tenant"]);
+        Assert.Equal("filter-level", merged.Headers["tenant"]);
         Assert.Equal(true, merged.Headers["call-only"]);
         Assert.Equal(7, merged.Headers["filter-only"]);
     }
