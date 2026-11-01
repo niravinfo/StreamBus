@@ -1,3 +1,5 @@
+using System.Diagnostics.CodeAnalysis;
+
 namespace StreamBus;
 
 internal interface ITypedFilterAdapter
@@ -16,22 +18,28 @@ internal static class FilterIdentity
 
 internal static class TypedFilterAdapter
 {
+    [RequiresUnreferencedCode(RuntimeGeneric.TrimMessage)]
+    [RequiresDynamicCode(RuntimeGeneric.AotMessage)]
     public static IStreamPublishFilter Publish(Type messageType, object filter)
     {
         ArgumentNullException.ThrowIfNull(messageType);
         ArgumentNullException.ThrowIfNull(filter);
-        return (IStreamPublishFilter)Activator.CreateInstance(
-            typeof(TypedPublishFilterAdapter<>).MakeGenericType(messageType),
-            filter)!;
+        return RuntimeGeneric.Create<IStreamPublishFilter>(
+            typeof(TypedPublishFilterAdapter<>),
+            new[] { messageType },
+            filter);
     }
 
+    [RequiresUnreferencedCode(RuntimeGeneric.TrimMessage)]
+    [RequiresDynamicCode(RuntimeGeneric.AotMessage)]
     public static IStreamConsumeFilter Consume(Type messageType, object filter)
     {
         ArgumentNullException.ThrowIfNull(messageType);
         ArgumentNullException.ThrowIfNull(filter);
-        return (IStreamConsumeFilter)Activator.CreateInstance(
-            typeof(TypedConsumeFilterAdapter<>).MakeGenericType(messageType),
-            filter)!;
+        return RuntimeGeneric.Create<IStreamConsumeFilter>(
+            typeof(TypedConsumeFilterAdapter<>),
+            new[] { messageType },
+            filter);
     }
 }
 

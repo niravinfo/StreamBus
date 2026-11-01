@@ -326,6 +326,53 @@ internal static class TypedConsumeContextFactory<T>
 }
 ```
 
+- **Verification & resolution (2026-11-01):** Partially valid, with severity
+  corrected from CRITICAL to IMPORTANT. The AOT/trimming claim is real but the
+  library makes no AOT promise, so it is not merge-blocking; the rename
+  fragility is a genuine latent bug and was fixed.
+  1. **Confirmed genuine:** `TypedConsumeContext.CreateFactory` resolved a
+     private method by `nameof(CreateTyped)` and `TypedMessageDeserializer`
+     resolved `IStreamSerializer.Deserialize` by name, both with `!`; a rename
+     would compile and crash on the first typed delivery. `Expression.Compile`
+     added per-type startup cost and cannot run under NativeAOT. `Hosting.cs`
+     had the same name-based pattern for typed consumer invokers.
+  2. **Refuted as CRITICAL:** no doc, csproj property, or README claim promises
+     trimming or NativeAOT support, so an AOT failure is an unsupported scenario
+     rather than a broken contract. The AOT work is a capability upgrade, not a
+     correctness emergency.
+  3. **Applied fix:** every name-based `GetMethod` / `MakeGenericMethod` /
+     `CreateDelegate` / `Expression.Compile` call was replaced by
+     `RuntimeGeneric`, a single annotated `MakeGenericType` +
+     `Activator.CreateInstance` helper used by generic factory classes
+     (`TypedMessageReader<T>`, `TypedConsumeContextFactory<T>`,
+     `TypedConsumerInvoker<T,TConsumer>`, typed filter adapters). The typed
+     deserializer now calls `IStreamSerializer.Deserialize<T>` directly.
+  4. **New API:** `UsePublishFilter<TFilter, TMessage>()` and
+     `UseConsumeFilter<TFilter, TMessage>()` (bus and endpoint) construct the
+     typed adapter at the call site (`PublishFilterRegistration.ForTyped` /
+     `ConsumeFilterRegistration.ForTyped`), so the common typed path performs no
+     runtime generic closing. The existing single-type-parameter and `Type`
+     overloads remain for interface-derived and open-generic registration and
+     now carry `[RequiresUnreferencedCode]` / `[RequiresDynamicCode]`, with
+     `[DynamicallyAccessedMembers]` on the type inputs.
+  5. **Docs/changelog:** the publish and consume guides and `docs/llms.txt`
+     state the trimming-safe path; CHANGELOG records the new overloads and the
+     removal of name-based reflection. Tests added in
+     `TypedFilterRegistrationTests` pin the new overloads and the compile-time
+     adapters (UnitTests 448/448; the brokered integration suite could not run
+     in this environment because no RabbitMQ broker is listening).
+  6. **Review follow-up (2026-11-01):** a fresh `csharp-reviewer` pass found no
+     critical/high defects. Its medium/low findings were addressed:
+     `[DynamicallyAccessedMembers]` now propagates into
+     `FilterTypeInspector.Classify`, so the IL2070 warning at
+     `FilterTypeInspector.cs` is gone under `IsTrimmable`; the same filter type
+     may be registered twice only when the registrations are pinned to
+     disjoint message types (true duplicates still fail); `WrapTyped` rejects a
+     message type the compile-time adapter was not pinned to; the dead
+     `CreateTyped` helpers were removed; the docs no longer imply end-to-end
+     trimming/NativeAOT support; and the CHANGELOG lists the new annotations
+     and interface members under `### Breaking`. UnitTests 458/458.
+
 ---
 
 # 🟠 IMPORTANT

@@ -1,6 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
-using System.Reflection;
+using System.Diagnostics.CodeAnalysis;
 
 namespace StreamBus;
 
@@ -55,9 +55,35 @@ internal sealed class ConsumeFilterRegistration
     public IStreamConsumeFilter? Instance { get; init; }
     public FilterRegistrationKind Kind { get; init; } = FilterRegistrationKind.Universal;
     public IReadOnlyList<Type> TypedMessageTypes { get; init; } = Array.Empty<Type>();
+
+    /// <summary>
+    /// Compile-time adapter factory supplied by
+    /// <see cref="ForTyped{TFilter,TMessage}"/>. When present, the typed filter
+    /// is wrapped without closing a generic type at runtime.
+    /// </summary>
+    public Func<object, IStreamConsumeFilter>? TypedAdapterFactory { get; init; }
+
     public bool IsTyped => Kind != FilterRegistrationKind.Universal;
 
-    public static ConsumeFilterRegistration ForType(Type filterType)
+    /// <summary>
+    /// Returns <see langword="true"/> when this registration and
+    /// <paramref name="other"/> would both run for at least one message type.
+    /// The same typed filter may be registered twice when each registration is
+    /// pinned to a disjoint message type; universal and typed registrations
+    /// always overlap because the universal one runs for every message type.
+    /// </summary>
+    public bool ConflictsWith(ConsumeFilterRegistration other)
+    {
+        ArgumentNullException.ThrowIfNull(other);
+        if (FilterType is null || FilterType != other.FilterType)
+            return false;
+        if (!IsTyped || !other.IsTyped)
+            return true;
+        return TypedMessageTypes.Intersect(other.TypedMessageTypes).Any();
+    }
+
+    public static ConsumeFilterRegistration ForType(
+        [DynamicallyAccessedMembers(RuntimeGeneric.FilterMembers)] Type filterType)
     {
         var classification = FilterTypeInspector.Classify(
             filterType,
@@ -75,10 +101,33 @@ internal sealed class ConsumeFilterRegistration
     public static ConsumeFilterRegistration ForFactory(Func<IServiceProvider, IStreamConsumeFilter> factory)
         => new() { Factory = factory };
 
+    /// <summary>
+    /// Registers a typed consume filter whose message type is pinned at the call
+    /// site. The adapter is constructed by the generic method itself, so the
+    /// common typed-filter path needs no runtime generic closing.
+    /// </summary>
+    public static ConsumeFilterRegistration ForTyped<[DynamicallyAccessedMembers(RuntimeGeneric.FilterMembers)] TFilter, TMessage>()
+        where TFilter : class, IStreamConsumeFilter<TMessage>
+    {
+        // Preserve the universal/typed classification rules (including the
+        // rejection of filters that also implement the universal interface).
+        FilterTypeInspector.Classify(
+            typeof(TFilter),
+            typeof(IStreamConsumeFilter),
+            typeof(IStreamConsumeFilter<>),
+            "Consume");
+        return new()
+        {
+            FilterType = typeof(TFilter),
+            Kind = FilterRegistrationKind.ConcreteTyped,
+            TypedMessageTypes = new[] { typeof(TMessage) },
+            TypedAdapterFactory = filter => new TypedConsumeFilterAdapter<TMessage>(
+                (IStreamConsumeFilter<TMessage>)filter),
+        };
+    }
+
     public static ConsumeFilterRegistration ForInstance(IStreamConsumeFilter instance)
         => new() { FilterType = instance.GetType(), Instance = instance };
-
-    public IStreamConsumeFilter Create(IServiceProvider provider) => CreateUniversal(provider);
 
     public IStreamConsumeFilter CreateUniversal(IServiceProvider provider)
         => FilterRegistrationSupport.CreateUniversal(provider, FilterType, Factory, Instance, IsTyped, "Consume");
@@ -92,11 +141,27 @@ internal sealed class ConsumeFilterRegistration
             typeof(IStreamConsumeFilter<>),
             "Consume");
 
-    public IStreamConsumeFilter CreateTyped(Type closedFilterType, Type messageType, IServiceProvider provider)
+    /// <summary>
+    /// Wraps a resolved typed filter in the adapter for
+    /// <paramref name="messageType"/>. Registrations created by
+    /// <see cref="ForTyped{TFilter,TMessage}"/> use their compile-time factory;
+    /// the remaining (open-generic or interface-derived) registrations close the
+    /// adapter at runtime.
+    /// </summary>
+    public IStreamConsumeFilter WrapTyped(Type messageType, object filter)
     {
-        ArgumentNullException.ThrowIfNull(closedFilterType);
         ArgumentNullException.ThrowIfNull(messageType);
-        return CreateTypedAdapter(messageType, ResolveTyped(closedFilterType, provider));
+        ArgumentNullException.ThrowIfNull(filter);
+        if (TypedAdapterFactory is { } factory)
+        {
+            if (!TypedMessageTypes.Contains(messageType))
+            {
+                throw new StreamBusConfigurationException(
+                    $"Consume filter '{FilterType}' is pinned to '{string.Join("', '", TypedMessageTypes.Select(t => t.Name))}' and cannot be wrapped for message type '{messageType.Name}'.");
+            }
+            return factory(filter);
+        }
+        return CreateTypedAdapter(messageType, filter);
     }
 
     public object ResolveTyped(Type closedFilterType, IServiceProvider provider)
@@ -132,10 +197,10 @@ internal sealed class StreamBusConsumeFilterStore
             filters = new List<ConsumeFilterRegistration>();
             _filters[busMarker] = filters;
         }
-        if (filter.FilterType is { } type && filters.Any(existing => existing.FilterType == type))
+        if (filter.FilterType is { } type && filters.Any(filter.ConflictsWith))
         {
             throw new StreamBusConfigurationException(
-                $"Consume filter '{type}' is already registered on this bus; duplicate registration would run it twice.");
+                $"Consume filter '{type}' is already registered on this bus for one of its message types; duplicate registration would run it twice.");
         }
         filters.Add(filter);
     }
@@ -234,31 +299,34 @@ internal sealed class ConsumePipeline
     }
 }
 
+internal interface ITypedConsumeContextFactory
+{
+    ConsumeContext Create(ConsumeContext delivery, object message);
+}
+
 internal static class TypedConsumeContext
 {
-    private static readonly ConcurrentDictionary<
-        Type,
-        Func<ConsumeContext, object, ConsumeContext>> Factories = new();
+    private static readonly ConcurrentDictionary<Type, ITypedConsumeContextFactory> Factories = new();
 
     public static ConsumeContext Create(Type messageType, ConsumeContext delivery, object message)
     {
         ArgumentNullException.ThrowIfNull(messageType);
         ArgumentNullException.ThrowIfNull(delivery);
         ArgumentNullException.ThrowIfNull(message);
-        return Factories.GetOrAdd(messageType, CreateFactory)(delivery, message);
+        return Factories.GetOrAdd(messageType, CreateFactory).Create(delivery, message);
     }
 
-    private static Func<ConsumeContext, object, ConsumeContext> CreateFactory(Type messageType)
-    {
-        var method = typeof(TypedConsumeContext).GetMethod(
-            nameof(CreateTyped),
-            BindingFlags.NonPublic | BindingFlags.Static)!;
-        return (Func<ConsumeContext, object, ConsumeContext>)method
-            .MakeGenericMethod(messageType)
-            .CreateDelegate(typeof(Func<ConsumeContext, object, ConsumeContext>));
-    }
+    [RequiresUnreferencedCode(RuntimeGeneric.TrimMessage)]
+    [RequiresDynamicCode(RuntimeGeneric.AotMessage)]
+    private static ITypedConsumeContextFactory CreateFactory(Type messageType)
+        => RuntimeGeneric.Create<ITypedConsumeContextFactory>(
+            typeof(TypedConsumeContextFactory<>),
+            messageType);
+}
 
-    private static ConsumeContext<T> CreateTyped<T>(ConsumeContext delivery, object message)
+internal sealed class TypedConsumeContextFactory<T> : ITypedConsumeContextFactory
+{
+    public ConsumeContext Create(ConsumeContext delivery, object message)
         => new ConsumeContext<T>
         {
             Stream = delivery.Stream,

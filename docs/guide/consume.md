@@ -141,7 +141,8 @@ cfg.UseConsumeFilter(typeof(TenantFilter<>));  // bus-wide, closes per endpoint 
 cfg.ReceiveEndpoint("orders", e =>
 {
     e.Consumer<OrderConsumer>("order-processors");
-    e.UseConsumeFilter<OrderEnrichmentFilter>(); // appended after bus-wide filters
+    e.UseConsumeFilter<OrderEnrichmentFilter, OrderEvent>(); // pins the message type
+    // e.UseConsumeFilter<OrderEnrichmentFilter>();           // runtime-discovery alternative
 });
 
 public sealed class OrderEnrichmentFilter : IStreamConsumeFilter<OrderEvent>
@@ -164,6 +165,22 @@ running filters or the consumer, and the consumer receives the same
 instance — no second deserialization. Raw and effectively-once pipelines
 never attach typed filters. Complete sample:
 `examples/StreamBus.Examples.Consumer/OrderEventFilter.cs`.
+
+`UseConsumeFilter<TFilter, TMessage>()` pins the endpoint message type at the
+call site and builds the typed adapter directly, avoiding a runtime generic
+closure for the adapter. The single-type-parameter overload discovers the
+filter's typed interfaces at configuration time and closes the adapter at
+runtime, so it carries `[RequiresUnreferencedCode]` / `[RequiresDynamicCode]`.
+Open-generic registration through a `Type` closes at runtime.
+
+StreamBus does not support trimming or NativeAOT end to end today: typed
+endpoints still close the message deserializer, typed consume context, and
+consumer invoker from a runtime type, and the default serializer is
+reflection-based. The annotations mark the dynamic paths; they are not a
+trimming-support guarantee.
+
+A filter that implements several typed interfaces can be pinned once per
+message type; each registration runs only for its own type.
 
 ## Full example
 

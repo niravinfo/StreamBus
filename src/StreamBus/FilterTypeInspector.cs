@@ -1,3 +1,5 @@
+using System.Diagnostics.CodeAnalysis;
+
 namespace StreamBus;
 
 internal enum FilterRegistrationKind
@@ -10,7 +12,7 @@ internal enum FilterRegistrationKind
 internal static class FilterTypeInspector
 {
     public static (FilterRegistrationKind Kind, IReadOnlyList<Type> MessageTypes) Classify(
-        Type filterType,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.Interfaces)] Type filterType,
         Type universalInterface,
         Type typedInterfaceDefinition,
         string family)
@@ -83,7 +85,9 @@ internal static class FilterTypeInspector
             : (FilterRegistrationKind.ConcreteTyped, typedTypes);
     }
 
-    private static List<Type> TypedMessageTypes(Type filterType, Type typedInterfaceDefinition)
+    private static List<Type> TypedMessageTypes(
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.Interfaces)] Type filterType,
+        Type typedInterfaceDefinition)
         => filterType.GetInterfaces()
             .Where(i => i.IsGenericType && i.GetGenericTypeDefinition() == typedInterfaceDefinition)
             .Select(i => i.GetGenericArguments()[0])

@@ -1,11 +1,22 @@
 using System.Collections.Concurrent;
-using System.Linq.Expressions;
+using System.Diagnostics.CodeAnalysis;
 
 namespace StreamBus;
 
+internal interface ITypedMessageReader
+{
+    object? Deserialize(IStreamSerializer serializer, ReadOnlyMemory<byte> body);
+}
+
+internal sealed class TypedMessageReader<T> : ITypedMessageReader
+{
+    public object? Deserialize(IStreamSerializer serializer, ReadOnlyMemory<byte> body)
+        => serializer.Deserialize<T>(body);
+}
+
 internal static class TypedMessageDeserializer
 {
-    private static readonly ConcurrentDictionary<Type, Func<IStreamSerializer, ReadOnlyMemory<byte>, object>> Deserializers = new();
+    private static readonly ConcurrentDictionary<Type, ITypedMessageReader> Readers = new();
 
     public static object Deserialize(IStreamSerializer serializer, Type messageType, ConsumeContext context)
     {
@@ -16,7 +27,8 @@ internal static class TypedMessageDeserializer
         object? message;
         try
         {
-            message = Deserializers.GetOrAdd(messageType, Create)(serializer, context.Body);
+            var reader = Readers.GetOrAdd(messageType, Create);
+            message = reader.Deserialize(serializer, context.Body);
         }
         catch (OperationCanceledException)
         {
@@ -34,15 +46,8 @@ internal static class TypedMessageDeserializer
         return message;
     }
 
-    private static Func<IStreamSerializer, ReadOnlyMemory<byte>, object> Create(Type messageType)
-    {
-        var closed = typeof(IStreamSerializer)
-            .GetMethod(nameof(IStreamSerializer.Deserialize))!
-            .MakeGenericMethod(messageType);
-        var serializer = Expression.Parameter(typeof(IStreamSerializer), "serializer");
-        var body = Expression.Parameter(typeof(ReadOnlyMemory<byte>), "body");
-        var call = Expression.Call(serializer, closed, body);
-        var boxed = Expression.Convert(call, typeof(object));
-        return Expression.Lambda<Func<IStreamSerializer, ReadOnlyMemory<byte>, object>>(boxed, serializer, body).Compile();
-    }
+    [RequiresUnreferencedCode(RuntimeGeneric.TrimMessage)]
+    [RequiresDynamicCode(RuntimeGeneric.AotMessage)]
+    private static ITypedMessageReader Create(Type messageType)
+        => RuntimeGeneric.Create<ITypedMessageReader>(typeof(TypedMessageReader<>), messageType);
 }

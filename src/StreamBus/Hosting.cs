@@ -1,4 +1,4 @@
-using System.Reflection;
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.ExceptionServices;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
@@ -265,28 +265,49 @@ internal sealed class StreamBusConsumerStore
     public IReadOnlyList<TypedConsumerRegistration> Registrations => _registrations;
 }
 
+internal interface ITypedConsumerInvoker
+{
+    Func<ConsumeContext, Task> Create();
+}
+
 internal static class TypedConsumerHandler
 {
+    [RequiresUnreferencedCode(RuntimeGeneric.TrimMessage)]
+    [RequiresDynamicCode(RuntimeGeneric.AotMessage)]
     public static Func<ConsumeContext, Task> Create(Type messageType, Type consumerType)
     {
         ArgumentNullException.ThrowIfNull(messageType);
         ArgumentNullException.ThrowIfNull(consumerType);
-        var open = typeof(TypedConsumerHandler).GetMethod(nameof(CreateTyped), BindingFlags.NonPublic | BindingFlags.Static)
-            ?? throw new StreamBusConfigurationException("Typed consumer invoker is missing (internal error).");
-        MethodInfo closed;
+
+        Type consumerInterface;
         try
         {
-            closed = open.MakeGenericMethod(messageType, consumerType);
+            consumerInterface = typeof(IConsumer<>).MakeGenericType(messageType);
         }
         catch (ArgumentException)
         {
-            throw new StreamBusConfigurationException($"Consumer {consumerType.FullName} cannot consume {messageType.FullName} (must implement IConsumer<{messageType.Name}>).");
+            throw new StreamBusConfigurationException(
+                $"Consumer {consumerType.FullName} cannot consume {messageType.FullName} (must implement IConsumer<{messageType.Name}>).");
         }
-        return (Func<ConsumeContext, Task>)closed.Invoke(null, Array.Empty<object>())!;
-    }
 
-    private static Func<ConsumeContext, Task> CreateTyped<T, TConsumer>()
-        where TConsumer : class, IConsumer<T>
+        if (!consumerInterface.IsAssignableFrom(consumerType))
+        {
+            throw new StreamBusConfigurationException(
+                $"Consumer {consumerType.FullName} cannot consume {messageType.FullName} (must implement IConsumer<{messageType.Name}>).");
+        }
+
+        var invoker = RuntimeGeneric.Create<ITypedConsumerInvoker>(
+            typeof(TypedConsumerInvoker<,>),
+            messageType,
+            consumerType);
+        return invoker.Create();
+    }
+}
+
+internal sealed class TypedConsumerInvoker<T, TConsumer> : ITypedConsumerInvoker
+    where TConsumer : class, IConsumer<T>
+{
+    public Func<ConsumeContext, Task> Create()
         => async context =>
         {
             if (context is not ConsumeContext<T> typed)

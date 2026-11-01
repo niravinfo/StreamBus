@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
@@ -33,12 +34,42 @@ public interface IStreamBusConfigurator
     void ReceiveEndpoint(string stream, Action<IReceiveEndpointConfigurator> configure);
     void UseMessageRetry(Action<IRetryConfigurator> configure);
     void UseRetry(RetryPolicy policy);
-    void UsePublishFilter<TFilter>() where TFilter : class;
-    void UsePublishFilter(Type filterType);
+    /// <summary>
+    /// Registers a publish filter, discovering its typed message interfaces at
+    /// runtime. Use
+    /// <see cref="UsePublishFilter{TFilter,TMessage}()"/> to avoid closing the
+    /// adapter at runtime.
+    /// </summary>
+    [RequiresUnreferencedCode(RuntimeGeneric.TrimMessage)]
+    [RequiresDynamicCode(RuntimeGeneric.AotMessage)]
+    void UsePublishFilter<[DynamicallyAccessedMembers(RuntimeGeneric.FilterMembers)] TFilter>() where TFilter : class;
+    /// <summary>
+    /// Registers a typed publish filter whose declared pipe type is
+    /// <typeparamref name="TMessage"/>. This overload constructs the typed
+    /// adapter at the call site and therefore avoids closing a generic type at
+    /// runtime. It removes one trim/AOT hazard; it does not by itself make
+    /// trimming or NativeAOT publish supported (the default serializer and
+    /// type-based configuration are still reflection-based).
+    /// </summary>
+    void UsePublishFilter<[DynamicallyAccessedMembers(RuntimeGeneric.FilterMembers)] TFilter, TMessage>() where TFilter : class, IStreamPublishFilter<TMessage>;
+    [RequiresUnreferencedCode(RuntimeGeneric.TrimMessage)]
+    [RequiresDynamicCode(RuntimeGeneric.AotMessage)]
+    void UsePublishFilter([DynamicallyAccessedMembers(RuntimeGeneric.FilterMembers)] Type filterType);
     void UsePublishFilter(Func<IServiceProvider, IStreamPublishFilter> factory);
     void UsePublishFilter(IStreamPublishFilter instance);
-    void UseConsumeFilter<TFilter>() where TFilter : class;
-    void UseConsumeFilter(Type filterType);
+    [RequiresUnreferencedCode(RuntimeGeneric.TrimMessage)]
+    [RequiresDynamicCode(RuntimeGeneric.AotMessage)]
+    void UseConsumeFilter<[DynamicallyAccessedMembers(RuntimeGeneric.FilterMembers)] TFilter>() where TFilter : class;
+    /// <summary>
+    /// Registers a typed consume filter whose endpoint message type is
+    /// <typeparamref name="TMessage"/>. Unlike
+    /// <see cref="UseConsumeFilter{TFilter}()"/>, this overload closes the typed
+    /// adapter at the call site and needs no runtime generic closing.
+    /// </summary>
+    void UseConsumeFilter<[DynamicallyAccessedMembers(RuntimeGeneric.FilterMembers)] TFilter, TMessage>() where TFilter : class, IStreamConsumeFilter<TMessage>;
+    [RequiresUnreferencedCode(RuntimeGeneric.TrimMessage)]
+    [RequiresDynamicCode(RuntimeGeneric.AotMessage)]
+    void UseConsumeFilter([DynamicallyAccessedMembers(RuntimeGeneric.FilterMembers)] Type filterType);
     void UseConsumeFilter(Func<IServiceProvider, IStreamConsumeFilter> factory);
     void UseConsumeFilter(IStreamConsumeFilter instance);
 }
@@ -53,8 +84,27 @@ public interface IReceiveEndpointConfigurator
     void Readiness(ReadinessPolicy policy);
     void UseMessageRetry(Action<IRetryConfigurator> configure);
     void UseRetry(RetryPolicy policy);
-    void UseConsumeFilter<TFilter>() where TFilter : class;
-    void UseConsumeFilter(Type filterType);
+    /// <summary>
+    /// Registers a consume filter on this endpoint and discovers its typed
+    /// message interfaces at runtime. Use
+    /// <see cref="UseConsumeFilter{TFilter,TMessage}()"/> to avoid closing the
+    /// adapter at runtime.
+    /// </summary>
+    [RequiresUnreferencedCode(RuntimeGeneric.TrimMessage)]
+    [RequiresDynamicCode(RuntimeGeneric.AotMessage)]
+    void UseConsumeFilter<[DynamicallyAccessedMembers(RuntimeGeneric.FilterMembers)] TFilter>() where TFilter : class;
+    /// <summary>
+    /// Registers a typed consume filter on this endpoint whose message type is
+    /// <typeparamref name="TMessage"/>. This overload constructs the typed
+    /// adapter at the call site and therefore avoids closing a generic type at
+    /// runtime. It removes one trim/AOT hazard; it does not by itself make
+    /// trimming or NativeAOT consume supported (the typed consumer and default
+    /// serializer are still reflection-based).
+    /// </summary>
+    void UseConsumeFilter<[DynamicallyAccessedMembers(RuntimeGeneric.FilterMembers)] TFilter, TMessage>() where TFilter : class, IStreamConsumeFilter<TMessage>;
+    [RequiresUnreferencedCode(RuntimeGeneric.TrimMessage)]
+    [RequiresDynamicCode(RuntimeGeneric.AotMessage)]
+    void UseConsumeFilter([DynamicallyAccessedMembers(RuntimeGeneric.FilterMembers)] Type filterType);
     void UseConsumeFilter(Func<IServiceProvider, IStreamConsumeFilter> factory);
     void UseConsumeFilter(IStreamConsumeFilter instance);
     void DeadLetterToStream(string name, Action<IStreamOptionsBuilder>? configure = null);
@@ -254,12 +304,21 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
         _globalRetry = policy;
     }
 
-    public void UsePublishFilter<TFilter>() where TFilter : class
+    [RequiresUnreferencedCode(RuntimeGeneric.TrimMessage)]
+    [RequiresDynamicCode(RuntimeGeneric.AotMessage)]
+    public void UsePublishFilter<[DynamicallyAccessedMembers(RuntimeGeneric.FilterMembers)] TFilter>() where TFilter : class
     {
         AddPublishFilter(PublishFilterRegistration.ForType(typeof(TFilter)));
     }
 
-    public void UsePublishFilter(Type filterType)
+    public void UsePublishFilter<[DynamicallyAccessedMembers(RuntimeGeneric.FilterMembers)] TFilter, TMessage>() where TFilter : class, IStreamPublishFilter<TMessage>
+    {
+        AddPublishFilter(PublishFilterRegistration.ForTyped<TFilter, TMessage>());
+    }
+
+    [RequiresUnreferencedCode(RuntimeGeneric.TrimMessage)]
+    [RequiresDynamicCode(RuntimeGeneric.AotMessage)]
+    public void UsePublishFilter([DynamicallyAccessedMembers(RuntimeGeneric.FilterMembers)] Type filterType)
     {
         ArgumentNullException.ThrowIfNull(filterType);
         AddPublishFilter(PublishFilterRegistration.ForType(filterType));
@@ -279,20 +338,29 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
 
     private void AddPublishFilter(PublishFilterRegistration filter)
     {
-        if (filter.FilterType is { } type && _publishFilters.Any(existing => existing.FilterType == type))
+        if (filter.FilterType is { } type && _publishFilters.Any(filter.ConflictsWith))
         {
             throw new StreamBusConfigurationException(
-                $"Publish filter '{type}' is already registered on this bus; duplicate registration would run it twice.");
+                $"Publish filter '{type}' is already registered on this bus for one of its message types; duplicate registration would run it twice.");
         }
         _publishFilters.Add(filter);
     }
 
-    public void UseConsumeFilter<TFilter>() where TFilter : class
+    [RequiresUnreferencedCode(RuntimeGeneric.TrimMessage)]
+    [RequiresDynamicCode(RuntimeGeneric.AotMessage)]
+    public void UseConsumeFilter<[DynamicallyAccessedMembers(RuntimeGeneric.FilterMembers)] TFilter>() where TFilter : class
     {
         AddConsumeFilter(ConsumeFilterRegistration.ForType(typeof(TFilter)));
     }
 
-    public void UseConsumeFilter(Type filterType)
+    public void UseConsumeFilter<[DynamicallyAccessedMembers(RuntimeGeneric.FilterMembers)] TFilter, TMessage>() where TFilter : class, IStreamConsumeFilter<TMessage>
+    {
+        AddConsumeFilter(ConsumeFilterRegistration.ForTyped<TFilter, TMessage>());
+    }
+
+    [RequiresUnreferencedCode(RuntimeGeneric.TrimMessage)]
+    [RequiresDynamicCode(RuntimeGeneric.AotMessage)]
+    public void UseConsumeFilter([DynamicallyAccessedMembers(RuntimeGeneric.FilterMembers)] Type filterType)
     {
         ArgumentNullException.ThrowIfNull(filterType);
         AddConsumeFilter(ConsumeFilterRegistration.ForType(filterType));
@@ -312,10 +380,10 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
 
     private void AddConsumeFilter(ConsumeFilterRegistration filter)
     {
-        if (filter.FilterType is { } type && _consumeFilters.Any(existing => existing.FilterType == type))
+        if (filter.FilterType is { } type && _consumeFilters.Any(filter.ConflictsWith))
         {
             throw new StreamBusConfigurationException(
-                $"Consume filter '{type}' is already registered on this bus; duplicate registration would run it twice.");
+                $"Consume filter '{type}' is already registered on this bus for one of its message types; duplicate registration would run it twice.");
         }
         _consumeFilters.Add(filter);
     }
@@ -460,11 +528,19 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
             ArgumentNullException.ThrowIfNull(policy);
             _retryOverride = policy;
         }
-        public void UseConsumeFilter<TFilter>() where TFilter : class
+        [RequiresUnreferencedCode(RuntimeGeneric.TrimMessage)]
+        [RequiresDynamicCode(RuntimeGeneric.AotMessage)]
+        public void UseConsumeFilter<[DynamicallyAccessedMembers(RuntimeGeneric.FilterMembers)] TFilter>() where TFilter : class
         {
             AddConsumeFilter(ConsumeFilterRegistration.ForType(typeof(TFilter)));
         }
-        public void UseConsumeFilter(Type filterType)
+        public void UseConsumeFilter<[DynamicallyAccessedMembers(RuntimeGeneric.FilterMembers)] TFilter, TMessage>() where TFilter : class, IStreamConsumeFilter<TMessage>
+        {
+            AddConsumeFilter(ConsumeFilterRegistration.ForTyped<TFilter, TMessage>());
+        }
+        [RequiresUnreferencedCode(RuntimeGeneric.TrimMessage)]
+        [RequiresDynamicCode(RuntimeGeneric.AotMessage)]
+        public void UseConsumeFilter([DynamicallyAccessedMembers(RuntimeGeneric.FilterMembers)] Type filterType)
         {
             ArgumentNullException.ThrowIfNull(filterType);
             AddConsumeFilter(ConsumeFilterRegistration.ForType(filterType));
@@ -481,10 +557,10 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
         }
         private void AddConsumeFilter(ConsumeFilterRegistration filter)
         {
-            if (filter.FilterType is { } type && _consumeFilters.Any(existing => existing.FilterType == type))
+            if (filter.FilterType is { } type && _consumeFilters.Any(filter.ConflictsWith))
             {
                 throw new StreamBusConfigurationException(
-                    $"Consume filter '{type}' is already registered on this endpoint; duplicate registration would run it twice.");
+                    $"Consume filter '{type}' is already registered on this endpoint for one of its message types; duplicate registration would run it twice.");
             }
             _consumeFilters.Add(filter);
         }

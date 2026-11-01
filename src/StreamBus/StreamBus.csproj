@@ -19,6 +19,14 @@
     <SymbolPackageFormat>snupkg</SymbolPackageFormat>
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <!-- NativeAOT/trimming is not a supported publish target yet: the default
+         serializer is reflection-based System.Text.Json and configuration is
+         type-based DI, so IsAotCompatible/IsTrimmable would surface warnings
+         this library cannot fix today. The typed filter/context/consumer paths
+         are annotated (RequiresUnreferencedCode / RequiresDynamicCode) and the
+         UsePublishFilter<TFilter,TMessage> / UseConsumeFilter<TFilter,TMessage>
+         overloads avoid runtime generic closing, so consumers can see where the
+         dynamic paths are before a trim/AOT lane is enabled. -->
     <!-- Documentation is added incrementally; keep the build clean until the
          remaining public API carries XML comments. -->
     <NoWarn>$(NoWarn);1591</NoWarn>
