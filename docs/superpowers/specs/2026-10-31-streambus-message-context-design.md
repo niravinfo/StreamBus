@@ -323,4 +323,4 @@ the publish; the body, identity, and time are fixed for the delivery.
 - `dotnet build` passes with 0 warnings; unit suite passes; brokered
   integration tests pass when a broker is available.
 - Guide, examples, and README use the new surface; the changelog records the
-  breaking change under 0.3.0.
+  breaking change under 0.2.0.
