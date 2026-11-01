@@ -92,7 +92,10 @@ built, because the filter is resolved once and cached. A filter must call
 `next` exactly once - zero or double continuations throw
 `StreamBusConfigurationException` (a second call is rejected before the
 duplicate send). Filter header mutations take precedence over call-level
-`PublishOptions.Properties` headers. `PublishRawAsync` bypasses the pipeline. Complete
+`PublishOptions.Properties` headers. Exceptions thrown by a filter (including
+an `OperationCanceledException` from a token you own) propagate unwrapped —
+they are not classified as transient, so do not blindly retry them.
+`PublishRawAsync` bypasses the pipeline. Complete
 samples: `examples/StreamBus.Examples.Producer/TenantFilter.cs` and
 `CorrelationIdFilter.cs`.
 

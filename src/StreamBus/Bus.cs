@@ -156,32 +156,32 @@ internal abstract class StreamBusCore<TBus> : IStreamBus
         effective = effective with { Properties = seed with { MessageId = messageId, SentTime = sentTime } };
 
         var pipeline = _publishPipelines.GetOrCreate(typeof(T));
-        if (pipeline.Count == 0)
-        {
-            await SendTypedAsync(stream, message, effective, ct, activity).ConfigureAwait(false);
-            return;
-        }
-
-        var scopeFactory = _publishScopeFactory
-            ?? throw new StreamBusConfigurationException(
-                "Publish filters are configured, but no IServiceScopeFactory is available (internal error).");
-        await using var publishScope = scopeFactory.CreateAsyncScope();
-        var headers = new StreamSendHeaders(effective.Properties?.Headers, _serializer);
-        var context = new PublishContext<T>
-        {
-            Stream = stream,
-            RoutingKey = routingKey,
-            Payload = message!,
-            MessageId = messageId,
-            CorrelationId = seed.CorrelationId,
-            SentTime = sentTime,
-            Headers = headers,
-            Services = publishScope.ServiceProvider,
-            CancellationToken = ct,
-        };
-
         try
         {
+            if (pipeline.Count == 0)
+            {
+                await SendTypedAsync(stream, message, effective, ct, activity).ConfigureAwait(false);
+                return;
+            }
+
+            var scopeFactory = _publishScopeFactory
+                ?? throw new StreamBusConfigurationException(
+                    "Publish filters are configured, but no IServiceScopeFactory is available (internal error).");
+            await using var publishScope = scopeFactory.CreateAsyncScope();
+            var headers = new StreamSendHeaders(effective.Properties?.Headers, _serializer);
+            var context = new PublishContext<T>
+            {
+                Stream = stream,
+                RoutingKey = routingKey,
+                Payload = message!,
+                MessageId = messageId,
+                CorrelationId = seed.CorrelationId,
+                SentTime = sentTime,
+                Headers = headers,
+                Services = publishScope.ServiceProvider,
+                CancellationToken = ct,
+            };
+
             await pipeline.RunAsync(
                 context,
                 () => SendTypedAsync(
@@ -191,26 +191,20 @@ internal abstract class StreamBusCore<TBus> : IStreamBus
                     ct,
                     activity)).ConfigureAwait(false);
         }
-        catch (StreamBusException ex)
+        catch (OperationCanceledException)
         {
-            StreamBusActivity.RecordException(activity, ex);
-            throw;
-        }
-        catch (Exception ex) when (StreamBusErrorClassification.IsFatal(ex))
-        {
-            StreamBusActivity.RecordException(activity, ex);
-            throw;
-        }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
+            // Never wrap cancellation (caller- or foreign-token) as a failure.
             throw;
         }
         catch (Exception ex)
         {
+            // The transport layer already classifies genuine transport failures as
+            // StreamBusException; anything reaching here is filter or pipeline code
+            // failing deterministically and surfaces unwrapped so callers do not
+            // retry-burn on their own bugs. Both the fast path and the filtered
+            // path record the failure identically on the publish activity.
             StreamBusActivity.RecordException(activity, ex);
-            throw new StreamBusPublishTransientException(
-                $"Publish to stream '{stream}' failed transiently in the publish pipeline.",
-                ex);
+            throw;
         }
     }
 

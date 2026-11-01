@@ -435,7 +435,7 @@ if (descriptor is { Lifetime: ServiceLifetime.Scoped or ServiceLifetime.Transien
 
 ---
 
-**[PUB-3] Pipeline catch-all wraps foreign exceptions as transient; fast path records nothing on the activity**
+**[PUB-3] Pipeline catch-all wraps foreign exceptions as transient; fast path records nothing on the activity — VALID, fixed (2026-11-01)**
 - **Severity:** IMPORTANT
 - **File:** src\StreamBus\Bus.cs (lines 158–215)
 - **Problem:** The zero-filter fast path (159–163) has no try/catch: raw exceptions propagate unwrapped and `StreamBusActivity.RecordException` is never called, so tracing differs depending on whether filters are configured. The filtered path catches every non-fatal, non-`StreamBusException` exception — including a user-filter `NullReferenceException` and a foreign `OperationCanceledException` with an untriggered caller token — and wraps it in `StreamBusPublishTransientException`. Callers that retry on transient exceptions will retry a deterministically broken filter forever.
@@ -489,6 +489,57 @@ catch (Exception ex)
     throw;
 }
 ```
+
+- **Verification & resolution (2026-11-01):** Confirmed genuine on all three counts.
+  1. The zero-filter fast path bypassed every `StreamBusActivity.RecordException` call
+     (the only publish-path recordings were inside the filtered-path catch blocks), so tracing
+     differed by configuration. The filtered path's `catch (OperationCanceledException) when
+     (ct.IsCancellationRequested)` let a foreign-token OCE from user filter code fall into the
+     generic catch, and `StreamBusErrorClassification.IsFatal` only matches protocol/SSL/auth
+     errors, so a filter `InvalidOperationException`/`NullReferenceException` was wrapped as
+     `StreamBusPublishTransientException` ("failed transiently in the publish pipeline") — an
+     exception consumers of the API classify as retryable (see `BrokerRestartTests`: users key
+     retry on `StreamBusPublishTransientException`), causing deterministic retry-burn.
+  2. The wrapping was also redundant: `StreamProducerRegistry.PublishAsync` already classifies
+     genuine transport failures (invalidating the producer and throwing `StreamBusPublishTransientException`
+     / `StreamBusTimeoutException` / `StreamBusPublishException`) before anything reaches the
+     pipeline catch-all, so the only non-`StreamBusException` exceptions reaching it came from
+     user filter/pipeline code.
+  3. **Applied fix** (`Bus.PublishThroughPipelineAsync`): one `try` now covers the fast path
+     and the filtered path; the whole block collapses to `catch (OperationCanceledException)
+     { throw; }` (never record or wrap cancellation) plus a single `catch (Exception ex)
+     { StreamBusActivity.RecordException(activity, ex); throw; }`. Transport failures stay
+     classified as transient by the producer layer; user-filter failures (including foreign-token
+     OCE) surface unwrapped; both paths trace identically.
+  4. Note: `PublishRawAsync` also publishes without recording an exception event; like the
+     pre-fix fast path it delegates classification to the producer layer. Left as-is — the
+     reviewer did not flag it and it has no pipeline semantics to unify; recording can be added
+     when other raw-path telemetry work lands.
+  5. Tests (TDD — all three failed before the fix): the pinning test
+     `Filter_exception_is_classified_as_a_publish_transient_failure` was inverted to
+     `Filter_exception_surfaces_unwrapped_and_is_recorded_on_activity` (asserts an unwrapped
+     `InvalidOperationException` plus an `exception` event on the `streambus.publish` activity
+     via an `ActivityListener`); `Foreign_cancelled_exception_from_filter_is_not_wrapped_as_transient`
+     (filter cancels its own CTS; caller token untouched → OCE propagates, not wrapped);
+     `Transport_failure_without_filters_is_recorded_on_publish_activity` (no-filter publish whose
+     transport throws `IOException` → producer-wrapped transient, now recorded on the activity).
+     CHANGELOG (`### Breaking`) and `docs/guide/publish.md` document the semantics change.
+     UnitTests 464/464; the brokered integration suite could not run in this environment
+     (no RabbitMQ broker is listening).
+  6. **Review follow-up (2026-11-01):** a fresh `csharp-reviewer` pass confirmed the production
+     change is correct (transport transient classification, double-recording, and
+     `OperationCanceledException`-race paths all verified) and flagged only test-harness
+     robustness, which was addressed: the `ActivityListener` is now disposed in a
+     `try/finally` around each test body (previously it leaked on any failing assertion and
+     polluted later tests); activity selection is scoped to the test's
+     `streambus.stream` tag instead of `SingleOrDefault` over all publish activities; an
+     `ActivityEvent`-is-a-struct bug in the helper (`FirstOrDefault` returning a
+     non-null boxed default) was fixed; the foreign-OCE test now pins both the
+     never-record-cancellation tracing contract (`GetPublishExceptionEvent` is null) and
+     that the *filter's own* token crossed the boundary (`ex.CancellationToken ==
+     filter.Own.Token`); the CHANGELOG breaking entry was widened to note that deterministic
+     pipeline-terminal failures (e.g., serializer errors) also surface raw — intended, since
+     callers should not retry them either. UnitTests 464/464 after follow-up.
 
 ---
 

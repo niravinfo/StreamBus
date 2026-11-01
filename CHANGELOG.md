@@ -96,6 +96,15 @@
   cached for the bus lifetime; a scoped or transient registration of a publish
   filter type is rejected at bus construction instead of silently becoming a
   captive dependency. Resolve scoped services from `PublishContext.Services`.
+- Exceptions thrown by publish filters (including foreign-token
+  `OperationCanceledException`s) now surface unwrapped instead of being
+  wrapped in `StreamBusPublishTransientException`, so callers no longer
+  retry a deterministically broken filter — this also covers deterministic
+  failures inside the pipeline terminal such as serializer errors, which
+  now surface raw. Genuine transport failures are still classified as
+  transient by the producer layer, and all publish failures — including the
+  zero-filter fast path — are now recorded as exception events on the
+  `streambus.publish` activity.
 
 ### Added
 
