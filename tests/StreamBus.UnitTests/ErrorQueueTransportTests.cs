@@ -49,6 +49,9 @@ public sealed class ErrorQueueTransportTests
         public Func<string, ErrorEnvelope, CancellationToken, Task>? Handler;
         public bool IsOpen { get; set; } = true;
 
+        public FakePublishChannel(Func<string, ErrorEnvelope, CancellationToken, Task>? handler = null)
+            => Handler = handler;
+
         public async Task PublishAsync(string queue, ErrorEnvelope envelope, TimeSpan confirmTimeout, CancellationToken ct)
         {
             PublishCount++;
@@ -91,10 +94,12 @@ public sealed class ErrorQueueTransportTests
 
         public FakePublishChannel Current => PublishChannels[^1];
 
+        public Func<string, ErrorEnvelope, CancellationToken, Task>? NewChannelHandler { get; set; }
+
         public Task<IErrorQueuePublishChannel> CreatePublishChannelAsync(CancellationToken ct)
         {
             PublishChannelCreations++;
-            var channel = new FakePublishChannel();
+            var channel = new FakePublishChannel(NewChannelHandler);
             PublishChannels.Add(channel);
             return Task.FromResult<IErrorQueuePublishChannel>(channel);
         }
@@ -202,6 +207,39 @@ public sealed class ErrorQueueTransportTests
         var ex = await Assert.ThrowsAsync<StreamBusTransientException>(() =>
             transport.PublishAsync(Queue("orders-error"), Envelope(), TestContext.Current.CancellationToken));
         Assert.Contains("stopping", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Caller_token_cancellation_resets_the_publish_channel()
+    {
+        // A publish interrupted by the caller's token leaves the outcome
+        // unknown: the channel must be reset so a late ack can never be
+        // mistaken for the next publish's confirm on the same channel.
+        var connection = new FakeConnection();
+        await using var transport = Transport(connection);
+        using var cts = new CancellationTokenSource();
+        var first = true;
+        connection.NewChannelHandler = (_, _, ct) =>
+        {
+            // First publish blocks until the caller cancels (outcome unknown);
+            // a fresh channel's publish proceeds normally.
+            if (first)
+            {
+                first = false;
+                return Task.Delay(Timeout.Infinite, ct);
+            }
+            return Task.CompletedTask;
+        };
+
+        var pending = transport.PublishAsync(Queue("orders-error"), Envelope(), cts.Token);
+        while (connection.PublishChannelCreations == 0 || connection.Current.PublishCount == 0)
+            await Task.Delay(10, TestContext.Current.CancellationToken);
+        cts.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending);
+
+        await transport.PublishAsync(Queue("orders-error"), Envelope(2), TestContext.Current.CancellationToken);
+
+        Assert.Equal(2, connection.PublishChannelCreations);
     }
 
     private sealed record OrderEvent(string Id);
