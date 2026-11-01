@@ -22,7 +22,7 @@
 - Reserved header keys, rejected on every write path: `streambus.message-id`, `streambus.correlation-id`, `streambus.sent-time`, `streambus.routing-key`.
 - One context instance per delivery and per publish: filters and the handler/terminal receive the same object.
 - Framework values are written after user headers so a user header can never override them.
-- Changelog entry goes under a new `## 0.3.0` section.
+- Changelog entry is folded into the existing `## 0.2.0` section.
 
 ## Review Focus
 
@@ -975,7 +975,7 @@ All four filters and both `Program.cs` consumers adopt the new signatures. `Tena
 
 - [ ] **Step 5: Add the changelog entry**
 
-Under a new `## 0.3.0` → `### Breaking` section, list: contexts replaced (`StreamConsumeFilterContext*` → `ConsumeContext*`, `StreamPublishFilterContext*` → `PublishContext*`), `Raw`/`Metadata`/`OutputHeaders`/`MessageType`/`RuntimeMessageType`/`Bus` removed, `MessageMetadata` removed, `IConsumer<T>` and filter signatures drop the token, `IStreamHeaderWriter` replaced by `IStreamSendHeaders`, ids are `Guid`/`Guid?`, `SentTime` added, content type and sent time written to AMQP properties, `ErrorEnvelope` ids are `Guid?`, super-stream routing keys are now written as `streambus.routing-key`. Under `### Added`, note the reserved-key guard and that `IStreamSerializer` now exposes `ContentType`.
+Under the existing `## 0.2.0` → `### Breaking` section, list: contexts replaced (`StreamConsumeFilterContext*` → `ConsumeContext*`, `StreamPublishFilterContext*` → `PublishContext*`), `Raw`/`Metadata`/`OutputHeaders`/`MessageType`/`RuntimeMessageType`/`Bus` removed, `MessageMetadata` removed, `IConsumer<T>` and filter signatures drop the token, `IStreamHeaderWriter` replaced by `IStreamSendHeaders`, ids are `Guid`/`Guid?`, `SentTime` added, content type and sent time written to AMQP properties, `ErrorEnvelope` ids are `Guid?`, super-stream routing keys are now written as `streambus.routing-key`. Under `### Added`, note the reserved-key guard and that `IStreamSerializer` now exposes `ContentType`.
 
 - [ ] **Step 6: Verify the docs build and the examples compile**
 
