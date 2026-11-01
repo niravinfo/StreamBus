@@ -326,6 +326,48 @@ public sealed class HostingTests
         Assert.Contains("no buses registered", result.Description, StringComparison.Ordinal);
     }
 
+    private sealed class FailingConnector : IStreamSystemConnector
+    {
+        private readonly TaskCompletionSource _shutdownObserved = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public Task ShutdownObserved => _shutdownObserved.Task;
+        public Task<IStreamSystemHandle> ConnectAsync(StreamBusOptions options, CancellationToken ct)
+        {
+            ct.Register(() => _shutdownObserved.TrySetResult());
+            return Task.FromException<IStreamSystemHandle>(new IOException("broker down"));
+        }
+    }
+
+    [Fact]
+    public async Task StopAsync_disposes_and_deregisters_supervisors_that_never_connected()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddStreamBus((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("app", "secret")));
+        var connector = new FailingConnector();
+        services.AddSingleton<IStreamSystemConnector>(connector);
+        await using var sp = services.BuildServiceProvider();
+        var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+
+        await hosted.StartAsync(TestContext.Current.CancellationToken);
+        var registry = sp.GetRequiredService<IStreamBusRegistry>();
+        var before = registry.SupervisorFor("/");
+        // StartAsync is fire-and-forget; wait for the first failed attempt so
+        // the test pins the "supervisor alive but never ready" condition.
+        while (before.State != BusConnectionState.TransientFailure)
+        {
+            Assert.True(DateTime.UtcNow < deadline, $"Supervisor state was {before.State}, expected TransientFailure.");
+            await Task.Delay(10, TestContext.Current.CancellationToken);
+        }
+
+        await hosted.StopAsync(CancellationToken.None);
+
+        // Dispose ran: the retry loop observed cancellation.
+        await connector.ShutdownObserved.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        // Deregister ran: the registry no longer hands back the same supervisor.
+        Assert.NotSame(before, registry.SupervisorFor("/"));
+    }
+
     [Fact]
     public async Task Blocking_startup_succeeds_when_connector_answers()
     {

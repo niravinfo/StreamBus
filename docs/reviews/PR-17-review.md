@@ -10,10 +10,19 @@
   **refuted** (the typed context is created before the pipeline runs each attempt, so all filters
   share one instance) and is therefore not included. The two claimed `_state.Inflight` leak paths
   were also refuted, but the structural fragility is kept as CON-3.
+- **INF-4 REFUTED (2026-11-01):** `StreamBusConnectionSupervisor.StartAsync` is fire-and-forget by
+  contract (`ConnectionSupervisor.cs:32-40`) — it returns `Task.CompletedTask` and `RunLoopAsync`
+  swallows every failure (transient → backoff/retry, fatal → `State = Fatal`). No exception can
+  reach `StartSupervisorAsync`'s catch block, so `startErrors` was always empty, the claimed
+  "failed-start supervisor never enters `_started`" path is unreachable, and every supervisor is
+  in `_started` before the hosted `StartAsync` can possibly throw. The dead start-failure
+  scaffolding (unreachable fatal-throw, transient-warning log, `IsFatalStartFailure`) was removed
+  and the fire-and-forget contract documented in `Hosting.cs`; ownership is pinned by
+  `HostingTests.StopAsync_disposes_and_deregisters_supervisors_that_never_connected`.
 
 ## Suggested execution order
 
-1. **Before merge (Critical):** INF-1, INF-3, INF-4, CON-1, CON-2, PUB-1, FLT-1.
+1. **Before merge (Critical):** INF-1, INF-3, CON-1, CON-2, PUB-1, FLT-1. (INF-4 refuted — see header note.)
 2. **Same PR, second commit (Important correctness):** PUB-2, PUB-3, PUB-4, PUB-5, CON-3, CON-4,
    CON-5, CON-6, CON-7, CON-11, CON-13, INF-2, INF-5, INF-6, INF-7, FLT-2, FLT-3, FLT-4, FLT-5.
 3. **Polish batch:** DOC-1, DOC-2, DOC-3, DOC-5, DOC-7, DOC-8, DOC-12, and all minors.
@@ -116,7 +125,26 @@ await _registry.DisposeAsync().ConfigureAwait(false);
 
 ---
 
-**[INF-4] Failed-start supervisors are never added to `_started` — never disposed or deregistered on StopAsync**
+**[INF-4] ~~Failed-start supervisors are never added to `_started` — never disposed or deregistered on StopAsync~~ — **REFUTED**
+- **Severity:** ~~CRITICAL~~ → none (refuted; minor cleanup applied)
+- **File:** src\StreamBus\Hosting.cs (lines 736–753, 755–785)
+- **Refutation:** The finding requires `supervisor.StartAsync(ct)` to be able to throw. It cannot:
+  `StreamBusConnectionSupervisor.StartAsync` (`ConnectionSupervisor.cs:32-40`) only links a CTS,
+  kicks off `RunLoopAsync` as a background task (which catches **all** exceptions internally —
+  OCE exits, fatal sets `State = Fatal`, transient backs off and retries), and returns
+  `Task.CompletedTask`. Therefore the `catch (Exception ex) { return ex; }` in
+  `StartSupervisorAsync` was unreachable, `startErrors` was always all-null, and every supervisor
+  lands in `_started` before the hosted `StartAsync` can throw on any later path (e.g.
+  `BlockStartupUntilReady` fatal). The premise "on failure the supervisor never enters `_started`"
+  does not occur.
+- **Resolution:** The misleading dead scaffolding was removed (see header note): `StartSupervisor`
+  is now synchronous, `IsFatalStartFailure`/fatal-throw/warning-lot lines are gone, the
+  fire-and-forget contract is documented at the call site, and
+  `HostingTests.StopAsync_disposes_and_deregisters_supervisors_that_never_connected` pins the
+  ownership invariant (StopAsync disposes + deregisters supervisors that never connected).
+- No original review text removed below for traceability:
+
+**[INF-4-ORIGINAL] Failed-start supervisors are never added to `_started` — never disposed or deregistered on StopAsync**
 - **Severity:** CRITICAL
 - **File:** src\StreamBus\Hosting.cs (lines 736–753, 755–785)
 - **Problem:** `StartSupervisorAsync` catches the start exception and returns it, so on failure the supervisor never enters `_started`. The supervisor's `RunLoopAsync` keeps retrying in the background by design, but `StopAsync` iterates only `_started`, so its `DisposeAsync` is never called and `_registry.RemoveSupervisor(vhost)` never runs. Cleanup only works by the incidental fact that `Host` passes a shutdown-linked token — an implementation detail the library shouldn't rely on.

@@ -369,18 +369,12 @@ internal sealed class StreamBusHostedService : IHostedService
         var supervisors = new List<(string Vhost, TimeSpan? Timeout, StreamBusConnectionSupervisor Supervisor)>();
         foreach (var (busType, options) in _store.Entries)
             _registry.GetOrCreateEntry(busType, options.Vhost);
-        var startTasks = new List<Task<Exception?>>();
         foreach (var vhost in _store.Entries.Select(r => r.Options.Vhost).Distinct())
         {
             var supervisor = _registry.SupervisorFor(vhost);
             supervisors.Add((vhost, _hosting.StartupTimeout, supervisor));
-            startTasks.Add(StartSupervisorAsync(vhost, supervisor, ct));
+            StartSupervisor(vhost, supervisor, ct);
         }
-        var startErrors = await Task.WhenAll(startTasks).ConfigureAwait(false);
-        var fatal = startErrors.FirstOrDefault(e => e is not null && IsFatalStartFailure(e));
-        if (fatal is not null) ExceptionDispatchInfo.Capture(fatal).Throw();
-        foreach (var transient in startErrors.OfType<Exception>())
-            _logger.LogWarning(transient, "Supervisor for a StreamBus vhost failed to start; its connection loop will retry.");
         CancellationTokenSource startupCts;
         lock (_gate)
         {
@@ -729,27 +723,16 @@ internal sealed class StreamBusHostedService : IHostedService
             ct).ConfigureAwait(false);
     }
 
-    private static bool IsFatalStartFailure(Exception ex)
-        => ex is StreamBusFatalException or StreamBusConfigurationException or StreamConfigurationConflictException
-            || StreamBusErrorClassification.IsFatal(ex);
-
-    private async Task<Exception?> StartSupervisorAsync(
-        string vhost, StreamBusConnectionSupervisor supervisor, CancellationToken ct)
+    // Starting a supervisor never fails: StartAsync is fire-and-forget and
+    // RunLoopAsync owns every failure by design (transient -> backoff and
+    // retry, fatal -> State = Fatal), so readiness is surfaced through
+    // State / WaitUntilReadyAsync instead of exceptions. Record the
+    // supervisor immediately so StopAsync disposes every supervisor it
+    // started, whatever connection state they end up in.
+    private void StartSupervisor(string vhost, StreamBusConnectionSupervisor supervisor, CancellationToken ct)
     {
-        try
-        {
-            await supervisor.StartAsync(ct).ConfigureAwait(false);
-            lock (_gate) _started.Add((vhost, supervisor));
-            return null;
-        }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            return ex;
-        }
+        supervisor.StartAsync(ct);
+        lock (_gate) _started.Add((vhost, supervisor));
     }
 
     public async Task StopAsync(CancellationToken ct)
