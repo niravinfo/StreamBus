@@ -22,7 +22,7 @@ file sealed class BlockingDisposeProducer : IProducer
     public ProducerInfo Info => throw new NotSupportedException("BlockingDisposeProducer never inspects the producer info.");
 }
 
-sealed class StubProducerHandle : IStreamSuperProducerHandle
+sealed class StubProducerHandle : IStreamPlainProducerHandle, IStreamSuperProducerHandle
 {
     private readonly Func<ReadOnlyMemory<byte>, string?, CancellationToken, Task> _send;
     public int SendCount;

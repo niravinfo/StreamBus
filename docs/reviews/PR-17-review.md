@@ -623,7 +623,7 @@ internal PublishOptions ToReplayOptions() => new()
 
 ---
 
-**[PUB-5] Super handle implements `SendEnvelopeAsync` without routing — throws `KeyNotFoundException` mid-send**
+**[PUB-5] Super handle implements `SendEnvelopeAsync` without routing — VALID, fixed (2026-11-02)**
 - **Severity:** IMPORTANT
 - **File:** src\StreamBus\ProducerHandles.cs (interface at lines 18–32; implementation at lines 259–268)
 - **Problem:** `IStreamSuperProducerHandle` inherits `IStreamPlainProducerHandle`, so `SendEnvelopeAsync` is part of the super handle's public surface. Its implementation never calls `_routing.Stamp(message, ...)` (no routing key registered in the routing table), but the client's `Routing` callback fires during send and throws `KeyNotFoundException` — a non-`StreamBusException`, so it ends up misclassified as "transient". The interface doc claims the split "keeps transport-specific members off the wrong surface"; this method violates that. It is internally unreachable today only because the error hand-off always fetches the plain-slot handle, but it is a public interface.
@@ -650,6 +650,45 @@ public interface IStreamSuperProducerHandle : IStreamProducerHandle
     Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, PublishOptions options, CancellationToken ct);
 }
 ```
+
+- **Verification & resolution (2026-11-02):** Confirmed genuine on every factual
+  claim, and the "internally unreachable" clause holds:
+  1. `SuperStreamProducerHandle.SendEnvelopeAsync` never called
+     `_routing.Stamp`, and `SuperStreamRouting.Route` is the dictionary
+     indexer (`_table[message]`), which every super producer passes as the
+     client's `Routing` callback (`Connector.cs:95/122`) — so the method threw
+     `KeyNotFoundException` on every call, mid-send, outside the
+     `StreamBusException` hierarchy.
+  2. Reachability bounded: the only internal caller is
+     `ProducerRegistry.PublishEnvelopeAsync`, which requests the plain slot
+     (`super: false`), and the replay/requeue paths explicitly reject super
+     streams (`ConsumerRegistry.cs:542–554`). A latent public-API trap, not a
+     live outage — IMPORTANT is the correct severity.
+  3. The reviewer's alternative fix ("route this method through
+     `SendMessageAsync`") was rejected: `SendMessageAsync` requires a routing
+     key and refuses to send without one, and `StreamMessageProperties` carries
+     no routing key — the envelope send is intrinsically a plain-stream
+     operation, so there is nothing to make work.
+  4. **Applied fix:** `IStreamSuperProducerHandle` now derives directly from
+     `IStreamProducerHandle`; `SendEnvelopeAsync` lives only on
+     `IStreamPlainProducerHandle`. `PublishReplayAsync` stays on the super
+     surface (declared there directly) since it routes via a caller-supplied
+     key. The un-routed `SuperStreamProducerHandle.SendEnvelopeAsync`
+     implementation was deleted. Misuse is now a compile error instead of a
+     runtime crash. Test stubs that used one handle object for both slots
+     (`PublishTests`, `EffectivelyOnceTests`, `AcceptanceTests`,
+     `PublishRoutingTests`, `ResultPublisherTests`) now implement both
+     interfaces explicitly.
+  5. Tests (TDD — watched the surface tests fail first for exactly the
+     expected reasons: `SendEnvelopeAsync` present on the super interface,
+     super assignable to plain): new `ProducerHandleSurfaceTests` pins by
+     reflection that the super handle exposes no `SendEnvelopeAsync`, is not
+     assignable to the plain handle contract, keeps
+     `SendAsync`/`PublishReplayAsync`/`PublishWithIdAsync`/`PublishResultAsync`,
+     and that the plain handle keeps envelope + replay sends. CHANGELOG
+     records the interface split under `### Breaking`. UnitTests 475/475
+     (471 prior + 4 new); integration suite unavailable in this environment
+     (no broker) but builds clean against the new surface.
 
 ---
 

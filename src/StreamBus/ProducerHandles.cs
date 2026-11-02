@@ -25,10 +25,18 @@ public interface IStreamPlainProducerHandle : IStreamProducerHandle
     Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, PublishOptions options, CancellationToken ct);
 }
 
-public interface IStreamSuperProducerHandle : IStreamPlainProducerHandle
+/// <summary>
+/// Super-stream producer surface. Every send on a super stream must carry a
+/// routing key (the broker routes each message to one partition), so the
+/// envelope send — which has no routing key — is deliberately absent here
+/// and lives only on <see cref="IStreamPlainProducerHandle"/>. Calling code
+/// that tries it simply does not compile.
+/// </summary>
+public interface IStreamSuperProducerHandle : IStreamProducerHandle
 {
     Task PublishWithIdAsync(ulong publishingId, ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct);
     Task PublishResultAsync(ReadOnlyMemory<byte> body, ulong publishingId, string? routingKey, CancellationToken ct);
+    Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, PublishOptions options, CancellationToken ct);
 }
 
 /// <summary>
@@ -256,16 +264,10 @@ internal sealed class SuperStreamProducerHandle : IStreamSuperProducerHandle
             (message, token) => _confirmations.PublishAsync(_producer, _stream, message, token),
             ct);
 
-    public Task SendEnvelopeAsync(
-        ReadOnlyMemory<byte> body,
-        StreamMessageProperties properties,
-        CancellationToken ct)
-    {
-        ArgumentNullException.ThrowIfNull(properties);
-        var message = new Message(body.ToArray());
-        StreamMessageProperties.ApplyTo(message, properties);
-        return _confirmations.PublishAsync(_producer, _stream, message, ct);
-    }
+    // SendEnvelopeAsync is intentionally absent: it carries no routing key,
+    // so a super-stream envelope send cannot be routed. The interface split
+    // (IStreamSuperProducerHandle no longer derives from
+    // IStreamPlainProducerHandle) makes that a compile-time guarantee.
 
     public Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, PublishOptions options, CancellationToken ct)
         => SendMessageAsync(

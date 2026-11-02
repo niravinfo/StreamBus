@@ -9,7 +9,7 @@ public sealed class PublishRoutingTests
     private sealed record InvoiceEvent(string InvoiceId);
     private sealed class OrdersBus;
 
-    private sealed class CapturingHandle : IStreamSuperProducerHandle
+    private sealed class CapturingHandle : IStreamPlainProducerHandle, IStreamSuperProducerHandle
     {
         public readonly List<(byte[] Body, string? RoutingKey)> Sent = new();
         public Task SendAsync(ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct)
