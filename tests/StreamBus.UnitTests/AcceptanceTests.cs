@@ -65,7 +65,7 @@ public sealed class AcceptanceTests : IDisposable
         Assert.Equal(1, new ConsumeOptions().OffsetStore.EveryMessages);
     }
 
-    private sealed class CountingHandle : IStreamSuperProducerHandle
+    private sealed class CountingHandle : IStreamPlainProducerHandle, IStreamSuperProducerHandle
     {
         public int SendCount;
         public Task SendAsync(ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct)

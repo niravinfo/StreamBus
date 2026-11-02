@@ -125,7 +125,7 @@ public sealed class EffectivelyOnceTests
         Assert.Null(ResultResume.ResumeOffset(new ulong?[] { null }));
     }
 
-    private sealed class StubHandle : IStreamSuperProducerHandle
+    private sealed class StubHandle : IStreamPlainProducerHandle, IStreamSuperProducerHandle
     {
         public readonly List<(ulong Id, string? Routing)> Published = new();
         public Task SendAsync(ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct) => throw new NotImplementedException("EO tests publish results only.");

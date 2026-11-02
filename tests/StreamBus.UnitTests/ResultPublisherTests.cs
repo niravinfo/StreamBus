@@ -4,7 +4,7 @@ namespace StreamBus.UnitTests;
 
 public sealed class ResultPublisherTests
 {
-    private sealed class FlakyHandle : IStreamSuperProducerHandle
+    private sealed class FlakyHandle : IStreamPlainProducerHandle, IStreamSuperProducerHandle
     {
         private int _failuresLeft;
         public int Calls;

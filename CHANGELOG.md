@@ -4,6 +4,15 @@
 
 ### Breaking
 
+- `IStreamSuperProducerHandle` no longer derives from
+  `IStreamPlainProducerHandle`; both now derive from `IStreamProducerHandle`.
+  `SendEnvelopeAsync` — which carries no routing key and therefore crashed
+  every super-stream call with `KeyNotFoundException` from the client's
+  `Routing` callback mid-send — is now only on the plain surface; misuse is a
+  compile error instead of a runtime failure. `PublishReplayAsync` remains
+  available on the super handle (declared directly) alongside
+  `PublishWithIdAsync` and `PublishResultAsync`.
+
 - Consume filters now receive one shared `ConsumeContext` per delivery
   (`StreamConsumeFilterContext*` → `ConsumeContext`, typed filters and the
   consumer use `ConsumeContext<T>`); publish filters receive one shared
