@@ -20,6 +20,15 @@ public sealed record ErrorEnvelope
     public DateTime? SentTime { get; init; }
     public required string? RoutingValue { get; init; }
 
+    /// <summary>Content type of the failed delivery, as it arrived from the
+    /// broker's AMQP <c>content-type</c> property. Reapplied on replay/requeue.</summary>
+    public string? ContentType { get; init; }
+
+    /// <summary>Original user headers of the failed delivery; framework keys
+    /// (<c>streambus.*</c>) and values with unsupported types are excluded.
+    /// Reapplied on replay/requeue.</summary>
+    public IReadOnlyDictionary<string, object?>? UserHeaders { get; init; }
+
     /// <summary>Headers added by the consume pipeline for the failed delivery.
     /// They are forwarded on top of the envelope's own fields; envelope fields
     /// win when a key collides.</summary>
@@ -42,11 +51,17 @@ public sealed record ErrorEnvelope
         [P + "correlation-id"] = CorrelationId?.ToString("D"),
         [P + "sent-time"] = SentTime?.ToString("o", CultureInfo.InvariantCulture),
         [P + "routing-value"] = RoutingValue,
+        [P + "content-type"] = ContentType,
     };
 
     public Dictionary<string, object?> ToApplicationProperties()
     {
         var properties = EnvelopeApplicationProperties();
+
+        // The original user headers and the consume-pipeline
+        // output travel on the wire as plain keys next to the error metadata.
+        // Envelope fields win collisions; consume-filter output (merged before
+        // the original user headers) wins over the original user value.
         if (SendHeaders is not null)
         {
             foreach (var (key, value) in SendHeaders)
@@ -55,12 +70,23 @@ public sealed record ErrorEnvelope
                     properties[key] = value;
             }
         }
+
+        if (UserHeaders is not null)
+        {
+            foreach (var (key, value) in UserHeaders)
+            {
+                if (!properties.ContainsKey(key))
+                    properties[key] = value;
+            }
+        }
+
         return properties;
     }
 
     /// <summary>
     /// Rebuilds the publish options for a requeue or replay so the message
-    /// keeps the identity it had when it entered the error destination.
+    /// keeps the identity, user headers, and content type it had when it
+    /// entered the error destination.
     /// </summary>
     internal PublishOptions ToReplayOptions() => new()
     {
@@ -69,8 +95,57 @@ public sealed record ErrorEnvelope
             MessageId = MessageId,
             CorrelationId = CorrelationId,
             SentTime = SentTime,
+            ContentType = ContentType,
+            Headers = UserHeaders is null
+                ? new Dictionary<string, object?>()
+                : new Dictionary<string, object?>(UserHeaders),
         },
     };
+
+    /// <summary>
+    /// Captures the original user headers of a delivery for the error
+    /// envelope: framework keys (any <c>streambus.*</c> key, which covers the
+    /// envelope's own fields), null values (AMQP application properties
+    /// cannot carry them; a null header is treated as absent), and values a
+    /// republish could not legally carry (anything but string, bool, int,
+    /// long) are dropped. Returns null when the delivery carried no user
+    /// headers.
+    /// </summary>
+    internal static IReadOnlyDictionary<string, object?>? CaptureUserHeaders(IStreamHeaders? headers)
+    {
+        if (headers is null) return null;
+        Dictionary<string, object?>? captured = null;
+
+        foreach (var (key, value) in headers.All)
+        {
+            if (key.StartsWith("streambus.", StringComparison.Ordinal)) continue;
+            if (value is null) continue;
+            if (value is not (string or bool or int or long)) continue;
+            captured ??= new Dictionary<string, object?>(StringComparer.Ordinal);
+            captured[key] = value;
+        }
+
+        return captured;
+    }
+
+    // Flat reconstruction, MassTransit-style: user headers are the plain
+    // non-framework keys that traveled next to the error metadata, so AMQP's
+    // own field-table typing (string/bool/int/long) round-trips the values
+    // with no encoding layer.
+    private static Dictionary<string, object?>? CaptureWireUserHeaders(IReadOnlyDictionary<string, object?> raw)
+    {
+        Dictionary<string, object?>? captured = null;
+        foreach (var (key, value) in raw)
+        {
+            if (key.StartsWith("streambus.", StringComparison.Ordinal)) continue;
+            if (value is null) continue;
+            if (value is not (string or bool or int or long or byte[])) continue;
+            captured ??= new Dictionary<string, object?>(StringComparer.Ordinal);
+            captured[key] = value is byte[] bytes ? System.Text.Encoding.UTF8.GetString(bytes) : value;
+        }
+
+        return captured;
+    }
 
     public Dictionary<string, object?> ToHeaders()
     {
@@ -80,6 +155,7 @@ public sealed record ErrorEnvelope
             if (value is not null)
                 headers[key] = value;
         }
+
         return headers;
     }
 
@@ -88,7 +164,7 @@ public sealed record ErrorEnvelope
         envelope = null;
         if (string.IsNullOrWhiteSpace(errorStream) || body is null || app is null) return false;
         string? Get(string name) => app.TryGetValue(P + name, out var v) ? v?.ToString() : null;
-        return TryParseCore(errorStream, body, Get, out envelope);
+        return TryParseCore(errorStream, body, app, Get, out envelope);
     }
 
     public static bool TryParseHeaders(string errorQueue, byte[] body, IReadOnlyDictionary<string, object?> headers, out ErrorEnvelope? envelope)
@@ -100,10 +176,12 @@ public sealed record ErrorEnvelope
             if (!headers.TryGetValue(P + name, out var v) || v is null) return null;
             return v is byte[] bytes ? System.Text.Encoding.UTF8.GetString(bytes) : v.ToString();
         }
-        return TryParseCore(errorQueue, body, Get, out envelope);
+        return TryParseCore(errorQueue, body, headers, Get, out envelope);
     }
 
-    private static bool TryParseCore(string errorDestination, byte[] body, Func<string, string?> get, out ErrorEnvelope? envelope)
+    private static bool TryParseCore(
+        string errorDestination, byte[] body, IReadOnlyDictionary<string, object?> raw,
+        Func<string, string?> get, out ErrorEnvelope? envelope)
     {
         envelope = null;
         var sourceStream = get("source-stream");
@@ -134,7 +212,10 @@ public sealed record ErrorEnvelope
             CorrelationId = ParseGuid(get("correlation-id")),
             SentTime = ParseSentTime(get("sent-time")),
             RoutingValue = get("routing-value"),
+            ContentType = get("content-type"),
+            UserHeaders = CaptureWireUserHeaders(raw),
         };
+
         return true;
     }
 

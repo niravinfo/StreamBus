@@ -176,9 +176,10 @@
 - Late consumer-close callbacks no longer clear a newer consumer handle, so the
   watchdog keeps observing the live subscription (D2 / V2-D2).
 - Replay and requeue identity: error-envelope replay and queue requeue carry
-  the original `MessageId`, `CorrelationId`, and `SentTime` forward instead of
-  minting fresh values. Requeue cannot restore `content-type` or
-  consume-added headers, and `SentTime` is normalized to UTC on read.
+  the original `MessageId`, `CorrelationId`, `SentTime`, the original user
+  headers, and the original `content-type` forward instead of minting fresh
+  values or dropping them at parse time (PUB-4); `SentTime` is normalized to
+  UTC on read.
 - Effectively-once retries reuse one message identity: a logical result
   publish keeps the same `MessageId` and `SentTime` across every retry attempt.
 - Header removal takes precedence over call-site values, so a key removed

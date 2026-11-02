@@ -337,6 +337,7 @@ internal sealed class TypedConsumeContextFactory<T> : ITypedConsumeContextFactor
             MessageId = delivery.MessageId,
             CorrelationId = delivery.CorrelationId,
             SentTime = delivery.SentTime,
+            ContentType = delivery.ContentType,
             Headers = delivery.Headers,
             SendHeaders = delivery.SendHeaders,
             Services = delivery.Services,

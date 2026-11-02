@@ -153,6 +153,7 @@ internal sealed class AmqpPublishChannel : IErrorQueuePublishChannel
                 DeliveryMode = DeliveryModes.Persistent,
                 MessageId = envelope.MessageId?.ToString("D"),
                 CorrelationId = envelope.CorrelationId?.ToString("D"),
+                ContentType = envelope.ContentType,
                 Headers = envelope.ToHeaders(),
             };
             // The confirm budget covers the send as well as the ack/nack: a blocked
