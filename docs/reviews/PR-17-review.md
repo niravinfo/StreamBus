@@ -543,7 +543,7 @@ catch (Exception ex)
 
 ---
 
-**[PUB-4] Requeued/replayed messages lose user headers and ContentType**
+**[PUB-4] Requeued/replayed messages lose user headers and ContentType — VALID, fixed (2026-11-02)**
 - **Severity:** IMPORTANT
 - **File:** src\StreamBus\ErrorEnvelope.cs (lines 61–73; consumer at src\StreamBus\Bus.cs line 242)
 - **Problem:** When a failed message is requeued, the drain path parses only the `streambus.error.*` properties — the original user application headers (`SendHeaders`) are dropped at parse time. `ToReplayOptions` then rebuilds `StreamMessageProperties` from just `MessageId`/`CorrelationId`/`SentTime`, so the republished message carries no `x-tenant`-style headers on the wire and no `ContentType`. Downstream consumers receive a semantically different message than the one that failed.
@@ -559,6 +559,55 @@ internal PublishOptions ToReplayOptions() => new()
 };
 ```
 - **Solution:** Persist the original user headers inside the envelope under a reserved key (e.g., `streambus.error.user-headers`), parse them back into a new `UserHeaders` property on the envelope, and include them in `ToReplayOptions()`. Preserve `ContentType` the same way, or stamp `_serializer.ContentType` on the requeue call the way `SendTypedAsync` does.
+
+- **Verification & resolution (2026-11-02):** Confirmed genuine, and the loss is worse than the
+  reviewer described — there are two drop points, not one:
+  1. **At handoff:** the envelope never captured the original delivery headers. The
+    `SendHeaders` carried on the envelope are an *empty-seeded write-only bag* for consume
+     filter output (`StreamPartitionConsumer.cs` seeds `new StreamSendHeaders(null, ...)`),
+     so original headers like `x-tenant` were lost before the message reached the error
+     destination. The reviewer's "dropped at parse time" applies to what little remained.
+  2. **At replay/requeue:** `ToReplayOptions` rebuilt properties from identity fields
+     only, and `ContentType` is stamped only by the typed-publish layer (`Bus.cs:220`),
+     which neither the requeue path (`Bus.RequeueErrorsAsync`) nor the replay path
+     (`ConsumerRegistry.ReplayAsync`) uses.
+  The fix keeps the original values end to end:
+  1. `ErrorEnvelope` gained `UserHeaders` and `ContentType`. The original user headers are
+     captured at exhaustion (`ErrorEnvelope.CaptureUserHeaders(consumeContext.Headers)`),
+     which excludes every `streambus.*` framework key and values the republish path could
+     not legally carry (anything but string/bool/int/long/null). `ConsumeContext` gained
+     `ContentType` (set from the AMQP message properties in `BuildContext`, copied by the
+     typed context factory), and both `ExhaustAsync` envelope constructions set both fields.
+  2. Wire round trip (MassTransit model, revised after design review): user headers travel
+     on the error destination as **plain keys next to the error metadata** — not repackaged
+     into a reserved-key JSON blob. A first implementation used
+     `streambus.error.user-headers` with a tagged-JSON encoding (the reviewer's literal
+     suggestion), but AMQP field tables already carry string/bool/int/long with their
+     types intact, so the encoding layer added complexity (and a JSON-vs-int/long
+     fidelity problem it then had to solve) without adding fidelity. Consume-filter
+     output (`SendHeaders`) wins collisions over original user headers, envelope fields
+     win over both, and parse reconstructs `UserHeaders` from every non-`streambus.*`
+     key (byte-array string values from classic queues are decoded; null values are
+     treated as absent, matching AMQP's inability to carry them as application
+     properties). `ContentType` is stored as a plain `streambus.error.content-type`
+     string and lifted into the queue path's `BasicProperties.ContentType`.
+     Documented AMQP size constraints: header keys and `content-type` are limited to
+     255 bytes, and the whole headers table must fit `frame_max` (128 KiB by default).
+  3. `ToReplayOptions` now restores both fields, so `Bus.RequeueErrorsAsync` and
+     `ConsumerRegistry.ReplayAsync` republish with the original headers and media type.
+     The error-destination copies themselves also carry the content type (the queue
+     `BasicProperties.ContentType` and the error-stream publish properties), so
+     inspection tooling sees the original media type too.
+  4. Tests (TDD — the replay/round-trip/capture tests were written first and watched
+     failing before the fix; the wire-format tests were added for the design revision and
+     one was watched failing against the blob implementation, driving its removal):
+     replay-options preservation, application-properties round trip, error-queue-headers
+     round trip, `CaptureUserHeaders` framework-key/null/type filtering, missing-headers
+     degrade, mixed primitive round trip (string/int/long/bool), raw flat keys on the
+     wire (user headers as plain keys, filter output wins collisions), and byte-array
+     header-value decoding on the queue path. UnitTests 471/471; the brokered
+     integration suite could not run in this environment (no RabbitMQ broker is
+     listening).
 ```csharp
 internal PublishOptions ToReplayOptions() => new()
 {

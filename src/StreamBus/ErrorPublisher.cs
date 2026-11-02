@@ -27,6 +27,7 @@ internal sealed class ErrorPublisher
             MessageId = envelope.MessageId,
             CorrelationId = envelope.CorrelationId,
             SentTime = envelope.SentTime,
+            ContentType = envelope.ContentType,
             Headers = envelope.ToApplicationProperties(),
         };
         return _producers.PublishEnvelopeAsync(errorStream, envelope.Body, properties, confirmTimeout, ct);

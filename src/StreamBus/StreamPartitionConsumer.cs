@@ -734,7 +734,9 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                 MessageId = consumeContext.MessageId,
                 CorrelationId = consumeContext.CorrelationId,
                 SentTime = consumeContext.SentTime,
+                ContentType = consumeContext.ContentType,
                 RoutingValue = consumeContext.RoutingValue,
+                UserHeaders = ErrorEnvelope.CaptureUserHeaders(consumeContext.Headers),
                 SendHeaders = sendHeaders,
             };
             _logger.LogWarning(lastError,
@@ -766,7 +768,9 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
             MessageId = consumeContext.MessageId,
             CorrelationId = consumeContext.CorrelationId,
             SentTime = consumeContext.SentTime,
+            ContentType = consumeContext.ContentType,
             RoutingValue = consumeContext.RoutingValue,
+            UserHeaders = ErrorEnvelope.CaptureUserHeaders(consumeContext.Headers),
             SendHeaders = sendHeaders,
         };
         _logger.LogWarning(lastError,
@@ -972,6 +976,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
             MessageId = StreamWire.ReadGuid(message.Properties?.MessageId),
             CorrelationId = StreamWire.ReadGuid(message.Properties?.CorrelationId),
             SentTime = StreamWire.ReadSentTime(message.Properties),
+            ContentType = message.Properties?.ContentType,
             Headers = new StreamHeaders(app, _serializer),
             SendHeaders = sendHeaders,
             Services = services,
