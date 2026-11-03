@@ -48,17 +48,6 @@ public sealed record ErrorStreamOptions
     public required string Stream { get; init; }
 }
 
-public sealed record ErrorHandoff
-{
-    public required string ErrorStream { get; init; }
-    public required string SourceStream { get; init; }
-    public required int SourcePartition { get; init; }
-    public required ulong SourceOffset { get; init; }
-    public required int Attempts { get; init; }
-    public required DateTimeOffset FailedAt { get; init; }
-    public required Exception Exception { get; init; }
-}
-
 internal static class RetryDelays
 {
     public static TimeSpan ResolveDelay(RetryPolicy policy, int attempt, Exception ex, ILogger logger)

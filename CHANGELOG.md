@@ -51,6 +51,16 @@
   `MaxAttempts` (`null` is unbounded). An unbounded policy cannot target an
   error stream, dead-letter queue, or exhaustion callback, and a bounded
   policy must configure one.
+- There is one exhaustion callback shape. `ConsumeOptions.OnRetryExhausted` /
+  `ErrorHandoff` (the v1 observe-only hook that only fired for error-stream
+  hand-off) and the internal `ExhaustionCallback` duplicate are removed;
+  `ConsumeOptions.OnExhausted(Func<ExhaustedContext, CancellationToken, Task>)`
+  is public and is the same callback the endpoint configurator exposes. It owns
+  the outcome (returning advances past the message, throwing recycles the
+  attach), and on the raw `ConsumeOptions` path `ErrorStream` and `OnExhausted`
+  are mutually exclusive — configuring both is a `StreamBusConfigurationException`.
+  Endpoints keep resolving the ambiguity by shadowing the declared destination
+  with a startup warning.
 - Consolidated `PublishResultOptions` retry knobs into a single
   `RetryPolicy Retry`.
 - Removed the unused `ErrorStreamOptions.RoutingValue` and

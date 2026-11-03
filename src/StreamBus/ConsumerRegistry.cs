@@ -209,9 +209,14 @@ internal sealed class StreamConsumerRegistry
         {
             throw new StreamBusConfigurationException("ConsumeOptions.Retry.MaxAttempts must be >= 1 when set.");
         }
+        if (options.ErrorStream is not null && options.OnExhausted is not null)
+        {
+            throw new StreamBusConfigurationException(
+                "ConsumeOptions configures both ErrorStream and OnExhausted; the callback owns exhaustion, so configure exactly one (ErrorStream for a hand-off destination, OnExhausted for a terminal callback).");
+        }
         var hasHandoff = options.ErrorStream is not null
             || options.DeadLetter is not null
-            || options.ExhaustionCallback is not null;
+            || options.OnExhausted is not null;
         if (retry.MaxAttempts is null)
         {
             if (hasHandoff)

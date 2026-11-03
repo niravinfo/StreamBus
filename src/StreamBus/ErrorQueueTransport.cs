@@ -286,7 +286,7 @@ internal sealed class ErrorQueueTransport : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(registrations);
         return registrations
-            .Where(r => r.Options.DeadLetter is not null && r.Options.ExhaustionCallback is null)
+            .Where(r => r.Options.DeadLetter is not null && r.Options.OnExhausted is null)
             .Select(r => r.Options.DeadLetter!)
             .Distinct()
             .ToList();

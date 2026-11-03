@@ -99,6 +99,14 @@ exception, services). Returning advances past the message; throwing
 recycles the attach (redeliver, never skip). Use `ctx.GetService<T>()` for
 buses and other services.
 
+The raw `ConsumeOptions` path exposes the same callback as
+`OnExhausted(Func<ExhaustedContext, CancellationToken, Task>)`, so there is
+one exhaustion shape across both APIs. On that path `OnExhausted` and
+`ErrorStream` are mutually exclusive: the callback owns the outcome, so
+configuring both fails with `StreamBusConfigurationException` instead of
+silently shadowing the destination. Endpoints resolve the same conflict by
+shadowing the declared destination with a startup warning.
+
 ## Requeue
 
 ```csharp

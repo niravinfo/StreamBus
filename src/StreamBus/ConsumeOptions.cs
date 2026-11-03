@@ -24,14 +24,24 @@ public sealed record ConsumeOptions
     public OffsetStoreOptions OffsetStore { get; init; } = new();
     public RetryPolicy Retry { get; init; } = new();
     public ErrorStreamOptions? ErrorStream { get; init; }
-    public Func<ErrorHandoff, Task>? OnRetryExhausted { get; init; }
+
+    /// <summary>
+    /// Terminal handler for exhausted messages. The callback owns the outcome:
+    /// it replaces any hand-off destination (on the raw <see cref="ConsumeOptions"/>
+    /// path <see cref="ErrorStream"/> and <see cref="OnExhausted"/> are mutually
+    /// exclusive). Returning advances past the message; throwing recycles the
+    /// attach (redeliver, never skip). Resolve services from
+    /// <see cref="ExhaustedContext.Services"/>; the endpoint configurator exposes
+    /// the same callback as <c>OnExhausted</c>.
+    /// </summary>
+    public Func<ExhaustedContext, CancellationToken, Task>? OnExhausted { get; init; }
+
     public ReadinessPolicy ReadinessPolicy { get; init; } = ReadinessPolicy.FailFastPolicy;
     /// <summary>Bound on the confirmed error-stream hand-off publish. A lost
     /// confirmation surfaces as transient so the partition dispatch gate is
     /// never wedged; the envelope stays replayable.</summary>
     public TimeSpan HandoffConfirmTimeout { get; init; } = TimeSpan.FromSeconds(10);
     internal EffectivelyOnceConfig? EffectivelyOnce { get; init; }
-    internal Func<ExhaustedContext, CancellationToken, Task>? ExhaustionCallback { get; init; }
     internal DeadLetterOptions? DeadLetter { get; init; }
     internal DeadLetterOptions? ShadowedDeadLetter { get; init; }
     internal IReadOnlyList<ConsumeFilterRegistration> ConsumeFilters { get; init; } = Array.Empty<ConsumeFilterRegistration>();

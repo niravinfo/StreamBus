@@ -435,7 +435,7 @@ internal sealed class StreamBusHostedService : IHostedService
             }
         }
         var queuesByVhost = starters
-            .Where(s => s.Reg.Options.DeadLetter is not null && s.Reg.Options.ExhaustionCallback is null)
+            .Where(s => s.Reg.Options.DeadLetter is not null && s.Reg.Options.OnExhausted is null)
             .GroupBy(s => s.Vhost, StringComparer.Ordinal)
             .ToDictionary(
                 g => g.Key,
@@ -719,7 +719,7 @@ internal sealed class StreamBusHostedService : IHostedService
         var entry = _registry.GetOrCreateEntry(reg.BusMarker, vhost);
         var reference = ConsumerReferenceValidation.Require(reg.Options.Reference, reg.Stream);
         var options = reg.Options with { Reference = reference };
-        if (options.ExhaustionCallback is not null && options.ShadowedDeadLetter is { } shadowed)
+        if (options.OnExhausted is not null && options.ShadowedDeadLetter is { } shadowed)
             _logger.LogWarning(
                 "ReceiveEndpoint '{Stream}' sets both OnExhausted and a dead-letter destination '{Destination}'; the callback owns exhaustion and the destination is shadowed.",
                 reg.Stream, shadowed.Name);

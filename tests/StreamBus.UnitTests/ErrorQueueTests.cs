@@ -122,7 +122,7 @@ public sealed class ErrorQueueTests
                 Retry = new RetryPolicy { MaxAttempts = 2 },
                 ErrorStream = deadLetter is { IsStream: true } ? new ErrorStreamOptions { Stream = deadLetter.Name } : null,
                 DeadLetter = deadLetter is { IsStream: false } ? deadLetter : null,
-                ExhaustionCallback = callback ? (_, _) => Task.CompletedTask : null,
+                OnExhausted = callback ? (_, _) => Task.CompletedTask : null,
             },
         };
 

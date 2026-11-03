@@ -70,7 +70,7 @@ public sealed class DispatchShutdownReleaseTests
             // The exhaustion handoff signals entry, then blocks on its cancellation
             // token, so cancelling the run token races shutdown straight through the
             // exhaustion branch while the inflight counter is still held.
-            ExhaustionCallback = async (_, ct) =>
+            OnExhausted = async (_, ct) =>
             {
                 enteredHandoff.TrySetResult();
                 await Task.Delay(Timeout.Infinite, ct);

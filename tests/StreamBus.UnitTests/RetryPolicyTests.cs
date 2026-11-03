@@ -60,6 +60,34 @@ public sealed class RetryPolicyTests
             }));
     }
 
+    [Fact]
+    public async Task Bounded_with_on_exhausted_callback_is_accepted()
+    {
+        // The callback is a hand-off destination in its own right: validation must
+        // reach readiness (not fail with "no hand-off destination").
+        await Assert.ThrowsAsync<StreamBusNotReadyException>(() =>
+            Consume(new ConsumeOptions
+            {
+                Reference = "grp",
+                Retry = new RetryPolicy { MaxAttempts = 3 },
+                OnExhausted = (_, _) => Task.CompletedTask,
+            }));
+    }
+
+    [Fact]
+    public async Task Bounded_with_error_stream_and_on_exhausted_throws()
+    {
+        var ex = await Assert.ThrowsAsync<StreamBusConfigurationException>(() =>
+            Consume(new ConsumeOptions
+            {
+                Reference = "grp",
+                Retry = new RetryPolicy { MaxAttempts = 3 },
+                ErrorStream = new ErrorStreamOptions { Stream = "e" },
+                OnExhausted = (_, _) => Task.CompletedTask,
+            }));
+        Assert.Contains("OnExhausted", ex.Message);
+    }
+
     [Theory]
     [InlineData(0)]
     [InlineData(-2)]
