@@ -44,14 +44,14 @@
   declaration.
 - Retry: `cfg.UseMessageRetry(...)` global default, per-endpoint
   override, `UseRetry` escape hatches. Schedules: Immediate, Interval,
-  Intervals, Exponential, None. Unbounded default retries forever
-  (`Strict`); `Strict` plus any hand-off destination or callback is a
-  configuration error.
-- Exhaustion: bounded + `DeadLetterToStream` / `DeadLetterToQueue` hands
-  off; bounded + `OnExhausted` callback owns the outcome (return advances,
-  throw recycles; declared destinations shadowed with a warning); bounded
-  + neither hands off to the derived classic queue `{stream}_error`;
-  unbounded + either is a config error.
+  Intervals, Exponential, None. The default has no attempt limit
+  (`Strict`, retries forever); combining a hand-off destination or
+  callback with no attempt limit is a configuration error.
+- Exhaustion: attempt limit + `DeadLetterToStream` / `DeadLetterToQueue`
+  hands off; attempt limit + `OnExhausted` callback owns the outcome
+  (return advances, throw recycles; declared destinations shadowed with
+  a warning); attempt limit + neither hands off to the derived classic
+  queue `{stream}_error`; no attempt limit + either is a config error.
 - Error destinations: `DeadLetterToStream(name, spec?)` uses a declared
   error stream with envelope semantics, advance-once, and
   `ReplayErrorStreamAsync`; `DeadLetterToQueue(name, DeadLetterQueueType)`

@@ -41,7 +41,7 @@ managed cycle only.
 `EffectivelyOnceOptions`: `SourceIsSuperStream` / `TargetIsSuperStream`
 for super endpoints, optional `Reference` (derived pipeline names apply
 when unset), `TargetRouting` (defaults to the incoming routing value),
-plus unbounded `Retry` and `ReadinessPolicy`. Consume filters attached to
+plus a `Retry` policy with no attempt limit and `ReadinessPolicy`. Consume filters attached to
 an effectively-once pipeline must call `next()` exactly once; returning
 without it is a runtime contract error.
 

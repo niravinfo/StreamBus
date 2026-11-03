@@ -104,7 +104,7 @@ public sealed class RetryConfigurationTests
                     e.DeadLetterToStream("audit-errors");
                 });
             }));
-        Assert.Contains("bound", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("attempt limit", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -121,7 +121,7 @@ public sealed class RetryConfigurationTests
                     e.OnExhausted((_, _) => Task.CompletedTask);
                 });
             }));
-        Assert.Contains("bound", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("attempt limit", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

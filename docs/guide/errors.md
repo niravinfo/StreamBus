@@ -53,15 +53,19 @@ Schedules: `Immediate(n)`, `Interval(n, delay)`, `Intervals(params)`,
 `Exponential(count, base, max, multiplier)`, `None()`. `UseRetry` takes
 a raw `RetryPolicy` as an escape hatch on both levels.
 
+`MaxAttempts` counts total attempts including the first (`None()` is one
+attempt, `Immediate(5)` is six). Leaving it unset sets no attempt limit:
+the endpoint retries until the handler succeeds and its partition waits.
+
 ## Exhaustion rules
 
 | Retry | Exhaustion | Effective mode |
 |---|---|---|
-| bounded schedule | `DeadLetterToStream` / `DeadLetterToQueue` | handoff to the declared destination, then advance |
-| bounded schedule | `OnExhausted` | the callback owns the outcome (a declared destination is shadowed with a startup warning) |
-| bounded schedule | neither | handoff to the derived destination: classic queue `{stream}_error` (durable, full headers) |
-| unbounded (default) | neither | `Strict`: retry forever |
-| unbounded | destination or callback | configuration error at startup (a handoff needs a bound) |
+| attempt limit set (`MaxAttempts`) | `DeadLetterToStream` / `DeadLetterToQueue` | handoff to the declared destination, then advance |
+| attempt limit set (`MaxAttempts`) | `OnExhausted` | the callback owns the outcome (a declared destination is shadowed with a startup warning) |
+| attempt limit set (`MaxAttempts`) | neither | handoff to the derived destination: classic queue `{stream}_error` (durable, full headers) |
+| no attempt limit (`MaxAttempts` unset, default) | neither | `Strict`: retry forever; the partition waits |
+| no attempt limit | destination or callback | configuration error at startup (a hand-off needs an attempt limit) |
 | `None()` | explicit/callback/nothing | immediate handoff or callback on first failure |
 
 Dead-letter destinations are kind-split, and a second call on the same
@@ -124,8 +128,8 @@ and preserve the same identity fields.
 
 ## Full example
 
-Bounded retry hands the poison message to a classic error queue; the
-operator drains it back after deploying the fix:
+A retry schedule with an attempt limit hands the poison message to a
+classic error queue; the operator drains it back after deploying the fix:
 
 ```csharp
 services.AddStreamBus((context, cfg) =>
