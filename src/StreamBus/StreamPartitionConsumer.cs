@@ -592,7 +592,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                         StreamBusActivity.RecordException(activity, ex);
                         var unbounded = _options.Retry.MaxAttempts is null;
                         var exhausted = !unbounded && attempts >= _options.Retry.MaxAttempts!.Value;
-                        var mode = unbounded ? "unbounded" : "bounded";
+                        var mode = unbounded ? "no-limit" : "limited";
                         if (RetryDelays.ShouldLogRetryWarning(attempts))
                             _logger.LogWarning(ex,
                                 "Consume handler failed for stream {Stream} partition {Partition} offset {Offset} (attempt {Attempt}, mode {Mode}); retrying in-handler.",

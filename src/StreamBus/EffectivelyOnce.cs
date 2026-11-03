@@ -9,7 +9,7 @@ public sealed record EffectivelyOnceOptions
     public string? Reference { get; init; }
     public Func<ConsumeContext, string?>? TargetRouting { get; init; }
 
-    /// <summary>Unbounded retry policy used while the result is confirmed.</summary>
+    /// <summary>Retry policy used while the result is confirmed; it must set no attempt limit.</summary>
     public RetryPolicy Retry { get; init; } = new();
 
     public ReadinessPolicy ReadinessPolicy { get; init; } = ReadinessPolicy.FailFastPolicy;
@@ -21,7 +21,7 @@ public sealed record PublishResultOptions
     public bool IsSuperStream { get; init; }
     public string? RoutingKey { get; init; }
 
-    /// <summary>Unbounded retry policy used until the result publish is confirmed.</summary>
+    /// <summary>Retry policy used until the result publish is confirmed; it must set no attempt limit.</summary>
     public RetryPolicy Retry { get; init; } = new();
 }
 
@@ -88,7 +88,7 @@ internal static class EffectivelyOnceValidation
     {
         ArgumentNullException.ThrowIfNull(retry);
         if (retry.MaxAttempts is not null)
-            throw new StreamBusConfigurationException($"{prefix}.MaxAttempts must be null for effectively-once (unbounded retry; the publish is retried until confirmed).");
+            throw new StreamBusConfigurationException($"{prefix}.MaxAttempts must be null for effectively-once (no attempt limit; the publish is retried until confirmed).");
         ValidateKnobs(retry.BaseDelay, retry.MaxDelay, retry.Multiplier, retry.MaxJitter, prefix);
     }
 

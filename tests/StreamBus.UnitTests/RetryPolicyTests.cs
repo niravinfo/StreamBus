@@ -26,7 +26,7 @@ public sealed class RetryPolicyTests
     {
         var ex = await Assert.ThrowsAsync<StreamBusConfigurationException>(() =>
             Consume(new ConsumeOptions { ErrorStream = new ErrorStreamOptions { Stream = "e" } }));
-        Assert.Contains("unbounded", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("no attempt limit", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -37,7 +37,7 @@ public sealed class RetryPolicyTests
             {
                 DeadLetter = new DeadLetterOptions { Name = "e", QueueType = DeadLetterQueueType.ClassicQueue },
             }));
-        Assert.Contains("unbounded", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("no attempt limit", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

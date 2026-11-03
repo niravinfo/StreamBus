@@ -24,7 +24,8 @@
 
 1. **Before merge (Critical):** INF-1, INF-3, CON-1, CON-2, PUB-1, FLT-1. (INF-4 refuted — see header note.)
 2. **Same PR, second commit (Important correctness):** PUB-2, PUB-3, PUB-4, PUB-5, CON-3, CON-4,
-   CON-5, CON-6, CON-7, CON-11, CON-13, INF-2, INF-5, INF-6, INF-7, FLT-2, FLT-3, FLT-4, FLT-5.
+   CON-6, CON-7, CON-11, CON-13, INF-2, INF-5, INF-6, INF-7, FLT-2, FLT-3, FLT-4, FLT-5.
+   (CON-5 refuted as IMPORTANT — doc-only, see its entry.)
 3. **Polish batch:** DOC-1, DOC-2, DOC-3, DOC-5, DOC-7, DOC-8, DOC-12, and all minors.
 
 ---
@@ -807,8 +808,8 @@ if (_options.OnRetryExhausted is { } hook)
 
 ---
 
-**[CON-5] Registry validation leaves unbounded-forever-retry as the implicit default**
-- **Severity:** IMPORTANT
+**[CON-5] Registry validation leaves unbounded-forever-retry as the implicit default — REFUTED as IMPORTANT, doc-only (2026-11-03)**
+- **Severity:** IMPORTANT → minor (refuted as IMPORTANT; documentation-only)
 - **File:** src\StreamBus\ConsumerRegistry.cs (lines 212–227)
 - **Problem:** The validation demands that bounded retry have a handoff and unbounded retry have none — but `new RetryPolicy()` (the `ConsumeOptions` default) already has `MaxAttempts = null`, so a user who touches nothing gets a policy where a persistent handler failure halts the partition indefinitely with no dead-letter escape. Configurator users always get bounded policies via `IRetryConfigurator`; raw `ConsumeOptions` users get silently different, dangerous semantics.
 ```csharp
@@ -822,6 +823,43 @@ if (retry.MaxAttempts is null)
 }
 ```
 - **Solution:** Require an explicit choice: reject a default-constructed unbounded policy unless the user opts in (e.g., `RetryPolicy.StrictForever()`), or at minimum document on `ConsumeOptions.Retry` and `RetryPolicy.MaxAttempts` that the default means "the partition halts on any persistent handler failure".
+
+- **Verification & resolution (2026-11-03):** Refuted as IMPORTANT; the mechanics are real but the
+  "implicit / silently different" defect is not. Closed with a documentation-only change.
+  1. **Confirmed mechanically:** `ConsumeOptions.Retry` defaults to `new RetryPolicy()`
+     (`ConsumeOptions.cs:25`) → `MaxAttempts = null`, and `ConsumerRegistry.ConsumeAsync`
+     (220–227) rejects unbounded retry only *with* a hand-off, so unbounded-without-hand-off
+     passes. A persistent handler failure therefore retries forever and the partition never
+     advances — the behavior the review describes.
+  2. **Refuted — no raw-vs-fluent divergence:** the review claims "configurator users always get
+     bounded policies via `IRetryConfigurator`". `RetryDerivation.Derive`
+     (`RetryConfiguration.cs:188–195`) falls back to `new RetryPolicy()` when neither
+     `UseMessageRetry` nor `UseRetry` is configured and returns
+     `ExhaustionKind.StrictForever`; `RetryConfigurationTests.Unbounded_default_is_strict_forever`
+     pins exactly that. Both APIs share one default.
+  3. **Refuted — it is the specified default, not an implicit one:** FR-4.4 defines
+     `FailureMode.Strict` (now expressed as `MaxAttempts is null`) as the default with
+     retry-forever/stall semantics; `docs/guide/errors.md:63` and `docs/llms.txt:47` state the
+     same table row. Effectively-once *requires* unbounded retry
+     (`EffectivelyOnceValidation.ValidateConsume`, `EffectivelyOnce.cs:90–91`), and both
+     `EffectivelyOnceOptions.Retry` and `PublishResultOptions.Retry` default to `new()`, so
+     rejecting a default-constructed unbounded policy would break the EO contract too.
+  4. **Considered and rejected:** the review's primary suggestion (explicit
+     `RetryPolicy.StrictForever()` opt-in, reject the default) is a breaking behavior change that
+     contradicts FR-4.4 and the pinned default test, for a documented at-least-once (never-skip,
+     partition back-pressure) design choice. The hazard is already documented on
+     `RetryPolicy.MaxAttempts` (added in the CON-1 follow-up), which points at the bounded +
+     hand-off alternative.
+  5. **Applied (doc-only):** `ConsumeOptions.Retry` carried no XML doc, so the raw path's
+     IntelliSense did not surface the default. It now states that the default sets no attempt
+     limit (retry forever, partition waits) and names every hand-off: `ErrorStream` (error
+     stream), `OnExhausted` (callback), and the endpoint API's `DeadLetterToQueue` (dead-letter
+     queue). Talk of "bounded/unbounded" was replaced with "attempt limit / no attempt limit"
+     across the user-facing surface (`RetryPolicy`, `ConsumeOptions`, `EffectivelyOnceOptions`,
+     `PublishResultOptions`, the three configuration exception messages, the retry-mode log value,
+     `docs/guide/errors.md`, `docs/guide/effectively-once.md`, `docs/llms.txt`); the two
+     message-pinning assertions in `RetryPolicyTests` were updated to match. No validation or
+     runtime change; build clean and unit suite green.
 
 ---
 

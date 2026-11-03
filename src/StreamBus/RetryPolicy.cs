@@ -3,20 +3,22 @@ using Microsoft.Extensions.Logging;
 namespace StreamBus;
 
 /// <summary>
-/// Retry timing and boundedness. A <see langword="null"/>
-/// <see cref="MaxAttempts"/> means unbounded retry.
+/// Retry timing and attempt limit. <see cref="MaxAttempts"/> is the total number
+/// of attempts per message, including the first; <see langword="null"/> means
+/// no attempt limit (retried forever), <c>1</c> means no retry.
 /// </summary>
 public sealed record RetryPolicy
 {
     /// <summary>
-    /// Total attempts including the initial one. <see langword="null"/> is
-    /// unbounded; <c>1</c> means no retry.
+    /// Total attempts including the initial one. <see langword="null"/> means no
+    /// attempt limit (retried until it succeeds); <c>1</c> means no retry.
     /// </summary>
     /// <remarks>
-    /// Unbounded retry has no hand-off destination: a persistent handler failure
-    /// halts the partition for as long as it persists (back-pressure, no
-    /// dead-letter). Prefer a bounded policy with an ErrorStream, dead-letter,
-    /// or OnExhausted hand-off.
+    /// With no attempt limit there is no hand-off destination: a handler that
+    /// keeps failing blocks its partition until it succeeds (back-pressure;
+    /// nothing is skipped or dead-lettered). To cap attempts and hand the
+    /// message off, set <see cref="MaxAttempts"/> and configure an error
+    /// stream, a dead-letter queue, or an <c>OnExhausted</c> callback.
     /// </remarks>
     public int? MaxAttempts { get; init; }
 

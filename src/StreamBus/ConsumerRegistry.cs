@@ -222,13 +222,13 @@ internal sealed class StreamConsumerRegistry
             if (hasHandoff)
             {
                 throw new StreamBusConfigurationException(
-                    "ConsumeOptions.Retry is unbounded (MaxAttempts is null); a hand-off destination (ErrorStream/DeadLetter/OnExhausted) cannot fire. Set MaxAttempts or remove the destination.");
+                    "ConsumeOptions.Retry has no attempt limit (MaxAttempts is null); a hand-off destination (ErrorStream/DeadLetter/OnExhausted) never fires. Set MaxAttempts or remove the destination.");
             }
         }
         else if (!hasHandoff)
         {
             throw new StreamBusConfigurationException(
-                "ConsumeOptions.Retry.MaxAttempts is bounded, but no hand-off destination is configured; configure ErrorStream, a DeadLetter destination, or an OnExhausted callback.");
+                "ConsumeOptions.Retry sets an attempt limit (MaxAttempts), but no hand-off destination is configured; configure ErrorStream, a DeadLetter destination, or an OnExhausted callback.");
         }
         if (retry.BaseDelay <= TimeSpan.Zero)
         {

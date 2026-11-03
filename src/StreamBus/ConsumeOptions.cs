@@ -22,6 +22,16 @@ public sealed record ConsumeOptions
     public bool SingleActiveConsumer { get; init; } = true;
     public ConsumeOffset Offset { get; init; } = ConsumeOffset.ResumeOrFirst;
     public OffsetStoreOptions OffsetStore { get; init; } = new();
+
+    /// <summary>
+    /// Retry policy. The default sets no attempt limit: a failing handler is
+    /// retried forever and its partition waits, so nothing is skipped. To cap
+    /// attempts and hand the message off instead, set
+    /// <see cref="RetryPolicy.MaxAttempts"/> and configure an error destination:
+    /// <see cref="ErrorStream"/> (an error stream) or <see cref="OnExhausted"/> (a
+    /// callback). The endpoint API also offers a dead-letter queue
+    /// (<c>DeadLetterToQueue</c>).
+    /// </summary>
     public RetryPolicy Retry { get; init; } = new();
     public ErrorStreamOptions? ErrorStream { get; init; }
 

@@ -190,7 +190,7 @@ internal static class RetryDerivation
         if (!bounded)
         {
             if (destination is not null || hasCallback)
-                throw new StreamBusConfigurationException($"Bus {busName}: endpoint '{stream}' sets a dead-letter destination or OnExhausted callback with an unbounded retry schedule. Handoff needs a bound: configure UseMessageRetry with Immediate, Interval, Intervals, Exponential, or None.");
+                throw new StreamBusConfigurationException($"Bus {busName}: endpoint '{stream}' sets a dead-letter destination or OnExhausted callback with a retry schedule that has no attempt limit. A hand-off needs an attempt limit: configure UseMessageRetry with Immediate, Interval, Intervals, Exponential, or None.");
             return new DerivedExhaustion(effective, ExhaustionKind.StrictForever, null, null, false);
         }
         if (hasCallback)
