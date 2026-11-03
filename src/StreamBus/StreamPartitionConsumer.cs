@@ -543,14 +543,22 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                 return;
             }
 
+            if (_eo is not null)
+            {
+                Interlocked.Increment(ref _state.Inflight);
+
+                // DispatchEffectivelyOnceAsync's own finally is the sole owner of the
+                // decrement + retry_blocked reset; this path returns through it.
+                await DispatchEffectivelyOnceAsync(offset, consumeContext, sendHeaders, attach, activity).ConfigureAwait(false);
+                return;
+            }
+
             Interlocked.Increment(ref _state.Inflight);
+
+            // A single finally owns the inflight decrement + retry_blocked reset for
+            // every non-EO exit path below (mirrors the effectively-once method).
             try
             {
-                if (_eo is not null)
-                {
-                    await DispatchEffectivelyOnceAsync(offset, consumeContext, sendHeaders, attach, activity).ConfigureAwait(false);
-                    return;
-                }
                 // In-handler retry (FR-4.1): the attempt loop runs under the already-held
                 // dispatch gate, so a retry sleep stalls exactly this partition and order
                 // is preserved by construction. `attempts` counts completed handler
@@ -568,8 +576,6 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                     }
                     catch (OperationCanceledException) when (attach.LoopToken.IsCancellationRequested)
                     {
-                        Interlocked.Decrement(ref _state.Inflight);
-                        Interlocked.Exchange(ref _state.RetryBlocked, 0);
                         return;
                     }
                     catch (OperationCanceledException ex)
@@ -578,8 +584,6 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                         // a handler failure, not shutdown. Fail the attach visibly
                         // (close + backoff + recreate + redeliver) instead of silently
                         // retrying forever inside the dispatch gate.
-                        Interlocked.Decrement(ref _state.Inflight);
-                        Interlocked.Exchange(ref _state.RetryBlocked, 0);
                         FailAttach(attach, offset, ex, "Consume handler cancelled without shutdown");
                         return;
                     }
@@ -599,8 +603,6 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                                 _stream, _partitionIndex, offset, attempts, mode);
                         if (exhausted)
                         {
-                            Interlocked.Decrement(ref _state.Inflight);
-                            Interlocked.Exchange(ref _state.RetryBlocked, 0);
                             await ExhaustAsync(consumer, offset, consumeContext, attempts, ex, attach, sendHeaders.Snapshot()).ConfigureAwait(false);
                             return;
                         }
@@ -612,8 +614,6 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                         }
                         catch (OperationCanceledException) when (attach.LoopToken.IsCancellationRequested)
                         {
-                            Interlocked.Decrement(ref _state.Inflight);
-                            Interlocked.Exchange(ref _state.RetryBlocked, 0);
                             return;
                         }
                     }
@@ -622,12 +622,14 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
             catch (OperationCanceledException) when (attach.LoopToken.IsCancellationRequested)
             {
                 // Shutdown raced dispatch; exit quietly without signalling failure.
-                return;
             }
-            Interlocked.Decrement(ref _state.Inflight);
-            Interlocked.Exchange(ref _state.RetryBlocked, 0);
+            finally
+            {
+                Interlocked.Decrement(ref _state.Inflight);
+                Interlocked.Exchange(ref _state.RetryBlocked, 0);
+            }
 
-            if (_eo is null && _storer.ShouldStoreOnSuccess(offset))
+            if (_storer.ShouldStoreOnSuccess(offset))
             {
                 await StoreAndTrackAsync(consumer, offset, attach, attach.LoopToken).ConfigureAwait(false);
             }

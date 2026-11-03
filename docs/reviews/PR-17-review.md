@@ -692,7 +692,7 @@ public interface IStreamSuperProducerHandle : IStreamProducerHandle
 
 ---
 
-**[CON-3] Non-EO dispatch maintains `_state.Inflight` decrements in five hand-placed spots — fragile, with future leak risk**
+**[CON-3] Non-EO dispatch maintains `_state.Inflight` decrements in five hand-placed spots — fragile, with future leak risk — VALID, fixed (2026-11-03)**
 - **Severity:** IMPORTANT
 - **File:** src\StreamBus\StreamPartitionConsumer.cs (lines 520–601 vs 913–917)
 - **Problem:** `DispatchEffectivelyOnceAsync` correctly owns the decrement in a single `finally` (913–917). The non-EO path instead decrements at 545, 565, 578, 590 individually, and the shutdown catch at 585–589 returns after the 520 increment without decrementing. Any future branch added to the region (e.g., the fix for CON-1!) reintroduces the leak.
@@ -719,6 +719,42 @@ finally
     Interlocked.Exchange(ref _state.RetryBlocked, 0);
 }
 ```
+
+- **Verification & resolution (2026-11-03):** Confirmed genuine on the structural claim, with two
+  corrections to the exact failure inventory:
+  1. **Fragility confirmed and already realized once.** At verification time the non-EO path had
+     *five* scattered decrement sites (not four as counted against the pre-CON-1 code — the
+     CON-1 foreign-token OCE catch had added exactly the predicted kind of branch, each requiring
+     its own hand-placed decrement). The EO method's "single finally owns the decrement" comment
+     (`DispatchEffectivelyOnceAsync`) is the in-codebase proof of the intended pattern; the
+     non-EO path simply didn't follow it.
+  2. **Line-number accuracy.** The reviewer's line numbers predate CON-1's fix; in the
+     post-CON-1 code the sites were 571/581/602/615/627 and the shutdown-race catch was 622–626.
+     The "shutdown catch returns without decrementing" hazard was real in the *original* shape:
+     that catch was reachable (an `OperationCanceledException` on the loop token escaping
+     `ExhaustAsync` after exhaustion), and in the pre-CON-1 code such a path leaked the counter.
+     The CON-1 fix had already de-fanged the specific exhaustion-adjacent paths by moving the
+     decrement ahead of `ExhaustAsync` — which traded correctness for an accuracy bug:
+     `Inflight` dropped to 0 *before* the exhaustion hand-off ran, so a blocked hand-off
+     (retry-forever publish, `OnExhausted` waiting on its token) was invisible to the
+     `streambus_partition_inflight` gauge and to replay-drain idle detection while the dispatch
+     gate was still held. Either way, every future branch in the region was one forgotten
+     decrement away from a real leak — the pattern the reviewer flagged.
+  3. **Applied fix** (`StreamPartitionConsumer.DispatchAsync`): the EO branch is hoisted out
+     (its own method's `finally` remains the sole owner of its decrement, avoiding a
+     double-decrement); the non-EO attempt loop, exhaustion, and shutdown-race catch now sit in
+     one `try` with a single `finally` doing `Decrement(Inflight)` + `RetryBlocked = 0`,
+     mirroring the EO method. All five scattered sites deleted, the unreachable-on-success
+     `_eo is null` store guard simplified away. The success store still runs after the
+     decrement (unchanged ordering); `StoreAndTrackAsync` failures still propagate to the
+     dispatch safety net.
+  4. **Tests (TDD — watched RED first, failing exactly at the in-handoff assert: pre-fix
+     `Inflight == 0` while the hand-off was blocked):**
+     `DispatchShutdownReleaseTests.Shutdown_racing_exhaustion_handoff_releases_the_inflight_decrement`
+     pins that the inflight counter is held (1) while the `OnExhausted` hand-off is blocked, and
+     that a shutdown racing the blocked hand-off releases both `Inflight` and `RetryBlocked`
+     back to 0. UnitTests 476/476; the brokered integration suite could not run in this
+     environment (no RabbitMQ broker is listening) but builds clean.
 
 ---
 
