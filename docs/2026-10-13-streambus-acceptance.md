@@ -39,7 +39,7 @@ v1 verdict for the exact lines.
 | FR-4.2 | Throwing handler never silently skipped; ordered paths avoid `Reliable` | `Handler_failure_redelivers_without_advancing` (attempts[2]==3, stored==4) + same no-`Reliable` code fact as FR-4.1 | ✅ |
 | FR-4.3 | Every `RetryPolicy` knob exercised; 1-based attempts; `MaxAttempts` semantics | `Attempt_1_resolves_to_base_delay_without_jitter` (BaseDelay+Multiplier 200→400→800) + `Delay_caps_at_max_delay_and_jitter_stays_bounded` (MaxDelay+Jitter) + `Delay_calculator_overrides_knobs_with_one_based_attempts` (override + seen==[1,2]) + `Skip_with_max_attempts_1_hands_off_after_one_attempt` vs `Skip_handoff_publishes_envelope_and_advances_once` (MaxAttempts 1 vs 3) + `Strict_with_max_attempts_throws` (null-only-with-Strict) + bound-validation tests | ✅ |
 | FR-4.4 | Strict stalls, never advances until success; Strict+ErrorStream rejected | `Strict_retry_window_survives_kill_without_skip` (redelivers same offset after kill) + `Strict_with_error_stream_throws` + `Strict_with_max_attempts_throws` | ✅ |
-| FR-4.5 | Skip advances exactly once + error publish; hook observes only | Handoff pinned: `Skip_handoff_publishes_envelope_and_advances_once` (fields + stored==4) + `Skip_with_max_attempts_1_…` + `Skip_without_error_stream_throws` / `Skip_without_max_attempts_throws`. Hook pinned (Task 2): `OnRetryExhausted_observes_but_never_changes_outcome` (hook fires with full handoff fields; a throwing hook cannot change the outcome — both handoffs published, stream advances past poison) | ✅ |
+| FR-4.5 | Skip advances exactly once + error publish; hook observes only | Handoff pinned: `Skip_handoff_publishes_envelope_and_advances_once` (fields + stored==4) + `Skip_with_max_attempts_1_…` + `Skip_without_error_stream_throws` / `Skip_without_max_attempts_throws`. Raw-path callback pinned: `OnExhausted_owns_exhaustion_and_advances_past_poison` (fires with the full `ExhaustedContext`; returning advances past poison — v2 replaced the v1 observe-only `OnRetryExhausted` hook with the owning `OnExhausted`) | ✅ |
 | FR-4.6 | Failure mode is per consumer | `Strict_and_skip_modes_coexist_per_consumer` | ✅ |
 | FR-4.7 | In-handler retry preserves ordering under load (G-1) | `Retry_preserves_order_under_load_and_failover` (24/24 distinct, per-key 1..12, stored == max per partition) | ✅ |
 | FR-5.1 | Error message keeps body + all FR-5.1 fields | Unit `Round_trip_preserves_every_field_and_body` (every field + body) + `Skip_handoff_…` field asserts (source-stream/partition/offset, attempts, exception type/message/stack, failed-at, error-routing-value, body "k:2") | ✅ |
@@ -106,7 +106,7 @@ and each now has its pin or ruling (verified green this session, see verdict):
 
 Expected confirmations verified (not assumed): FR-8.2 now pinned by
 `One_bus_serves_two_streams`;
-FR-4.5 hook now pinned by `OnRetryExhausted_observes_but_never_changes_outcome`;
+FR-4.5 raw-path callback now pinned by `OnExhausted_owns_exhaustion_and_advances_past_poison`;
 FR-10.9 IS pinned (failover per-partition stored == max received);
 FR-5.1 IS pinned (envelope round-trip + handoff field asserts);
 FR-4.3 numbering IS pinned (`Delay_calculator_overrides_knobs_with_one_based_attempts`,
@@ -281,9 +281,11 @@ v1 pins and stayed green unmodified.
 Behavior deltas vs v1 rows: `Invalid_options_fail_blocking_startup`
 became `Unbounded_retry_with_destination_fails_at_registration`
 (unbounded + destination is now a registration error, not a startup
-error); the v1 observe-only `OnRetryExhausted` hook survives only on the
-raw `ConsumeOptions` path (`OnRetryExhausted_observes_but_never_changes_outcome`
-still green); endpoint exhaustion is owned by `OnExhausted` or a
+error); the v1 observe-only `OnRetryExhausted` hook is removed: the raw
+`ConsumeOptions` path now exposes the same owning `OnExhausted` callback as
+endpoints (`OnExhausted_owns_exhaustion_and_advances_past_poison`), and
+`ErrorStream` + `OnExhausted` on that path is a registration error instead of
+a shadowed destination. Endpoint exhaustion is owned by `OnExhausted` or a
 dead-letter destination. FR-8.1 (multi-bus markers) semantics unchanged,
 now expressed through `AddStreamBus<TBus>` + per-bus endpoints.
 

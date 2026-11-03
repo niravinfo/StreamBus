@@ -681,7 +681,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
     // recycle + redeliver), never to a silent skip.
     private async Task ExhaustAsync(IStreamConsumerHandle consumer, ulong offset, ConsumeContext consumeContext, int attempts, Exception lastError, AttachState attach, IReadOnlyDictionary<string, object?>? sendHeaders = null)
     {
-        if (_options.ExhaustionCallback is { } owned)
+        if (_options.OnExhausted is { } owned)
         {
             _logger.LogWarning(lastError,
                 "Retry budget exhausted for stream {Stream} partition {Partition} offset {Offset} after {Attempts} attempts; handing off to the OnExhausted callback.",
@@ -788,47 +788,6 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
             (n, ex) => RetryDelays.ResolveDelay(_options.Retry, n, ex, _logger),
             attach.LoopToken,
             _options.HandoffConfirmTimeout).ConfigureAwait(false);
-        if (_options.OnRetryExhausted is { } hook)
-        {
-            var handoff = new ErrorHandoff
-            {
-                ErrorStream = errorStream,
-                SourceStream = _stream,
-                SourcePartition = _partitionIndex,
-                SourceOffset = offset,
-                Attempts = attempts,
-                FailedAt = failedAt,
-                Exception = lastError,
-            };
-            var hookTask = hook(handoff);
-            try
-            {
-                await hookTask.WaitAsync(attach.LoopToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (attach.LoopToken.IsCancellationRequested)
-            {
-                _ = hookTask.ContinueWith(
-                    t =>
-                    {
-                        if (t.Exception is { } hex)
-                            _logger.LogWarning(hex,
-                                "OnRetryExhausted hook faulted after abandon for stream {Stream} partition {Partition} reference {Reference}.",
-                                _stream, _partitionIndex, _reference);
-                    },
-                    CancellationToken.None,
-                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
-                    TaskScheduler.Default);
-                _logger.LogDebug(
-                    "OnRetryExhausted hook abandoned on shutdown for stream {Stream} partition {Partition}.",
-                    _stream, _partitionIndex);
-            }
-            catch (Exception hex)
-            {
-                _logger.LogWarning(hex,
-                    "OnRetryExhausted hook failed for stream {Stream} partition {Partition}; handoff outcome unchanged.",
-                    _stream, _partitionIndex);
-            }
-        }
     }
 
     // Effectively-once dispatch (FR-6): Strict-unbounded compute retry (EO

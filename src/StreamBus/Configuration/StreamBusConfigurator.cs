@@ -771,7 +771,7 @@ public static class StreamBusConfiguratorExtensions
                 ErrorStream = derived.Kind == ExhaustionKind.StreamHandoff ? derived.Stream : null,
                 ReadinessPolicy = descriptor.Readiness,
                 HandoffConfirmTimeout = descriptor.HandoffConfirmTimeout,
-                ExhaustionCallback = derived.Kind == ExhaustionKind.Callback ? descriptor.OnExhausted : null,
+                OnExhausted = derived.Kind == ExhaustionKind.Callback ? descriptor.OnExhausted : null,
                 DeadLetter = derived.Kind == ExhaustionKind.QueueHandoff ? derived.Queue : null,
                 ShadowedDeadLetter = derived.DestinationShadowed ? descriptor.DeadLetter : null,
                 ConsumeFilters = descriptor.ConsumeFilters,

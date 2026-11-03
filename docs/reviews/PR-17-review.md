@@ -758,8 +758,8 @@ finally
 
 ---
 
-**[CON-4] Two competing exhaustion callbacks: `OnRetryExhausted` only fires on the ErrorStream branch**
-- **Severity:** IMPORTANT
+**[CON-4] Two competing exhaustion callbacks: `OnRetryExhausted` only fires on the ErrorStream branch — VALID (structurally), fixed (2026-11-03)**
+- **Severity:** IMPORTANT → resolved as a public-API break
 - **File:** src\StreamBus\RetryPolicy.cs (lines 45–54) + src\StreamBus\Configuration\RetryConfiguration.cs (lines 57–75) + src\StreamBus\StreamPartitionConsumer.cs (lines 643–789)
 - **Problem:** Two exhaustion hooks exist with different shapes: `ErrorHandoff` + `OnRetryExhausted` (no `CancellationToken`) and `ExhaustedContext` + `ExhaustionCallback` (with token and `Services`). `ExhaustAsync` dispatches to the callback branch, the dead-letter branch, or the error-stream branch — and `OnRetryExhausted` only executes inside the ErrorStream branch. A user who registers `OnRetryExhausted` with a queue dead-letter or callback destination is never notified about exhausted messages at all.
 ```csharp
@@ -769,6 +769,41 @@ public Func<ErrorHandoff, Task>? OnRetryExhausted { get; init; }
 if (_options.OnRetryExhausted is { } hook)
 ```
 - **Solution:** Keep one callback. `ExhaustedContext`/`ExhaustionCallback` is the better shape (has `CancellationToken`, `Services`, `Attempts`). Delete `OnRetryExhausted`/`ErrorHandoff` (or at minimum fire it on every exhaustion path); port any payload it provides into `ExhaustedContext`.
+
+- **Verification & resolution (2026-11-03):** Structurally genuine, with the reported
+  failure path refuted as unreachable; resolved by unifying the surface anyway (breaking
+  changes are acceptable pre-release).
+  1. **Refuted as a user-facing bug:** `OnRetryExhausted` and the dead-letter/callback
+     branches cannot coexist through the public API. `DeadLetter` and `ExhaustionCallback`
+     were `internal` on `ConsumeOptions`; the endpoint configurator (the only producer of
+     those fields) never set `OnRetryExhausted`; and `ConsumerRegistry` validation rejected
+     bounded retry without a handoff and unbounded retry with one while `hasHandoff`
+     excluded `OnRetryExhausted` — so the only constructible combination was bounded +
+     `ErrorStream`, exactly the branch where the hook fired. The reviewer also cited
+     `RetryPolicy.cs:45-54`, which is `ErrorStreamOptions`, not the hook.
+  2. **Genuine as design debt:** two exhaustion shapes in one assembly, one of them
+     undocumented in the guides and observable only on the raw path, is a trap for the next
+     maintainer (`StreamBusConfigurator` maps `OnExhausted` to the internal duplicate, so a
+     future field added to one shape silently misses the other).
+  3. **Applied fix (unify, do not delete-and-lose):** `ConsumeOptions.OnExhausted`
+     (`Func<ExhaustedContext, CancellationToken, Task>`) is now public and is the single
+     callback for both the raw and endpoint APIs; `OnRetryExhausted`, `ErrorHandoff`, and
+     the internal `ExhaustionCallback` duplicate are deleted. `ExhaustAsync` runs the one
+     callback branch, and the post-handoff observe-only hook block is gone. The raw path
+     rejects `ErrorStream` + `OnExhausted` with `StreamBusConfigurationException`
+     (endpoints keep resolving the ambiguity by shadowing the destination with a startup
+     warning, which is unchanged).
+  4. Tests (TDD — the new tests failed first with `CS0117: 'ConsumeOptions' does not
+     contain a definition for 'OnExhausted'`): `RetryPolicyTests.Bounded_with_on_exhausted_callback_is_accepted`
+     (the callback counts as a handoff) and `Bounded_with_error_stream_and_on_exhausted_throws`;
+     the raw-path integration test was rewritten as
+     `AcceptanceIntegrationTests.OnExhausted_owns_exhaustion_and_advances_past_poison`
+     (full `ExhaustedContext` fields, returning advances, no error-stream copy). UnitTests
+     478/478; IntegrationTests 71/71 with 1 pre-existing cluster-gated skip
+     (`Leader_placement_gate_G3`, needs a 3-node cluster); build clean (0 warnings).
+  5. **Docs/changelog:** CHANGELOG `### Breaking` records the surface change and the raw-path
+     mutual exclusivity; `docs/guide/errors.md` documents the shared callback; the
+     acceptance evidence row/notes point at the new test.
 
 ---
 

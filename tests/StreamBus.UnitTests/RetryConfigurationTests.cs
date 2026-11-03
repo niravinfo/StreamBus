@@ -47,7 +47,7 @@ public sealed class RetryConfigurationTests
         Assert.Equal(3, options.Retry.MaxAttempts);
         Assert.Equal("audit-errors", options.ErrorStream?.Stream);
         Assert.Null(options.DeadLetter);
-        Assert.Null(options.ExhaustionCallback);
+        Assert.Null(options.OnExhausted);
     }
 
     [Fact]
@@ -60,7 +60,7 @@ public sealed class RetryConfigurationTests
             e.OnExhausted((_, _) => Task.CompletedTask);
         });
         Assert.Equal(6, options.Retry.MaxAttempts);
-        Assert.NotNull(options.ExhaustionCallback);
+        Assert.NotNull(options.OnExhausted);
         Assert.Null(options.ErrorStream);
         Assert.Null(options.DeadLetter);
     }
@@ -87,7 +87,7 @@ public sealed class RetryConfigurationTests
         Assert.Null(options.Retry.MaxAttempts);
         Assert.Null(options.ErrorStream);
         Assert.Null(options.DeadLetter);
-        Assert.Null(options.ExhaustionCallback);
+        Assert.Null(options.OnExhausted);
     }
 
     [Fact]
@@ -146,7 +146,7 @@ public sealed class RetryConfigurationTests
             e.DeadLetterToStream("audit-errors");
             e.OnExhausted((_, _) => Task.CompletedTask);
         });
-        Assert.NotNull(options.ExhaustionCallback);
+        Assert.NotNull(options.OnExhausted);
         Assert.Null(options.ErrorStream);
         Assert.Equal("audit-errors", options.ShadowedDeadLetter?.Name);
     }
