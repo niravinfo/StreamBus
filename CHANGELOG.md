@@ -198,6 +198,11 @@
   compiles expression trees. A rename can no longer turn into a delivery-time
   crash, and the deserialization path no longer pays `Expression.Compile`
   startup cost.
+- Non-effectively-once dispatch now owns the inflight counter and
+  retry-blocked flag in a single `try/finally` instead of five hand-placed
+  decrement sites (CON-3). The `streambus_partition_inflight` gauge stays 1
+  while a retry-exhaustion hand-off is still in progress and returns to 0 on
+  every exit path, including a shutdown racing the hand-off.
 
 ### Validation
 
