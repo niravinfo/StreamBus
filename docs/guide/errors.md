@@ -101,7 +101,10 @@ lost confirmation wedge the partition:
 offset, body, message id, correlation id, sent time, headers, attempts,
 exception, services). Returning advances past the message; throwing
 recycles the attach (redeliver, never skip). Use `ctx.GetService<T>()` for
-buses and other services.
+buses and other services. A missing registration throws the standard
+`InvalidOperationException` from `GetRequiredService<T>()` — the bus
+already started, so this is a DI wiring problem, not invalid bus
+configuration.
 
 The raw `ConsumeOptions` path exposes the same callback as
 `OnExhausted(Func<ExhaustedContext, CancellationToken, Task>)`, so there is

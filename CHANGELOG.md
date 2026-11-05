@@ -124,6 +124,14 @@
   transient by the producer layer, and all publish failures — including the
   zero-filter fast path — are now recorded as exception events on the
   `streambus.publish` activity.
+- `ExhaustedContext.GetService<T>()` now delegates to
+  `GetRequiredService<T>()`, so a missing registration throws
+  `InvalidOperationException` instead of `StreamBusConfigurationException`.
+  The callback runs after the bus started; a DI miss is a runtime wiring
+  problem, not invalid bus configuration (which is what the configuration
+  exception is documented to mean). Callers that caught
+  `StreamBusConfigurationException` around this call must catch
+  `InvalidOperationException` instead.
 
 ### Added
 
