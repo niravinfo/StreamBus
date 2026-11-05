@@ -294,6 +294,10 @@ public sealed class RetryConfigurationTests
         await using var sp = services.BuildServiceProvider();
         var ctx = CallbackContext(sp);
         Assert.Equal("hello", ctx.GetService<string>());
-        Assert.Throws<StreamBusConfigurationException>(() => ctx.GetService<int>());
+
+        // A missing DI registration is a runtime resolution miss, not invalid
+        // bus configuration: surface the standard required-service failure.
+        var missing = Assert.Throws<InvalidOperationException>(() => ctx.GetService<int>());
+        Assert.Contains("System.Int32", missing.Message);
     }
 }

@@ -917,6 +917,39 @@ public T GetService<T>() where T : notnull
     => Services.GetRequiredService<T>();
 ```
 
+- **Verification & resolution (2026-11-05):** Genuine, with severity corrected from IMPORTANT to
+  MINOR. The defect is real but has no behavioural impact:
+  1. **Confirmed against the code**: `RetryConfiguration.cs:72-74` matched the review verbatim, and
+     the type contradicted the library's own documented exception contract —
+     `docs/guide/errors.md:164` defines `StreamBusConfigurationException` as "Invalid or contradictory
+     configuration" that the user fixes before running. Every other throw of that type in the
+     codebase is a registration/validation/build-time check; a missing DI registration inside an
+     `OnExhausted` callback happens after the bus started and cannot be a bus-configuration defect.
+  2. **Refuted as IMPORTANT (no runtime consequence)**: `ExhaustedContext.Services` is the
+     per-delivery DI scope (`StreamPartitionConsumer.cs:691,705`) and the callback runs through
+     `ExhaustionCallbackRunner.RunAsync` (`RetryConfiguration.cs:208-236`), which catches every
+     exception, logs a warning, and recycles the attach. The exception type never reaches library
+     classification logic, so retryability, dispatch, and health behaviour are unchanged; the type
+     only reaches the user's own callback-level `catch` and the log entry. Nothing on the startup
+     path (`Hosting.cs:517`) can observe it, so "polluting configuration-exception handling" is
+     limited to user code.
+  3. **Applied fix:** `GetService<T>()` now delegates to `Services.GetRequiredService<T>()`, with an
+     XML doc stating the `InvalidOperationException` contract. The review's alternative — deleting
+     the helper and making users call `ctx.Services.GetRequiredService<T>()` like
+     `ConsumeContext`/`PublishContext` — was rejected as an unnecessary public-API break; the helper
+     is documented (`docs/guide/errors.md`).
+  4. **Deliberate consequence:** the failure is no longer a `StreamBusException`. Verified at compile
+     time — an attempt to assert `missing is StreamBusException` in the test is `CS0184` (unrelated
+     types), which is exactly the intended classification: a missing user registration is a DI
+     error, not a library error.
+  5. **Tests (TDD — watched RED first, failing because the old code threw
+     `StreamBusConfigurationException`):** `RetryConfigurationTests.Exhausted_context_resolves_services`
+     now asserts `InvalidOperationException` and that the standard DI message names the missing type.
+     UnitTests 478/478; the brokered integration suite was not run (no RabbitMQ broker listening).
+  6. **Docs/changelog:** `docs/guide/errors.md` notes the `InvalidOperationException` contract next
+     to `ctx.GetService<T>()`; CHANGELOG `### Breaking` records the exception-type change for callers
+     that caught the configuration exception around this call.
+
 ---
 
 **[CON-11] Naming drift: "ReceiveEndpoint" in errors with no such type; three consumer type names; inconsistent health registration schemes**

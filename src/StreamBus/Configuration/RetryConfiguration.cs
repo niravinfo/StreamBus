@@ -1,3 +1,5 @@
+using Microsoft.Extensions.DependencyInjection;
+
 namespace StreamBus;
 
 public enum DeadLetterQueueType
@@ -69,9 +71,15 @@ public sealed record ExhaustedContext
     public required DateTimeOffset FailedAt { get; init; }
     public required IServiceProvider Services { get; init; }
 
+    /// <summary>
+    /// Resolves a required service from the exhaustion scope. A missing
+    /// registration is a runtime DI miss, not invalid bus configuration, so
+    /// this surfaces the standard <see cref="InvalidOperationException"/>
+    /// from <see cref="ServiceProviderServiceExtensions.GetRequiredService{T}(IServiceProvider)"/>.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">No service of type <typeparamref name="T"/> is registered.</exception>
     public T GetService<T>() where T : notnull
-        => (T)(Services.GetService(typeof(T))
-            ?? throw new StreamBusConfigurationException($"ExhaustedContext has no service of type {typeof(T).FullName} registered."));
+        => Services.GetRequiredService<T>();
 }
 
 public interface IRetryConfigurator
