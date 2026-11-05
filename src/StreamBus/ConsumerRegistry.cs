@@ -48,24 +48,55 @@ internal sealed class StreamConsumerRegistration : IStreamConsumer
         {
             return;
         }
-        _family.Cancel();
+
+        await ConsumerTeardown.RunAsync(
+            _family,
+            _loops,
+            _scopes,
+            onStopped: _onStopped,
+            onDisposed: () => _deregister(this)).ConfigureAwait(false);
+    }
+}
+
+/// <summary>
+/// Single owner of consumer teardown: cancel the family, drain the run tasks, dispose the
+/// partition loops, scopes, and cancellation source, then run the stopped/deregistered hooks.
+/// Shared by the registration's <see cref="StreamConsumerRegistration.DisposeAsync"/> and the
+/// failed-start cleanup in <see cref="StreamConsumerRegistry.ConsumeAsync"/> /
+/// <see cref="StreamConsumerRegistry.ConsumeEffectivelyOnceAsync"/>.
+/// </summary>
+internal static class ConsumerTeardown
+{
+    public static async Task RunAsync(
+        CancellationTokenSource family,
+        List<(StreamPartitionConsumer Loop, Task RunTask)> loops,
+        List<IDisposable> scopes,
+        Action? onStopped = null,
+        Action? onDisposed = null,
+        bool swallowRunTaskFailures = false)
+    {
+        family.Cancel();
         try
         {
-            await Task.WhenAll(_loops.Select(l => l.RunTask)).ConfigureAwait(false);
+            await Task.WhenAll(loops.Select(l => l.RunTask)).ConfigureAwait(false);
+        }
+        catch (Exception) when (swallowRunTaskFailures)
+        {
+            // The caller rethrows its original failure; the run tasks are observed only.
         }
         finally
         {
-            foreach (var (loop, _) in _loops)
+            foreach (var (loop, _) in loops)
             {
                 await loop.DisposeAsync().ConfigureAwait(false);
             }
-            foreach (var scope in _scopes)
+            foreach (var scope in scopes)
             {
                 scope.Dispose();
             }
-            _family.Dispose();
-            _onStopped?.Invoke();
-            _deregister(this);
+            family.Dispose();
+            onStopped?.Invoke();
+            onDisposed?.Invoke();
         }
     }
 }
@@ -252,17 +283,8 @@ internal sealed class StreamConsumerRegistry
         }
         var reference = ConsumerReferenceValidation.Require(options.Reference, stream);
 
-        var readiness = await _supervisor.WaitUntilReadyAsync(options.ReadinessPolicy, ct).ConfigureAwait(false);
-        if (readiness == BusReadiness.Fatal)
-        {
-            throw new StreamBusFatalException($"StreamBus for vhost '{_vhost}' is in Fatal state; consume of '{stream}' refused.");
-        }
-        if (readiness != BusReadiness.Ready)
-        {
-            throw new StreamBusNotReadyException($"StreamBus for vhost '{_vhost}' is not ready ({readiness}); consume of '{stream}' refused.");
-        }
-        var handle = _supervisor.CurrentHandle
-            ?? throw new StreamBusNotReadyException($"StreamBus for vhost '{_vhost}' is not ready; consume of '{stream}' refused.");
+        var handle = await RequireReadyAsync(
+            options.ReadinessPolicy, $"consume of '{stream}'", ct).ConfigureAwait(false);
 
         var exists = options.IsSuperStream
             ? await handle.SuperStreamExistsAsync(stream, ct).ConfigureAwait(false)
@@ -343,25 +365,8 @@ internal sealed class StreamConsumerRegistry
         }
         catch
         {
-            family.Cancel();
-            try
-            {
-                await Task.WhenAll(loops.Select(l => l.RunTask)).ConfigureAwait(false);
-            }
-            catch (Exception)
-            {
-                // Teardown observes the already-started tasks; the original failure is rethrown below.
-            }
-            foreach (var (loop, _) in loops)
-            {
-                await loop.DisposeAsync().ConfigureAwait(false);
-            }
-            foreach (var scope in scopes)
-            {
-                scope.Dispose();
-            }
-            family.Dispose();
-            tracker?.Stop();
+            await ConsumerTeardown.RunAsync(
+                family, loops, scopes, onStopped: tracker is null ? null : tracker.Stop, swallowRunTaskFailures: true).ConfigureAwait(false);
             throw;
         }
 
@@ -392,17 +397,8 @@ internal sealed class StreamConsumerRegistry
         ConsumerReferenceValidation.Validate(reference);
         if (options.Reference is not null) ConsumerReferenceValidation.Validate(options.Reference);
 
-        var readiness = await _supervisor.WaitUntilReadyAsync(options.ReadinessPolicy, ct).ConfigureAwait(false);
-        if (readiness == BusReadiness.Fatal)
-        {
-            throw new StreamBusFatalException($"StreamBus for vhost '{_vhost}' is in Fatal state; effectively-once consume of '{sourceStream}' refused.");
-        }
-        if (readiness != BusReadiness.Ready)
-        {
-            throw new StreamBusNotReadyException($"StreamBus for vhost '{_vhost}' is not ready ({readiness}); effectively-once consume of '{sourceStream}' refused.");
-        }
-        var handle = _supervisor.CurrentHandle
-            ?? throw new StreamBusNotReadyException($"StreamBus for vhost '{_vhost}' is not ready; effectively-once consume of '{sourceStream}' refused.");
+        var handle = await RequireReadyAsync(
+            options.ReadinessPolicy, $"effectively-once consume of '{sourceStream}'", ct).ConfigureAwait(false);
 
         string[] sourcePartitions;
         if (options.SourceIsSuperStream)
@@ -480,24 +476,8 @@ internal sealed class StreamConsumerRegistry
         }
         catch
         {
-            family.Cancel();
-            try
-            {
-                await Task.WhenAll(loops.Select(l => l.RunTask)).ConfigureAwait(false);
-            }
-            catch (Exception)
-            {
-            }
-            foreach (var (loop, _) in loops)
-            {
-                await loop.DisposeAsync().ConfigureAwait(false);
-            }
-            foreach (var scope in scopes)
-            {
-                scope.Dispose();
-            }
-            family.Dispose();
-            tracker?.Stop();
+            await ConsumerTeardown.RunAsync(
+                family, loops, scopes, onStopped: tracker is null ? null : tracker.Stop, swallowRunTaskFailures: true).ConfigureAwait(false);
             throw;
         }
 
@@ -515,9 +495,8 @@ internal sealed class StreamConsumerRegistry
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(stream);
         ConsumerReferenceValidation.Validate(reference);
-        await EnsureReadyAsync(stream, ct).ConfigureAwait(false);
-        var handle = _supervisor.CurrentHandle
-            ?? throw new StreamBusNotReadyException($"StreamBus for vhost '{_vhost}' is not ready; offset query for '{stream}' refused.");
+        var handle = await RequireReadyAsync(
+            ReadinessPolicy.FailFastPolicy, $"offset query for '{stream}'", ct).ConfigureAwait(false);
         var partitionStream = await ResolvePartitionStreamAsync(handle, stream, partition, ct).ConfigureAwait(false);
         return await handle.TryQueryOffsetAsync(reference, partitionStream, ct).ConfigureAwait(false);
     }
@@ -526,9 +505,8 @@ internal sealed class StreamConsumerRegistry
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(stream);
         ConsumerReferenceValidation.Validate(reference);
-        await EnsureReadyAsync(stream, ct).ConfigureAwait(false);
-        var handle = _supervisor.CurrentHandle
-            ?? throw new StreamBusNotReadyException($"StreamBus for vhost '{_vhost}' is not ready; offset store for '{stream}' refused.");
+        var handle = await RequireReadyAsync(
+            ReadinessPolicy.FailFastPolicy, $"offset store for '{stream}'", ct).ConfigureAwait(false);
         var partitionStream = await ResolvePartitionStreamAsync(handle, stream, partition, ct).ConfigureAwait(false);
         await handle.StoreSystemOffsetAsync(reference, partitionStream, offset, ct).ConfigureAwait(false);
         _guard.Overwrite($"{reference}@{partitionStream}", offset);
@@ -541,9 +519,8 @@ internal sealed class StreamConsumerRegistry
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(errorStream);
         if (targetStream is not null) ArgumentException.ThrowIfNullOrWhiteSpace(targetStream);
-        await EnsureReadyAsync(errorStream, ct).ConfigureAwait(false);
-        var handle = _supervisor.CurrentHandle
-            ?? throw new StreamBusNotReadyException($"StreamBus for vhost '{_vhost}' is not ready; replay of '{errorStream}' refused.");
+        var handle = await RequireReadyAsync(
+            ReadinessPolicy.FailFastPolicy, $"replay of '{errorStream}'", ct).ConfigureAwait(false);
         if (await handle.SuperStreamExistsAsync(errorStream, ct).ConfigureAwait(false))
         {
             throw new StreamBusConfigurationException($"Error stream '{errorStream}' must be a plain stream in v1.");
@@ -685,9 +662,8 @@ internal sealed class StreamConsumerRegistry
         ArgumentException.ThrowIfNullOrWhiteSpace(targetStream);
         ArgumentNullException.ThrowIfNull(options);
         EffectivelyOnceValidation.ValidatePublishResult(options);
-        await EnsureReadyAsync(targetStream, ct).ConfigureAwait(false);
-        var handle = _supervisor.CurrentHandle
-            ?? throw new StreamBusNotReadyException($"StreamBus for vhost '{_vhost}' is not ready; result publish to '{targetStream}' refused.");
+        var handle = await RequireReadyAsync(
+            ReadinessPolicy.FailFastPolicy, $"result publish to '{targetStream}'", ct).ConfigureAwait(false);
         if (options.IsSuperStream)
         {
             if (!await handle.SuperStreamExistsAsync(targetStream, ct).ConfigureAwait(false))
@@ -717,17 +693,20 @@ internal sealed class StreamConsumerRegistry
             ct).ConfigureAwait(false);
     }
 
-    private async Task EnsureReadyAsync(string stream, CancellationToken ct)
+    private async Task<IStreamSystemHandle> RequireReadyAsync(
+        ReadinessPolicy policy, string operation, CancellationToken ct)
     {
-        var readiness = await _supervisor.WaitUntilReadyAsync(ReadinessPolicy.FailFastPolicy, ct).ConfigureAwait(false);
+        var readiness = await _supervisor.WaitUntilReadyAsync(policy, ct).ConfigureAwait(false);
         if (readiness == BusReadiness.Fatal)
         {
-            throw new StreamBusFatalException($"StreamBus for vhost '{_vhost}' is in Fatal state; offset operation for '{stream}' refused.");
+            throw new StreamBusFatalException($"StreamBus for vhost '{_vhost}' is in Fatal state; {operation} refused.");
         }
         if (readiness != BusReadiness.Ready)
         {
-            throw new StreamBusNotReadyException($"StreamBus for vhost '{_vhost}' is not ready ({readiness}); offset operation for '{stream}' refused.");
+            throw new StreamBusNotReadyException($"StreamBus for vhost '{_vhost}' is not ready ({readiness}); {operation} refused.");
         }
+        return _supervisor.CurrentHandle
+            ?? throw new StreamBusNotReadyException($"StreamBus for vhost '{_vhost}' is not ready; {operation} refused.");
     }
 
     private static async Task<string> ResolvePartitionStreamAsync(IStreamSystemHandle handle, string stream, int partition, CancellationToken ct)
