@@ -33,6 +33,10 @@ file sealed class HealthConnector : IStreamSystemConnector
 
 public sealed class HealthAggregatorTests
 {
+    private sealed class OrdersBus;
+
+    private sealed class BillingBus;
+
     private static StreamBusHealthAggregator Ready()
     {
         var aggregator = new StreamBusHealthAggregator();
@@ -108,9 +112,107 @@ public sealed class HealthAggregatorTests
             typeof(DefaultBus), "orders", consumeOptions, _ => Task.CompletedTask, TestContext.Current.CancellationToken);
 
         var rows = health.Snapshot().Registrations.Where(r => r.Kind == "consumer").ToList();
-        Assert.Contains(rows, r => r.Registration == "raw:orders" && r.State == BusRegistrationState.Attached);
-        Assert.Contains(rows, r => r.Registration == "raw:orders:2" && r.State == BusRegistrationState.Attached);
+        Assert.Contains(rows, r => r.Registration == $"raw:{typeof(DefaultBus).FullName}:orders" && r.State == BusRegistrationState.Attached);
+        Assert.Contains(rows, r => r.Registration == $"raw:{typeof(DefaultBus).FullName}:orders:2" && r.State == BusRegistrationState.Attached);
         Assert.Equal(StreamBusHealthAggregator.HealthStatus.Healthy, health.Compute());
+    }
+
+    [Fact]
+    public async Task Raw_consumer_rows_on_a_shared_vhost_name_the_bus_that_owns_them()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var system = new HealthSystemHandle();
+        var options = new StreamBusOptions { Vhost = "/", UserName = "app", Password = "secret" };
+        await using var supervisor = new StreamBusConnectionSupervisor(options, new HealthConnector(system));
+        await supervisor.StartAsync(ct);
+        Assert.Equal(BusReadiness.Ready, await supervisor.WaitUntilReadyAsync(ReadinessPolicy.Indefinitely, ct));
+
+        var health = new StreamBusHealthAggregator();
+        health.SetConnection(supervisor.State);
+        var consumers = new StreamConsumerRegistry(
+            supervisor, "/",
+            new StreamProducerRegistry(supervisor, "/"),
+            null,
+            new ResultProducerRegistry(supervisor, "/"),
+            health: health,
+            consumerFactory: new ScriptedConsumerFactory().CreateAsync);
+        var consumeOptions = new ConsumeOptions
+        {
+            Reference = "grp",
+            SingleActiveConsumer = false,
+            Offset = ConsumeOffset.AlwaysFirst,
+        };
+
+        await using var orders = await consumers.ConsumeAsync(
+            typeof(OrdersBus), "orders", consumeOptions, _ => Task.CompletedTask, ct);
+        await using var billing = await consumers.ConsumeAsync(
+            typeof(BillingBus), "orders", consumeOptions, _ => Task.CompletedTask, ct);
+
+        var rows = health.Snapshot().Registrations.Where(r => r.Kind == "consumer").ToList();
+        Assert.Contains(rows, r => r.Registration == $"raw:{typeof(OrdersBus).FullName}:orders" && r.State == BusRegistrationState.Attached);
+        Assert.Contains(rows, r => r.Registration == $"raw:{typeof(BillingBus).FullName}:orders" && r.State == BusRegistrationState.Attached);
+    }
+
+    [Fact]
+    public async Task Declared_endpoint_rows_name_the_bus_that_owns_them()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var system = new HealthSystemHandle();
+        var options = new StreamBusOptions { Vhost = "/", UserName = "app", Password = "secret" };
+        await using var supervisor = new StreamBusConnectionSupervisor(options, new HealthConnector(system));
+        await supervisor.StartAsync(ct);
+        Assert.Equal(BusReadiness.Ready, await supervisor.WaitUntilReadyAsync(ReadinessPolicy.Indefinitely, ct));
+
+        var health = new StreamBusHealthAggregator();
+        health.SetConnection(supervisor.State);
+        var consumers = new StreamConsumerRegistry(
+            supervisor, "/",
+            new StreamProducerRegistry(supervisor, "/"),
+            null,
+            new ResultProducerRegistry(supervisor, "/"),
+            health: health,
+            consumerFactory: new ScriptedConsumerFactory().CreateAsync);
+        var consumeOptions = new ConsumeOptions
+        {
+            Reference = "grp",
+            SingleActiveConsumer = false,
+            Offset = ConsumeOffset.AlwaysFirst,
+        };
+
+        await using var endpoint = await consumers.ConsumeDeclaredEndpointAsync(
+            typeof(OrdersBus), "orders", consumeOptions, _ => Task.CompletedTask, ct);
+
+        var rows = health.Snapshot().Registrations.Where(r => r.Kind == "consumer").ToList();
+        Assert.Contains(rows, r => r.Registration == $"endpoint:{typeof(OrdersBus).FullName}:orders" && r.State == BusRegistrationState.Attached);
+    }
+
+    [Fact]
+    public async Task Effectively_once_rows_name_the_bus_that_owns_them()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var system = new HealthSystemHandle();
+        var options = new StreamBusOptions { Vhost = "/", UserName = "app", Password = "secret" };
+        await using var supervisor = new StreamBusConnectionSupervisor(options, new HealthConnector(system));
+        await supervisor.StartAsync(ct);
+        Assert.Equal(BusReadiness.Ready, await supervisor.WaitUntilReadyAsync(ReadinessPolicy.Indefinitely, ct));
+
+        var health = new StreamBusHealthAggregator();
+        health.SetConnection(supervisor.State);
+        var consumers = new StreamConsumerRegistry(
+            supervisor, "/",
+            new StreamProducerRegistry(supervisor, "/"),
+            null,
+            new ResultProducerRegistry(supervisor, "/"),
+            health: health,
+            consumerFactory: new ScriptedConsumerFactory().CreateAsync);
+
+        await using var eo = await consumers.ConsumeEffectivelyOnceAsync(
+            typeof(OrdersBus), "orders-source", "orders-result",
+            new EffectivelyOnceOptions { Reference = "eo-grp" },
+            _ => Task.FromResult(ReadOnlyMemory<byte>.Empty), ct);
+
+        var rows = health.Snapshot().Registrations.Where(r => r.Kind == "consumer").ToList();
+        Assert.Contains(rows, r => r.Registration == $"effectively-once:{typeof(OrdersBus).FullName}:orders-source" && r.State == BusRegistrationState.Attached);
     }
 
     [Fact]

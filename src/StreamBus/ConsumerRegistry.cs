@@ -116,7 +116,7 @@ internal sealed class StreamConsumerRegistry
     private readonly ErrorQueueTransport? _queues;
     private readonly StreamBusHealthAggregator? _health;
     private readonly Func<IStreamSystemHandle, RawConsumerConfig, CancellationToken, Task<IStreamConsumerHandle>>? _consumerFactory;
-    private readonly ConcurrentDictionary<string, int> _rawSequence = new();
+    private readonly ConcurrentDictionary<(string BusName, string Stream), int> _rawSequence = new();
     private readonly StreamBusConsumeFilterStore? _consumeFilterStore;
     private readonly IServiceProvider? _rootProvider;
     private readonly ConcurrentDictionary<(Type BusType, ConsumeFilterRegistration Registration), IStreamConsumeFilter> _filterInstances = new();
@@ -215,10 +215,23 @@ internal sealed class StreamConsumerRegistry
         }
     }
 
-    public async Task<IStreamConsumer> ConsumeAsync(
+    public Task<IStreamConsumer> ConsumeAsync(
         Type busType, string stream, ConsumeOptions options,
-        Func<ConsumeContext, Task> handler, CancellationToken ct = default, string? registrationName = null,
+        Func<ConsumeContext, Task> handler, CancellationToken ct = default,
         IStreamSerializer? serializer = null)
+        => ConsumeCoreAsync(busType, stream, options, handler, serializer, registrationName: null, ct);
+
+    internal Task<IStreamConsumer> ConsumeDeclaredEndpointAsync(
+        Type busType, string stream, ConsumeOptions options,
+        Func<ConsumeContext, Task> handler, CancellationToken ct = default,
+        IStreamSerializer? serializer = null)
+        => ConsumeCoreAsync(busType, stream, options, handler, serializer,
+            ConsumerHealthNames.Endpoint(busType.FullName ?? busType.Name, stream), ct);
+
+    private async Task<IStreamConsumer> ConsumeCoreAsync(
+        Type busType, string stream, ConsumeOptions options,
+        Func<ConsumeContext, Task> handler, IStreamSerializer? serializer,
+        string? registrationName, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(busType);
         ArgumentException.ThrowIfNullOrWhiteSpace(stream);
@@ -334,7 +347,7 @@ internal sealed class StreamConsumerRegistry
         }
 
         var busName = busType.FullName ?? busType.Name;
-        registrationName ??= NextRawRegistration(stream);
+        registrationName ??= NextRawRegistration(busName, stream);
         var tracker = _health is null ? null : new RegistrationTracker(_health, _vhost, registrationName, partitionStreams.Length);
         Action<int, BusRegistrationState, string?>? healthCallback = null;
         if (tracker is not null) healthCallback = tracker.Update;
@@ -429,7 +442,7 @@ internal sealed class StreamConsumerRegistry
         }
 
         var busName = busType.FullName ?? busType.Name;
-        var tracker = _health is null ? null : new RegistrationTracker(_health, _vhost, $"eo:{sourceStream}", sourcePartitions.Length);
+        var tracker = _health is null ? null : new RegistrationTracker(_health, _vhost, ConsumerHealthNames.EffectivelyOnce(busName, sourceStream), sourcePartitions.Length);
         Action<int, BusRegistrationState, string?>? healthCallback = null;
         if (tracker is not null) healthCallback = tracker.Update;
         var family = new CancellationTokenSource();
@@ -771,10 +784,10 @@ internal sealed class StreamConsumerRegistry
         }
     }
 
-    private string NextRawRegistration(string stream)
+    private string NextRawRegistration(string busName, string stream)
     {
-        var sequence = _rawSequence.AddOrUpdate(stream, 1, static (_, current) => current + 1);
-        return sequence == 1 ? $"raw:{stream}" : $"raw:{stream}:{sequence}";
+        var sequence = _rawSequence.AddOrUpdate((busName, stream), 1, static (_, current) => current + 1);
+        return ConsumerHealthNames.Raw(busName, stream, sequence);
     }
 
     private sealed class RegistrationTracker

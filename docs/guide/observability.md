@@ -7,9 +7,14 @@ state:
 
 - `{vhost}|{busType}` - connection state for that bus (for example
   `/|StreamBus.DefaultBus`).
-- `{vhost}|{registration}` - one row per typed consumer or declaration,
-  formatted as `consumer:<state>` or `declare:<state>`, with the reason
-  and `since` timestamp when present.
+- `{vhost}|{registration}` - one row per consumer or declaration. Consumer
+  rows carry the bus type so several buses on one vhost stay attributable:
+  `endpoint:{busType}:{stream}` for typed receive endpoints,
+  `raw:{busType}:{stream}` for `IStreamBus.ConsumeAsync` (with `:2`, `:3`, ...
+  on repeat consumes of the same stream on that bus), and
+  `effectively-once:{busType}:{sourceStream}` for effectively-once consumers. Declarations
+  use `declare:{name}`. The value is `consumer:<state>` or `declare:<state>`,
+  with the reason and `since` timestamp when present.
 
 No buses registered reports degraded with a hint. The check is healthy
 only when every registration is attached and every connection is ready.
