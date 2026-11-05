@@ -221,6 +221,12 @@
   decrement sites (CON-3). The `streambus_partition_inflight` gauge stays 1
   while a retry-exhaustion hand-off is still in progress and returns to 0 on
   every exit path, including a shutdown racing the hand-off.
+- Consumer health rows are attributable when several buses share a vhost
+  (CON-11). Registration names now include the bus type
+  (`endpoint:{bus}:{stream}`, `raw:{bus}:{stream}`,
+  `effectively-once:{bus}:{sourceStream}`) instead of only the stream name, so two buses consuming the same stream no
+  longer overwrite one health row and the check can no longer report
+  `Attached` for a bus that is actually retrying.
 
 ### Validation
 

@@ -965,6 +965,43 @@ return sequence == 1 ? $"raw:{stream}" : $"raw:{stream}:{sequence}";
 ```
 - **Solution:** Pick one term ("consumer" or "endpoint") and use it in errors, type names, and health rows. Unify health registration names with a single helper (e.g., `$"consumer:{busName}:{stream}"` / `$"consumer:eo:{busName}:{sourceStream}"`).
 
+- **Verification & resolution (2026-11-05):** Partially genuine — the naming claims are refuted, but the
+  telemetry-identity problem underneath them is real and was fixed.
+  1. **"`ReceiveEndpoint` in errors has no such type" — refuted.** `ReceiveEndpoint(string,
+     Action<IReceiveEndpointConfigurator>)` is the public endpoint-configuration API
+     (`StreamBusConfigurator.cs:34`), backed by public `IReceiveEndpointConfigurator` (`:93`) and
+     `ReceiveEndpointDescriptor`. The messages name exactly what the user wrote; grepping `ReceiveEndpoint`
+     finds the configuration surface. The "three consumer type names" are `IStreamConsumer` (the public
+     handle) plus `StreamConsumerRegistration` and `StreamPartitionConsumer`, both `internal`
+     implementation types users never reference — roles, not drift. The cited `ConsumerRegistry.cs:160` is
+     now `:191`, so the item also predates recent commits.
+  2. **"`busType.FullName` for markers" — refuted.** No health row is keyed by a bus type alone. Rows are
+     `consumer` rows (`ConsumerRegistry.cs:838`) and `declare:{name}` rows
+     (`Hosting.cs:595/599/685/689`); `busName` was used only for metrics and log scoping.
+  3. **The underlying identity problem was real.** Health rows key `{vhost}|{registration}` on a per-vhost
+     aggregator (`HealthAggregator.cs:31`, `Registry.cs:109-110`), while typed endpoints registered under
+     the bare stream name and `eo:`/`raw:` rows carried no bus name. Two buses on one vhost consuming the
+     same stream therefore shared one row and overwrote each other's state — the check could report
+     `Attached` while one bus was `FailedRetrying`. That is exactly the multi-bus case the review's
+     "inconsistent telemetry identity" pointed at, even though its evidence was wrong.
+  4. **Applied fix:** new `ConsumerHealthNames` centralizes the three consumer schemes and every name
+     carries the bus type: `endpoint:{busName}:{stream}`, `raw:{busName}:{stream}` (`:2`, `:3`, … on repeat
+     raw consumes of the same stream on the same bus; `_rawSequence` is now keyed by (bus, stream)), and
+     `effectively-once:{busName}:{sourceStream}`. Declared endpoints enter through the new internal
+     `StreamConsumerRegistry.ConsumeDeclaredEndpointAsync`, so the registry owns the scheme without adding a
+     mode parameter to the raw `ConsumeAsync` surface; `Hosting` calls that method.
+  5. **Rejected:** the proposed rename of the `ReceiveEndpoint` messages and the "pick one term" sweep.
+     The messages already name the public API.
+  6. **Docs/changelog:** `docs/guide/hosting.md`, `docs/guide/observability.md`, the A6 architecture spec,
+     and CHANGELOG (`### Fixed`) describe the new keys.
+  7. **Tests (TDD — watched RED first):** restoring the old names made the three bus-attribution tests fail
+     (`Raw_consumers_are_first_class_registrations`,
+     `Raw_consumer_rows_on_a_shared_vhost_name_the_bus_that_owns_them`,
+     `Declared_endpoint_rows_name_the_bus_that_owns_them`), and
+     `Effectively_once_rows_name_the_bus_that_owns_them` failed with the row name `eo:…` before the
+     `effectively-once:` rename. UnitTests 481/481; solution builds with 0 warnings. The brokered
+     integration suite was not run (no RabbitMQ broker listening).
+
 ---
 
 **[CON-13] `_inflight` tracks only the latest dispatch; earlier queued dispatches can run after `DisposeAsync` completes**
