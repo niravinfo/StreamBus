@@ -877,6 +877,29 @@ if (readiness == BusReadiness.Fatal)
 ```
 - **Solution:** Extract `private Task<IStreamSystemHandle> RequireReadyAsync(ReadinessPolicy policy, string operation, CancellationToken ct)` and `private async Task TearDownAsync(CancellationTokenSource family, List<(StreamPartitionConsumer, Task)> loops, List<IDisposable> scopes, RegistrationTracker? tracker)`; call both from the two catch blocks.
 
+- **Verification & resolution (2026-11-05):** Confirmed genuine, with two corrections to the
+  reported shape:
+  1. **Readiness duplication confirmed:** the probe blocks in `ConsumeAsync` (255–265) and
+     `ConsumeEffectivelyOnceAsync` (395–405) are identical apart from the operation noun in the
+     exception messages. `EnsureReadyAsync` existed (720–731) but could not be reused verbatim:
+     it hard-coded `ReadinessPolicy.FailFastPolicy`, always said "offset operation", and did not
+     return the handle.
+  2. **Teardown duplication confirmed, and there was a third copy:** the two failed-start `catch`
+     blocks (344–366, 481–502) were line-for-line identical except one comment, and
+     `StreamConsumerRegistration.DisposeAsync` (45–70) ran the same cancel/drain/dispose
+     sequence with only `_onStopped`/`_deregister` added.
+  3. **Applied fix:** `RequireReadyAsync(policy, operation, ct)` now owns the probe and returns
+     `IStreamSystemHandle`; both consume paths and the four former `EnsureReadyAsync` call sites
+     (offset query/store, replay, result publish) use it, and `EnsureReadyAsync` is deleted.
+     `ConsumerTeardown.RunAsync(family, loops, scopes, onStopped, onDisposed,
+     swallowRunTaskFailures)` is the single teardown owner for the registration's
+     `DisposeAsync` and both failed-start catch blocks; the callers keep `throw;` so the original
+     failure still surfaces, and `swallowRunTaskFailures` preserves the old
+     registration-propagates / failed-start-swallows exception split.
+  4. **Tests:** no new tests (per review decision); the change is behavior-preserving by
+     inspection. Build clean (0 warnings), UnitTests 478/478. The brokered integration suite was
+     not run (no RabbitMQ broker listening).
+
 ---
 
 **[CON-7] `ExhaustedContext.GetService<T>` throws a configuration exception for a runtime lookup miss**
