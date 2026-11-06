@@ -1032,6 +1032,34 @@ _ = dispatch.ContinueWith(
 // DisposeAsync: await _drainedTcs.Task (with timeout)
 ```
 
+- **Verification & resolution (2026-11-06):** Structurally genuine; the exact failure
+  description needed correction, and the fix is smaller than the counted-set rewrite.
+  1. **Confirmed:** `_inflight` is a single latest-wins task (`MessageHandler` assigns it
+     per delivery) and `DisposeAsync` awaits only the snapshot, while `_dispatchGate`
+     serializes waiters without cancelling them. `attach.Drained` is only set on a failed
+     attach, so a dispatch from a *newer* (current) generation is not protected by it.
+  2. **Reachability correction:** `RabbitMQ.Stream.Client` (1.12.1) dispatches
+     `RawConsumerConfig.MessageHandler` strictly sequentially — `ProcessChunks` awaits
+     `ParseChunk`, which awaits each `DispatchMessage`/handler — so one attach cannot have
+     two queued dispatches. Queueing requires cross-generation overlap: `Close()` cancels
+     the client token but does not await a handler already in progress, and the attach loop
+     recreates after backoff while that handler can still run. An old-generation dispatch
+     is drained and exits at the existing check; a queueing dispatch from the *new*
+     generation is not. The literal "runs after `DisposeAsync` returns" variant additionally
+     needs the `_inflight` assignment inversion (the older handler's synchronous prefix,
+     including user code before its first `await`, outlasts the newer attach's start and
+     overwrites `_inflight` with the older task). Narrow, but both are genuine.
+  3. **Applied fix** (`StreamPartitionConsumer.DispatchAsync`): after acquiring the gate,
+     a dispatch exits when `_disposed != 0`, before building a context or invoking any
+     handler. Disposal already waits for the running dispatch — or for a later queued one
+     that waits behind it on the FIFO gate — so the flag closes the queued-waiter gap
+     without the reviewer's counter/TCS machinery.
+  4. **Test (TDD — watched RED first with `Expected: 0 / Actual: 1`):**
+     `DisposeDispatchTests.Queued_dispatch_does_not_run_after_dispose` queues a second
+     delivery behind a blocked first dispatch, starts `DisposeAsync`, and asserts the
+     queued handler never runs. UnitTests 482/482; solution builds with 0 warnings. The
+     brokered integration suite was not run (no RabbitMQ broker listening).
+
 ---
 
 **[INF-2] `HandOffAsync` retries every exception forever, including fatal ones — partition wedges permanently**

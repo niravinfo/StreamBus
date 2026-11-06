@@ -227,6 +227,11 @@
   `effectively-once:{bus}:{sourceStream}`) instead of only the stream name, so two buses consuming the same stream no
   longer overwrite one health row and the check can no longer report
   `Attached` for a bus that is actually retrying.
+- Queued dispatches observe shutdown (CON-13): a delivery that acquires the
+  serialized dispatch gate after `DisposeAsync` began now exits before touching
+  the attach or invoking the handler. The gate does not cancel waiters and the
+  current-generation attach is not drained at dispose time, so the disposed
+  flag is checked immediately after the gate is acquired.
 
 ### Validation
 

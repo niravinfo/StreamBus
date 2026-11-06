@@ -511,6 +511,15 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
         Activity? activity = null;
         try
         {
+            // The gate serializes dispatches but does not cancel queued waiters, so a
+            // delivery can acquire it after DisposeAsync has begun. The attach is not
+            // necessarily drained (it may be the current generation), so the disposed
+            // flag is the authoritative stop signal: exit before touching any state.
+            if (Volatile.Read(ref _disposed) != 0)
+            {
+                return;
+            }
+
             // Post-failure deliveries racing the loop's close are skipped; they are
             // redelivered from the stored offset after recreate.
             if (Interlocked.CompareExchange(ref attach.Drained, 0, 0) == 1)
