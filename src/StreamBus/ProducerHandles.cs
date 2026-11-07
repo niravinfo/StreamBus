@@ -34,8 +34,6 @@ public interface IStreamPlainProducerHandle : IStreamProducerHandle
 /// </summary>
 public interface IStreamSuperProducerHandle : IStreamProducerHandle
 {
-    Task PublishWithIdAsync(ulong publishingId, ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct);
-    Task PublishResultAsync(ReadOnlyMemory<byte> body, ulong publishingId, string? routingKey, CancellationToken ct);
     Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, PublishOptions options, CancellationToken ct);
 }
 
@@ -274,20 +272,6 @@ internal sealed class SuperStreamProducerHandle : IStreamSuperProducerHandle
             new Message(body.ToArray()),
             options,
             (message, token) => _confirmations.PublishWithIdAsync(_producer, _stream, publishingId, message, token),
-            ct);
-
-    public Task PublishWithIdAsync(ulong publishingId, ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct)
-        => SendMessageAsync(
-            new Message(body.ToArray()),
-            options,
-            (message, token) => _confirmations.PublishWithIdAsync(_producer, _stream, publishingId, message, token),
-            ct);
-
-    public Task PublishResultAsync(ReadOnlyMemory<byte> body, ulong publishingId, string? routingKey, CancellationToken ct)
-        => PublishWithIdAsync(
-            publishingId,
-            body,
-            new PublishOptions { IsSuperStream = true, RoutingKey = routingKey },
             ct);
 
     private async Task SendMessageAsync(

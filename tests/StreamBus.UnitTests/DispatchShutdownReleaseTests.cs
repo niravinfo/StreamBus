@@ -3,7 +3,7 @@ using RabbitMQ.Stream.Client;
 
 namespace StreamBus.UnitTests;
 
-// CON-3: every non-effectively-once dispatch exit path must release the inflight
+// CON-3: every dispatch exit path must release the inflight
 // counter and the retry-blocked flag through one finally — including the
 // shutdown-raced exit. A stale inflight count after shutdown skews the
 // streambus_partition_inflight gauge and the replay drain's idle detection.

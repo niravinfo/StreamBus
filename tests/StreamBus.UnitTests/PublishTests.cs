@@ -37,10 +37,6 @@ sealed class StubProducerHandle : IStreamPlainProducerHandle, IStreamSuperProduc
         => throw new NotImplementedException("PublishTests never sends envelopes.");
     public Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, PublishOptions options, CancellationToken ct)
         => throw new NotImplementedException("PublishTests never replays.");
-    public Task PublishWithIdAsync(ulong publishingId, ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct)
-        => throw new NotImplementedException("StubProducerHandle never publishes results.");
-    public Task PublishResultAsync(ReadOnlyMemory<byte> body, ulong publishingId, string? routingKey, CancellationToken ct)
-        => throw new NotImplementedException("StubProducerHandle never publishes results.");
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }
 

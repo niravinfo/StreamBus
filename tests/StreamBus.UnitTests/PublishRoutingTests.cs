@@ -21,10 +21,6 @@ public sealed class PublishRoutingTests
             => throw new NotImplementedException("PublishRoutingTests never sends envelopes.");
         public Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, PublishOptions options, CancellationToken ct)
             => throw new NotImplementedException("PublishRoutingTests never replays.");
-        public Task PublishWithIdAsync(ulong publishingId, ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct)
-            => throw new NotImplementedException("PublishRoutingTests never publishes results.");
-        public Task PublishResultAsync(ReadOnlyMemory<byte> body, ulong publishingId, string? routingKey, CancellationToken ct)
-            => throw new NotImplementedException("PublishRoutingTests never publishes results.");
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 

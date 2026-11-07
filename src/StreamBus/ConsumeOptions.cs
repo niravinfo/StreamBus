@@ -51,7 +51,6 @@ public sealed record ConsumeOptions
     /// confirmation surfaces as transient so the partition dispatch gate is
     /// never wedged; the envelope stays replayable.</summary>
     public TimeSpan HandoffConfirmTimeout { get; init; } = TimeSpan.FromSeconds(10);
-    internal EffectivelyOnceConfig? EffectivelyOnce { get; init; }
     internal DeadLetterOptions? DeadLetter { get; init; }
     internal DeadLetterOptions? ShadowedDeadLetter { get; init; }
     internal IReadOnlyList<ConsumeFilterRegistration> ConsumeFilters { get; init; } = Array.Empty<ConsumeFilterRegistration>();

@@ -121,26 +121,6 @@ public sealed class PipelineSemanticsTests
     }
 
     [Fact]
-    public async Task Effectively_once_zero_next_is_a_filter_contract_error()
-    {
-        var pipeline = new ConsumePipeline(
-            new IStreamConsumeFilter[] { new ZeroNextFilter() },
-            requiresContinuation: true);
-        var terminalCalls = 0;
-
-        var ex = await Assert.ThrowsAsync<StreamBusFilterContractException>(() =>
-            pipeline.RunAsync(NewContext(), () =>
-            {
-                Interlocked.Increment(ref terminalCalls);
-                return Task.CompletedTask;
-            }));
-
-        Assert.Contains(nameof(ZeroNextFilter), ex.Message, StringComparison.Ordinal);
-        Assert.Contains("returned without calling next", ex.Message, StringComparison.Ordinal);
-        Assert.Equal(0, terminalCalls);
-    }
-
-    [Fact]
     public async Task Double_next_is_transient_and_names_the_nested_filter()
     {
         var log = new List<string>();
@@ -829,7 +809,6 @@ public sealed class PipelineSemanticsTests
                 "/",
                 producers,
                 loggerFactory: null,
-                results: new ResultProducerRegistry(supervisor, "/"),
                 scopeFactory: provider.GetRequiredService<IServiceScopeFactory>(),
                 consumerFactory: factory.CreateAsync,
                 consumeFilters: filterStore,

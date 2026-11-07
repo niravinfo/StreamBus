@@ -141,7 +141,7 @@ internal sealed class SwappingConnector : IStreamSystemConnector
     }
 }
 
-public sealed class ReplayAndEffectivelyOnceReattachTests
+public sealed class ReplayReattachTests
 {
     private sealed class Harness : IAsyncDisposable
     {
@@ -179,7 +179,6 @@ public sealed class ReplayAndEffectivelyOnceReattachTests
             "/",
             new StreamProducerRegistry(supervisor, "/"),
             loggerFactory: null,
-            new ResultProducerRegistry(supervisor, "/"),
             consumerFactory: factory.CreateAsync);
         return new Harness
         {
@@ -239,36 +238,6 @@ public sealed class ReplayAndEffectivelyOnceReattachTests
     {
         await cts.CancelAsync();
         try { await replay; } catch (OperationCanceledException) { }
-    }
-
-    [Fact]
-    public async Task Effectively_once_reattaches_through_current_system_after_supervisor_swap()
-    {
-        await using var harness = await CreateAsync();
-        var registration = await harness.Registry.ConsumeEffectivelyOnceAsync(
-            typeof(DefaultBus),
-            "orders",
-            "results",
-            new EffectivelyOnceOptions(),
-            _ => Task.FromResult(ReadOnlyMemory<byte>.Empty),
-            TestContext.Current.CancellationToken);
-        try
-        {
-            Assert.Same(harness.OldSystem, harness.Factory.SystemAt(0));
-
-            harness.OldSystem.MarkClosed();
-            await WaitUntilAsync(
-                () => ReferenceEquals(harness.Supervisor.CurrentHandle, harness.NewSystem),
-                TimeSpan.FromSeconds(5));
-            await harness.Factory.FirstConfig.ConnectionClosedHandler("supervisor swapped the handle");
-
-            await WaitUntilAsync(() => harness.Factory.CreateCount >= 2, TimeSpan.FromSeconds(5));
-            Assert.Same(harness.NewSystem, harness.Factory.SystemAt(1));
-        }
-        finally
-        {
-            await registration.DisposeAsync();
-        }
     }
 
     [Fact]
@@ -355,3 +324,4 @@ public sealed class ReplayAndEffectivelyOnceReattachTests
         }
     }
 }
+

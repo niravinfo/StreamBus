@@ -77,10 +77,6 @@ public sealed class AcceptanceTests : IDisposable
             => throw new NotImplementedException("Acceptance tests publish plain only.");
         public Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, PublishOptions options, CancellationToken ct)
             => throw new NotImplementedException("Acceptance tests publish plain only.");
-        public Task PublishWithIdAsync(ulong publishingId, ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct)
-            => throw new NotImplementedException("Acceptance tests publish plain only.");
-        public Task PublishResultAsync(ReadOnlyMemory<byte> body, ulong publishingId, string? routingKey, CancellationToken ct)
-            => throw new NotImplementedException("Acceptance tests publish plain only.");
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
@@ -218,7 +214,7 @@ public sealed class AcceptanceTests : IDisposable
         var options = new StreamBusOptions { Vhost = "/", UserName = "app", Password = "secret" };
         await using var supervisor = new StreamBusConnectionSupervisor(options, new DelayedConnector(system, TimeSpan.FromMilliseconds(500)));
         await supervisor.StartAsync(TestContext.Current.CancellationToken);
-        var consumers = new StreamConsumerRegistry(supervisor, "/", new StreamProducerRegistry(supervisor, "/"), null, new ResultProducerRegistry(supervisor, "/"));
+        var consumers = new StreamConsumerRegistry(supervisor, "/", new StreamProducerRegistry(supervisor, "/"), null);
         var ct = TestContext.Current.CancellationToken;
         await Assert.ThrowsAsync<StreamBusNotReadyException>(() =>
             consumers.ConsumeAsync(typeof(DefaultBus), "s",

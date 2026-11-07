@@ -96,8 +96,7 @@ public sealed class HealthAggregatorTests
             supervisor, "/",
             new StreamProducerRegistry(supervisor, "/"),
             null,
-            new ResultProducerRegistry(supervisor, "/"),
-            health: health,
+                        health: health,
             consumerFactory: new ScriptedConsumerFactory().CreateAsync);
 
         var consumeOptions = new ConsumeOptions
@@ -133,8 +132,7 @@ public sealed class HealthAggregatorTests
             supervisor, "/",
             new StreamProducerRegistry(supervisor, "/"),
             null,
-            new ResultProducerRegistry(supervisor, "/"),
-            health: health,
+                        health: health,
             consumerFactory: new ScriptedConsumerFactory().CreateAsync);
         var consumeOptions = new ConsumeOptions
         {
@@ -169,8 +167,7 @@ public sealed class HealthAggregatorTests
             supervisor, "/",
             new StreamProducerRegistry(supervisor, "/"),
             null,
-            new ResultProducerRegistry(supervisor, "/"),
-            health: health,
+                        health: health,
             consumerFactory: new ScriptedConsumerFactory().CreateAsync);
         var consumeOptions = new ConsumeOptions
         {
@@ -184,35 +181,6 @@ public sealed class HealthAggregatorTests
 
         var rows = health.Snapshot().Registrations.Where(r => r.Kind == "consumer").ToList();
         Assert.Contains(rows, r => r.Registration == $"endpoint:{typeof(OrdersBus).FullName}:orders" && r.State == BusRegistrationState.Attached);
-    }
-
-    [Fact]
-    public async Task Effectively_once_rows_name_the_bus_that_owns_them()
-    {
-        var ct = TestContext.Current.CancellationToken;
-        var system = new HealthSystemHandle();
-        var options = new StreamBusOptions { Vhost = "/", UserName = "app", Password = "secret" };
-        await using var supervisor = new StreamBusConnectionSupervisor(options, new HealthConnector(system));
-        await supervisor.StartAsync(ct);
-        Assert.Equal(BusReadiness.Ready, await supervisor.WaitUntilReadyAsync(ReadinessPolicy.Indefinitely, ct));
-
-        var health = new StreamBusHealthAggregator();
-        health.SetConnection(supervisor.State);
-        var consumers = new StreamConsumerRegistry(
-            supervisor, "/",
-            new StreamProducerRegistry(supervisor, "/"),
-            null,
-            new ResultProducerRegistry(supervisor, "/"),
-            health: health,
-            consumerFactory: new ScriptedConsumerFactory().CreateAsync);
-
-        await using var eo = await consumers.ConsumeEffectivelyOnceAsync(
-            typeof(OrdersBus), "orders-source", "orders-result",
-            new EffectivelyOnceOptions { Reference = "eo-grp" },
-            _ => Task.FromResult(ReadOnlyMemory<byte>.Empty), ct);
-
-        var rows = health.Snapshot().Registrations.Where(r => r.Kind == "consumer").ToList();
-        Assert.Contains(rows, r => r.Registration == $"effectively-once:{typeof(OrdersBus).FullName}:orders-source" && r.State == BusRegistrationState.Attached);
     }
 
     [Fact]

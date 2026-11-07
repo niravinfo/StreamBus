@@ -47,29 +47,6 @@ internal static class StreamBusNaming
         return $"streambus-replay-{Sha32(errorStream)}";
     }
 
-    /// <summary>Effectively-once producer name per (source partition stream -> target).</summary>
-    public static string EffectivelyOnceProducerName(string sourcePartitionStream, string targetStream)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(sourcePartitionStream);
-        ArgumentException.ThrowIfNullOrWhiteSpace(targetStream);
-        var full = $"streambus-eo-{sourcePartitionStream}-to-{targetStream}";
-        return Encoding.UTF8.GetByteCount(full) <= MaxName
-            ? full
-            : $"streambus-eo-{Sha32(full)}";
-    }
-
-    /// <summary>Stable consumer reference for an effectively-once pipeline.</summary>
-    public static string EffectivelyOnceConsumerReference(Type busType, string sourceStream, string targetStream)
-    {
-        ArgumentNullException.ThrowIfNull(busType);
-        ArgumentException.ThrowIfNullOrWhiteSpace(sourceStream);
-        ArgumentException.ThrowIfNullOrWhiteSpace(targetStream);
-        var full = $"streambus-eo:{busType.FullName}:{sourceStream}->{targetStream}";
-        return Encoding.UTF8.GetByteCount(full) <= MaxName
-            ? full
-            : $"streambus-eo-{Sha32(full)}";
-    }
-
     public static string Enforce(string name)
     {
         ArgumentNullException.ThrowIfNull(name);
