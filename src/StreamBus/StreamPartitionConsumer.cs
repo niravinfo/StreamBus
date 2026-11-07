@@ -218,6 +218,16 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
         _health = health;
         _serializer = serializer ?? SystemTextJsonStreamSerializer.Default;
         _pipeline = pipeline ?? new ConsumePipeline(Array.Empty<IStreamConsumeFilter>());
+
+        // Mirrors the publish path (Bus.cs): filters run against the per-delivery
+        // scope, so a filter pipeline without a scope factory would silently hand
+        // every filter a null-provider instead of failing the configuration.
+        if (_pipeline.Count > 0 && _scopes is null)
+        {
+            throw new StreamBusConfigurationException(
+                $"Consume filters are configured for stream '{stream}' but no IServiceScopeFactory is available (internal error).");
+        }
+
         // Same key format Task 4's SetOffsetAsync overwrites on the shared guard.
         _waterKey = $"{reference}@{partitionStream}";
         _storer = new OffsetStorer(

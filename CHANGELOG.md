@@ -311,6 +311,12 @@
   its faults unobserved. The `ConsumeNext`/`PublishNext` contracts now state
   that the returned task must be awaited before returning (zero-call consume
   filtering is unchanged).
+- A consumer whose pipeline has consume filters but no `IServiceScopeFactory`
+  throws `StreamBusConfigurationException` at construction (CON-12), matching
+  the publish path. Previously every filter silently resolved all services to
+  `null` on such a consumer, so a missing DI setup looked like missing services.
+  Filterless, untyped endpoints are unaffected: their `ConsumeContext.Services`
+  is still a provider that resolves nothing, now documented on the property.
 
 ### Validation
 

@@ -47,7 +47,15 @@ public class ConsumeContext
     /// <summary>Headers carried on the error envelope.</summary>
     public required IStreamSendHeaders SendHeaders { get; init; }
 
-    /// <summary>Per-delivery service scope shared with the typed consumer.</summary>
+    /// <summary>
+    /// Per-delivery service scope shared with the typed consumer. Use
+    /// <see cref="IServiceProvider.GetService"/> — preferably the
+    /// <c>GetRequiredService</c> extension — for services the consumer
+    /// requires. On filterless, untyped endpoints (or a bus built without
+    /// dependency injection) no scope is created and this provider resolves
+    /// nothing: it returns <see langword="null"/> for every type, so treat a
+    /// <see langword="null"/> here as "no DI" rather than "service not registered".
+    /// </summary>
     public required IServiceProvider Services { get; init; }
 
     /// <summary>Cancellation token for this delivery.</summary>
