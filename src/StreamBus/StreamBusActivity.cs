@@ -61,6 +61,10 @@ internal static class StreamBusActivity
         {
             ["exception.type"] = exception.GetType().FullName,
             ["exception.message"] = exception.Message,
+
+            // OpenTelemetry semantic conventions: exception.stacktrace carries
+            // the failure site (exception.ToString() includes type + message).
+            ["exception.stacktrace"] = exception.ToString(),
         }));
     }
 }

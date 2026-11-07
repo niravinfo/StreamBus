@@ -1733,6 +1733,14 @@ private sealed class ProducerSlot
 }
 ```
 
+- **Verification & resolution (2026-11-07):** Confirmed genuine. `Failed` was written at three sites
+  (`ProducerRegistry.cs` 175/192/202) and never read anywhere in the codebase — every other `.Failed`
+  match is the unrelated `BusRegistrationState.FailedRetrying` health state — and the recovery reasoning
+  holds: the failure path clears `slot.Pending`, so the next publish becomes the new owner and retries
+  creation without consulting `Failed`. The field and its three assignments were deleted; `ProducerSlot`
+  is now a clean two-state machine (`Pending` → `Success`). No behavior change (a dead private field has
+  nothing observable to pin), so no new test — verified by regression: UnitTests 462/462.
+
 ---
 
 **[PUB-7] `PublishResultAsync` on the super handle interface has no callers**
@@ -1749,6 +1757,13 @@ public Task PublishResultAsync(ReadOnlyMemory<byte> body, ulong publishingId, st
 ```
 - **Solution:** Remove `PublishResultAsync` from the interface and delete the implementation (remove before the package ships; if already shipped, `[Obsolete]` for one release then remove).
 
+- **Verification & resolution:** Already resolved as part of the PUB-5 interface split
+  (2026-11-02): `IStreamSuperProducerHandle` no longer derives from
+  `IStreamPlainProducerHandle`, `PublishResultAsync` exists nowhere in `src\StreamBus`
+  (neither interface nor implementation), and its absence on both surfaces is pinned by
+  `ProducerHandleSurfaceTests` (`Assert.Null(Method(... "PublishResultAsync"))` on super
+  and plain). Residual subject: none.
+
 ---
 
 **[PUB-8] `PublishContext<T>.Message` re-casts `Payload` on every access**
@@ -1763,6 +1778,16 @@ public sealed class PublishContext<T> : PublishContext
 }
 ```
 - **Solution:** Capture the typed value once at construction — stash the typed reference via a private field assigned by the only construction site (Bus.cs ~line 170), e.g. `internal T TypedPayload { get; init; }` with `public T Message => TypedPayload;`.
+
+- **Verification & resolution (2026-11-07):** Confirmed genuine, MINOR severity correct — for
+  reference types the cast is a cheap type check, but value types unbox-and-copy on every access.
+  Only one production construction site exists (`Bus.cs`, always `Payload = message!`), so the
+  cast never fails and carries no validation value. Fix as suggested, plus a fallback: `PublishContext<T>`
+  gained `internal T? TypedPayload { get; init; }` and `Message` returns it, falling back to the old
+  `(T)Payload` cast when unset — the constructor is `protected internal` (test assemblies construct
+  contexts via `InternalsVisibleTo`), so unset sites keep identical behavior. `Bus.cs` sets
+  `TypedPayload = message` at construction. Pure perf refactor with no observable change — no red-first
+  test applicable; verified by regression: UnitTests 462/462.
 
 ---
 
@@ -1782,6 +1807,16 @@ var instance = _typedInstances.GetOrAdd(
 
 filter = PublishFilterRegistration.CreateTypedAdapter(messageType, instance);
 ```
+
+- **Verification & resolution (2026-11-07):** Confirmed, and the redundancy is stronger than claimed:
+  `_typed` was effectively write-only. `Build` runs at most once per message type (`_pipelines` is the real
+  cache), and each registration is visited once per `Build`, so the `(ClosedFilterType, MessageType)` key
+  can never hit — every call was a miss that stored an entry, tuple allocation and lockstep dictionary
+  growth for nothing. Safety of the removal verified before deleting: `WrapTyped` is stateless per call
+  (validates the pinned type, constructs the adapter), and `FilterIdentity.TypeOf` unwraps adapters, so
+  the duplicate-filter check does not depend on adapter identity. `_typed` deleted; `Build` calls
+  `registration.WrapTyped(messageType, instance)` directly with a comment explaining why no second cache
+  is needed. No behavior change — verified by regression: UnitTests 462/462.
 
 ---
 
@@ -1817,6 +1852,17 @@ catch (Exception ex)
 }
 ```
 
+- **Verification & resolution (2026-11-07):** Confirmed genuine — `IStreamSerializer` is a public
+  extension point (custom serializers were added for the PUB-4/FLT-1 work), so only the built-in
+  `JsonException` was handled while a custom serializer's parse exception escaped raw out of a
+  header-read API. Fixed with the suggested shape (broad catch is correct for a synchronous,
+  pluggable deserialize), including the serializer type name so the user sees which serializer
+  rejected the value. TDD:
+  `HeadersTests.GetJson_custom_serializer_failure_names_the_key_and_keeps_the_exception`
+  (custom serializer throwing `InvalidOperationException`) was written first and watched RED
+  (raw exception escaped), then green after the fix; the existing `GetJson_invalid_json_*` test
+  passes unchanged. UnitTests 463/463.
+
 ---
 
 **[PUB-11] `RecordException` omits the standard `exception.stacktrace` tag**
@@ -1840,6 +1886,18 @@ activity.AddEvent(new ActivityEvent("exception", tags: new ActivityTagsCollectio
 }));
 ```
 
+- **Verification & resolution (2026-11-07):** Confirmed genuine — the exception event carried only
+  `exception.type` and `exception.message`, omitting the `exception.stacktrace` tag from the
+  OpenTelemetry exception semantic conventions. All five call sites (publish pipeline and consume
+  dispatch) funnel through `StreamBusActivity.RecordException`, so one change covers both paths.
+  TDD: `AssertPublishActivityHasExceptionEvent` (`PublishPipelineTests`) was extended to require a
+  non-empty `exception.stacktrace` containing the exception type;
+  `Filter_exception_surfaces_unwrapped_and_is_recorded_on_activity` and
+  `Transport_failure_without_filters_is_recorded_on_publish_activity` were watched RED (2 failures
+  on the missing tag), then green after adding
+  `["exception.stacktrace"] = exception.ToString()` with a comment citing the convention.
+  UnitTests 463/463.
+
 ---
 
 **[PUB-12] Duplicate-filter check in `Build` is near-unreachable and runs lazily**
@@ -1855,6 +1913,26 @@ if (!seen.Add(filterType))
 }
 ```
 - **Solution:** Move validation to seal time: in the `PublishPipelineCache` constructor, eagerly `GetOrAdd` every registered typed message type so config errors surface at build time; `Build` becomes a pure assembly step.
+
+- **Verification & resolution (2026-11-07):** REFUTED on the central premise; the check stays (with a
+  clarifying comment added at the site).
+  1. **"Near-unreachable" is false.** Registration-time `ConflictsWith` (`PublishRegistration.cs`)
+     returns `false` when `FilterType is null` — and factory registrations
+     (`UsePublishFilter(Func<IServiceProvider, IStreamPublishFilter>)`, `ForFactory`) carry a null
+     `FilterType`. A factory producing an instance of class `X` plus a separate *typed* registration
+     of `X` passes registration-time validation; the only guard is `Build`'s `seen` check on the
+     **resolved identity** (`FilterIdentity.TypeOf` unwraps adapters to the underlying class).
+     Removing or weakening it would be a regression.
+  2. **The eager alternative is infeasible in general.** Universal/factory duplicates are already
+     caught eagerly — the cache constructor resolves every universal registration and runs its own
+     resolved-identity `seen` check (which also catches DI-injected-subclass collisions). Typed
+     filters cannot be eagerly validated: open-generic registrations (`ForType(typeof(Foo<>))`) have
+     no enumerable message-type set, and eagerly building pipelines for all declared pinned types
+     would resolve every typed filter instance (DI + lifetime validation) at bus construction for
+     configurations that may never publish those types.
+  3. **Applied:** no code change; the previously-unexplained check now carries a comment stating
+     why it exists (factory registrations are invisible to `ConflictsWith`) and why it cannot be
+     eager (open-generic message-type sets are unbounded). Verified by regression: UnitTests 463/463.
 
 ---
 

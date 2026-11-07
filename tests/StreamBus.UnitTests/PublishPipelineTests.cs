@@ -952,6 +952,12 @@ public sealed class PublishPipelineTests
         Assert.Equal(
             exceptionTypeName,
             exceptionEvent!.Value.Tags.FirstOrDefault(t => t.Key == "exception.type").Value as string);
+
+        // OpenTelemetry semantic conventions: the exception event carries the
+        // failure site via exception.stacktrace (exception.ToString()).
+        var stackTrace = exceptionEvent!.Value.Tags.FirstOrDefault(t => t.Key == "exception.stacktrace").Value as string;
+        Assert.False(string.IsNullOrWhiteSpace(stackTrace));
+        Assert.Contains(exceptionTypeName, stackTrace, StringComparison.Ordinal);
     }
 
     private sealed class CountingFilter : IStreamPublishFilter
