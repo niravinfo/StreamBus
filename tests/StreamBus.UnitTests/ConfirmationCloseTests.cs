@@ -90,6 +90,48 @@ public sealed class ConfirmationCloseTests
     private static readonly IReadOnlyDictionary<string, object?> NoHeaders = new Dictionary<string, object?>();
 
     [Fact]
+    public async Task Duplicate_publishing_id_in_flight_is_rejected()
+    {
+        // Replay republishes under a stable publishing id and must never put
+        // the same id in flight twice; the pending-id table in
+        // ConfirmationTracker rejects the second same-id publish loudly.
+        var tracker = new ConfirmationTracker();
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var producer = new GateProducer(gate.Task);
+        using var timeout = new CancellationTokenSource();
+        var first = tracker.PublishWithIdAsync(producer, "dst", 5, new Message(new byte[] { 1 }), timeout.Token);
+        await Task.Delay(200, TestContext.Current.CancellationToken);
+        var ex = await Assert.ThrowsAsync<StreamBusPublishException>(() =>
+            tracker.PublishWithIdAsync(producer, "dst", 5, new Message(new byte[] { 2 }), timeout.Token));
+        Assert.Contains("already in flight", ex.Message);
+        gate.TrySetResult();
+        // Nothing confirms the first publish (no ConfirmHandler wired in the
+        // fake), so cancel its token: the tracker's ct-registration fires and
+        // the await propagates OperationCanceledException instead of hanging.
+        timeout.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => first);
+    }
+
+    private sealed class GateProducer : IProducer
+    {
+        private readonly Task _gate;
+        public GateProducer(Task gate) => _gate = gate;
+        public async ValueTask Send(ulong publishingId, Message message) => await _gate;
+        public ValueTask Send(List<(ulong, Message)> messages) => throw new NotSupportedException("ConfirmationCloseTests handle single sends only.");
+        public ValueTask Send(ulong publishingId, List<Message> subEntryMessages, CompressionType compressionType) => throw new NotSupportedException("ConfirmationCloseTests handle single sends only.");
+        public Task<ulong> GetLastPublishingId() => throw new NotSupportedException("GateProducer never queries the last id.");
+        public bool IsOpen() => throw new NotSupportedException("GateProducer never reports openness.");
+        public void Dispose() => throw new NotSupportedException("GateProducer is never disposed.");
+        public Task<ResponseCode> Close() => throw new NotSupportedException("GateProducer is never closed.");
+        public int MessagesSent => throw new NotSupportedException("GateProducer never reports counters.");
+        public int ConfirmFrames => throw new NotSupportedException("GateProducer never reports counters.");
+        public int IncomingFrames => throw new NotSupportedException("GateProducer never reports counters.");
+        public int PublishCommandsSent => throw new NotSupportedException("GateProducer never reports counters.");
+        public int PendingCount => throw new NotSupportedException("GateProducer never reports counters.");
+        public ProducerInfo Info => throw new NotSupportedException("GateProducer never reports info.");
+    }
+
+    [Fact]
     public async Task Connection_lost_mid_wait_fails_all_pending_confirmations_transiently()
     {
         var tracker = new ConfirmationTracker();

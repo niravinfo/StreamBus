@@ -101,47 +101,5 @@ public sealed class SuperStreamRoutingIntegrationTests : IAsyncDisposable
         Assert.Contains(seen, ctx => ctx.RoutingValue == "key-a");
         Assert.All(seen, ctx => Assert.NotEqual(Guid.Empty, ctx.MessageId));
     }
-
-    [Fact]
-    public async Task Super_target_result_carries_the_source_routing_key()
-    {
-        var source = Unique("routing-eo-src");
-        var target = Unique("routing-eo-tgt");
-        var admin = await ConnectAdminAsync();
-        await using var _ = admin;
-        await admin.CreateSuperStream(new PartitionsSuperStreamSpec(source, 2));
-        _superStreams.Add(source);
-        await admin.CreateSuperStream(new PartitionsSuperStreamSpec(target, 2));
-        _superStreams.Add(target);
-
-        await using var publisher = await BusInstance.StartAsync("routing-eo-pub");
-        await publisher.Bus.PublishSuperAsync(source, new RoutingEvent("key-a"), "key-a",
-            TestContext.Current.CancellationToken);
-
-        await using var eo = await BusInstance.StartAsync("routing-eo");
-        await using var step = await eo.Bus.ConsumeEffectivelyOnceAsync(
-            source, target,
-            new EffectivelyOnceOptions
-            {
-                SourceIsSuperStream = true,
-                TargetIsSuperStream = true,
-                Retry = new RetryPolicy { BaseDelay = TimeSpan.FromMilliseconds(10), MaxJitter = TimeSpan.Zero },
-            },
-            ctx => Task.FromResult(ctx.Body),
-            TestContext.Current.CancellationToken);
-
-        var seen = new List<ConsumeContext>();
-        await using var reader = await BusInstance.StartAsync("routing-eo-read");
-        await using var subscription = await reader.Bus.ConsumeAsync(
-            target,
-            new ConsumeOptions { IsSuperStream = true, Reference = "routing-eo-grp", Offset = ConsumeOffset.AlwaysFirst },
-            ctx => { lock (seen) seen.Add(ctx); return Task.CompletedTask; },
-            TestContext.Current.CancellationToken);
-
-        await WaitForAsync(() => Count(seen) == 1, TimeSpan.FromSeconds(30), "routed result");
-        var result = Assert.Single(seen);
-        Assert.Equal("key-a", result.RoutingValue);
-        Assert.Equal("key-a", result.Headers.GetString("streambus.routing-key"));
-        Assert.NotEqual(Guid.Empty, result.MessageId);
-    }
 }
+

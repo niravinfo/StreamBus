@@ -37,7 +37,7 @@ public class ConsumeContext
     /// <summary>Application properties as received, framework keys included.</summary>
     public required IStreamHeaders Headers { get; init; }
 
-    /// <summary>Headers carried on the error envelope or effectively-once result.</summary>
+    /// <summary>Headers carried on the error envelope.</summary>
     public required IStreamSendHeaders SendHeaders { get; init; }
 
     /// <summary>Per-delivery service scope shared with the typed consumer.</summary>

@@ -711,26 +711,6 @@ public sealed class TypedConsumeFilterTests
     }
 
     [Fact]
-    public async Task Effectively_once_typed_filter_zero_next_names_the_user_filter_not_the_adapter()
-    {
-        var pipeline = new ConsumePipeline(
-            new IStreamConsumeFilter[]
-            {
-                new TypedConsumeFilterAdapter<TypedOrderMessage>(new NoNextTypedFilter()),
-            },
-            requiresContinuation: true);
-
-        var ex = await Assert.ThrowsAsync<StreamBusFilterContractException>(() =>
-            pipeline.RunAsync(
-                PipelineContext(),
-                () => Task.CompletedTask));
-
-        Assert.Contains(nameof(NoNextTypedFilter), ex.Message, StringComparison.Ordinal);
-        Assert.Contains("returned without calling next", ex.Message, StringComparison.Ordinal);
-        Assert.DoesNotContain("TypedConsumeFilterAdapter", ex.Message, StringComparison.Ordinal);
-    }
-
-    [Fact]
     public async Task Typed_filter_double_next_error_names_the_user_filter_not_the_adapter()
     {
         var pipeline = new ConsumePipeline(new IStreamConsumeFilter[]

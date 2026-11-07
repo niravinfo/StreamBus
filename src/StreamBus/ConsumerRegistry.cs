@@ -62,8 +62,7 @@ internal sealed class StreamConsumerRegistration : IStreamConsumer
 /// Single owner of consumer teardown: cancel the family, drain the run tasks, dispose the
 /// partition loops, scopes, and cancellation source, then run the stopped/deregistered hooks.
 /// Shared by the registration's <see cref="StreamConsumerRegistration.DisposeAsync"/> and the
-/// failed-start cleanup in <see cref="StreamConsumerRegistry.ConsumeAsync"/> /
-/// <see cref="StreamConsumerRegistry.ConsumeEffectivelyOnceAsync"/>.
+/// failed-start cleanup in <see cref="StreamConsumerRegistry.ConsumeAsync"/>.
 /// </summary>
 internal static class ConsumerTeardown
 {
@@ -108,7 +107,6 @@ internal sealed class StreamConsumerRegistry
     private readonly ILoggerFactory _loggerFactory;
     private readonly ILogger<StreamConsumerRegistry> _logger;
     private readonly StreamProducerRegistry _producers;
-    private readonly ResultProducerRegistry _results;
     private readonly MonotonicOffsetGuard _guard = new();
     private readonly HashSet<StreamConsumerRegistration> _live = new();
     private readonly object _gate = new();
@@ -123,13 +121,11 @@ internal sealed class StreamConsumerRegistry
     private readonly ConcurrentDictionary<(Type BusType, Type ClosedFilterType), object> _typedFilterInstances = new();
     private readonly ConcurrentDictionary<(Type BusType, Type ClosedFilterType, Type MessageType), IStreamConsumeFilter> _typedFilterAdapters = new();
 
-    public StreamConsumerRegistry(StreamBusConnectionSupervisor supervisor, string vhost, StreamProducerRegistry producers, ILoggerFactory? loggerFactory, ResultProducerRegistry results, IServiceScopeFactory? scopeFactory = null, ErrorQueueTransport? queues = null, StreamBusHealthAggregator? health = null, Func<IStreamSystemHandle, RawConsumerConfig, CancellationToken, Task<IStreamConsumerHandle>>? consumerFactory = null, StreamBusConsumeFilterStore? consumeFilters = null, IServiceProvider? rootProvider = null)
+    public StreamConsumerRegistry(StreamBusConnectionSupervisor supervisor, string vhost, StreamProducerRegistry producers, ILoggerFactory? loggerFactory, IServiceScopeFactory? scopeFactory = null, ErrorQueueTransport? queues = null, StreamBusHealthAggregator? health = null, Func<IStreamSystemHandle, RawConsumerConfig, CancellationToken, Task<IStreamConsumerHandle>>? consumerFactory = null, StreamBusConsumeFilterStore? consumeFilters = null, IServiceProvider? rootProvider = null)
     {
         _supervisor = supervisor;
         _vhost = vhost;
         _producers = producers;
-        ArgumentNullException.ThrowIfNull(results);
-        _results = results;
         _scopes = scopeFactory;
         _queues = queues;
         _health = health;
@@ -155,7 +151,6 @@ internal sealed class StreamConsumerRegistry
         Type busType,
         string stream,
         IReadOnlyList<ConsumeFilterRegistration> endpointFilters,
-        bool effectivelyOnce,
         Type? messageType)
     {
         var busFilters = _consumeFilterStore?.FiltersFor(busType) ?? Array.Empty<ConsumeFilterRegistration>();
@@ -171,7 +166,7 @@ internal sealed class StreamConsumerRegistry
         AddFilters(busFilters, filters, "bus", endpointScope: false);
         AddFilters(endpointFilters, filters, "endpoint", endpointScope: true);
 
-        return new ConsumePipeline(filters, requiresContinuation: effectivelyOnce);
+        return new ConsumePipeline(filters);
 
         void AddFilters(IReadOnlyList<ConsumeFilterRegistration> registrations, List<IStreamConsumeFilter> target, string scope, bool endpointScope)
         {
@@ -353,7 +348,7 @@ internal sealed class StreamConsumerRegistry
         if (tracker is not null) healthCallback = tracker.Update;
         var family = new CancellationTokenSource();
         var errors = new ErrorPublisher(_producers, _loggerFactory.CreateLogger<ErrorPublisher>(), _queues);
-        var pipeline = BuildPipeline(busType, stream, options.ConsumeFilters, false, options.MessageType);
+        var pipeline = BuildPipeline(busType, stream, options.ConsumeFilters, options.MessageType);
         var loops = new List<(StreamPartitionConsumer Loop, Task RunTask)>(partitionStreams.Length);
         var scopes = new List<IDisposable>(partitionStreams.Length);
         try
@@ -366,7 +361,7 @@ internal sealed class StreamConsumerRegistry
                 var loop = new StreamPartitionConsumer(
                     handle, stream, partitionStream, index, reference, options, handler,
                     _guard, state, StreamBusMetrics.Shared, _vhost, busName, errors,
-                    _loggerFactory.CreateLogger<StreamPartitionConsumer>(), null, null, _scopes,
+                    _loggerFactory.CreateLogger<StreamPartitionConsumer>(), _scopes,
                     _consumerFactory, healthCallback, serializer, pipeline,
                     () => _supervisor.CurrentHandle);
                 loops.Add((loop, loop.RunAsync(family.Token)));
@@ -386,117 +381,6 @@ internal sealed class StreamConsumerRegistry
         Action? onStopped = null;
         if (tracker is not null) onStopped = tracker.Stop;
         var registration = new StreamConsumerRegistration(stream, reference, loops, scopes, family, Remove, onStopped);
-        lock (_gate)
-        {
-            _live.Add(registration);
-        }
-        return registration;
-    }
-
-    public async Task<IStreamConsumer> ConsumeEffectivelyOnceAsync(
-        Type busType, string sourceStream, string targetStream, EffectivelyOnceOptions options,
-        Func<ConsumeContext, Task<ReadOnlyMemory<byte>>> handler, CancellationToken ct = default,
-        IStreamSerializer? serializer = null)
-    {
-        ArgumentNullException.ThrowIfNull(busType);
-        ArgumentException.ThrowIfNullOrWhiteSpace(sourceStream);
-        ArgumentException.ThrowIfNullOrWhiteSpace(targetStream);
-        ArgumentNullException.ThrowIfNull(options);
-        ArgumentNullException.ThrowIfNull(handler);
-        ArgumentNullException.ThrowIfNull(options.Retry);
-        ArgumentNullException.ThrowIfNull(options.ReadinessPolicy);
-        EffectivelyOnceValidation.ValidateConsume(options.Retry);
-        var reference = options.Reference ?? ResultNaming.ConsumerReference(busType, sourceStream, targetStream);
-        ConsumerReferenceValidation.Validate(reference);
-        if (options.Reference is not null) ConsumerReferenceValidation.Validate(options.Reference);
-
-        var handle = await RequireReadyAsync(
-            options.ReadinessPolicy, $"effectively-once consume of '{sourceStream}'", ct).ConfigureAwait(false);
-
-        string[] sourcePartitions;
-        if (options.SourceIsSuperStream)
-        {
-            if (!await handle.SuperStreamExistsAsync(sourceStream, ct).ConfigureAwait(false))
-                throw new StreamBusStreamNotFoundException(sourceStream);
-            sourcePartitions = await handle.QueryPartitionAsync(sourceStream, ct).ConfigureAwait(false);
-        }
-        else
-        {
-            if (await handle.SuperStreamExistsAsync(sourceStream, ct).ConfigureAwait(false))
-                throw new StreamBusConfigurationException($"Effectively-once source '{sourceStream}' is a super stream but SourceIsSuperStream is false.");
-            if (!await handle.StreamExistsAsync(sourceStream, ct).ConfigureAwait(false))
-                throw new StreamBusStreamNotFoundException(sourceStream);
-            sourcePartitions = new[] { sourceStream };
-        }
-        if (options.TargetIsSuperStream)
-        {
-            if (!await handle.SuperStreamExistsAsync(targetStream, ct).ConfigureAwait(false))
-                throw new StreamBusStreamNotFoundException(targetStream);
-        }
-        else
-        {
-            if (await handle.SuperStreamExistsAsync(targetStream, ct).ConfigureAwait(false))
-                throw new StreamBusConfigurationException($"Effectively-once target '{targetStream}' is a super stream but TargetIsSuperStream is false.");
-            if (!await handle.StreamExistsAsync(targetStream, ct).ConfigureAwait(false))
-                throw new StreamBusStreamNotFoundException(targetStream);
-        }
-
-        var busName = busType.FullName ?? busType.Name;
-        var tracker = _health is null ? null : new RegistrationTracker(_health, _vhost, ConsumerHealthNames.EffectivelyOnce(busName, sourceStream), sourcePartitions.Length);
-        Action<int, BusRegistrationState, string?>? healthCallback = null;
-        if (tracker is not null) healthCallback = tracker.Update;
-        var family = new CancellationTokenSource();
-        var errors = new ErrorPublisher(_producers, _loggerFactory.CreateLogger<ErrorPublisher>(), _queues);
-        var pipeline = BuildPipeline(busType, sourceStream, Array.Empty<ConsumeFilterRegistration>(), true, null);
-        var targetRouting = options.TargetRouting ?? (static ctx => ctx.RoutingValue);
-        var loops = new List<(StreamPartitionConsumer Loop, Task RunTask)>(sourcePartitions.Length);
-        var scopes = new List<IDisposable>(sourcePartitions.Length);
-        try
-        {
-            for (var index = 0; index < sourcePartitions.Length; index++)
-            {
-                var partitionStream = sourcePartitions[index];
-                var state = new PartitionState();
-                scopes.Add(StreamBusMetrics.Shared.TrackPartition(_vhost, busName, sourceStream, index, reference, state));
-                var consumeOptions = new ConsumeOptions
-                {
-                    IsSuperStream = options.SourceIsSuperStream,
-                    Reference = reference,
-                    SingleActiveConsumer = true,
-                    Offset = ConsumeOffset.ResumeOrFirst,
-                    Retry = options.Retry,
-                    ReadinessPolicy = options.ReadinessPolicy,
-                    EffectivelyOnce = new EffectivelyOnceConfig
-                    {
-                        TargetStream = targetStream,
-                        TargetIsSuperStream = options.TargetIsSuperStream,
-                        TargetRouting = targetRouting,
-                        ResultHandler = handler,
-                        ResumeQuery = _results.GetResumeOffsetAsync,
-                    },
-                };
-                var loop = new StreamPartitionConsumer(
-                    handle, sourceStream, partitionStream, index, reference, consumeOptions,
-                    static _ => Task.CompletedTask, // unreached in EO mode (the branch above calls ResultHandler)
-                    _guard, state, StreamBusMetrics.Shared, _vhost, busName, errors,
-                    _loggerFactory.CreateLogger<StreamPartitionConsumer>(), consumeOptions.EffectivelyOnce, _results, _scopes,
-                    _consumerFactory, healthCallback, serializer, pipeline, systemProvider: () => _supervisor.CurrentHandle);
-                loops.Add((loop, loop.RunAsync(family.Token)));
-            }
-            // Same attach contract as ConsumeAsync: every partition's first broker
-            // subscription is confirmed before the call returns.
-            await Task.WhenAll(loops.Select(l => l.Loop.FirstAttachAsync)).WaitAsync(ct).ConfigureAwait(false);
-        }
-        catch
-        {
-            await ConsumerTeardown.RunAsync(
-                family, loops, scopes, onStopped: tracker is null ? null : tracker.Stop, swallowRunTaskFailures: true).ConfigureAwait(false);
-            throw;
-        }
-
-        Action? onStopped = null;
-        if (tracker is not null) onStopped = tracker.Stop;
-        var registration = new StreamConsumerRegistration(sourceStream, reference, loops, scopes, family, Remove, onStopped);
         lock (_gate)
         {
             _live.Add(registration);
@@ -668,42 +552,6 @@ internal sealed class StreamConsumerRegistry
         {
             DisposeProducers();
         }
-    }
-
-    public async Task PublishResultAsync(string targetStream, ReadOnlyMemory<byte> result, ulong sourceOffset, PublishResultOptions? options, CancellationToken ct = default)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(targetStream);
-        ArgumentNullException.ThrowIfNull(options);
-        EffectivelyOnceValidation.ValidatePublishResult(options);
-        var handle = await RequireReadyAsync(
-            ReadinessPolicy.FailFastPolicy, $"result publish to '{targetStream}'", ct).ConfigureAwait(false);
-        if (options.IsSuperStream)
-        {
-            if (!await handle.SuperStreamExistsAsync(targetStream, ct).ConfigureAwait(false))
-                throw new StreamBusStreamNotFoundException(targetStream);
-        }
-        else
-        {
-            if (await handle.SuperStreamExistsAsync(targetStream, ct).ConfigureAwait(false))
-                throw new StreamBusConfigurationException($"Result target '{targetStream}' is a super stream but PublishResultOptions.IsSuperStream is false.");
-            if (!await handle.StreamExistsAsync(targetStream, ct).ConfigureAwait(false))
-                throw new StreamBusStreamNotFoundException(targetStream);
-        }
-        var publisher = new ResultPublisher(_results, _loggerFactory.CreateLogger<ResultPublisher>());
-        await publisher.PublishForeverAsync(
-            new ResultWork
-            {
-                TargetStream = targetStream,
-                TargetSuper = options.IsSuperStream,
-                Body = result,
-                SourceOffset = sourceOffset,
-                RoutingKey = options.RoutingKey,
-                ProducerName = options.ProducerName,
-                MessageId = Guid.NewGuid(),
-                SentTime = StreamWire.NormalizeSentTime(DateTime.UtcNow),
-            },
-            options.Retry,
-            ct).ConfigureAwait(false);
     }
 
     private async Task<IStreamSystemHandle> RequireReadyAsync(

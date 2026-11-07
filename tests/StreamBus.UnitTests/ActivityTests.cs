@@ -241,7 +241,5 @@ public sealed class ActivityTests
 
     private sealed class SuperHandle : Handle, IStreamSuperProducerHandle
     {
-        public Task PublishWithIdAsync(ulong publishingId, ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct) => Task.CompletedTask;
-        public Task PublishResultAsync(ReadOnlyMemory<byte> body, ulong publishingId, string? routingKey, CancellationToken ct) => Task.CompletedTask;
     }
 }

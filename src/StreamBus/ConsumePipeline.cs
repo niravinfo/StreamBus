@@ -43,8 +43,9 @@ public interface IStreamConsumeFilter<T>
 }
 
 /// <summary>
-/// Continues a consume pipeline. Normal filters may call it zero or one time;
-/// effectively-once pipelines require exactly one call.
+/// Continues a consume pipeline. A filter may call it zero or one times:
+/// zero skips the delivery (the handler is not invoked and the offset
+/// advances); more than one call is rejected.
 /// </summary>
 public delegate Task ConsumeDelegate();
 
@@ -216,15 +217,11 @@ internal sealed class StreamBusConsumeFilterStore
 internal sealed class ConsumePipeline
 {
     private readonly IStreamConsumeFilter[] _filters;
-    private readonly bool _requiresContinuation;
 
-    public ConsumePipeline(
-        IReadOnlyList<IStreamConsumeFilter> filters,
-        bool requiresContinuation = false)
+    public ConsumePipeline(IReadOnlyList<IStreamConsumeFilter> filters)
     {
         ArgumentNullException.ThrowIfNull(filters);
         _filters = filters.ToArray();
-        _requiresContinuation = requiresContinuation;
     }
 
     public int Count => _filters.Length;
@@ -265,11 +262,8 @@ internal sealed class ConsumePipeline
             var call = Interlocked.Increment(ref nextCalls);
             if (call > 1)
             {
-                var message =
-                    $"Consume filter '{filterName}' invoked next {call} times; a message must be handled exactly once.";
-                throw _requiresContinuation
-                    ? new StreamBusFilterContractException(message)
-                    : new StreamBusTransientException(message);
+                throw new StreamBusTransientException(
+                    $"Consume filter '{filterName}' invoked next {call} times; a message must be handled at most once.");
             }
 
             return InvokeAsync(index + 1, context, terminal);
@@ -280,21 +274,9 @@ internal sealed class ConsumePipeline
         var calls = Volatile.Read(ref nextCalls);
         if (calls == 0)
         {
-            if (_requiresContinuation)
-            {
-                throw new StreamBusFilterContractException(
-                    $"Effectively-once consume filter '{filterName}' returned without calling next; an effectively-once pipeline requires exactly one continuation.");
-            }
-
+            // A consume filter may skip a delivery by returning without calling
+            // next: the handler is not invoked and the offset advances.
             return;
-        }
-        if (calls > 1)
-        {
-            var message =
-                $"Consume filter '{filterName}' invoked next {calls} times; a message must be handled exactly once.";
-            throw _requiresContinuation
-                ? new StreamBusFilterContractException(message)
-                : new StreamBusTransientException(message);
         }
     }
 }

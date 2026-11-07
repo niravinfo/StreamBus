@@ -1103,10 +1103,5 @@ public sealed class PublishPipelineTests
     private sealed class CapturingSuperHandle(string stream, CapturingSystem system)
         : CapturingPlainHandle(stream, system), IStreamSuperProducerHandle
     {
-        public Task PublishWithIdAsync(ulong publishingId, ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct)
-            => SendAsync(body, options, ct);
-
-        public Task PublishResultAsync(ReadOnlyMemory<byte> body, ulong publishingId, string? routingKey, CancellationToken ct)
-            => SendAsync(body, new PublishOptions { RoutingKey = routingKey, IsSuperStream = true }, ct);
     }
 }

@@ -13,9 +13,6 @@ internal static class ConsumerHealthNames
     public static string Endpoint(string busName, string stream)
         => $"endpoint:{busName}:{stream}";
 
-    public static string EffectivelyOnce(string busName, string sourceStream)
-        => $"effectively-once:{busName}:{sourceStream}";
-
     public static string Raw(string busName, string stream, int sequence)
         => sequence <= 1 ? $"raw:{busName}:{stream}" : $"raw:{busName}:{stream}:{sequence}";
 }
