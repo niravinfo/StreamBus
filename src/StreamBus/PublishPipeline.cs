@@ -151,7 +151,7 @@ internal sealed class PublishPipeline
             var call = Interlocked.Increment(ref nextCalls);
             if (call > 1)
             {
-                throw new StreamBusConfigurationException(
+                throw new StreamBusFilterContractException(
                     $"Publish filter {filterName} invoked next {call} times; exactly one continuation is allowed.");
             }
 
@@ -165,12 +165,12 @@ internal sealed class PublishPipeline
         var calls = Volatile.Read(ref nextCalls);
         if (calls == 0)
         {
-            throw new StreamBusConfigurationException(
+            throw new StreamBusFilterContractException(
                 $"Publish filter '{filterName}' returned without calling next; the message would have been silently dropped.");
         }
         if (calls > 1)
         {
-            throw new StreamBusConfigurationException(
+            throw new StreamBusFilterContractException(
                 $"Publish filter {filterName} invoked next {calls} times; exactly one continuation is allowed.");
         }
     }

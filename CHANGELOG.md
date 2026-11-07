@@ -4,6 +4,17 @@
 
 ### Breaking
 
+- Publish-filter contract violations (calling `next()` zero times or more
+  than once) now throw the newly public
+  `StreamBusFilterContractException` instead of
+  `StreamBusConfigurationException`, which is now reserved strictly for
+  configuration-time failures. `StreamBusFilterContractException` derives
+  from `StreamBusException`, so callers that catch the base type are
+  unaffected; callers that distinguished setup errors by catching
+  `StreamBusConfigurationException` will no longer intercept publish-filter
+  bugs on every publish. The effectively-once consume pipeline already threw
+  this exception internally; both surfaces now share the public type.
+
 - `IStreamSuperProducerHandle` no longer derives from
   `IStreamPlainProducerHandle`; both now derive from `IStreamProducerHandle`.
   `SendEnvelopeAsync` — which carries no routing key and therefore crashed

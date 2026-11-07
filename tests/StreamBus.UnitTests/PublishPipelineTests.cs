@@ -266,11 +266,11 @@ public sealed class PublishPipelineTests
     }
 
     [Fact]
-    public async Task Zero_next_is_rejected_as_a_configuration_error()
+    public async Task Zero_next_is_rejected_as_a_filter_contract_violation()
     {
         var pipeline = new PublishPipeline(new IStreamPublishFilter[] { new ZeroNextFilter() });
 
-        var ex = await Assert.ThrowsAsync<StreamBusConfigurationException>(() =>
+        var ex = await Assert.ThrowsAsync<StreamBusFilterContractException>(() =>
             pipeline.RunAsync(NewContext(), () => Task.CompletedTask));
 
         Assert.Contains(nameof(ZeroNextFilter), ex.Message, StringComparison.Ordinal);
@@ -278,12 +278,12 @@ public sealed class PublishPipelineTests
     }
 
     [Fact]
-    public async Task Double_next_is_rejected_as_a_configuration_error()
+    public async Task Double_next_is_rejected_as_a_filter_contract_violation()
     {
         var pipeline = new PublishPipeline(new IStreamPublishFilter[] { new DoubleNextFilter() });
         var terminalCalls = 0;
 
-        var ex = await Assert.ThrowsAsync<StreamBusConfigurationException>(() =>
+        var ex = await Assert.ThrowsAsync<StreamBusFilterContractException>(() =>
             pipeline.RunAsync(NewContext(), () =>
             {
                 Interlocked.Increment(ref terminalCalls);

@@ -90,7 +90,7 @@ registers the filter type as a singleton; registering the same filter type
 yourself with a scoped or transient lifetime is rejected when the bus is
 built, because the filter is resolved once and cached. A filter must call
 `next` exactly once - zero or double continuations throw
-`StreamBusConfigurationException` (a second call is rejected before the
+`StreamBusFilterContractException` (a second call is rejected before the
 duplicate send). Filter header mutations take precedence over call-level
 `PublishOptions.Properties` headers. Exceptions thrown by a filter (including
 an `OperationCanceledException` from a token you own) propagate unwrapped —
