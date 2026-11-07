@@ -413,6 +413,120 @@ public sealed class HostingTests
         }
     }
 
+    // INF-7 refutation pin: "BlockUntilConsumersAttached treats rows.Count == 0 as
+    // success — startup can pass with zero consumers" is unreachable. The attach-wait
+    // loop only runs when BlockStartupUntilReady is true (StartAsync returns early
+    // otherwise), and the same StartAsync first awaits Task.WhenAll over the very
+    // consumer start tasks whose ConsumeCoreAsync upserts the health row synchronously
+    // and only returns after every partition's first attach. So a configured-but-
+    // unattached consumer can never let StartAsync finish successfully; rows.Count == 0
+    // at the loop can only mean "no typed consumers were registered" (correct success).
+    private sealed record PinEvent;
+
+    private sealed class PinConsumer : IConsumer<PinEvent>
+    {
+        public Task Consume(ConsumeContext<PinEvent> context) => Task.CompletedTask;
+    }
+
+    private sealed class NeverAttachingHandle : IStreamSystemHandle
+    {
+        public bool IsClosed => false;
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        public Task<IStreamPlainProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct)
+            => throw new NotImplementedException("HostingTests never publishes.");
+        public Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
+            => throw new NotImplementedException("HostingTests never publishes.");
+        public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
+            => throw new NotImplementedException("HostingTests never publishes.");
+        public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
+            => throw new NotImplementedException("NeverAttachingHandle never creates stable super producers.");
+        public Task<ulong> QuerySequenceAsync(string reference, string stream, CancellationToken ct)
+            => throw new NotImplementedException("HostingTests never queries publishing sequences.");
+        public Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken ct)
+            => Task.FromResult<ulong?>(null);
+        public Task StoreSystemOffsetAsync(string reference, string stream, ulong offset, CancellationToken ct)
+            => Task.CompletedTask;
+        public Task<bool> StreamExistsAsync(string stream, CancellationToken ct) => Task.FromResult(true);
+        public Task<bool> SuperStreamExistsAsync(string superStream, CancellationToken ct) => Task.FromResult(false);
+        public Task<string[]> QueryPartitionAsync(string superStream, CancellationToken ct)
+            => Task.FromResult(Array.Empty<string>());
+        public Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct)
+            => new TaskCompletionSource<RawConsumer>(TaskCreationOptions.RunContinuationsAsynchronously).Task;
+        public Task CreateStreamAsync(StreamSpec spec, CancellationToken ct) => Task.CompletedTask;
+        public Task CreateSuperStreamAsync(PartitionsSuperStreamSpec spec, CancellationToken ct) => Task.CompletedTask;
+    }
+
+    [Fact]
+    public async Task Blocking_startup_times_out_while_a_typed_consumer_is_unattached()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddStreamBus<OrdersBus>((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("app", "secret")));
+        services.AddStreamBusHosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(1)));
+        services.AddSingleton<IStreamSystemConnector>(new SuccessConnector(new NeverAttachingHandle()));
+        await using var sp = services.BuildServiceProvider();
+        sp.GetRequiredService<StreamBusConsumerStore>().Add(
+            typeof(OrdersBus), typeof(PinEvent), typeof(PinConsumer), "orders",
+            new ConsumeOptions { Reference = "pin-group" });
+        var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
+        try
+        {
+            var startTask = hosted.StartAsync(TestContext.Current.CancellationToken);
+
+            // The consumer's health row is upserted synchronously inside ConsumeCoreAsync
+            // (RegistrationTracker constructor), before the attach wait — so the pending
+            // start means rows for unattached consumers never read as "registered == 0".
+            var registry = sp.GetRequiredService<IStreamBusRegistry>();
+            BusRegistrationHealth? row = null;
+            var rowDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+            while (row is null)
+            {
+                Assert.True(DateTime.UtcNow < rowDeadline, "The typed consumer's health row never appeared.");
+                row = registry.HealthFor("/").Snapshot().Registrations.FirstOrDefault(r => r.Kind == "consumer");
+                if (row is null) await Task.Delay(10, TestContext.Current.CancellationToken);
+            }
+            Assert.Equal(BusRegistrationState.Attaching, row.State);
+
+            // Startup must NOT pass with the consumer unattached: the pending start
+            // task trips the startup budget, it can never return successfully.
+            var ex = await Assert.ThrowsAsync<StreamBusTimeoutException>(() => startTask);
+            Assert.NotEqual(BusRegistrationState.Attached, row.State);
+        }
+        finally
+        {
+            await hosted.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task Blocking_startup_with_no_typed_consumers_completes_with_zero_rows()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddStreamBus((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("app", "secret")));
+        services.AddStreamBusHosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(5)));
+        services.AddSingleton<IStreamSystemConnector>(new SuccessConnector());
+        await using var sp = services.BuildServiceProvider();
+        var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
+        try
+        {
+            await hosted.StartAsync(TestContext.Current.CancellationToken);
+
+            // rows.Count == 0 in the attach-wait loop means "no typed consumers were
+            // configured", which is a correct success — there is nothing to wait for.
+            var registry = sp.GetRequiredService<IStreamBusRegistry>();
+            Assert.DoesNotContain(
+                registry.HealthFor("/").Snapshot().Registrations,
+                r => r.Kind == "consumer");
+            var bus = sp.GetRequiredService<IStreamBus>();
+            Assert.Equal(BusConnectionState.Ready, bus.State);
+        }
+        finally
+        {
+            await hosted.StopAsync(CancellationToken.None);
+        }
+    }
+
     [Fact]
     public async Task Non_blocking_startup_returns_without_waiting()
     {
