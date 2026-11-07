@@ -242,6 +242,39 @@ public sealed class ErrorQueueTransportTests
         Assert.Equal(2, connection.PublishChannelCreations);
     }
 
+    [Fact]
+    public async Task DisposeAsync_waits_for_the_inflight_publish_to_release_the_publish_gate()
+    {
+        // Disposal must not reset the cached publish channel while a publish
+        // holds the gate: the channel/connection pair is only swapped under
+        // the gate, so an in-flight publish always finishes on a live pair
+        // and Dispose waits for it instead of racing the swap.
+        var connection = new FakeConnection();
+        var transport = Transport(connection);
+        using var release = new SemaphoreSlim(0, 1);
+        connection.NewChannelHandler = (_, _, ct) => release.WaitAsync(ct);
+
+        var pending = transport.PublishAsync(Queue("orders-error"), Envelope(), TestContext.Current.CancellationToken);
+        while (connection.PublishChannelCreations == 0 || connection.Current.PublishCount == 0)
+            await Task.Delay(10, TestContext.Current.CancellationToken);
+
+        var disposing = transport.DisposeAsync().AsTask();
+        for (var i = 0; i < 100; i++)
+        {
+            if (disposing.IsCompleted) break;
+            await Task.Delay(10, TestContext.Current.CancellationToken);
+        }
+        Assert.False(disposing.IsCompleted);
+
+        release.Release();
+        await pending;
+        await disposing;
+
+        Assert.False(connection.IsOpen);
+        await Assert.ThrowsAsync<StreamBusTransientException>(() =>
+            transport.PublishAsync(Queue("orders-error"), Envelope(), TestContext.Current.CancellationToken));
+    }
+
     private sealed record OrderEvent(string Id);
 
     private sealed class OrderConsumer : IConsumer<OrderEvent>
