@@ -32,8 +32,9 @@ public sealed class ProducerHandleSurfaceTests
     {
         Assert.NotNull(Method(typeof(IStreamSuperProducerHandle), nameof(IStreamProducerHandle.SendAsync)));
         Assert.NotNull(Method(typeof(IStreamSuperProducerHandle), nameof(IStreamSuperProducerHandle.PublishReplayAsync)));
-        Assert.NotNull(Method(typeof(IStreamSuperProducerHandle), nameof(IStreamSuperProducerHandle.PublishWithIdAsync)));
-        Assert.NotNull(Method(typeof(IStreamSuperProducerHandle), nameof(IStreamSuperProducerHandle.PublishResultAsync)));
+        // EO removal: no publishing-id result surface on any handle.
+        Assert.Null(Method(typeof(IStreamSuperProducerHandle), "PublishWithIdAsync"));
+        Assert.Null(Method(typeof(IStreamSuperProducerHandle), "PublishResultAsync"));
     }
 
     [Fact]
@@ -47,5 +48,20 @@ public sealed class ProducerHandleSurfaceTests
     {
         Assert.NotNull(Method(typeof(IStreamPlainProducerHandle), nameof(IStreamPlainProducerHandle.SendEnvelopeAsync)));
         Assert.NotNull(Method(typeof(IStreamPlainProducerHandle), nameof(IStreamPlainProducerHandle.PublishReplayAsync)));
+        // EO removal: no publishing-id result surface on the plain handle.
+        Assert.Null(Method(typeof(IStreamPlainProducerHandle), "PublishResultAsync"));
+    }
+
+    [Fact]
+    public void Bus_surface_has_no_effectively_once_members()
+    {
+        // EO removal: the read-process-write pipeline and manual result
+        // publish leave the public bus surface entirely.
+        Assert.Null(typeof(IStreamBus).GetMethod(
+            "ConsumeEffectivelyOnceAsync",
+            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance));
+        Assert.Null(typeof(IStreamBus).GetMethod(
+            "PublishResultAsync",
+            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance));
     }
 }
