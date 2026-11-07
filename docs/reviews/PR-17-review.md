@@ -19,7 +19,7 @@
   scaffolding (unreachable fatal-throw, transient-warning log, `IsFatalStartFailure`) was removed
   and the fire-and-forget contract documented in `Hosting.cs`; ownership is pinned by
   `HostingTests.StopAsync_disposes_and_deregisters_supervisors_that_never_connected`.
-- **FLT-3, FLT-5, and the effectively-once portions of CON-13 are MOOT (2026-11-07):** the
+- **FLT-3 and the effectively-once portions of CON-13 are MOOT (2026-11-07):** the
   effectively-once pipeline was removed entirely by product decision — StreamBus is at-least-once
   and deduplication is the application's responsibility (see
   `docs/superpowers/plans/2026-11-07-remove-effectively-once.md` and the CHANGELOG `### Breaking`
@@ -27,12 +27,15 @@
   `ConsumePipeline(requiresContinuation)`, EO deserialization ordering) no longer exists, so the
   findings have no remaining subject. The replay/dead-letter machinery they touched incidentally
   is kept and still pinned by `ConfirmationCloseTests`/`ReplayReattachTests`.
+- **FLT-5 is REFUTED (2026-11-07):** it was previously and incorrectly listed as moot alongside
+  the EO removal, but its subject is the publish pipeline cache, which still exists unchanged.
+  It is refuted on its own merits — see the FLT-5 entry.
 
 ## Suggested execution order
 
 1. **Before merge (Critical):** INF-1, INF-3, CON-1, CON-2, PUB-1, FLT-1. (INF-4 refuted — see header note.)
 2. **Same PR, second commit (Important correctness):** PUB-2, PUB-3, PUB-4, PUB-5, CON-3, CON-4,
-   CON-6, CON-7, CON-11, CON-13, INF-2, INF-5, INF-6, FLT-2, FLT-3, FLT-4, FLT-5.
+   CON-6, CON-7, CON-11, CON-13, INF-2, INF-5, INF-6, FLT-2, FLT-3, FLT-4. (FLT-5 refuted — see its entry.)
    (INF-7 refuted — see its entry; CON-5 refuted as IMPORTANT — doc-only, see its entry.)
 3. **Polish batch:** DOC-1, DOC-2, DOC-3, DOC-5, DOC-7, DOC-8, DOC-12, and all minors.
 
@@ -1461,7 +1464,35 @@ internal sealed class ScopedConsumeFilter(Type filterType) : IStreamConsumeFilte
 
 ---
 
-**[FLT-5] PublishPipelineCache grows unbounded for explicit-stream publishes and leaks typed filters across pipes**
+**[FLT-5] ~~PublishPipelineCache grows unbounded for explicit-stream publishes and leaks typed filters across pipes~~ — **REFUTED**
+- **Severity:** ~~IMPORTANT~~ → none
+- **File:** src\StreamBus\Bus.cs (lines 111–118, 158); src\StreamBus\PublishPipelineCache.cs (lines 52–96)
+- **Refutation (2026-11-07):** Verified against the code after the effectively-once removal — the
+  code this finding describes still exists unchanged, so it is refuted on its own merits, not mooted
+  by the EO removal (the earlier header note mislabeled it):
+  1. The "semantics leak" claim assumes typed publish filters are a *declared-pipe* concept. They
+     are not: publish filters are registered **bus-wide, keyed by message type**
+     (`StreamBusConfigurator._publishFilters`; there is no per-stream publish-filter API — only
+     consume endpoints get per-endpoint filters). The documented contract explicitly states the
+     current behavior (`docs/guide/publish.md:166-167`): "Explicit-stream publishes
+     (`PublishAsync(stream, message, ct)`) use the declared `T` the same way." A concrete typed
+     filter is skipped for non-matching `T`
+     (`FilterRegistrationSupport.ClosedFilterType` → `ConcreteTyped` matches only
+     `typedMessageTypes.Contains(messageType)`), and open generics closing once per message type
+     is their documented purpose (`publish.md:129`). There is no pipe scope for the filter to
+     leak out of. The proposed `GetOrCreateUniversal()` fix would actually *break* this
+     documented contract by silently skipping typed filters on explicit publishes.
+  2. The "unbounded growth" claim is structurally true but practically negligible. `T` is a
+     compile-time generic argument, so the set of cache keys is finite in any normal application.
+     The hypothetical "reflection-driven outbox replayer" has no internal counterpart — every
+     internal path that publishes with a runtime-determined payload bypasses the pipeline cache
+     entirely: `Bus.RequeueErrorsAsync` (Bus.cs) and `ConsumerRegistry.ReplayAsync` go through
+     `_producers.PublishAsync` directly, and `PublishRawAsync` bypasses the pipeline
+     (documented at `publish.md:167`). Per-entry cost is one small filter list plus an adapter —
+     not a defect.
+- No original review text removed below for traceability:
+
+**[FLT-5-ORIGINAL] PublishPipelineCache grows unbounded for explicit-stream publishes and leaks typed filters across pipes**
 - **Severity:** IMPORTANT
 - **File:** src\StreamBus\Bus.cs (lines 111–118, 158); src\StreamBus\PublishPipelineCache.cs (lines 52–96)
 - **Problem:** `PublishThroughPipelineAsync` keys the pipeline cache on `typeof(T)` of the call site — including the unregistered `PublishAsync<T>(string stream, T message, ...)` overloads. A caller (or a reflection-driven outbox replayer) publishing with many distinct generic instantiations grows `_pipelines`, `_typedInstances`, and `_typed` forever. Worse, `Build(messageType)` eagerly closes every open-generic typed registration against that arbitrary `typeof(T)`, so a filter registered with the declared pipe `OrderEvent` also runs on an explicit `PublishAsync("raw-stream", orderEvent)` call it was never registered for — a semantics leak, not just a memory issue.
