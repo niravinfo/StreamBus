@@ -105,8 +105,16 @@ public class PublishContext
 /// <typeparam name="T">The declared message type.</typeparam>
 public sealed class PublishContext<T> : PublishContext
 {
+    /// <summary>
+    /// The payload captured as <typeparamref name="T"/> at construction, so
+    /// <see cref="Message"/> does not re-cast (and re-unbox for value types)
+    /// <see cref="PublishContext.Payload"/> on every access. Falls back to a
+    /// cast when not set (e.g. contexts constructed in tests).
+    /// </summary>
+    internal T? TypedPayload { get; init; }
+
     /// <summary>The published payload as <typeparamref name="T"/>.</summary>
-    public T Message => (T)Payload;
+    public T Message => TypedPayload is { } typed ? typed : (T)Payload;
 }
 
 internal sealed class PublishPipeline

@@ -279,6 +279,7 @@ internal abstract class StreamBusCore<TBus> : IStreamBus
                 Stream = stream,
                 RoutingKey = routingKey,
                 Payload = message!,
+                TypedPayload = message,
                 MessageId = messageId,
                 CorrelationId = seed.CorrelationId,
                 SentTime = sentTime,

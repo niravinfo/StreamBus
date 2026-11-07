@@ -108,10 +108,13 @@ internal abstract class StreamHeaderBag : IStreamHeaders
         {
             return Serializer.Deserialize<T>(Encoding.UTF8.GetBytes(json));
         }
-        catch (System.Text.Json.JsonException ex)
+        catch (Exception ex)
         {
+            // IStreamSerializer is pluggable: a custom serializer's parse errors
+            // are not JsonException, but they are still header-value problems and
+            // must surface as this API's documented ArgumentException shape.
             throw new ArgumentException(
-                $"Header '{key}' is not valid JSON for {typeof(T).FullName}.",
+                $"Header '{key}' could not be deserialized to {typeof(T).FullName} using {Serializer.GetType().Name}.",
                 nameof(key),
                 ex);
         }

@@ -57,6 +57,32 @@ public sealed class HeadersTests
         Assert.IsType<JsonException>(ex.InnerException);
     }
 
+    [Fact]
+    public void GetJson_custom_serializer_failure_names_the_key_and_keeps_the_exception()
+    {
+        var headers = new StreamHeaders(new Dictionary<string, object?>
+        {
+            ["payload"] = "not-protobuf",
+        }, new ThrowingSerializer());
+
+        var ex = Assert.Throws<ArgumentException>(() => headers.GetJson<HeaderPayload>("payload"));
+        Assert.Contains("payload", ex.Message, StringComparison.Ordinal);
+        Assert.Contains(typeof(HeaderPayload).FullName!, ex.Message, StringComparison.Ordinal);
+        Assert.Contains(nameof(ThrowingSerializer), ex.Message, StringComparison.Ordinal);
+        Assert.IsType<InvalidOperationException>(ex.InnerException);
+    }
+
+    private sealed class ThrowingSerializer : IStreamSerializer
+    {
+        public string ContentType => "application/vnd.throwing";
+
+        public byte[] Serialize<T>(T message)
+            => throw new NotSupportedException();
+
+        public T Deserialize<T>(ReadOnlyMemory<byte> data)
+            => throw new InvalidOperationException("custom serializer parse failure");
+    }
+
     [Theory]
     [InlineData("streambus.message-id")]
     [InlineData("streambus.correlation-id")]
