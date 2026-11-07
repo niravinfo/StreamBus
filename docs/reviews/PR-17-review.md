@@ -1195,7 +1195,7 @@ _supervisor.StateChanged += state =>
 
 ---
 
-**[INF-6] Publish channel/connection stored as two separate torn `Interlocked` writes**
+**[INF-6] Publish channel/connection stored as two separate torn `Interlocked` writes — VALID (structurally), fixed (2026-11-07)**
 - **Severity:** IMPORTANT
 - **File:** src\StreamBus\ErrorQueueTransport.cs (lines 226–228, 375–395, 504–518)
 - **Problem:** `_publishChannel` and `_publishChannelConnection` are written and exchanged as two independent fields. `ResetPublishChannelAsync` (called from `DisposeAsync` **without** holding `_publishGate`) exchanges the channel first, then the connection; a concurrent `GetPublishChannelAsync` can observe a torn pair — a new channel paired with the *previous* connection, or a channel created on a connection `DisposeAsync` is concurrently disposing. Correctness then relies on downstream `ObjectDisposedException` catches.
@@ -1229,6 +1229,45 @@ private async Task<IErrorQueuePublishChannel> GetPublishChannelAsync(IErrorQueue
     return created;
 }
 ```
+
+- **Verification & resolution (2026-11-07):** Partially genuine — the two-field
+  layout and the un-gated reset paths were real, but the claimed harms were
+  unreachable:
+  1. **Confirmed genuine:** `_publishChannel`/`_publishChannelConnection` were two
+     plain fields written as two assignments and exchanged separately in
+     `ResetPublishChannelAsync`, so a torn pair between two interleaved writes
+     was representable. `DisposeAsync` and `InvalidateConnectionAsync` called
+     the reset without holding `_publishGate`, so un-gated resets racing a
+     gated publish genuinely existed.
+  2. **Refuted as a correctness bug:** a torn pair could never be *used*. The
+     only guarded read (`GetPublishChannelAsync`) required
+     `IsOpen && ReferenceEquals(_publishChannelConnection, connection)`, so
+     every mismatched state routed to reset + recreate — the
+     "new channel paired with the previous connection" state the reviewer
+     described never survived the guard. Steady-state writes were already
+     serialized by `_publishGate` (the same invariant INF-1's delivery-tag fix
+     relies on). Shutdown/invalidation races all landed in existing catches
+     (`AlreadyClosedException`, `ObjectDisposedException`, the channel-shutdown
+     confirm handler) that reset and rethrow — no wrong-successful publish, no
+     leak. Kept as a robustness/hygiene fix on the same rationale as CON-3,
+     not a merge-blocking defect.
+  3. **Applied fix** (`ErrorQueueTransport`): the channel and connection are
+     now one immutable `PublishChannelState(Channel, Connection)` record
+     swapped with a single `Volatile.Write`/`Interlocked.Exchange`, so a torn
+     pair is no longer representable; the mismatch check reads the pair
+     atomically. `DisposeAsync` and `InvalidateConnectionAsync` enter
+     `_publishGate` via `TryEnterPublishGateAsync` (ObjectDisposedException →
+     skip, the gate only goes away after `DisposeAsync` already cleared the
+     pair) before resetting; `DisposeAsync` releases the gate before disposing
+     the semaphores. In-flight publishes are bounded by the confirm budget and
+     the caller token, so the dispose wait terminates.
+  4. Tests (TDD — watched RED first, failing exactly because the pre-fix
+     `DisposeAsync` completed while a publish held the gate):
+     `DisposeAsync_waits_for_the_inflight_publish_to_release_the_publish_gate`
+     pins that disposal blocks until the in-flight publish completes, closes
+     the connection, and rejects subsequent publishes with
+     `StreamBusTransientException`. UnitTests 488/488; the brokered integration
+     suite could not run in this environment (no RabbitMQ broker is listening).
 
 ---
 

@@ -123,7 +123,7 @@ internal sealed class AmqpPublishChannel : IErrorQueuePublishChannel
             if (error is null) confirmed.TrySetResult(true);
             else confirmed.TrySetException(error);
         }
-        
+
         // Confirms are pending per delivery tag on this channel; a late ack or
         // nack from an earlier unknown-outcome publish must not resolve this
         // publish's confirm. Publishes are serialized by the transport gate,
@@ -136,7 +136,7 @@ internal sealed class AmqpPublishChannel : IErrorQueuePublishChannel
                 return;
             Complete(error);
         }
-        
+
         AsyncEventHandler<BasicAckEventArgs> onAck = (_, e) => { CompleteIfOwn(e.DeliveryTag, e.Multiple, null); return Task.CompletedTask; };
         AsyncEventHandler<BasicNackEventArgs> onNack = (_, e) => { CompleteIfOwn(e.DeliveryTag, e.Multiple, new StreamBusPublishException($"Error queue '{queue}' negatively confirmed the handoff (delivery tag {e.DeliveryTag}).")); return Task.CompletedTask; };
         AsyncEventHandler<BasicReturnEventArgs> onReturn = (_, e) => { Complete(new StreamBusPublishException($"Error queue '{queue}' returned the handoff as unroutable (reply {e.ReplyCode} {e.ReplyText}).")); return Task.CompletedTask; };
@@ -230,6 +230,8 @@ internal sealed class AmqpControlChannel : IErrorQueueControlChannel
 
 internal sealed class ErrorQueueTransport : IAsyncDisposable
 {
+    private sealed record PublishChannelState(IErrorQueuePublishChannel Channel, IErrorQueueConnection Connection);
+
     private static readonly TimeSpan DrainIdle = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan DrainPoll = TimeSpan.FromMilliseconds(200);
 
@@ -239,8 +241,12 @@ internal sealed class ErrorQueueTransport : IAsyncDisposable
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly SemaphoreSlim _publishGate = new(1, 1);
     private IErrorQueueConnection? _connection;
-    private IErrorQueuePublishChannel? _publishChannel;
-    private IErrorQueueConnection? _publishChannelConnection;
+
+    // The cached publish channel and the connection it was created on are one
+    // atomic pair: a torn observation (channel from one connection, connection
+    // field from another) can never happen because the pair is swapped with a
+    // single reference write. All writes happen under _publishGate.
+    private PublishChannelState? _publishState;
     private bool _fatal;
     private Exception? _fatalError;
     private int _disposed;
@@ -394,25 +400,31 @@ internal sealed class ErrorQueueTransport : IAsyncDisposable
         }
     }
 
-    private async Task<IErrorQueuePublishChannel> GetPublishChannelAsync(
+    private Task<IErrorQueuePublishChannel> GetPublishChannelAsync(
         IErrorQueueConnection connection,
         CancellationToken ct)
     {
-        if (_publishChannel is { IsOpen: true } channel && ReferenceEquals(_publishChannelConnection, connection))
-            return channel;
+        var state = Volatile.Read(ref _publishState);
+        if (state is { Channel: { IsOpen: true } } matched && ReferenceEquals(matched.Connection, connection))
+            return Task.FromResult(matched.Channel);
+        return CreatePublishChannelAsync(connection, ct);
+    }
+
+    private async Task<IErrorQueuePublishChannel> CreatePublishChannelAsync(
+        IErrorQueueConnection connection,
+        CancellationToken ct)
+    {
         await ResetPublishChannelAsync().ConfigureAwait(false);
         var created = await connection.CreatePublishChannelAsync(ct).ConfigureAwait(false);
-        _publishChannel = created;
-        _publishChannelConnection = connection;
+        Volatile.Write(ref _publishState, new PublishChannelState(created, connection));
         return created;
     }
 
     private async Task ResetPublishChannelAsync()
     {
-        var channel = Interlocked.Exchange(ref _publishChannel, null);
-        Interlocked.Exchange(ref _publishChannelConnection, null);
-        if (channel is null) return;
-        try { await channel.DisposeAsync().ConfigureAwait(false); }
+        var state = Interlocked.Exchange(ref _publishState, null);
+        if (state is null) return;
+        try { await state.Channel.DisposeAsync().ConfigureAwait(false); }
         catch { }
     }
 
@@ -516,17 +528,56 @@ internal sealed class ErrorQueueTransport : IAsyncDisposable
 
     private async Task InvalidateConnectionAsync()
     {
-        await ResetPublishChannelAsync().ConfigureAwait(false);
+        // Take the publish gate so the reset cannot interleave with an
+        // in-flight publish's channel swap. If the gate is already disposed,
+        // DisposeAsync has already cleared the cached pair — nothing to reset.
+        if (await TryEnterPublishGateAsync().ConfigureAwait(false))
+        {
+            try { await ResetPublishChannelAsync().ConfigureAwait(false); }
+            finally { ExitPublishGate(); }
+        }
         var current = Interlocked.Exchange(ref _connection, null);
         if (current is null) return;
         try { await current.DisposeAsync().ConfigureAwait(false); }
         catch { }
     }
 
+    private async Task<bool> TryEnterPublishGateAsync()
+    {
+        try
+        {
+            await _publishGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+            return true;
+        }
+        catch (ObjectDisposedException)
+        {
+            return false;
+        }
+    }
+
+    private void ExitPublishGate()
+    {
+        try { _publishGate.Release(); }
+        catch (ObjectDisposedException) { }
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) == 1) return;
-        await ResetPublishChannelAsync().ConfigureAwait(false);
+        // Serialize with any in-flight publish so the cached channel/connection
+        // pair can never be swapped or disposed mid-publish. Publishes are
+        // bounded (confirm budget and caller token), so this wait terminates.
+        if (await TryEnterPublishGateAsync().ConfigureAwait(false))
+        {
+            try
+            {
+                await ResetPublishChannelAsync().ConfigureAwait(false);
+            }
+            finally
+            {
+                ExitPublishGate();
+            }
+        }
         var current = Interlocked.Exchange(ref _connection, null);
         if (current is not null)
         {

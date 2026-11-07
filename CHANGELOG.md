@@ -241,6 +241,12 @@
   still retry without advancing. The stream hand-off path also stops wrapping
   fatal transport errors as `StreamBusPublishTransientException`, matching the
   normal publish path.
+- The error-queue transport's cached publish channel and its connection are now
+  one atomic pair swapped with a single write (INF-6), and `DisposeAsync` /
+  connection invalidation take the publish gate before resetting the pair, so
+  disposal can no longer reset or dispose a channel while a publish holds the
+  gate; the mismatched-pair torn read the two-field layout allowed is no longer
+  representable.
 
 ### Validation
 
