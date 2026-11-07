@@ -231,6 +231,10 @@
 
 ### Fixed
 
+- Per-delivery DI scopes (the consume dispatch path and the `OnExhausted`
+  handoff) now use `CreateAsyncScope()`, so scoped services implementing
+  `IAsyncDisposable` (e.g. a `DbContext`) are disposed asynchronously instead
+  of synchronously on the dispatch thread.
 - A1 consumer liveness: parked consumers detect a closed handle and recover
   instead of stalling silently (A1 / V2-A1).
 - A2 supervision: the connection supervisor reconnects after the system

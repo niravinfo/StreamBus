@@ -2104,7 +2104,7 @@ internal sealed class EmptyServiceProvider : IServiceProvider
 
 ---
 
-**[CON-14] `CreateScope()` used instead of `CreateAsyncScope()` for per-message scopes**
+**[CON-14] `CreateScope()` used instead of `CreateAsyncScope()` for per-message scopes — VALID, fixed (2026-11-07)**
 - **Severity:** MINOR
 - **File:** src\StreamBus\StreamPartitionConsumer.cs (lines 502–505)
 - **Problem:** The dispatch path creates per-delivery service scopes synchronously with `CreateScope()` and disposes via sync `Dispose`. `CreateAsyncScope()` exists precisely so scoped services implementing `IAsyncDisposable` (EF `DbContext` etc.) are disposed asynchronously; the sync path forces sync disposal of async resources on the dispatch thread.
@@ -2121,6 +2121,30 @@ await using var messageScope =
         ? _scopes.CreateAsyncScope()
         : null;
 ```
+
+- **Verification & resolution (2026-11-07):** Confirmed genuine. The dispatch-path scope used the
+  sync `CreateScope()`/`using` pair in an `async` method, forcing synchronous disposal of
+  `IAsyncDisposable` scoped services; the publish path already used `CreateAsyncScope()`
+  (`Bus.cs:275`), so the consume side was inconsistent with the codebase's own precedent. The
+  reviewer also missed a second, arguably more important site: `ExhaustAsync`'s
+  `OnExhausted` handoff scope (`using var scope = scopes.CreateScope()`), where exhaustion
+  callbacks — the most likely place a user resolves a `DbContext` to record a failure — got the
+  same sync disposal. Both were fixed:
+  1. `ExhaustAsync` now uses `await using var scope = scopes.CreateAsyncScope();`.
+  2. The dispatch site's scope is optional (`null` when no filters and no typed endpoint), and
+     `AsyncServiceScope` is a struct, so a conditional with `: null` doesn't compile; a small
+     internal wrapper (`src\StreamBus\OptionalAsyncScope.cs`, an `IAsyncDisposable` struct over
+     `AsyncServiceScope?`) preserves the optional-scope shape with `await using`. No boxing of
+     the live scope; a default/empty wrapper skips disposal.
+  3. `FilterRegistrationSupport.cs:45` (`CreateScope` in the singleton-lifetime validation
+     helper) was left as-is: it is a one-shot, configuration-time probe resolving only filter
+     types, which are required to be singletons — not a per-message hot path.
+  4. Tests (TDD — both watched RED first, failing on "must dispose scoped services via
+     DisposeAsync"): new `AsyncScopeDisposalTests` register a probe service implementing both
+     `IDisposable` and `IAsyncDisposable` and assert the per-delivery filter scope and the
+     `OnExhausted` handoff scope dispose it via `DisposeAsync` (and never fall back to sync
+     `Dispose`). CHANGELOG notes the fix. UnitTests 470/470; the brokered integration suite
+     builds clean but could not run in this environment (no RabbitMQ broker is listening).
 
 ---
 

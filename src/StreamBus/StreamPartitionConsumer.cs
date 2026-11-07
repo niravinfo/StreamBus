@@ -534,11 +534,15 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                 offset,
                 message.Properties?.CorrelationId?.ToString());
 
-            using var messageScope =
+            // CreateAsyncScope: scoped services implementing IAsyncDisposable
+            // (e.g. a DbContext) must be disposed asynchronously, not
+            // synchronously on the dispatch thread. The scope is optional
+            // (empty when no per-message DI surface is needed).
+            await using var messageScope =
                 (_pipeline.Count > 0 || _options.MessageType is not null) && _scopes is not null
-                    ? _scopes.CreateScope()
-                    : null;
-            var services = messageScope?.ServiceProvider ?? EmptyServiceProvider.Instance;
+                    ? new OptionalAsyncScope(_scopes.CreateAsyncScope())
+                    : OptionalAsyncScope.Empty;
+            var services = messageScope.Services ?? EmptyServiceProvider.Instance;
             var sendHeaders = new StreamSendHeaders(null, _serializer);
             ConsumeContext consumeContext;
             try
@@ -687,7 +691,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                 _stream, _partitionIndex, offset, attempts);
             var scopes = _scopes ?? throw new StreamBusConfigurationException(
                 $"OnExhausted callback for stream '{_stream}' has no IServiceScopeFactory available (internal error).");
-            using var scope = scopes.CreateScope();
+            await using var scope = scopes.CreateAsyncScope();
             var exhausted = new ExhaustedContext
             {
                 Stream = _stream,
