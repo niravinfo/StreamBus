@@ -8,7 +8,6 @@ internal sealed class PublishPipelineCache
     private readonly IServiceProvider? _rootProvider;
     private readonly Dictionary<PublishFilterRegistration, IStreamPublishFilter> _universal = new();
     private readonly ConcurrentDictionary<Type, object> _typedInstances = new();
-    private readonly ConcurrentDictionary<(Type ClosedFilterType, Type MessageType), IStreamPublishFilter> _typed = new();
     private readonly ConcurrentDictionary<Type, PublishPipeline> _pipelines = new();
 
     public PublishPipelineCache(
@@ -37,6 +36,14 @@ internal sealed class PublishPipelineCache
             if (registration.IsTyped)
                 continue;
 
+            if (registration.Instance is null)
+            {
+                FilterRegistrationSupport.EnsureSingletonLifetime(
+                    rootProvider,
+                    registration.FilterType,
+                    "Publish");
+            }
+
             var filter = registration.CreateUniversal(rootProvider);
             var filterType = FilterIdentity.TypeOf(filter);
             if (!seen.Add(filterType))
@@ -58,6 +65,13 @@ internal sealed class PublishPipelineCache
     private PublishPipeline Build(Type messageType)
     {
         var filters = new List<IStreamPublishFilter>(_registrations.Count);
+
+        // Registration-time ConflictsWith only sees declared FilterTypes; factory
+        // registrations carry none, and a typed registration's resolved class can
+        // collide with a factory-produced universal instance (universal duplicates
+        // are caught eagerly in the constructor, typed ones can only be checked
+        // once per message type — open-generic registrations have no enumerable
+        // message-type set). Hence this resolved-identity check at first publish.
         var seen = new HashSet<Type>();
 
         foreach (var registration in _registrations)
@@ -75,11 +89,18 @@ internal sealed class PublishPipelineCache
 
                 var instance = _typedInstances.GetOrAdd(
                     closedFilterType,
-                    type => registration.ResolveTyped(type, _rootProvider!));
+                    type =>
+                    {
+                        FilterRegistrationSupport.EnsureSingletonLifetime(
+                            _rootProvider!,
+                            type,
+                            "Publish");
+                        return registration.ResolveTyped(type, _rootProvider!);
+                    });
 
-                filter = _typed.GetOrAdd(
-                    (closedFilterType, messageType),
-                    key => PublishFilterRegistration.CreateTypedAdapter(key.MessageType, instance));
+                // Build runs once per message type (_pipelines is the cache), so
+                // the adapter needs no second cache keyed by (filter, message).
+                filter = registration.WrapTyped(messageType, instance);
             }
 
             var filterType = FilterIdentity.TypeOf(filter);

@@ -41,31 +41,9 @@ sealed class ScriptedConsumerFactory
     }
 }
 
-file sealed class NeverReadySystem : IStreamSystemHandle
+file sealed class NeverReadySystem : NeverReadyConsumerSystem
 {
-    private int _queryCount;
-
-    public int QueryCount => Volatile.Read(ref _queryCount);
-    public bool IsClosed => false;
-    public Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken ct)
-    {
-        Interlocked.Increment(ref _queryCount);
-        return Task.FromResult<ulong?>(null);
-    }
-    public Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct)
-        => throw new NotSupportedException("ConsumerDeathTests inject their own consumer factory.");
-    public Task<IStreamPlainProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct) => throw new NotSupportedException();
-    public Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct) => throw new NotSupportedException();
-    public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct) => throw new NotSupportedException();
-    public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct) => throw new NotSupportedException();
-    public Task<ulong> QuerySequenceAsync(string reference, string stream, CancellationToken ct) => throw new NotSupportedException();
-    public Task StoreSystemOffsetAsync(string reference, string stream, ulong offset, CancellationToken ct) => Task.CompletedTask;
-    public Task<bool> StreamExistsAsync(string stream, CancellationToken ct) => Task.FromResult(true);
-    public Task<bool> SuperStreamExistsAsync(string superStream, CancellationToken ct) => Task.FromResult(false);
-    public Task<string[]> QueryPartitionAsync(string superStream, CancellationToken ct) => Task.FromResult(new[] { superStream });
-    public Task CreateStreamAsync(StreamSpec spec, CancellationToken ct) => Task.CompletedTask;
-    public Task CreateSuperStreamAsync(PartitionsSuperStreamSpec spec, CancellationToken ct) => Task.CompletedTask;
-    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    public int QueryCount { get { lock (OffsetQueries) return OffsetQueries.Count; } }
 }
 
 file sealed class NeverReadyConnector : IStreamSystemConnector

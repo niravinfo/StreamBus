@@ -21,22 +21,36 @@ internal sealed class StreamTopologyRegistry : IStreamTopology
         _supervisor = supervisor;
         _vhost = vhost;
         _logger = logger ?? NullLogger<StreamTopologyRegistry>.Instance;
+
+        // A cached "declared" fingerprint is only valid for as long as the
+        // broker state it was observed against: across a reconnect or a
+        // broker-side deletion the stream may vanish, and the fast path would
+        // otherwise report success forever with no probe. Invalidate on every
+        // departure from Ready; the next Ensure re-establishes truth through
+        // the normal probe/create/compare path.
+        _supervisor.StateChanged += state =>
+        {
+            if (state != BusConnectionState.Ready)
+            {
+                _declared.Clear();
+            }
+        };
     }
 
     public string Vhost => _vhost;
 
     internal sealed record StreamExistence(bool SuperExists, bool PlainExists);
 
-    internal async Task<StreamExistence> ProbeStreamAsync(string stream, CancellationToken ct = default)
+    internal async Task<StreamExistence> ProbeStreamAsync(string stream, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(stream);
-        var handle = await ReadyHandleAsync(stream, ct).ConfigureAwait(false);
-        var super = await handle.SuperStreamExistsAsync(stream, ct).ConfigureAwait(false);
-        var plain = await handle.StreamExistsAsync(stream, ct).ConfigureAwait(false);
+        var handle = await ReadyHandleAsync(stream, cancellationToken).ConfigureAwait(false);
+        var super = await handle.SuperStreamExistsAsync(stream, cancellationToken).ConfigureAwait(false);
+        var plain = await handle.StreamExistsAsync(stream, cancellationToken).ConfigureAwait(false);
         return new StreamExistence(super, plain);
     }
 
-    public async Task EnsureStreamAsync(StreamDeclaration declaration, CancellationToken ct = default)
+    public async Task EnsureStreamAsync(StreamDeclaration declaration, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(declaration);
         TopologyValidation.ValidateStream(declaration);
@@ -49,10 +63,10 @@ internal sealed class StreamTopologyRegistry : IStreamTopology
             static (handle, spec, token) => handle.CreateStreamAsync(TopologyMapping.ToStreamSpec(spec), token),
             ComparePlainAsync,
             "Stream",
-            ct).ConfigureAwait(false);
+            cancellationToken).ConfigureAwait(false);
     }
 
-    public async Task EnsureSuperStreamAsync(SuperStreamDeclaration declaration, CancellationToken ct = default)
+    public async Task EnsureSuperStreamAsync(SuperStreamDeclaration declaration, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(declaration);
         TopologyValidation.ValidateSuper(declaration);
@@ -65,7 +79,7 @@ internal sealed class StreamTopologyRegistry : IStreamTopology
             static (handle, spec, token) => handle.CreateSuperStreamAsync(TopologyMapping.ToSuperStreamSpec(spec), token),
             CompareSuperAsync,
             "Super stream",
-            ct).ConfigureAwait(false);
+            cancellationToken).ConfigureAwait(false);
     }
 
     private async Task EnsureAsync<TSpec>(
@@ -77,11 +91,11 @@ internal sealed class StreamTopologyRegistry : IStreamTopology
         Func<IStreamSystemHandle, TSpec, CancellationToken, Task> create,
         Func<IStreamSystemHandle, TSpec, Exception?, CancellationToken, Task<Exception?>> compare,
         string label,
-        CancellationToken ct)
+        CancellationToken cancellationToken)
     {
-        var handle = await ReadyHandleAsync(name, ct).ConfigureAwait(false);
+        var handle = await ReadyHandleAsync(name, cancellationToken).ConfigureAwait(false);
         var gate = _gates.GetOrAdd(name, static _ => new SemaphoreSlim(1, 1));
-        await gate.WaitAsync(ct).ConfigureAwait(false);
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             if (_declared.TryGetValue(name, out var known) && known == fingerprint)
@@ -92,16 +106,16 @@ internal sealed class StreamTopologyRegistry : IStreamTopology
             // so attempting the create on a super-occupied name would silently enter
             // ambiguous broker state instead of throwing the kind conflict.
             Exception? createError = null;
-            if (!await firstExists(handle, name, ct).ConfigureAwait(false)
-                && !await secondExists(handle, name, ct).ConfigureAwait(false))
+            if (!await firstExists(handle, name, cancellationToken).ConfigureAwait(false)
+                && !await secondExists(handle, name, cancellationToken).ConfigureAwait(false))
             {
                 try
                 {
-                    await create(handle, declaration, ct).ConfigureAwait(false);
+                    await create(handle, declaration, cancellationToken).ConfigureAwait(false);
                     _declared[name] = fingerprint;
                     return;
                 }
-                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
                     throw;
                 }
@@ -110,7 +124,7 @@ internal sealed class StreamTopologyRegistry : IStreamTopology
                     createError = ex;
                 }
             }
-            var terminal = await compare(handle, declaration, createError, ct).ConfigureAwait(false);
+            var terminal = await compare(handle, declaration, createError, cancellationToken).ConfigureAwait(false);
             if (terminal is not null) ExceptionDispatchInfo.Capture(terminal).Throw();
             if (createError is not null)
                 _logger.LogInformation(createError, "{Label} '{Stream}' was declared concurrently with an identical-enough spec; treating as success.", label, name);
@@ -128,19 +142,19 @@ internal sealed class StreamTopologyRegistry : IStreamTopology
     // failure meeting an existing plain stream means the specs differed. A
     // pre-existing plain stream with no create attempt is success-with-warning
     // (order-dependent residual — keep declarations in sync across processes).
-    private async Task<Exception?> ComparePlainAsync(IStreamSystemHandle handle, StreamDeclaration declaration, Exception? createError, CancellationToken ct)
+    private async Task<Exception?> ComparePlainAsync(IStreamSystemHandle handle, StreamDeclaration declaration, Exception? createError, CancellationToken cancellationToken)
     {
-        if (await handle.SuperStreamExistsAsync(declaration.Name, ct).ConfigureAwait(false))
+        if (await handle.SuperStreamExistsAsync(declaration.Name, cancellationToken).ConfigureAwait(false))
         {
-            var partitions = await handle.QueryPartitionAsync(declaration.Name, ct).ConfigureAwait(false);
-            return new StreamConfigurationConflictException(declaration.Name,
+            var partitions = await handle.QueryPartitionAsync(declaration.Name, cancellationToken).ConfigureAwait(false);
+            return new StreamBusStreamConfigurationConflictException(declaration.Name,
                 TopologyDescribe.Expected(declaration),
                 $"super stream with {partitions.Length} partitions");
         }
-        if (await handle.StreamExistsAsync(declaration.Name, ct).ConfigureAwait(false))
+        if (await handle.StreamExistsAsync(declaration.Name, cancellationToken).ConfigureAwait(false))
         {
             if (createError is not null)
-                return new StreamConfigurationConflictException(declaration.Name,
+                return new StreamBusStreamConfigurationConflictException(declaration.Name,
                     TopologyDescribe.Expected(declaration),
                     "plain stream with differing arguments (argument detail is not readable via the stream protocol)");
             _logger.LogWarning("Stream '{Stream}' already exists; argument-level compatibility is not readable via the stream protocol — treating as success. Keep declarations in sync across processes.", declaration.Name);
@@ -150,36 +164,36 @@ internal sealed class StreamTopologyRegistry : IStreamTopology
         return new StreamBusStreamNotFoundException(declaration.Name);
     }
 
-    private async Task<Exception?> CompareSuperAsync(IStreamSystemHandle handle, SuperStreamDeclaration declaration, Exception? createError, CancellationToken ct)
+    private async Task<Exception?> CompareSuperAsync(IStreamSystemHandle handle, SuperStreamDeclaration declaration, Exception? createError, CancellationToken cancellationToken)
     {
-        if (await handle.SuperStreamExistsAsync(declaration.Name, ct).ConfigureAwait(false))
+        if (await handle.SuperStreamExistsAsync(declaration.Name, cancellationToken).ConfigureAwait(false))
         {
-            var partitions = await handle.QueryPartitionAsync(declaration.Name, ct).ConfigureAwait(false);
+            var partitions = await handle.QueryPartitionAsync(declaration.Name, cancellationToken).ConfigureAwait(false);
             if (partitions.Length != declaration.Partitions)
-                return new StreamConfigurationConflictException(declaration.Name,
+                return new StreamBusStreamConfigurationConflictException(declaration.Name,
                     TopologyDescribe.Expected(declaration),
                     $"super stream with {partitions.Length} partitions");
-            if (await handle.StreamExistsAsync(declaration.Name, ct).ConfigureAwait(false))
-                return new StreamConfigurationConflictException(declaration.Name,
+            if (await handle.StreamExistsAsync(declaration.Name, cancellationToken).ConfigureAwait(false))
+                return new StreamBusStreamConfigurationConflictException(declaration.Name,
                     TopologyDescribe.Expected(declaration),
                     $"super stream with {partitions.Length} partitions coexisting with a plain stream of the same name");
             if (createError is not null)
-                return new StreamConfigurationConflictException(declaration.Name,
+                return new StreamBusStreamConfigurationConflictException(declaration.Name,
                     TopologyDescribe.Expected(declaration),
                     $"super stream with {partitions.Length} partitions and differing arguments (argument detail is not readable via the stream protocol)");
             return null;
         }
-        if (await handle.StreamExistsAsync(declaration.Name, ct).ConfigureAwait(false))
-            return new StreamConfigurationConflictException(declaration.Name,
+        if (await handle.StreamExistsAsync(declaration.Name, cancellationToken).ConfigureAwait(false))
+            return new StreamBusStreamConfigurationConflictException(declaration.Name,
                 TopologyDescribe.Expected(declaration),
                 "plain stream");
         if (createError is not null) return createError;
         return new StreamBusStreamNotFoundException(declaration.Name);
     }
 
-    private async Task<IStreamSystemHandle> ReadyHandleAsync(string stream, CancellationToken ct)
+    private async Task<IStreamSystemHandle> ReadyHandleAsync(string stream, CancellationToken cancellationToken)
     {
-        var readiness = await _supervisor.WaitUntilReadyAsync(ReadinessPolicy.FailFastPolicy, ct).ConfigureAwait(false);
+        var readiness = await _supervisor.WaitUntilReadyAsync(ReadinessPolicy.FailFastPolicy, cancellationToken).ConfigureAwait(false);
         if (readiness == BusReadiness.Fatal)
             throw new StreamBusFatalException($"StreamBus for vhost '{_vhost}' is in Fatal state; topology declaration for '{stream}' refused.");
         if (readiness != BusReadiness.Ready)

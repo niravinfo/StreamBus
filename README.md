@@ -68,7 +68,7 @@ public sealed record OrderPlaced(string OrderId);
 
 public sealed class OrderConsumer(ILogger<OrderConsumer> log) : IConsumer<OrderPlaced>
 {
-    public Task Consume(ConsumeContext<OrderPlaced> context, CancellationToken cancellationToken)
+    public Task Consume(ConsumeContext<OrderPlaced> context)
     {
         log.LogInformation("Order {OrderId} at offset {Offset}", context.Message.OrderId, context.Offset);
         return Task.CompletedTask;
@@ -88,14 +88,13 @@ Every capability points to its guide section:
 - Typed publish: route table, keyed super publish, overrides, raw bytes (`docs/guide/publish.md`)
 - Endpoints: required groups, scale-out, SAC/offset/store knobs (`docs/guide/consume.md`)
 - Raw consume + manual offset get/set (`docs/guide/consume.md`)
-- Effectively-once pipelines + manual result publish (`docs/guide/effectively-once.md`)
 - Retry: global + per-endpoint schedules, escape hatch (`docs/guide/errors.md`)
 - Exhaustion: stream / classic+quorum queue (bounded schedule, no destination or callback: `{stream}_error`) / owning callback (`docs/guide/errors.md`)
 - Replay (streams) and requeue (queues) (`docs/guide/errors.md`)
 - Topology derivation, runtime `bus.Topology`, adopt rule, conflicts (`docs/guide/topology.md`)
 - Multi-bus markers + shared consumer classes (`docs/guide/multi-bus.md`)
 - Message properties: message/correlation IDs and typed headers (`docs/guide/publish.md`)
-- Middleware: ordered publish/consume filters, explicit consume skip, telemetry (`docs/guide/publish.md`, `docs/guide/consume.md`)
+- Middleware: ordered publish/consume filters, telemetry (`docs/guide/publish.md`, `docs/guide/consume.md`)
 - Observability: per-registration health, metrics, log events (`docs/guide/observability.md`)
 
 ## Concepts
@@ -125,7 +124,6 @@ Every capability points to its guide section:
 - `docs/guide/hosting.md` - startup blocking, readiness, health checks.
 - `docs/guide/publish.md` - typed publish, super streams, escape hatches.
 - `docs/guide/consume.md` - endpoints, groups, raw consume, offsets.
-- `docs/guide/effectively-once.md` - read-process-write pipelines.
 - `docs/guide/multi-bus.md` - marker buses and shared consumers.
 - `docs/guide/errors.md` - retry layering, dead letters, requeue, exception table.
 - `docs/guide/topology.md` - declarations, runtime topology, derivation, adopt rule.

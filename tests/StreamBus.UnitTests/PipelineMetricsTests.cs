@@ -2,6 +2,12 @@ using System.Diagnostics.Metrics;
 
 namespace StreamBus.UnitTests;
 
+// MeterListener observes process-wide instruments, so these tests must not
+// overlap with any other test that can run a pipeline.
+[CollectionDefinition(nameof(PipelineMetricsCollection), DisableParallelization = true)]
+public sealed class PipelineMetricsCollection;
+
+[Collection(nameof(PipelineMetricsCollection))]
 public sealed class PipelineMetricsTests : IDisposable
 {
     private readonly MeterListener _listener = new();
@@ -27,24 +33,19 @@ public sealed class PipelineMetricsTests : IDisposable
     public async Task Publish_pipeline_duration_is_recorded_in_seconds_with_the_publish_kind()
     {
         var pipeline = new PublishPipeline(new IStreamPublishFilter[] { new NoopPublishFilter() });
-        var context = new StreamPublishFilterContext
+        var context = new PublishContext
         {
             Stream = "orders",
             RoutingKey = null,
-            Message = new object(),
-            Headers = new HeaderWriter(),
-            Bus = new StreamBusRegistrationView
-            {
-                Vhost = "/",
-                Host = "localhost",
-                StreamPort = 5552,
-                AmqpPort = 5672,
-                HeartbeatSeconds = 60,
-            },
+            Payload = new object(),
+            MessageId = Guid.NewGuid(),
+            SentTime = DateTime.UtcNow,
+            Headers = new StreamSendHeaders(null, SystemTextJsonStreamSerializer.Default),
             Services = EmptyProvider.Instance,
+            CancellationToken = TestContext.Current.CancellationToken,
         };
 
-        await pipeline.RunAsync(context, _ => Task.CompletedTask, TestContext.Current.CancellationToken);
+        await pipeline.RunAsync(context, () => Task.CompletedTask);
 
         var measurement = Assert.Single(_measurements, m =>
             m.Instrument == "streambus_pipeline_duration"
@@ -57,23 +58,20 @@ public sealed class PipelineMetricsTests : IDisposable
     public async Task Consume_pipeline_duration_is_recorded_in_seconds_with_the_consume_kind()
     {
         var pipeline = new ConsumePipeline(new IStreamConsumeFilter[] { new NoopConsumeFilter() });
-        var context = new StreamConsumeFilterContext
+        var context = new ConsumeContext
         {
-            Message = new ConsumeContext
-            {
-                Stream = "orders",
-                Partition = 0,
-                Offset = 0,
-                RoutingValue = null,
-                Body = ReadOnlyMemory<byte>.Empty,
-                Metadata = new MessageMetadata(),
-                CancellationToken = TestContext.Current.CancellationToken,
-            },
-            OutputHeaders = new HeaderWriter(),
+            Stream = "orders",
+            Partition = 0,
+            Offset = 0,
+            RoutingValue = null,
+            Body = ReadOnlyMemory<byte>.Empty,
+            Headers = new StreamHeaders(new Dictionary<string, object?>(), SystemTextJsonStreamSerializer.Default),
+            SendHeaders = new StreamSendHeaders(null, SystemTextJsonStreamSerializer.Default),
             Services = EmptyProvider.Instance,
+            CancellationToken = TestContext.Current.CancellationToken,
         };
 
-        await pipeline.RunAsync(context, _ => Task.CompletedTask, TestContext.Current.CancellationToken, allowSkip: false);
+        await pipeline.RunAsync(context, () => Task.CompletedTask);
 
         var measurement = Assert.Single(_measurements, m =>
             m.Instrument == "streambus_pipeline_duration"
@@ -84,14 +82,14 @@ public sealed class PipelineMetricsTests : IDisposable
 
     private sealed class NoopPublishFilter : IStreamPublishFilter
     {
-        public Task OnPublish(StreamPublishFilterContext context, PublishDelegate next, CancellationToken ct)
-            => next(context);
+        public Task OnPublish(PublishContext context, PublishNext next)
+            => next();
     }
 
     private sealed class NoopConsumeFilter : IStreamConsumeFilter
     {
-        public Task OnConsume(StreamConsumeFilterContext context, ConsumeDelegate next, CancellationToken ct)
-            => next(context);
+        public Task OnConsume(ConsumeContext context, ConsumeNext next)
+            => next();
     }
 
     private sealed class EmptyProvider : IServiceProvider

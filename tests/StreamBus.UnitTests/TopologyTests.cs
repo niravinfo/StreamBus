@@ -78,41 +78,31 @@ public sealed class TopologyTests
         Assert.Contains("no partitions", plain.Message);
     }
 
-    private sealed class ScriptSystem : IStreamSystemHandle
+    private sealed class ScriptSystem : ScriptedSystemHandle
     {
-        public readonly List<string> CreatedStreams = new();
-        public readonly List<string> CreatedSupers = new();
         public int ExistsProbes;
-        public Func<string, CancellationToken, Task>? OnCreateStream;
-        public Func<string, CancellationToken, Task>? OnCreateSuper;
         public Func<string, bool> StreamExists = _ => false;
         public Func<string, bool> SuperExists = _ => false;
         public Func<string, string[]> Partitions = _ => Array.Empty<string>();
-        public bool IsClosed => false;
-        public Task CreateStreamAsync(StreamSpec spec, CancellationToken ct)
+        public List<string> CreatedStreams => CreatedStreamNames;
+        public List<string> CreatedSupers => CreatedSuperNames;
+        public override Task<bool> StreamExistsAsync(string stream, CancellationToken ct)
         {
-            lock (CreatedStreams) CreatedStreams.Add(spec.Name);
-            if (OnCreateStream is not null) return OnCreateStream(spec.Name, ct);
-            return Task.CompletedTask;
+            Interlocked.Increment(ref ExistsProbes);
+            return Task.FromResult(StreamExists(stream));
         }
-        public Task CreateSuperStreamAsync(PartitionsSuperStreamSpec spec, CancellationToken ct)
+        public override Task<bool> SuperStreamExistsAsync(string superStream, CancellationToken ct)
         {
-            lock (CreatedSupers) CreatedSupers.Add(spec.Name);
-            if (OnCreateSuper is not null) return OnCreateSuper(spec.Name, ct);
-            return Task.CompletedTask;
+            Interlocked.Increment(ref ExistsProbes);
+            return Task.FromResult(SuperExists(superStream));
         }
-        public Task<IStreamPlainProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct) => throw new NotImplementedException("Topology tests declare only.");
-        public Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct) => throw new NotImplementedException("Topology tests declare only.");
-        public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct) => throw new NotImplementedException("Topology tests declare only.");
-        public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct) => throw new NotImplementedException("Topology tests declare only.");
-        public Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct) => throw new NotImplementedException("Topology tests never attach.");
-        public Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken ct) => Task.FromResult<ulong?>(null);
-        public Task<ulong> QuerySequenceAsync(string reference, string stream, CancellationToken ct) => Task.FromResult(0UL);
-        public Task StoreSystemOffsetAsync(string reference, string stream, ulong offset, CancellationToken ct) => Task.CompletedTask;
-        public Task<bool> StreamExistsAsync(string stream, CancellationToken ct) { Interlocked.Increment(ref ExistsProbes); return Task.FromResult(StreamExists(stream)); }
-        public Task<bool> SuperStreamExistsAsync(string superStream, CancellationToken ct) { Interlocked.Increment(ref ExistsProbes); return Task.FromResult(SuperExists(superStream)); }
-        public Task<string[]> QueryPartitionAsync(string superStream, CancellationToken ct) => Task.FromResult(Partitions(superStream));
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        public override Task<string[]> QueryPartitionAsync(string superStream, CancellationToken ct)
+            => Task.FromResult(Partitions(superStream));
+        public override Task<IStreamPlainProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct) => throw new NotImplementedException("Topology tests declare only.");
+        public override Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct) => throw new NotImplementedException("Topology tests declare only.");
+        public override Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct) => throw new NotImplementedException("Topology tests declare only.");
+        public override Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct) => throw new NotImplementedException("Topology tests declare only.");
+        public override Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct) => throw new NotImplementedException("Topology tests never attach.");
     }
 
     private sealed class ReadyConnector : IStreamSystemConnector
@@ -123,14 +113,29 @@ public sealed class TopologyTests
     }
 
     private static (StreamTopologyRegistry Registry, ScriptSystem System) CreateRegistry()
+        => CreateRegistry(TimeSpan.FromSeconds(5));
+
+    private static (StreamTopologyRegistry Registry, ScriptSystem System) CreateRegistry(TimeSpan monitorInterval)
+    {
+        var (registry, system, _) = CreateRegistryCore(monitorInterval);
+        return (registry, system);
+    }
+
+    private static (StreamTopologyRegistry Registry, ScriptSystem System, StreamBusConnectionSupervisor Supervisor) CreateRegistryCore(TimeSpan monitorInterval)
     {
         var system = new ScriptSystem();
-        var options = new StreamBusOptions { Vhost = "/", UserName = "app", Password = "secret" };
+        var options = new StreamBusOptions
+        {
+            Vhost = "/",
+            UserName = "app",
+            Password = "secret",
+            Connection = new StreamBusConnectionOptions { MonitorInterval = monitorInterval },
+        };
         var supervisor = new StreamBusConnectionSupervisor(options, new ReadyConnector(system));
         supervisor.StartAsync(CancellationToken.None).GetAwaiter().GetResult();
         var readiness = supervisor.WaitUntilReadyAsync(ReadinessPolicy.Indefinitely, new CancellationTokenSource(TimeSpan.FromSeconds(5)).Token).GetAwaiter().GetResult();
         Assert.Equal(BusReadiness.Ready, readiness);
-        return (new StreamTopologyRegistry(supervisor, "/"), system);
+        return (new StreamTopologyRegistry(supervisor, "/"), system, supervisor);
     }
 
     [Fact]
@@ -190,7 +195,7 @@ public sealed class TopologyTests
         system.SuperExists = _ => Interlocked.Increment(ref superProbes) > 1;
         system.OnCreateSuper = (_, _) => throw new InvalidOperationException("broker: PreconditionFailed");
         system.Partitions = _ => new[] { "ss-0", "ss-1", "ss-2" };
-        var ex = await Assert.ThrowsAsync<StreamConfigurationConflictException>(() =>
+        var ex = await Assert.ThrowsAsync<StreamBusStreamConfigurationConflictException>(() =>
             registry.EnsureSuperStreamAsync(new SuperStreamDeclaration { Name = "ss", Partitions = 3, MaxAge = TimeSpan.FromDays(1) }, ct));
         Assert.Contains("differing arguments", ex.Actual);
     }
@@ -206,7 +211,7 @@ public sealed class TopologyTests
         var streamProbes = 0;
         system.StreamExists = _ => Interlocked.Increment(ref streamProbes) > 1;
         system.OnCreateStream = (_, _) => throw new InvalidOperationException("broker: PreconditionFailed");
-        var ex = await Assert.ThrowsAsync<StreamConfigurationConflictException>(() =>
+        var ex = await Assert.ThrowsAsync<StreamBusStreamConfigurationConflictException>(() =>
             registry.EnsureStreamAsync(new StreamDeclaration { Name = "s", MaxAge = TimeSpan.FromDays(1) }, ct));
         Assert.Contains("differing arguments", ex.Actual);
     }
@@ -219,7 +224,7 @@ public sealed class TopologyTests
         system.SuperExists = _ => true;
         system.StreamExists = _ => true;
         system.Partitions = _ => new[] { "ss-0", "ss-1", "ss-2" };
-        var ex = await Assert.ThrowsAsync<StreamConfigurationConflictException>(() =>
+        var ex = await Assert.ThrowsAsync<StreamBusStreamConfigurationConflictException>(() =>
             registry.EnsureSuperStreamAsync(new SuperStreamDeclaration { Name = "ss", Partitions = 3 }, ct));
         Assert.Contains("coexisting", ex.Actual);
     }
@@ -232,7 +237,7 @@ public sealed class TopologyTests
         system.OnCreateSuper = (_, _) => throw new InvalidOperationException("broker: PreconditionFailed");
         system.SuperExists = _ => true;
         system.Partitions = _ => new[] { "ss-0", "ss-1", "ss-2" };
-        var ex = await Assert.ThrowsAsync<StreamConfigurationConflictException>(() =>
+        var ex = await Assert.ThrowsAsync<StreamBusStreamConfigurationConflictException>(() =>
             registry.EnsureSuperStreamAsync(new SuperStreamDeclaration { Name = "ss", Partitions = 5 }, ct));
         Assert.Contains("5", ex.Message);
         Assert.Contains("3", ex.Message);
@@ -246,7 +251,7 @@ public sealed class TopologyTests
         var (registry, system) = CreateRegistry();
         var ct = TestContext.Current.CancellationToken;
         system.StreamExists = _ => true;
-        var ex = await Assert.ThrowsAsync<StreamConfigurationConflictException>(() =>
+        var ex = await Assert.ThrowsAsync<StreamBusStreamConfigurationConflictException>(() =>
             registry.EnsureSuperStreamAsync(new SuperStreamDeclaration { Name = "s", Partitions = 2 }, ct));
         Assert.Contains("plain stream", ex.Actual);
         // A plain Ensure over an occupying super must reach the compare path: the
@@ -256,7 +261,7 @@ public sealed class TopologyTests
         system.SuperExists = _ => true;
         system.Partitions = _ => new[] { "s-0" };
         system.OnCreateStream = (_, _) => throw new InvalidOperationException("broker: PreconditionFailed");
-        var ex2 = await Assert.ThrowsAsync<StreamConfigurationConflictException>(() =>
+        var ex2 = await Assert.ThrowsAsync<StreamBusStreamConfigurationConflictException>(() =>
             registry.EnsureStreamAsync(new StreamDeclaration { Name = "s" }, ct));
         Assert.Contains("1", ex2.Actual);
     }
@@ -280,5 +285,39 @@ public sealed class TopologyTests
         system.StreamExists = _ => true;
         await registry.EnsureStreamAsync(new StreamDeclaration { Name = "s" }, ct);
         Assert.Empty(system.CreatedStreams);
+    }
+
+    [Fact]
+    public async Task Reconnect_clears_declared_cache_and_recreates_a_broker_deleted_stream()
+    {
+        var (registry, system, supervisor) = CreateRegistryCore(TimeSpan.FromMilliseconds(50));
+        var ct = TestContext.Current.CancellationToken;
+        var decl = new StreamDeclaration { Name = "s" };
+        await registry.EnsureStreamAsync(decl, ct);
+        Assert.Single(system.CreatedStreams);
+
+        // A connection drop (monitor sees the handle closed) must invalidate the
+        // cache: after the reconnect, the next Ensure re-probes and re-creates a
+        // stream that was deleted on the broker while disconnected.
+        var nonReady = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        void OnState(BusConnectionState s) { if (s != BusConnectionState.Ready) nonReady.TrySetResult(); }
+        supervisor.StateChanged += OnState;
+        try
+        {
+            system.IsClosed = true;
+            await nonReady.Task.WaitAsync(TimeSpan.FromSeconds(5), ct);
+        }
+        finally
+        {
+            supervisor.StateChanged -= OnState;
+            system.IsClosed = false;
+        }
+
+        var readiness = await supervisor.WaitUntilReadyAsync(
+            ReadinessPolicy.Indefinitely, new CancellationTokenSource(TimeSpan.FromSeconds(5)).Token);
+        Assert.Equal(BusReadiness.Ready, readiness);
+
+        await registry.EnsureStreamAsync(decl, ct);
+        Assert.Equal(2, system.CreatedStreams.Count);
     }
 }

@@ -76,22 +76,27 @@ cfg.UsePublishFilter<CorrelationIdFilter>();
 
 public sealed class TenantFilter(TenantScope ambient) : IStreamPublishFilter
 {
-    public Task OnPublish(StreamPublishFilterContext context, PublishDelegate next, CancellationToken ct)
+    public Task OnPublish(PublishContext context, PublishNext next)
     {
         context.Headers.Set("x-tenant", ambient.Tenant);
-        return next(context);
+        return next();
     }
 }
 ```
 
 Filters are singletons per bus and must be thread-safe; each publish gets
-its own DI scope through `context.Services`. A filter must call `next`
-exactly once - zero or double continuations throw
-`StreamBusConfigurationException` (a second call is rejected before the
-duplicate send). Call-level
-`PublishOptions.Properties` win over filter headers on key conflicts.
-`PublishRawAsync` bypasses the pipeline. Complete samples:
-`examples/StreamBus.Examples.Producer/TenantFilter.cs` and
+its own DI scope through `context.Services`. `UsePublishFilter<TFilter>()`
+registers the filter type as a singleton; registering the same filter type
+yourself with a scoped or transient lifetime is rejected when the bus is
+built, because the filter is resolved once and cached. A filter must call
+`next` exactly once - zero or double continuations throw
+`StreamBusFilterContractException` (a second call is rejected before the
+duplicate send). Filter header mutations take precedence over call-level
+`PublishOptions.Properties` headers. Exceptions thrown by a filter (including
+an `OperationCanceledException` from a token you own) propagate unwrapped —
+they are not classified as transient, so do not blindly retry them.
+`PublishRawAsync` bypasses the pipeline. Complete
+samples: `examples/StreamBus.Examples.Producer/TenantFilter.cs` and
 `CorrelationIdFilter.cs`.
 
 ### Typed publish filters
@@ -104,19 +109,19 @@ filter:
 ```csharp
 public sealed class OrderPublishFilter : IStreamPublishFilter<OrderEvent>
 {
-    public Task OnPublish(StreamPublishFilterContext<OrderEvent> context, PublishDelegate next, CancellationToken ct)
+    public Task OnPublish(PublishContext<OrderEvent> context, PublishNext next)
     {
         context.Headers.Set("x-order-id", context.Message.OrderId);
-        return next(context.Inner); // continue the shared pipeline
+        return next();
     }
 }
 
 public sealed class TenantFilter<T> : IStreamPublishFilter<T> // open generic
 {
-    public Task OnPublish(StreamPublishFilterContext<T> context, PublishDelegate next, CancellationToken ct)
+    public Task OnPublish(PublishContext<T> context, PublishNext next)
     {
         context.Headers.Set("x-message-type", typeof(T).Name);
-        return next(context.Inner);
+        return next();
     }
 }
 
@@ -124,20 +129,58 @@ cfg.UsePublishFilter<OrderPublishFilter>();    // attaches to OrderEvent publish
 cfg.UsePublishFilter(typeof(TenantFilter<>));  // closes once per message type
 ```
 
-A typed context adds `context.Message` as `T`; every other member
-delegates to `Inner`, the shared universal context that `next` expects.
-Attachment is by declared type, not runtime type: `context.MessageType`
-is the `typeof(T)` at the publish call site (a typed context always
-reports its own `T`), while `context.RuntimeMessageType` is the payload's
-runtime type — they differ when a derived message is published through a
-base-type pipe. A concrete typed filter whose `T` does not match the pipe
-type is skipped silently. An open generic that cannot close for the pipe
-type (constraint violation or a missing typed interface) is a
-configuration error when that type's pipeline is built — at bus creation
-for registered publish types, at the first explicit publish otherwise.
+`UsePublishFilter<TFilter, TMessage>()` pins the declared pipe type at the
+call site and builds the typed adapter directly:
+
+```csharp
+cfg.UsePublishFilter<OrderPublishFilter, OrderEvent>();
+```
+
+Use it to construct the typed adapter at the call site and avoid closing a
+generic type at runtime. The single-type-parameter overload discovers the
+filter's typed interfaces at configuration time and closes the adapter at
+runtime, so it is annotated `[RequiresUnreferencedCode]` /
+`[RequiresDynamicCode]`. Open-generic registration through a `Type`
+(`typeof(TenantFilter<>)`) also closes at runtime. Universal filters registered
+as an instance or a factory need no runtime closing either.
+
+Avoiding runtime closure removes one trim/AOT hazard, but StreamBus does not
+support trimming or NativeAOT end to end today: the default
+`SystemTextJsonStreamSerializer` is reflection-based and type-based
+configuration uses runtime DI construction. Treat the annotations as a map of
+the dynamic paths, not as a trimming-support guarantee.
+
+A filter that implements several typed interfaces can be pinned once per
+message type; each registration runs only for its own type.
+
+A typed context adds `context.Message` as `T` to the shared universal context,
+which exposes the same payload as `context.Payload`. Every other member is the
+same object that universal filters receive. `next` is parameterless because
+there is no separate wrapper context to pass forward.
+Filters attach by declared type; there is no runtime-type dispatch.
+A concrete typed filter whose `T` does not match the pipe type is skipped
+silently. An open generic that cannot close for the pipe type (constraint
+violation or a missing typed interface) is a configuration error when that
+type's pipeline is built — at bus creation for registered publish types, at
+the first explicit publish otherwise.
 Explicit-stream publishes (`PublishAsync(stream, message, ct)`) use the
 declared `T` the same way. `PublishRawAsync` still bypasses the pipeline.
 Complete sample: `examples/StreamBus.Examples.Producer/OrderPublishFilter.cs`.
+
+### Identity
+
+`PublishContext.MessageId` and `PublishContext.SentTime` are always
+populated before the pipeline runs: `MessageId` is generated when
+`PublishOptions.Properties.MessageId` is absent, and `SentTime` defaults to
+`DateTime.UtcNow` truncated to milliseconds. Supplied values are
+preserved. Header values and restrictions on
+`PublishOptions.Properties.Headers` are documented on the
+`StreamMessageProperties` API reference. `CorrelationId` is never generated —
+it stays null unless the
+caller supplies `PublishOptions.Properties.CorrelationId`. The four
+framework keys (`streambus.message-id`, `streambus.correlation-id`,
+`streambus.sent-time`, `streambus.routing-key`) are rejected in
+`PublishOptions.Properties.Headers` and in `context.Headers.Set`.
 
 ## Serializer
 

@@ -112,7 +112,7 @@ public sealed class RetryIntegrationTests : IAsyncDisposable
             new ConsumeOptions
             {
                 Reference = "grp-r1",
-                Retry = new RetryPolicy { FailureMode = FailureMode.SkipAfterDeadline, MaxAttempts = maxAttempts },
+                Retry = new RetryPolicy { MaxAttempts = maxAttempts },
                 ErrorStream = new ErrorStreamOptions { Stream = error },
             },
             ctx =>
@@ -134,7 +134,7 @@ public sealed class RetryIntegrationTests : IAsyncDisposable
             new ConsumeOptions { Reference = "grp-r1-err", Offset = ConsumeOffset.AlwaysFirst },
             ctx =>
             {
-                var app = ctx.Metadata.ApplicationProperties.ToDictionary(kv => kv.Key, kv => kv.Value?.ToString());
+                var app = ctx.Headers.All.ToDictionary(kv => kv.Key, kv => kv.Value?.ToString());
                 lock (errors) errors.Add((System.Text.Encoding.UTF8.GetString(ctx.Body.Span), app));
                 return Task.CompletedTask;
             },
@@ -151,7 +151,6 @@ public sealed class RetryIntegrationTests : IAsyncDisposable
         Assert.Equal("poison 2", Env(eApp, "exception-message"));
         Assert.False(string.IsNullOrWhiteSpace(Env(eApp, "exception-stack")));
         Assert.False(string.IsNullOrWhiteSpace(Env(eApp, "failed-at")));
-        Assert.Equal(stream, Env(eApp, "error-routing-value"));
     }
 
     [Fact]
@@ -311,10 +310,17 @@ public sealed class RetryIntegrationTests : IAsyncDisposable
         await admin.CreateStream(ErrorSpec(error));
         _streams.Add(error);
         await using var pub = await BusInstance.StartAsync("pub");
+        var replayedId = Guid.NewGuid();
+        var replayedSentTime = new DateTime(2026, 10, 31, 9, 12, 3, 284, DateTimeKind.Utc);
         try
         {
             foreach (var seq in Enumerable.Range(0, 3))
-                await pub.Bus.PublishRawAsync(stream, Body($"k:{seq}"), new PublishOptions(), TestContext.Current.CancellationToken);
+                await pub.Bus.PublishRawAsync(stream, Body($"k:{seq}"), new PublishOptions
+                {
+                    Properties = seq == 1
+                        ? new StreamMessageProperties { MessageId = replayedId, SentTime = replayedSentTime }
+                        : new StreamMessageProperties(),
+                }, TestContext.Current.CancellationToken);
         }
         finally { await pub.DisposeAsync(); }
         await using var inst = await BusInstance.StartAsync("i");
@@ -322,7 +328,7 @@ public sealed class RetryIntegrationTests : IAsyncDisposable
             new ConsumeOptions
             {
                 Reference = "grp-rd",
-                Retry = new RetryPolicy { FailureMode = FailureMode.SkipAfterDeadline, MaxAttempts = 2 },
+                Retry = new RetryPolicy { MaxAttempts = 2 },
                 ErrorStream = new ErrorStreamOptions { Stream = error },
             },
             ctx =>
@@ -338,21 +344,28 @@ public sealed class RetryIntegrationTests : IAsyncDisposable
             await Task.Delay(100, TestContext.Current.CancellationToken);
         }
         await c.DisposeAsync();
-        var read = new List<string>();
+        var read = new List<ConsumeContext>();
         var rc = await inst.Bus.ConsumeAsync(stream,
             new ConsumeOptions { Reference = "grp-rd-read", Offset = ConsumeOffset.AlwaysFirst },
-            ctx => { lock (read) read.Add(System.Text.Encoding.UTF8.GetString(ctx.Body.Span)); return Task.CompletedTask; },
+            ctx => { lock (read) read.Add(ctx); return Task.CompletedTask; },
             TestContext.Current.CancellationToken);
         Assert.Equal(1, await inst.Bus.ReplayErrorStreamAsync(error, null, TestContext.Current.CancellationToken));
         await WaitForAsync(() => Count(read) == 4, TimeSpan.FromSeconds(60), "replayed read");
-        Assert.Equal(new[] { "k:0", "k:1", "k:2", "k:1" }, read);
+        Assert.Equal(new[] { "k:0", "k:1", "k:2", "k:1" },
+            read.Select(ctx => System.Text.Encoding.UTF8.GetString(ctx.Body.Span)).ToArray());
+        Assert.All(read.Where(ctx => System.Text.Encoding.UTF8.GetString(ctx.Body.Span) == "k:1"), ctx =>
+        {
+            Assert.Equal(replayedId, ctx.MessageId);
+            Assert.Equal(replayedSentTime, ctx.SentTime);
+        });
         // Garbage on the error stream is skipped without throwing; the real envelope
         // replays again but broker dedup (stable name + id = source offset) stores nothing new.
         await inst.Bus.PublishRawAsync(error, Body("not-an-envelope"), new PublishOptions(), TestContext.Current.CancellationToken);
         Assert.Equal(1, await inst.Bus.ReplayErrorStreamAsync(error, null, TestContext.Current.CancellationToken));
         await Task.Delay(TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken);
         await rc.DisposeAsync();
-        Assert.Equal(new[] { "k:0", "k:1", "k:2", "k:1" }, read);
+        Assert.Equal(new[] { "k:0", "k:1", "k:2", "k:1" },
+            read.Select(ctx => System.Text.Encoding.UTF8.GetString(ctx.Body.Span)).ToArray());
     }
 
     [Fact]
@@ -381,7 +394,7 @@ public sealed class RetryIntegrationTests : IAsyncDisposable
             new ConsumeOptions
             {
                 Reference = "grp-re1",
-                Retry = new RetryPolicy { FailureMode = FailureMode.SkipAfterDeadline, MaxAttempts = 2 },
+                Retry = new RetryPolicy { MaxAttempts = 2 },
                 ErrorStream = new ErrorStreamOptions { Stream = shared },
             },
             _ => throw new InvalidOperationException("poison a"),
@@ -390,8 +403,8 @@ public sealed class RetryIntegrationTests : IAsyncDisposable
             new ConsumeOptions
             {
                 Reference = "grp-re2",
-                Retry = new RetryPolicy { FailureMode = FailureMode.SkipAfterDeadline, MaxAttempts = 2 },
-                ErrorStream = new ErrorStreamOptions { Stream = shared, RoutingValue = "custom-2" },
+                Retry = new RetryPolicy { MaxAttempts = 2 },
+                ErrorStream = new ErrorStreamOptions { Stream = shared },
             },
             _ => throw new InvalidOperationException("poison b"),
             TestContext.Current.CancellationToken);
@@ -400,7 +413,7 @@ public sealed class RetryIntegrationTests : IAsyncDisposable
             new ConsumeOptions { Reference = "grp-re-read", Offset = ConsumeOffset.AlwaysFirst },
             ctx =>
             {
-                var app = ctx.Metadata.ApplicationProperties.ToDictionary(kv => kv.Key, kv => kv.Value?.ToString());
+                var app = ctx.Headers.All.ToDictionary(kv => kv.Key, kv => kv.Value?.ToString());
                 lock (errors) errors.Add((System.Text.Encoding.UTF8.GetString(ctx.Body.Span), app));
                 return Task.CompletedTask;
             },
@@ -409,10 +422,9 @@ public sealed class RetryIntegrationTests : IAsyncDisposable
         await c1.DisposeAsync();
         await c2.DisposeAsync();
         await ec.DisposeAsync();
-        Assert.Equal(2, errors.Select(e => e.Body).Distinct().Count());
-        var byRouting = errors.ToDictionary(e => Env(e.App, "error-routing-value"), e => e.Body);
-        Assert.Equal("a:0", byRouting[s1]);
-        Assert.Equal("b:0", byRouting["custom-2"]);
+        Assert.Equal(
+            new[] { "a:0", "b:0" },
+            errors.Select(e => e.Body).OrderBy(static body => body, StringComparer.Ordinal));
     }
 
     [Fact]
@@ -460,7 +472,7 @@ public sealed class RetryIntegrationTests : IAsyncDisposable
             new ConsumeOptions
             {
                 Reference = "grp-rf-k",
-                Retry = new RetryPolicy { FailureMode = FailureMode.SkipAfterDeadline, MaxAttempts = 2 },
+                Retry = new RetryPolicy { MaxAttempts = 2 },
                 ErrorStream = new ErrorStreamOptions { Stream = error },
             },
             ctx =>

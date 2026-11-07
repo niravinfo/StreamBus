@@ -3,24 +3,10 @@ using RabbitMQ.Stream.Client;
 
 namespace StreamBus.UnitTests;
 
-file sealed class HealthSystemHandle : IStreamSystemHandle
+file sealed class HealthSystemHandle : NeverReadyConsumerSystem
 {
-    public bool IsClosed => false;
-    public Task<bool> StreamExistsAsync(string stream, CancellationToken ct) => Task.FromResult(true);
-    public Task<bool> SuperStreamExistsAsync(string superStream, CancellationToken ct) => Task.FromResult(false);
-    public Task<string[]> QueryPartitionAsync(string superStream, CancellationToken ct) => Task.FromResult(new[] { superStream });
-    public Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct)
+    public override Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct)
         => throw new NotSupportedException("HealthAggregatorTests inject their own consumer factory.");
-    public Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken ct) => Task.FromResult<ulong?>(null);
-    public Task StoreSystemOffsetAsync(string reference, string stream, ulong offset, CancellationToken ct) => Task.CompletedTask;
-    public Task<IStreamPlainProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct) => throw new NotSupportedException();
-    public Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct) => throw new NotSupportedException();
-    public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct) => throw new NotSupportedException();
-    public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct) => throw new NotSupportedException();
-    public Task<ulong> QuerySequenceAsync(string reference, string stream, CancellationToken ct) => throw new NotSupportedException();
-    public Task CreateStreamAsync(StreamSpec spec, CancellationToken ct) => Task.CompletedTask;
-    public Task CreateSuperStreamAsync(PartitionsSuperStreamSpec spec, CancellationToken ct) => Task.CompletedTask;
-    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }
 
 file sealed class HealthConnector : IStreamSystemConnector
@@ -33,6 +19,10 @@ file sealed class HealthConnector : IStreamSystemConnector
 
 public sealed class HealthAggregatorTests
 {
+    private sealed class OrdersBus;
+
+    private sealed class BillingBus;
+
     private static StreamBusHealthAggregator Ready()
     {
         var aggregator = new StreamBusHealthAggregator();
@@ -92,8 +82,7 @@ public sealed class HealthAggregatorTests
             supervisor, "/",
             new StreamProducerRegistry(supervisor, "/"),
             null,
-            new ResultProducerRegistry(supervisor, "/"),
-            health: health,
+                        health: health,
             consumerFactory: new ScriptedConsumerFactory().CreateAsync);
 
         var consumeOptions = new ConsumeOptions
@@ -108,9 +97,76 @@ public sealed class HealthAggregatorTests
             typeof(DefaultBus), "orders", consumeOptions, _ => Task.CompletedTask, TestContext.Current.CancellationToken);
 
         var rows = health.Snapshot().Registrations.Where(r => r.Kind == "consumer").ToList();
-        Assert.Contains(rows, r => r.Registration == "raw:orders" && r.State == BusRegistrationState.Attached);
-        Assert.Contains(rows, r => r.Registration == "raw:orders:2" && r.State == BusRegistrationState.Attached);
+        Assert.Contains(rows, r => r.Registration == $"raw:{typeof(DefaultBus).FullName}:orders" && r.State == BusRegistrationState.Attached);
+        Assert.Contains(rows, r => r.Registration == $"raw:{typeof(DefaultBus).FullName}:orders:2" && r.State == BusRegistrationState.Attached);
         Assert.Equal(StreamBusHealthAggregator.HealthStatus.Healthy, health.Compute());
+    }
+
+    [Fact]
+    public async Task Raw_consumer_rows_on_a_shared_vhost_name_the_bus_that_owns_them()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var system = new HealthSystemHandle();
+        var options = new StreamBusOptions { Vhost = "/", UserName = "app", Password = "secret" };
+        await using var supervisor = new StreamBusConnectionSupervisor(options, new HealthConnector(system));
+        await supervisor.StartAsync(ct);
+        Assert.Equal(BusReadiness.Ready, await supervisor.WaitUntilReadyAsync(ReadinessPolicy.Indefinitely, ct));
+
+        var health = new StreamBusHealthAggregator();
+        health.SetConnection(supervisor.State);
+        var consumers = new StreamConsumerRegistry(
+            supervisor, "/",
+            new StreamProducerRegistry(supervisor, "/"),
+            null,
+                        health: health,
+            consumerFactory: new ScriptedConsumerFactory().CreateAsync);
+        var consumeOptions = new ConsumeOptions
+        {
+            Reference = "grp",
+            SingleActiveConsumer = false,
+            Offset = ConsumeOffset.AlwaysFirst,
+        };
+
+        await using var orders = await consumers.ConsumeAsync(
+            typeof(OrdersBus), "orders", consumeOptions, _ => Task.CompletedTask, ct);
+        await using var billing = await consumers.ConsumeAsync(
+            typeof(BillingBus), "orders", consumeOptions, _ => Task.CompletedTask, ct);
+
+        var rows = health.Snapshot().Registrations.Where(r => r.Kind == "consumer").ToList();
+        Assert.Contains(rows, r => r.Registration == $"raw:{typeof(OrdersBus).FullName}:orders" && r.State == BusRegistrationState.Attached);
+        Assert.Contains(rows, r => r.Registration == $"raw:{typeof(BillingBus).FullName}:orders" && r.State == BusRegistrationState.Attached);
+    }
+
+    [Fact]
+    public async Task Declared_endpoint_rows_name_the_bus_that_owns_them()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var system = new HealthSystemHandle();
+        var options = new StreamBusOptions { Vhost = "/", UserName = "app", Password = "secret" };
+        await using var supervisor = new StreamBusConnectionSupervisor(options, new HealthConnector(system));
+        await supervisor.StartAsync(ct);
+        Assert.Equal(BusReadiness.Ready, await supervisor.WaitUntilReadyAsync(ReadinessPolicy.Indefinitely, ct));
+
+        var health = new StreamBusHealthAggregator();
+        health.SetConnection(supervisor.State);
+        var consumers = new StreamConsumerRegistry(
+            supervisor, "/",
+            new StreamProducerRegistry(supervisor, "/"),
+            null,
+                        health: health,
+            consumerFactory: new ScriptedConsumerFactory().CreateAsync);
+        var consumeOptions = new ConsumeOptions
+        {
+            Reference = "grp",
+            SingleActiveConsumer = false,
+            Offset = ConsumeOffset.AlwaysFirst,
+        };
+
+        await using var endpoint = await consumers.ConsumeDeclaredEndpointAsync(
+            typeof(OrdersBus), "orders", consumeOptions, _ => Task.CompletedTask, ct);
+
+        var rows = health.Snapshot().Registrations.Where(r => r.Kind == "consumer").ToList();
+        Assert.Contains(rows, r => r.Registration == $"endpoint:{typeof(OrdersBus).FullName}:orders" && r.State == BusRegistrationState.Attached);
     }
 
     [Fact]

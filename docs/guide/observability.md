@@ -7,9 +7,13 @@ state:
 
 - `{vhost}|{busType}` - connection state for that bus (for example
   `/|StreamBus.DefaultBus`).
-- `{vhost}|{registration}` - one row per typed consumer or declaration,
-  formatted as `consumer:<state>` or `declare:<state>`, with the reason
-  and `since` timestamp when present.
+- `{vhost}|{registration}` - one row per consumer or declaration. Consumer
+  rows carry the bus type so several buses on one vhost stay attributable:
+  `endpoint:{busType}:{stream}` for typed receive endpoints, and
+  `raw:{busType}:{stream}` for `IStreamBus.ConsumeAsync` (with `:2`, `:3`, ...
+  on repeat consumes of the same stream on that bus). Declarations
+  use `declare:{name}`. The value is `consumer:<state>` or `declare:<state>`,
+  with the reason and `since` timestamp when present.
 
 No buses registered reports degraded with a hint. The check is healthy
 only when every registration is attached and every connection is ready.
@@ -38,8 +42,7 @@ listener (for example OpenTelemetry):
 | `streambus_pipeline_duration` | histogram (seconds) | kind = publish \| consume |
 
 The lag gauge compares the last delivered offset against the last stored
-offset per partition. It is not meaningful on effectively-once
-references (the source never stores offsets).
+offset per partition.
 
 The pipeline duration covers the whole chain, including filters and the
 terminal handler. It is recorded only when a pipeline actually runs
@@ -47,7 +50,8 @@ terminal handler. It is recorded only when a pipeline actually runs
 
 ## Activities
 
-`ActivitySource` name: `StreamBus` (version `2.0.0`). It is always
+`ActivitySource` name: `StreamBus` (version matches the released
+package version, generated from the assembly). It is always
 available and costs nothing when no listener samples it.
 
 | Span | Kind | Tags |
@@ -56,10 +60,10 @@ available and costs nothing when no listener samples it.
 | `streambus.consume` | Consumer | `streambus.stream`, `streambus.partition`, `streambus.offset` |
 
 Consume spans add an `exception` event with `exception.type` and
-`exception.message` when a delivery fails. If
-`MessageMetadata.CorrelationId` is a valid W3C `traceparent`, the consume
-span carries it as an `ActivityLink`; malformed values are ignored rather
-than thrown.
+`exception.message` when a delivery fails. Consume spans carry an
+`ActivityLink` when the AMQP `correlation-id` holds a valid W3C
+`traceparent`; ids produced by StreamBus are Guids, so the link applies to
+foreign producers only. Malformed values are ignored rather than thrown.
 
 ## Logs
 

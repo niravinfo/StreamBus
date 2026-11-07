@@ -7,9 +7,9 @@ using RabbitMQ.Stream.Client;
 namespace StreamBus.IntegrationTests;
 
 [Collection(ChaosCollection.Name)]
-public sealed class ConsumerDeathTests : IAsyncDisposable
+public sealed class ConsumerDeathIntegrationTests : IAsyncDisposable
 {
-    public ConsumerDeathTests() => IntegrationLane.RequireBroker();
+    public ConsumerDeathIntegrationTests() => IntegrationLane.RequireBroker();
 
     private static string User() => Environment.GetEnvironmentVariable("STREAMBUS_USER") ?? "app";
     private static string Password() => Environment.GetEnvironmentVariable("STREAMBUS_PASSWORD") ?? "password";

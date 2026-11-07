@@ -18,14 +18,14 @@ internal sealed class ConsumePipelineTenantProbe
 
 internal sealed class ConsumePipelineTenantFilter : IStreamConsumeFilter
 {
-    public Task OnConsume(StreamConsumeFilterContext context, ConsumeDelegate next, CancellationToken ct)
+    public Task OnConsume(ConsumeContext context, ConsumeNext next)
     {
         var scope = (ConsumePipelineTenantScope)context.Services.GetRequiredService(typeof(ConsumePipelineTenantScope));
-        scope.Tenant = context.Message.Metadata.ApplicationProperties.TryGetValue("tenant", out var value)
+        scope.Tenant = context.Headers.All.TryGetValue("tenant", out var value)
             ? value?.ToString()
             : null;
         context.SetPayload(scope.Tenant);
-        return next(context);
+        return next();
     }
 }
 
@@ -33,7 +33,7 @@ internal sealed class ConsumePipelineTenantConsumer(
     ConsumePipelineTenantScope scope,
     ConsumePipelineTenantProbe probe) : IConsumer<ConsumePipelineTenantMessage>
 {
-    public Task Consume(ConsumeContext<ConsumePipelineTenantMessage> context, CancellationToken ct)
+    public Task Consume(ConsumeContext<ConsumePipelineTenantMessage> context)
     {
         lock (probe.Seen) probe.Seen.Add(scope.Tenant);
         return Task.CompletedTask;
@@ -42,23 +42,18 @@ internal sealed class ConsumePipelineTenantConsumer(
 
 internal sealed class ConsumePipelineHeaderThrowingFilter : IStreamConsumeFilter
 {
-    public Task OnConsume(StreamConsumeFilterContext context, ConsumeDelegate next, CancellationToken ct)
+    public Task OnConsume(ConsumeContext context, ConsumeNext next)
     {
-        if (context.Message.Metadata.ApplicationProperties.TryGetValue("tenant", out var tenant))
-            context.OutputHeaders.Set("tenant", tenant);
+        if (context.Headers.All.TryGetValue("tenant", out var tenant))
+            context.SendHeaders.Set("tenant", tenant);
         throw new InvalidOperationException("pipeline boom");
     }
 }
 
-internal sealed class ConsumePipelineSkipFilter : IStreamConsumeFilter
+internal sealed class ConsumePipelineFilteringFilter : IStreamConsumeFilter
 {
-    public bool CanSkip => true;
-
-    public Task OnConsume(StreamConsumeFilterContext context, ConsumeDelegate next, CancellationToken ct)
-    {
-        context.SkipHandler = true;
-        return Task.CompletedTask;
-    }
+    public Task OnConsume(ConsumeContext context, ConsumeNext next)
+        => Task.CompletedTask;
 }
 
 public sealed class ConsumePipelineIntegrationTests : IAsyncDisposable
@@ -218,7 +213,6 @@ public sealed class ConsumePipelineIntegrationTests : IAsyncDisposable
             Offset = ConsumeOffset.AlwaysFirst,
             Retry = new RetryPolicy
             {
-                FailureMode = FailureMode.SkipAfterDeadline,
                 MaxAttempts = 1,
                 BaseDelay = TimeSpan.FromMilliseconds(10),
                 MaxDelay = TimeSpan.FromMilliseconds(50),
@@ -266,41 +260,41 @@ public sealed class ConsumePipelineIntegrationTests : IAsyncDisposable
     }
 
     [Fact]
-    public async Task Skip_advances_the_offset_once_and_does_not_redeliver_after_dispose()
+    public async Task Zero_next_advances_the_offset_once_and_does_not_redeliver_after_dispose()
     {
         var ct = TestContext.Current.CancellationToken;
-        var stream = Unique("pipe-skip");
+        var stream = Unique("pipe-filtered");
         await using var admin = await ConnectAdminAsync();
         await CreateStreamAsync(admin, stream);
         _streams.Add(stream);
 
         await using var bus = await BusInstance.StartAsync(configureServices: null, _ => { });
-        var skipConsumer = await bus.Bus.ConsumeAsync(stream, new ConsumeOptions
+        var filteringConsumer = await bus.Bus.ConsumeAsync(stream, new ConsumeOptions
         {
-            Reference = "skip-grp",
+            Reference = "filter-grp",
             Offset = ConsumeOffset.AlwaysFirst,
-            ConsumeFilters = new[] { ConsumeFilterRegistration.ForInstance(new ConsumePipelineSkipFilter()) },
-        }, _ => throw new InvalidOperationException("the handler must not run for a skipped message"), ct);
+            ConsumeFilters = new[] { ConsumeFilterRegistration.ForInstance(new ConsumePipelineFilteringFilter()) },
+        }, _ => throw new InvalidOperationException("the handler must not run for a filtered message"), ct);
 
         try
         {
             for (var i = 0; i < 3; i++)
-                await bus.Bus.PublishRawAsync(stream, Body($"skipped-{i}"), new PublishOptions(), ct);
+                await bus.Bus.PublishRawAsync(stream, Body($"filtered-{i}"), new PublishOptions(), ct);
 
             await WaitForAsync(
-                async () => await bus.Bus.GetConsumerOffsetAsync(stream, "skip-grp", 0, ct) == 2,
+                async () => await bus.Bus.GetConsumerOffsetAsync(stream, "filter-grp", 0, ct) == 2,
                 TimeSpan.FromSeconds(30),
-                "all three skipped offsets to be stored");
+                "all three filtered offsets to be stored");
         }
         finally
         {
-            await skipConsumer.DisposeAsync();
+            await filteringConsumer.DisposeAsync();
         }
 
         var delivered = new List<string>();
         var resumed = await bus.Bus.ConsumeAsync(stream, new ConsumeOptions
         {
-            Reference = "skip-grp",
+            Reference = "filter-grp",
             Offset = ConsumeOffset.ResumeOrFirst,
         }, ctx =>
         {
@@ -312,9 +306,9 @@ public sealed class ConsumePipelineIntegrationTests : IAsyncDisposable
             await Task.Delay(TimeSpan.FromSeconds(2), ct);
             lock (delivered) Assert.Empty(delivered);
 
-            await bus.Bus.PublishRawAsync(stream, Body("after-skip"), new PublishOptions(), ct);
+            await bus.Bus.PublishRawAsync(stream, Body("after-filter"), new PublishOptions(), ct);
             await WaitForAsync(() => { lock (delivered) return delivered.Count == 1; }, TimeSpan.FromSeconds(30), "the post-resume message");
-            lock (delivered) Assert.Equal(new[] { "after-skip" }, delivered);
+            lock (delivered) Assert.Equal(new[] { "after-filter" }, delivered);
         }
         finally
         {

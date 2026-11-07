@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
@@ -5,73 +6,358 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace StreamBus;
 
+/// <summary>Service collection passed to the bus configuration callback.</summary>
 public interface IStreamRegistrationContext
 {
+    /// <summary>The service collection the bus is being added to.</summary>
     IServiceCollection Services { get; }
 }
 
+/// <summary>Configures broker connection settings inside <c>Host</c>.</summary>
 public interface IHostConfigurator
 {
+    /// <summary>Sets the broker credentials.</summary>
+    /// <param name="user">User name; must not be null.</param>
+    /// <param name="password">Password; must not be null.</param>
     void Credentials(string user, string password);
+
+    /// <summary>Sets the stream protocol port.</summary>
+    /// <param name="port">Stream port; default 5552.</param>
     void StreamPort(int port = 5552);
+
+    /// <summary>Sets the AMQP port used for dead-letter queues and topology.</summary>
+    /// <param name="port">AMQP port; default 5672.</param>
     void AmqpPort(int port = 5672);
+
+    /// <summary>Sets the requested heartbeat interval.</summary>
+    /// <param name="heartbeat">Heartbeat interval; must be positive.</param>
     void Heartbeat(TimeSpan heartbeat);
+
+    /// <summary>Sets the connection monitor interval.</summary>
+    /// <param name="interval">Interval between monitor passes; positive, at most 60 seconds.</param>
     void MonitorInterval(TimeSpan interval);
+
+    /// <summary>Sets producers multiplexed per connection.</summary>
+    /// <param name="count">Producer count; 1..255.</param>
     void ProducersPerConnection(int count = 1);
+
+    /// <summary>Sets consumers multiplexed per connection.</summary>
+    /// <param name="count">Consumer count; 1..255.</param>
     void ConsumersPerConnection(int count = 1);
 }
 
+/// <summary>Configures one StreamBus bus: connection, topology, and retry.</summary>
 public interface IStreamBusConfigurator
 {
+    /// <summary>Sets the broker connection; exactly one per bus.</summary>
+    /// <param name="host">Broker host name or address; must not be empty.</param>
+    /// <param name="vhost">RabbitMQ virtual host; must not be empty.</param>
+    /// <param name="configure">Connection settings callback.</param>
+    /// <exception cref="StreamBusConfigurationException">Called more than once for this bus.</exception>
     void Host(string host, string vhost, Action<IHostConfigurator> configure);
+
+    /// <summary>Replaces the message serializer.</summary>
+    /// <param name="serializer">Serializer used by typed publish and consume.</param>
     void Serializer(IStreamSerializer serializer);
+
+    /// <summary>
+    /// Replaces the message serializer with a System.Text.Json serializer built
+    /// from a fresh <see cref="JsonSerializerOptions"/> configured by
+    /// <paramref name="configure"/>.
+    /// </summary>
+    /// <param name="configure">Callback that mutates the new options.</param>
     void Serializer(Action<JsonSerializerOptions> configure);
+
+    /// <summary>Declares a publish stream for <typeparamref name="TMessage"/>.</summary>
+    /// <typeparam name="TMessage">The publish message type.</typeparam>
+    /// <param name="stream">Stream name; must not be empty.</param>
+    /// <param name="configure">Optional stream declaration callback.</param>
     void Publish<TMessage>(string stream, Action<IStreamOptionsBuilder>? configure = null);
+
+    /// <summary>Declares a publish stream for <typeparamref name="TMessage"/> with an explicit declaration spec.</summary>
+    /// <typeparam name="TMessage">The publish message type.</typeparam>
+    /// <param name="stream">Stream name; must not be empty.</param>
+    /// <param name="spec">Stream declaration spec.</param>
     void Publish<TMessage>(string stream, StreamOptions spec);
+
+    /// <summary>Declares a super-stream publish for <typeparamref name="TMessage"/>.</summary>
+    /// <typeparam name="TMessage">The publish message type.</typeparam>
+    /// <param name="stream">Super-stream name; must not be empty.</param>
+    /// <param name="configure">Super-stream declaration callback.</param>
     void PublishSuper<TMessage>(string stream, Action<ISuperStreamOptionsBuilder> configure);
+
+    /// <summary>Declares a super-stream publish for <typeparamref name="TMessage"/> with an explicit declaration spec.</summary>
+    /// <typeparam name="TMessage">The publish message type.</typeparam>
+    /// <param name="stream">Super-stream name; must not be empty.</param>
+    /// <param name="spec">Super-stream declaration spec.</param>
     void PublishSuper<TMessage>(string stream, StreamOptions spec);
+
+    /// <summary>Declares a receive endpoint on <paramref name="stream"/> for one consumer and consumer group.</summary>
+    /// <param name="stream">Stream name; must not be empty.</param>
+    /// <param name="configure">Endpoint configuration callback.</param>
     void ReceiveEndpoint(string stream, Action<IReceiveEndpointConfigurator> configure);
+
+    /// <summary>
+    /// Configures the bus-wide retry schedule; endpoints inherit it unless they
+    /// override it with their own schedule.
+    /// </summary>
+    /// <param name="configure">Retry configuration callback.</param>
+    /// <exception cref="StreamBusConfigurationException">The callback sets no schedule.</exception>
     void UseMessageRetry(Action<IRetryConfigurator> configure);
+
+    /// <summary>
+    /// Sets the bus-wide retry schedule from a raw policy, an escape hatch for
+    /// schedules the fluent configurator cannot express.
+    /// </summary>
+    /// <param name="policy">The retry policy to inherit by every endpoint without its own schedule.</param>
     void UseRetry(RetryPolicy policy);
-    void UsePublishFilter<TFilter>() where TFilter : class;
-    void UsePublishFilter(Type filterType);
+    /// <summary>
+    /// Registers a publish filter, discovering its typed message interfaces at
+    /// runtime. Use
+    /// <see cref="UsePublishFilter{TFilter,TMessage}()"/> to avoid closing the
+    /// adapter at runtime. The filter type is registered as a singleton because
+    /// publish filters are resolved once per bus and cached; register the type
+    /// as a singleton yourself if you add it before this call.
+    /// </summary>
+    [RequiresUnreferencedCode(RuntimeGeneric.TrimMessage)]
+    [RequiresDynamicCode(RuntimeGeneric.AotMessage)]
+    void UsePublishFilter<[DynamicallyAccessedMembers(RuntimeGeneric.FilterMembers)] TFilter>() where TFilter : class;
+    /// <summary>
+    /// Registers a typed publish filter whose declared pipe type is
+    /// <typeparamref name="TMessage"/>. This overload constructs the typed
+    /// adapter at the call site and therefore avoids closing a generic type at
+    /// runtime. It removes one trim/AOT hazard; it does not by itself make
+    /// trimming or NativeAOT publish supported (the default serializer and
+    /// type-based configuration are still reflection-based). The filter type is
+    /// registered as a singleton because publish filters are resolved once per
+    /// bus and cached.
+    /// </summary>
+    void UsePublishFilter<[DynamicallyAccessedMembers(RuntimeGeneric.FilterMembers)] TFilter, TMessage>() where TFilter : class, IStreamPublishFilter<TMessage>;
+    /// <summary>
+    /// Registers a publish filter by type. The type is registered as a
+    /// singleton because publish filters are resolved once per bus and cached.
+    /// </summary>
+    [RequiresUnreferencedCode(RuntimeGeneric.TrimMessage)]
+    [RequiresDynamicCode(RuntimeGeneric.AotMessage)]
+    void UsePublishFilter([DynamicallyAccessedMembers(RuntimeGeneric.FilterMembers)] Type filterType);
+    /// <summary>
+    /// Registers a publish filter created by <paramref name="factory"/>. The
+    /// factory runs once per bus; its result is cached for the bus lifetime.
+    /// </summary>
     void UsePublishFilter(Func<IServiceProvider, IStreamPublishFilter> factory);
+    /// <summary>
+    /// Registers an existing publish filter instance, which is used for every
+    /// publish on the bus.
+    /// </summary>
     void UsePublishFilter(IStreamPublishFilter instance);
-    void UseConsumeFilter<TFilter>() where TFilter : class;
-    void UseConsumeFilter(Type filterType);
+    /// <summary>
+    /// Registers a consume filter, discovering its typed message interfaces at
+    /// runtime. Use
+    /// <see cref="UseConsumeFilter{TFilter,TMessage}()"/> to avoid closing the
+    /// adapter at runtime. The filter type is registered as a singleton because
+    /// consume filters are resolved once per bus and cached; register the type
+    /// as a singleton yourself if you add it before this call.
+    /// </summary>
+    [RequiresUnreferencedCode(RuntimeGeneric.TrimMessage)]
+    [RequiresDynamicCode(RuntimeGeneric.AotMessage)]
+    void UseConsumeFilter<[DynamicallyAccessedMembers(RuntimeGeneric.FilterMembers)] TFilter>() where TFilter : class;
+    /// <summary>
+    /// Registers a typed consume filter whose endpoint message type is
+    /// <typeparamref name="TMessage"/>. Unlike
+    /// <see cref="UseConsumeFilter{TFilter}()"/>, this overload closes the typed
+    /// adapter at the call site and needs no runtime generic closing. The
+    /// filter type is registered as a singleton because consume filters are
+    /// resolved once per bus and cached.
+    /// </summary>
+    void UseConsumeFilter<[DynamicallyAccessedMembers(RuntimeGeneric.FilterMembers)] TFilter, TMessage>() where TFilter : class, IStreamConsumeFilter<TMessage>;
+    /// <summary>
+    /// Registers a consume filter by type. The type is registered as a
+    /// singleton because consume filters are resolved once per bus and cached.
+    /// </summary>
+    [RequiresUnreferencedCode(RuntimeGeneric.TrimMessage)]
+    [RequiresDynamicCode(RuntimeGeneric.AotMessage)]
+    void UseConsumeFilter([DynamicallyAccessedMembers(RuntimeGeneric.FilterMembers)] Type filterType);
+    /// <summary>
+    /// Registers a consume filter created by <paramref name="factory"/>. The
+    /// factory runs once per bus; its result is cached for the bus lifetime.
+    /// </summary>
     void UseConsumeFilter(Func<IServiceProvider, IStreamConsumeFilter> factory);
+    /// <summary>
+    /// Registers an existing consume filter instance, which is used for every
+    /// delivery on the bus.
+    /// </summary>
     void UseConsumeFilter(IStreamConsumeFilter instance);
 }
 
+/// <summary>Configures one receive endpoint: consumer, offset, retry, and exhaustion behavior.</summary>
 public interface IReceiveEndpointConfigurator
 {
+    /// <summary>
+    /// Sets the endpoint's typed consumer and its consumer group; exactly once
+    /// per endpoint. The consumer class must implement
+    /// <c>IConsumer&lt;T&gt;</c> for exactly one message type.
+    /// </summary>
+    /// <typeparam name="TConsumer">The consumer class; registered as transient.</typeparam>
+    /// <param name="consumerGroup">Consumer group name; required, at most 255 UTF-8 bytes.</param>
+    /// <exception cref="StreamBusConfigurationException">Called twice, the group name is empty, the group name exceeds the broker's 255-byte limit, or the consumer type implements <c>IConsumer&lt;T&gt;</c> for zero or multiple message types.</exception>
     void Consumer<TConsumer>(string consumerGroup) where TConsumer : class;
+
+    /// <summary>Marks the endpoint's stream as a super-stream.</summary>
+    /// <param name="enabled">Whether the stream is a super-stream.</param>
     void SuperStream(bool enabled = true);
+
+    /// <summary>Enables or disables single-active-consumer semantics for the consumer group.</summary>
+    /// <param name="enabled">Whether only one consumer instance in the group is active.</param>
     void SingleActiveConsumer(bool enabled = true);
+
+    /// <summary>Sets where the consumer starts when no stored offset exists.</summary>
+    /// <param name="offset">The first-offset policy.</param>
     void Offset(ConsumeOffset offset);
+
+    /// <summary>Sets the offset-tracking store options.</summary>
+    /// <param name="options">Offset store configuration.</param>
     void OffsetStore(OffsetStoreOptions options);
+
+    /// <summary>Sets the readiness policy for the consumer.</summary>
+    /// <param name="policy">The readiness policy.</param>
     void Readiness(ReadinessPolicy policy);
+
+    /// <summary>
+    /// Configures this endpoint's retry schedule, overriding the bus-wide
+    /// schedule for messages delivered to this endpoint.
+    /// </summary>
+    /// <param name="configure">Retry configuration callback.</param>
+    /// <exception cref="StreamBusConfigurationException">The callback sets no schedule.</exception>
     void UseMessageRetry(Action<IRetryConfigurator> configure);
+
+    /// <summary>
+    /// Sets this endpoint's retry schedule from a raw policy, overriding the
+    /// bus-wide schedule.
+    /// </summary>
+    /// <param name="policy">The retry policy for this endpoint.</param>
     void UseRetry(RetryPolicy policy);
-    void UseConsumeFilter<TFilter>() where TFilter : class;
-    void UseConsumeFilter(Type filterType);
+    /// <summary>
+    /// Registers a consume filter on this endpoint and discovers its typed
+    /// message interfaces at runtime. Use
+    /// <see cref="UseConsumeFilter{TFilter,TMessage}()"/> to avoid closing the
+    /// adapter at runtime. The filter type is registered as a singleton
+    /// because consume filters are resolved once per bus and cached; register
+    /// the type as a singleton yourself if you add it before this call.
+    /// </summary>
+    [RequiresUnreferencedCode(RuntimeGeneric.TrimMessage)]
+    [RequiresDynamicCode(RuntimeGeneric.AotMessage)]
+    void UseConsumeFilter<[DynamicallyAccessedMembers(RuntimeGeneric.FilterMembers)] TFilter>() where TFilter : class;
+    /// <summary>
+    /// Registers a typed consume filter on this endpoint whose message type is
+    /// <typeparamref name="TMessage"/>. This overload constructs the typed
+    /// adapter at the call site and therefore avoids closing a generic type at
+    /// runtime. It removes one trim/AOT hazard; it does not by itself make
+    /// trimming or NativeAOT consume supported (the typed consumer and default
+    /// serializer are still reflection-based). The filter type is registered as
+    /// a singleton because consume filters are resolved once per bus and
+    /// cached.
+    /// </summary>
+    void UseConsumeFilter<[DynamicallyAccessedMembers(RuntimeGeneric.FilterMembers)] TFilter, TMessage>() where TFilter : class, IStreamConsumeFilter<TMessage>;
+    /// <summary>
+    /// Registers a consume filter on this endpoint by type. The type is
+    /// registered as a singleton because consume filters are resolved once per
+    /// bus and cached.
+    /// </summary>
+    [RequiresUnreferencedCode(RuntimeGeneric.TrimMessage)]
+    [RequiresDynamicCode(RuntimeGeneric.AotMessage)]
+    void UseConsumeFilter([DynamicallyAccessedMembers(RuntimeGeneric.FilterMembers)] Type filterType);
+    /// <summary>
+    /// Registers a consume filter on this endpoint created by
+    /// <paramref name="factory"/>. The factory runs once per bus; its result
+    /// is cached for the bus lifetime.
+    /// </summary>
     void UseConsumeFilter(Func<IServiceProvider, IStreamConsumeFilter> factory);
+    /// <summary>
+    /// Registers an existing consume filter instance, which is used for every
+    /// delivery on this endpoint.
+    /// </summary>
     void UseConsumeFilter(IStreamConsumeFilter instance);
-    void AllowPipelineSkip(bool enabled = true);
+    /// <summary>
+    /// Declares a stream dead-letter destination for messages whose retry
+    /// schedule is exhausted; at most one dead-letter destination per endpoint.
+    /// The destination is declared at startup with the given spec (partitions
+    /// are not allowed).
+    /// </summary>
+    /// <param name="name">Destination stream name; must not be empty.</param>
+    /// <param name="configure">Optional stream declaration callback.</param>
+    /// <exception cref="StreamBusConfigurationException">A dead-letter destination is already configured, or the declaration spec is invalid.</exception>
     void DeadLetterToStream(string name, Action<IStreamOptionsBuilder>? configure = null);
+
+    /// <summary>
+    /// Declares a stream dead-letter destination with an explicit declaration
+    /// spec; at most one dead-letter destination per endpoint.
+    /// </summary>
+    /// <param name="name">Destination stream name; must not be empty.</param>
+    /// <param name="spec">Destination stream declaration spec; partitions are not allowed.</param>
+    /// <exception cref="StreamBusConfigurationException">A dead-letter destination is already configured, or the declaration spec is invalid.</exception>
     void DeadLetterToStream(string name, StreamOptions spec);
+
+    /// <summary>
+    /// Declares a durable AMQP queue dead-letter destination; at most one
+    /// dead-letter destination per endpoint.
+    /// </summary>
+    /// <param name="name">Destination queue name; must not be empty.</param>
+    /// <param name="type">Queue type; must be a defined <see cref="DeadLetterQueueType"/> value.</param>
+    /// <exception cref="StreamBusConfigurationException">A dead-letter destination is already configured, or <paramref name="type"/> is undefined.</exception>
     void DeadLetterToQueue(string name, DeadLetterQueueType type);
+
+    /// <summary>
+    /// Declares a durable AMQP queue dead-letter destination with configured
+    /// error-queue options; at most one dead-letter destination per endpoint.
+    /// </summary>
+    /// <param name="name">Destination queue name; must not be empty.</param>
+    /// <param name="type">Queue type; must be a defined <see cref="DeadLetterQueueType"/> value.</param>
+    /// <param name="configure">Error-queue options callback (e.g. confirm timeout).</param>
+    /// <exception cref="StreamBusConfigurationException">A dead-letter destination is already configured, or <paramref name="type"/> is undefined.</exception>
     void DeadLetterToQueue(string name, DeadLetterQueueType type, Action<IErrorQueueOptionsBuilder> configure);
+
+    /// <summary>
+    /// Sets the confirmation budget for a stream dead-letter hand-off. Values
+    /// below one second are raised to one second.
+    /// </summary>
+    /// <param name="timeout">The stream hand-off confirmation timeout; must be positive.</param>
+    /// <exception cref="StreamBusConfigurationException"><paramref name="timeout"/> is not positive.</exception>
     void ErrorHandoffTimeout(TimeSpan timeout);
+
+    /// <summary>
+    /// Registers a callback that owns the outcome for messages whose retry
+    /// schedule is exhausted. It shadows a declared dead-letter destination
+    /// with a startup warning; returning advances past the message, throwing
+    /// recycles the attach for redelivery. Last call wins.
+    /// </summary>
+    /// <param name="handler">The exhaustion callback.</param>
     void OnExhausted(Func<ExhaustedContext, CancellationToken, Task> handler);
+
+    /// <summary>
+    /// Marks the endpoint's stream as a super-stream partitioned into
+    /// <paramref name="partitions"/> partitions.
+    /// </summary>
+    /// <param name="partitions">Partition count for the super-stream; must be >= 1.</param>
     void Partitions(int partitions);
+
+    /// <summary>Sets the stream's maximum age before segment truncation.</summary>
+    /// <param name="maxAge">The maximum age.</param>
     void MaxAge(TimeSpan maxAge);
+
+    /// <summary>Sets the stream's maximum length in bytes before segment truncation.</summary>
+    /// <param name="maxLengthBytes">The maximum length in bytes.</param>
     void MaxLengthBytes(ulong maxLengthBytes);
+
+    /// <summary>Sets the maximum size of a single stream segment in bytes.</summary>
+    /// <param name="maxSegmentSizeBytes">The segment size limit in bytes.</param>
     void MaxSegmentSizeBytes(int maxSegmentSizeBytes);
+
+    /// <summary>Sets the stream's leader locator strategy.</summary>
+    /// <param name="locator">The leader locator.</param>
     void LeaderLocator(StreamLeaderLocator locator);
 }
 
-public sealed record ReceiveEndpointDescriptor
+internal sealed record ReceiveEndpointDescriptor
 {
     public required string Stream { get; init; }
     public required Type MessageType { get; init; }
@@ -92,7 +378,6 @@ public sealed record ReceiveEndpointDescriptor
     public Func<ExhaustedContext, CancellationToken, Task>? OnExhausted { get; init; }
     public ReadinessPolicy Readiness { get; init; } = ReadinessPolicy.FailFastPolicy;
     internal IReadOnlyList<ConsumeFilterRegistration> ConsumeFilters { get; init; } = Array.Empty<ConsumeFilterRegistration>();
-    internal bool AllowPipelineSkip { get; init; }
 
     internal void Validate()
         => StreamOptionsValidation.Validate(
@@ -109,7 +394,7 @@ public sealed record ReceiveEndpointDescriptor
             partitionsError: "super-stream partitions must be >= 1.");
 }
 
-public sealed class StreamBusEndpointStore
+internal sealed class StreamBusEndpointStore
 {
     private readonly List<(Type BusMarker, ReceiveEndpointDescriptor Descriptor)> _endpoints = new();
 
@@ -256,12 +541,21 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
         _globalRetry = policy;
     }
 
-    public void UsePublishFilter<TFilter>() where TFilter : class
+    [RequiresUnreferencedCode(RuntimeGeneric.TrimMessage)]
+    [RequiresDynamicCode(RuntimeGeneric.AotMessage)]
+    public void UsePublishFilter<[DynamicallyAccessedMembers(RuntimeGeneric.FilterMembers)] TFilter>() where TFilter : class
     {
         AddPublishFilter(PublishFilterRegistration.ForType(typeof(TFilter)));
     }
 
-    public void UsePublishFilter(Type filterType)
+    public void UsePublishFilter<[DynamicallyAccessedMembers(RuntimeGeneric.FilterMembers)] TFilter, TMessage>() where TFilter : class, IStreamPublishFilter<TMessage>
+    {
+        AddPublishFilter(PublishFilterRegistration.ForTyped<TFilter, TMessage>());
+    }
+
+    [RequiresUnreferencedCode(RuntimeGeneric.TrimMessage)]
+    [RequiresDynamicCode(RuntimeGeneric.AotMessage)]
+    public void UsePublishFilter([DynamicallyAccessedMembers(RuntimeGeneric.FilterMembers)] Type filterType)
     {
         ArgumentNullException.ThrowIfNull(filterType);
         AddPublishFilter(PublishFilterRegistration.ForType(filterType));
@@ -281,20 +575,29 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
 
     private void AddPublishFilter(PublishFilterRegistration filter)
     {
-        if (filter.FilterType is { } type && _publishFilters.Any(existing => existing.FilterType == type))
+        if (filter.FilterType is { } type && _publishFilters.Any(filter.ConflictsWith))
         {
             throw new StreamBusConfigurationException(
-                $"Publish filter '{type}' is already registered on this bus; duplicate registration would run it twice.");
+                $"Publish filter '{type}' is already registered on this bus for one of its message types; duplicate registration would run it twice.");
         }
         _publishFilters.Add(filter);
     }
 
-    public void UseConsumeFilter<TFilter>() where TFilter : class
+    [RequiresUnreferencedCode(RuntimeGeneric.TrimMessage)]
+    [RequiresDynamicCode(RuntimeGeneric.AotMessage)]
+    public void UseConsumeFilter<[DynamicallyAccessedMembers(RuntimeGeneric.FilterMembers)] TFilter>() where TFilter : class
     {
         AddConsumeFilter(ConsumeFilterRegistration.ForType(typeof(TFilter)));
     }
 
-    public void UseConsumeFilter(Type filterType)
+    public void UseConsumeFilter<[DynamicallyAccessedMembers(RuntimeGeneric.FilterMembers)] TFilter, TMessage>() where TFilter : class, IStreamConsumeFilter<TMessage>
+    {
+        AddConsumeFilter(ConsumeFilterRegistration.ForTyped<TFilter, TMessage>());
+    }
+
+    [RequiresUnreferencedCode(RuntimeGeneric.TrimMessage)]
+    [RequiresDynamicCode(RuntimeGeneric.AotMessage)]
+    public void UseConsumeFilter([DynamicallyAccessedMembers(RuntimeGeneric.FilterMembers)] Type filterType)
     {
         ArgumentNullException.ThrowIfNull(filterType);
         AddConsumeFilter(ConsumeFilterRegistration.ForType(filterType));
@@ -314,10 +617,10 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
 
     private void AddConsumeFilter(ConsumeFilterRegistration filter)
     {
-        if (filter.FilterType is { } type && _consumeFilters.Any(existing => existing.FilterType == type))
+        if (filter.FilterType is { } type && _consumeFilters.Any(filter.ConflictsWith))
         {
             throw new StreamBusConfigurationException(
-                $"Consume filter '{type}' is already registered on this bus; duplicate registration would run it twice.");
+                $"Consume filter '{type}' is already registered on this bus for one of its message types; duplicate registration would run it twice.");
         }
         _consumeFilters.Add(filter);
     }
@@ -414,7 +717,6 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
         private Func<ExhaustedContext, CancellationToken, Task>? _onExhausted;
         private ReadinessPolicy _readiness = ReadinessPolicy.FailFastPolicy;
         private readonly List<ConsumeFilterRegistration> _consumeFilters = new();
-        private bool _allowPipelineSkip;
 
         public ReceiveEndpointConfigurator(string stream) => _stream = stream;
 
@@ -463,11 +765,19 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
             ArgumentNullException.ThrowIfNull(policy);
             _retryOverride = policy;
         }
-        public void UseConsumeFilter<TFilter>() where TFilter : class
+        [RequiresUnreferencedCode(RuntimeGeneric.TrimMessage)]
+        [RequiresDynamicCode(RuntimeGeneric.AotMessage)]
+        public void UseConsumeFilter<[DynamicallyAccessedMembers(RuntimeGeneric.FilterMembers)] TFilter>() where TFilter : class
         {
             AddConsumeFilter(ConsumeFilterRegistration.ForType(typeof(TFilter)));
         }
-        public void UseConsumeFilter(Type filterType)
+        public void UseConsumeFilter<[DynamicallyAccessedMembers(RuntimeGeneric.FilterMembers)] TFilter, TMessage>() where TFilter : class, IStreamConsumeFilter<TMessage>
+        {
+            AddConsumeFilter(ConsumeFilterRegistration.ForTyped<TFilter, TMessage>());
+        }
+        [RequiresUnreferencedCode(RuntimeGeneric.TrimMessage)]
+        [RequiresDynamicCode(RuntimeGeneric.AotMessage)]
+        public void UseConsumeFilter([DynamicallyAccessedMembers(RuntimeGeneric.FilterMembers)] Type filterType)
         {
             ArgumentNullException.ThrowIfNull(filterType);
             AddConsumeFilter(ConsumeFilterRegistration.ForType(filterType));
@@ -482,13 +792,12 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
             ArgumentNullException.ThrowIfNull(instance);
             AddConsumeFilter(ConsumeFilterRegistration.ForInstance(instance));
         }
-        public void AllowPipelineSkip(bool enabled = true) => _allowPipelineSkip = enabled;
         private void AddConsumeFilter(ConsumeFilterRegistration filter)
         {
-            if (filter.FilterType is { } type && _consumeFilters.Any(existing => existing.FilterType == type))
+            if (filter.FilterType is { } type && _consumeFilters.Any(filter.ConflictsWith))
             {
                 throw new StreamBusConfigurationException(
-                    $"Consume filter '{type}' is already registered on this endpoint; duplicate registration would run it twice.");
+                    $"Consume filter '{type}' is already registered on this endpoint for one of its message types; duplicate registration would run it twice.");
             }
             _consumeFilters.Add(filter);
         }
@@ -595,7 +904,6 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
                 OnExhausted = _onExhausted,
                 Readiness = _readiness,
                 ConsumeFilters = _consumeFilters.ToArray(),
-                AllowPipelineSkip = _allowPipelineSkip,
             };
             descriptor.Validate();
             return descriptor;
@@ -603,8 +911,17 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
     }
 }
 
+/// <summary>AddStreamBus entry points for the service collection.</summary>
 public static class StreamBusConfiguratorExtensions
 {
+    /// <summary>
+    /// Adds the default bus (<see cref="IStreamBus"/>) configured by
+    /// <paramref name="configure"/>: topology declarations, retry schedules,
+    /// and receive endpoints are validated and registered immediately.
+    /// </summary>
+    /// <param name="services">The service collection.</param>
+    /// <param name="configure">The bus configuration callback.</param>
+    /// <exception cref="StreamBusConfigurationException">The configuration is invalid or contradictory.</exception>
     public static IServiceCollection AddStreamBus(
         this IServiceCollection services,
         Action<IStreamRegistrationContext, IStreamBusConfigurator> configure)
@@ -614,6 +931,16 @@ public static class StreamBusConfiguratorExtensions
         return AddCore(services, typeof(DefaultBus), configure);
     }
 
+    /// <summary>
+    /// Adds a named bus (<typeparamref name="TBus"/>, exposed as
+    /// <c>IStreamBus&lt;TBus&gt;</c>) configured by <paramref name="configure"/>:
+    /// topology declarations, retry schedules, and receive endpoints are
+    /// validated and registered immediately.
+    /// </summary>
+    /// <typeparam name="TBus">Marker type that identifies this bus.</typeparam>
+    /// <param name="services">The service collection.</param>
+    /// <param name="configure">The bus configuration callback.</param>
+    /// <exception cref="StreamBusConfigurationException">The configuration is invalid or contradictory.</exception>
     public static IServiceCollection AddStreamBus<TBus>(
         this IServiceCollection services,
         Action<IStreamRegistrationContext, IStreamBusConfigurator> configure)
@@ -638,16 +965,25 @@ public static class StreamBusConfiguratorExtensions
         foreach (var filter in configurator.PublishFilters)
         {
             publishStore.AddFilter(busType, filter);
+            // Publish filters are resolved once when the bus is built and
+            // cached for the bus lifetime (PublishPipelineCache). Registering
+            // them as singletons makes that contract explicit; the cache
+            // rejects scoped/transient registrations at bus construction.
             if (filter.FilterType is { } filterType && filter.Instance is null)
-                services.TryAddTransient(filterType, filterType);
+                services.TryAddSingleton(filterType, filterType);
         }
         publishStore.Seal(busType);
         var consumeFilterStore = ServiceCollectionExtensions.GetOrCreateConsumeFilterStore(services);
         foreach (var filter in configurator.ConsumeFilters)
         {
             consumeFilterStore.AddFilter(busType, filter);
+            // Consume filters are resolved once when the consumer attaches and
+            // cached for the bus lifetime (StreamConsumerRegistry); see the
+            // matching publish-side comment above. Registering them as
+            // singletons makes that contract explicit; the registry rejects
+            // scoped/transient registrations when the pipeline is built.
             if (filter.FilterType is { } filterType && filter.Instance is null)
-                services.TryAddTransient(filterType, filterType);
+                services.TryAddSingleton(filterType, filterType);
         }
         consumeFilterStore.Seal(busType);
         var endpointStore = ServiceCollectionExtensions.GetOrCreateEndpointStore(services);
@@ -659,7 +995,7 @@ public static class StreamBusConfiguratorExtensions
             foreach (var filter in descriptor.ConsumeFilters)
             {
                 if (filter.FilterType is { } filterType && filter.Instance is null)
-                    services.TryAddTransient(filterType, filterType);
+                    services.TryAddSingleton(filterType, filterType);
             }
             var busName = busType.FullName ?? busType.Name;
             var derived = RetryDerivation.Derive(
@@ -680,12 +1016,10 @@ public static class StreamBusConfiguratorExtensions
                 ErrorStream = derived.Kind == ExhaustionKind.StreamHandoff ? derived.Stream : null,
                 ReadinessPolicy = descriptor.Readiness,
                 HandoffConfirmTimeout = descriptor.HandoffConfirmTimeout,
-                ExhaustionCallback = derived.Kind == ExhaustionKind.Callback ? descriptor.OnExhausted : null,
+                OnExhausted = derived.Kind == ExhaustionKind.Callback ? descriptor.OnExhausted : null,
                 DeadLetter = derived.Kind == ExhaustionKind.QueueHandoff ? derived.Queue : null,
                 ShadowedDeadLetter = derived.DestinationShadowed ? descriptor.DeadLetter : null,
                 ConsumeFilters = descriptor.ConsumeFilters,
-                AllowPipelineSkip = descriptor.AllowPipelineSkip,
-                IsTypedEndpoint = true,
                 MessageType = descriptor.MessageType,
             });
         }

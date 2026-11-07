@@ -8,15 +8,15 @@ namespace StreamBus.UnitTests;
 
 internal sealed class ConsumePipelineConfigFilter : IStreamConsumeFilter
 {
-    public Task OnConsume(StreamConsumeFilterContext context, ConsumeDelegate next, CancellationToken ct)
-        => next(context);
+    public Task OnConsume(ConsumeContext context, ConsumeNext next)
+        => next();
 }
 
 internal sealed record ConsumePipelineConfigMessage(int Id);
 
 internal sealed class ConsumePipelineConfigConsumer : IConsumer<ConsumePipelineConfigMessage>
 {
-    public Task Consume(ConsumeContext<ConsumePipelineConfigMessage> context, CancellationToken cancellationToken)
+    public Task Consume(ConsumeContext<ConsumePipelineConfigMessage> context)
         => Task.CompletedTask;
 }
 
@@ -38,23 +38,28 @@ internal sealed class TenantProbe
 
 internal sealed class TenantProbeFilter(TenantProbe probe) : IStreamConsumeFilter
 {
-    public Task OnConsume(StreamConsumeFilterContext context, ConsumeDelegate next, CancellationToken ct)
+    public Task OnConsume(ConsumeContext context, ConsumeNext next)
     {
         var accessor = (TenantAccessor)context.Services.GetRequiredService(typeof(TenantAccessor));
-        accessor.Tenant = context.Message.Metadata.ApplicationProperties["tenant"]?.ToString();
+        accessor.Tenant = context.Headers.All["tenant"]?.ToString();
         context.SetPayload(accessor);
         lock (probe.FilterAccessors) probe.FilterAccessors.Add(accessor);
-        return next(context);
+        return next();
     }
 }
 
 internal sealed class TenantProbeConsumer(TenantAccessor accessor, TenantProbe probe) : IConsumer<TenantMessage>
 {
-    public Task Consume(ConsumeContext<TenantMessage> context, CancellationToken cancellationToken)
+    public Task Consume(ConsumeContext<TenantMessage> context)
     {
         lock (probe.ConsumerAccessors) probe.ConsumerAccessors.Add(accessor);
         return Task.CompletedTask;
     }
+}
+
+internal sealed class DeserializationProbeConsumer : IConsumer<TenantMessage>
+{
+    public Task Consume(ConsumeContext<TenantMessage> context) => Task.CompletedTask;
 }
 
 public sealed class PipelineSemanticsTests
@@ -76,11 +81,11 @@ public sealed class PipelineSemanticsTests
             new RecordingFilter("C", log),
         });
 
-        await pipeline.RunAsync(NewContext(), _ =>
+        await pipeline.RunAsync(NewContext(), () =>
         {
             log.Add("terminal");
             return Task.CompletedTask;
-        }, TestContext.Current.CancellationToken, allowSkip: false);
+        });
 
         Assert.Equal(new[] { "A-in", "B-in", "C-in", "terminal", "C-out", "B-out", "A-out" }, log);
     }
@@ -95,48 +100,24 @@ public sealed class PipelineSemanticsTests
             new PayloadReaderFilter(probe),
         });
 
-        await pipeline.RunAsync(NewContext(), _ => Task.CompletedTask, TestContext.Current.CancellationToken, allowSkip: false);
+        await pipeline.RunAsync(NewContext(), () => Task.CompletedTask);
 
         Assert.Equal("tenant-acme", probe.Seen);
     }
 
     [Fact]
-    public async Task Zero_next_without_skip_is_transient_and_names_the_filter()
+    public async Task Zero_next_filters_without_invoking_the_terminal()
     {
         var pipeline = new ConsumePipeline(new IStreamConsumeFilter[] { new ZeroNextFilter() });
-
-        var ex = await Assert.ThrowsAsync<StreamBusTransientException>(() =>
-            pipeline.RunAsync(NewContext(), _ => Task.CompletedTask, TestContext.Current.CancellationToken, allowSkip: false));
-
-        Assert.Contains(nameof(ZeroNextFilter), ex.Message, StringComparison.Ordinal);
-        Assert.Contains("returned without calling next", ex.Message, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public async Task Zero_next_with_skip_and_allowSkip_bypasses_the_terminal()
-    {
-        var pipeline = new ConsumePipeline(new IStreamConsumeFilter[] { new SkipFilter("tenant", "acme") });
         var terminalCalls = 0;
 
-        await pipeline.RunAsync(NewContext(), _ =>
+        await pipeline.RunAsync(NewContext(), () =>
         {
             Interlocked.Increment(ref terminalCalls);
             return Task.CompletedTask;
-        }, TestContext.Current.CancellationToken, allowSkip: true);
+        });
 
         Assert.Equal(0, terminalCalls);
-    }
-
-    [Fact]
-    public async Task Zero_next_with_skip_but_allowSkip_false_is_transient()
-    {
-        var pipeline = new ConsumePipeline(new IStreamConsumeFilter[] { new SkipFilter("tenant", "acme") });
-
-        var ex = await Assert.ThrowsAsync<StreamBusTransientException>(() =>
-            pipeline.RunAsync(NewContext(), _ => Task.CompletedTask, TestContext.Current.CancellationToken, allowSkip: false));
-
-        Assert.Contains(nameof(SkipFilter), ex.Message, StringComparison.Ordinal);
-        Assert.Contains("without setting SkipHandler", ex.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -151,16 +132,31 @@ public sealed class PipelineSemanticsTests
         var terminalCalls = 0;
 
         var ex = await Assert.ThrowsAsync<StreamBusTransientException>(() =>
-            pipeline.RunAsync(NewContext(), _ =>
+            pipeline.RunAsync(NewContext(), () =>
             {
                 Interlocked.Increment(ref terminalCalls);
                 return Task.CompletedTask;
-            }, TestContext.Current.CancellationToken, allowSkip: false));
+            }));
 
         Assert.Contains(nameof(DoubleNextFilter), ex.Message, StringComparison.Ordinal);
         Assert.Contains("invoked next 2 times", ex.Message, StringComparison.Ordinal);
         Assert.Equal(1, terminalCalls);
         Assert.Equal(new[] { "outer-in" }, log);
+    }
+
+    [Fact]
+    public async Task Fire_and_forget_next_is_rejected_as_a_filter_contract_violation()
+    {
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var pipeline = new ConsumePipeline(new IStreamConsumeFilter[] { new FireAndForgetNextFilter() });
+
+        var ex = await Assert.ThrowsAsync<StreamBusFilterContractException>(() =>
+            pipeline.RunAsync(NewContext(), () => release.Task));
+
+        Assert.Contains(nameof(FireAndForgetNextFilter), ex.Message, StringComparison.Ordinal);
+        Assert.Contains("before its continuation completed", ex.Message, StringComparison.Ordinal);
+        Assert.False(release.Task.IsCompleted, "the escaped continuation must not be awaited by the pipeline");
+        release.SetResult();
     }
 
     // ---------------------------------------------------------------------
@@ -203,41 +199,6 @@ public sealed class PipelineSemanticsTests
         Assert.Contains("already registered on this endpoint", ex.Message, StringComparison.Ordinal);
     }
 
-    [Fact]
-    public async Task CanSkip_filter_on_an_effectively_once_pipeline_is_rejected()
-    {
-        var filters = new StreamBusConsumeFilterStore();
-        filters.AddFilter(typeof(DefaultBus), ConsumeFilterRegistration.ForInstance(new SkipFilter("tenant", "acme")));
-        await using var harness = await Harness.CreateAsync(filters);
-
-        var ex = await Assert.ThrowsAsync<StreamBusConfigurationException>(() =>
-            harness.Registry.ConsumeEffectivelyOnceAsync(
-                typeof(DefaultBus), "orders", "results", new EffectivelyOnceOptions(),
-                _ => Task.FromResult<ReadOnlyMemory<byte>>(ReadOnlyMemory<byte>.Empty),
-                TestContext.Current.CancellationToken));
-
-        Assert.Contains(nameof(SkipFilter), ex.Message, StringComparison.Ordinal);
-        Assert.Contains("effectively-once", ex.Message, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public async Task CanSkip_filter_on_a_typed_endpoint_without_AllowPipelineSkip_is_rejected()
-    {
-        await using var harness = await Harness.CreateAsync();
-        var options = DispatchOptions(
-            endpointFilters: new[] { ConsumeFilterRegistration.ForInstance(new SkipFilter("tenant", "acme")) },
-            typedEndpoint: true,
-            allowSkip: false);
-
-        var ex = await Assert.ThrowsAsync<StreamBusConfigurationException>(() =>
-            harness.Registry.ConsumeAsync(
-                typeof(DefaultBus), "orders", options, _ => Task.CompletedTask,
-                TestContext.Current.CancellationToken));
-
-        Assert.Contains(nameof(SkipFilter), ex.Message, StringComparison.Ordinal);
-        Assert.Contains("AllowPipelineSkip", ex.Message, StringComparison.Ordinal);
-    }
-
     // ---------------------------------------------------------------------
     // Composition and dispatch (registry + consumer attach)
     // ---------------------------------------------------------------------
@@ -271,12 +232,12 @@ public sealed class PipelineSemanticsTests
     }
 
     [Fact]
-    public async Task Skip_on_a_raw_endpoint_advances_the_offset_without_the_handler_or_an_error_publish()
+    public async Task Zero_next_on_a_raw_endpoint_advances_the_offset_without_handler_or_error_publish()
     {
         await using var harness = await Harness.CreateAsync();
         var handlerCalls = 0;
         var options = DispatchOptions(
-            endpointFilters: new[] { ConsumeFilterRegistration.ForInstance(new SkipFilter("tenant", "acme")) });
+            endpointFilters: new[] { ConsumeFilterRegistration.ForInstance(new FilteringFilter("tenant", "acme")) });
         harness.Consumer = await harness.Registry.ConsumeAsync(
             typeof(DefaultBus), "orders", options, _ =>
             {
@@ -292,30 +253,7 @@ public sealed class PipelineSemanticsTests
     }
 
     [Fact]
-    public async Task Skip_on_a_typed_endpoint_with_AllowPipelineSkip_advances_the_offset_once()
-    {
-        await using var harness = await Harness.CreateAsync();
-        var handlerCalls = 0;
-        var options = DispatchOptions(
-            endpointFilters: new[] { ConsumeFilterRegistration.ForInstance(new SkipFilter("tenant", "acme")) },
-            typedEndpoint: true,
-            allowSkip: true);
-        harness.Consumer = await harness.Registry.ConsumeAsync(
-            typeof(DefaultBus), "orders", options, _ =>
-            {
-                Interlocked.Increment(ref handlerCalls);
-                return Task.CompletedTask;
-            }, TestContext.Current.CancellationToken);
-
-        await harness.DeliverAsync(9, "hello");
-
-        Assert.Equal(0, handlerCalls);
-        Assert.Equal(new ulong[] { 9 }, harness.Factory.Current.StoredOffsets);
-        Assert.Empty(harness.System.Envelopes);
-    }
-
-    [Fact]
-    public async Task Zero_next_delivery_exhausts_to_the_error_stream_without_invoking_the_handler()
+    public async Task Zero_next_delivery_is_filtered_and_not_published_to_error()
     {
         await using var harness = await Harness.CreateAsync();
         var zero = new ZeroNextFilter();
@@ -335,10 +273,7 @@ public sealed class PipelineSemanticsTests
 
         Assert.Equal(1, zero.Calls);
         Assert.Equal(0, handlerCalls);
-        var envelope = Assert.Single(harness.System.Envelopes);
-        Assert.Equal("errors", envelope.Stream);
-        Assert.Equal("3", envelope.Properties["streambus.error.source-offset"]?.ToString());
-        Assert.Contains("returned without calling next", envelope.Properties["streambus.error.exception-message"]?.ToString(), StringComparison.Ordinal);
+        Assert.Empty(harness.System.Envelopes);
         Assert.Equal(new ulong[] { 3 }, harness.Factory.Current.StoredOffsets);
     }
 
@@ -448,12 +383,10 @@ public sealed class PipelineSemanticsTests
         });
         var handler = TypedConsumerHandler.Create(
             typeof(TenantMessage),
-            typeof(TenantProbeConsumer),
-            harness.ScopeFactory,
-            SystemTextJsonStreamSerializer.Default);
+            typeof(TenantProbeConsumer));
         var options = DispatchOptions(
             endpointFilters: new[] { ConsumeFilterRegistration.ForInstance(new TenantProbeFilter(probe)) },
-            typedEndpoint: true);
+            messageType: typeof(TenantMessage));
         harness.Consumer = await harness.Registry.ConsumeAsync(
             typeof(DefaultBus), "orders", options, handler, TestContext.Current.CancellationToken);
 
@@ -470,41 +403,82 @@ public sealed class PipelineSemanticsTests
         Assert.Equal(2, probe.DisposedAccessors);
     }
 
+    [Fact]
+    public async Task Typed_message_that_fails_to_deserialize_is_retried_and_exhausted()
+    {
+        await using var harness = await Harness.CreateAsync(configureServices: services =>
+            services.AddTransient<DeserializationProbeConsumer>());
+        var handler = TypedConsumerHandler.Create(
+            typeof(TenantMessage), typeof(DeserializationProbeConsumer));
+        var options = DispatchOptions(
+            maxAttempts: 2,
+            errorStream: "errors",
+            messageType: typeof(TenantMessage));
+        harness.Consumer = await harness.Registry.ConsumeAsync(
+            typeof(DefaultBus), "orders", options, handler, TestContext.Current.CancellationToken);
+
+        await harness.DeliverAsync(12, "this-is-not-json");
+
+        var envelope = Assert.Single(harness.System.Envelopes);
+        Assert.Equal("2", envelope.Properties["streambus.error.attempts"]?.ToString());
+        Assert.Contains(
+            nameof(StreamBusDeserializationException),
+            envelope.Properties["streambus.error.exception-type"]?.ToString(),
+            StringComparison.Ordinal);
+        Assert.Equal(new ulong[] { 12 }, harness.Factory.Current.StoredOffsets);
+    }
+
+    [Fact]
+    public async Task Failed_attempt_headers_do_not_leak_into_the_next_attempt()
+    {
+        await using var harness = await Harness.CreateAsync();
+        var options = DispatchOptions(
+            endpointFilters: new[] { ConsumeFilterRegistration.ForInstance(new SetOnceThenThrowFilter()) },
+            maxAttempts: 2,
+            errorStream: "errors");
+        harness.Consumer = await harness.Registry.ConsumeAsync(
+            typeof(DefaultBus), "orders", options, _ => Task.CompletedTask,
+            TestContext.Current.CancellationToken);
+
+        await harness.DeliverAsync(11, "hello");
+
+        var envelope = Assert.Single(harness.System.Envelopes);
+        Assert.Equal("2", envelope.Properties["streambus.error.attempts"]?.ToString());
+        Assert.False(envelope.Properties.ContainsKey("tenant"));
+    }
+
     // ---------------------------------------------------------------------
     // Helpers
     // ---------------------------------------------------------------------
 
-    private static StreamConsumeFilterContext NewContext() => new()
+    private static ConsumeContext NewContext() => new()
     {
-        Message = new ConsumeContext
-        {
-            Stream = "orders",
-            Partition = 0,
-            Offset = 0,
-            RoutingValue = null,
-            Body = ReadOnlyMemory<byte>.Empty,
-            Metadata = new MessageMetadata(),
-            CancellationToken = TestContext.Current.CancellationToken,
-        },
-        OutputHeaders = new HeaderWriter(),
+        Stream = "orders",
+        Partition = 0,
+        Offset = 0,
+        RoutingValue = null,
+        Body = ReadOnlyMemory<byte>.Empty,
+        Headers = new StreamHeaders(
+            new Dictionary<string, object?>(),
+            SystemTextJsonStreamSerializer.Default),
+        SendHeaders = new StreamSendHeaders(null, SystemTextJsonStreamSerializer.Default),
         Services = EmptyProvider.Instance,
+        CancellationToken = TestContext.Current.CancellationToken,
     };
 
     private static ConsumeOptions DispatchOptions(
         IReadOnlyList<ConsumeFilterRegistration>? endpointFilters = null,
-        bool typedEndpoint = false,
-        bool allowSkip = false,
         int maxAttempts = 1,
-        string? errorStream = null) => new()
-    {
-        Reference = "grp",
-        SingleActiveConsumer = false,
-        Offset = ConsumeOffset.AlwaysFirst,
-        OffsetStore = new OffsetStoreOptions { EveryMessages = 1 },
-        Retry = errorStream is null
+        string? errorStream = null,
+        Type? messageType = null) => new()
+        {
+            Reference = "grp",
+            SingleActiveConsumer = false,
+            Offset = ConsumeOffset.AlwaysFirst,
+            OffsetStore = new OffsetStoreOptions { EveryMessages = 1 },
+            Retry = errorStream is null
             ? new RetryPolicy
             {
-                FailureMode = FailureMode.Strict,
                 MaxAttempts = null,
                 BaseDelay = TimeSpan.FromMilliseconds(1),
                 MaxDelay = TimeSpan.FromMilliseconds(2),
@@ -513,18 +487,64 @@ public sealed class PipelineSemanticsTests
             }
             : new RetryPolicy
             {
-                FailureMode = FailureMode.SkipAfterDeadline,
                 MaxAttempts = maxAttempts,
                 BaseDelay = TimeSpan.FromMilliseconds(1),
                 MaxDelay = TimeSpan.FromMilliseconds(2),
                 Multiplier = 1.0,
                 MaxJitter = TimeSpan.Zero,
             },
-        ErrorStream = errorStream is null ? null : new ErrorStreamOptions { Stream = errorStream },
-        ConsumeFilters = endpointFilters ?? Array.Empty<ConsumeFilterRegistration>(),
-        IsTypedEndpoint = typedEndpoint,
-        AllowPipelineSkip = allowSkip,
-    };
+            ErrorStream = errorStream is null ? null : new ErrorStreamOptions { Stream = errorStream },
+            ConsumeFilters = endpointFilters ?? Array.Empty<ConsumeFilterRegistration>(),
+            MessageType = messageType,
+        };
+
+    private static async Task<StreamBusConfigurationException> AssertFilterLifetimeRejectedAsync(
+        Action<IServiceCollection> configureServices,
+        ConsumeFilterRegistration registration,
+        Type? messageType = null)
+    {
+        await using var harness = await Harness.CreateAsync(configureServices: configureServices);
+        harness.Filters.AddFilter(typeof(DefaultBus), registration);
+
+        var ex = await Assert.ThrowsAsync<StreamBusConfigurationException>(() =>
+            harness.Registry.ConsumeAsync(
+                typeof(DefaultBus), "orders", DispatchOptions(messageType: messageType), _ => Task.CompletedTask,
+                TestContext.Current.CancellationToken));
+
+        Assert.Contains("singleton", ex.Message, StringComparison.Ordinal);
+        return ex;
+    }
+
+    [Fact]
+    public async Task Scoped_consume_filter_is_rejected_when_the_consumer_attaches()
+    {
+        var ex = await AssertFilterLifetimeRejectedAsync(
+            services => services.AddScoped<ScopedLifetimeConsumeFilter>(),
+            ConsumeFilterRegistration.ForType(typeof(ScopedLifetimeConsumeFilter)));
+
+        Assert.Contains(nameof(ScopedLifetimeConsumeFilter), ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Transient_consume_filter_is_rejected_when_the_consumer_attaches()
+    {
+        var ex = await AssertFilterLifetimeRejectedAsync(
+            services => services.AddTransient<TransientLifetimeConsumeFilter>(),
+            ConsumeFilterRegistration.ForType(typeof(TransientLifetimeConsumeFilter)));
+
+        Assert.Contains(nameof(TransientLifetimeConsumeFilter), ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Scoped_typed_consume_filter_is_rejected_when_the_consumer_attaches()
+    {
+        var ex = await AssertFilterLifetimeRejectedAsync(
+            services => services.AddScoped<ScopedLifetimeTypedConsumeFilter>(),
+            ConsumeFilterRegistration.ForType(typeof(ScopedLifetimeTypedConsumeFilter)),
+            messageType: typeof(TenantMessage));
+
+        Assert.Contains(nameof(ScopedLifetimeTypedConsumeFilter), ex.Message, StringComparison.Ordinal);
+    }
 
     private static ErrorEnvelope NewEnvelope(IReadOnlyDictionary<string, object?>? outputHeaders = null) => new()
     {
@@ -542,46 +562,60 @@ public sealed class PipelineSemanticsTests
         MessageId = null,
         CorrelationId = null,
         RoutingValue = null,
-        ErrorRoutingValue = "orders",
-        OutputHeaders = outputHeaders,
+        SendHeaders = outputHeaders,
     };
+
+    private sealed class ScopedLifetimeConsumeFilter : IStreamConsumeFilter
+    {
+        public Task OnConsume(ConsumeContext context, ConsumeNext next) => next();
+    }
+
+    private sealed class TransientLifetimeConsumeFilter : IStreamConsumeFilter
+    {
+        public Task OnConsume(ConsumeContext context, ConsumeNext next) => next();
+    }
+
+    private sealed class ScopedLifetimeTypedConsumeFilter : IStreamConsumeFilter<TenantMessage>
+    {
+        public Task OnConsume(ConsumeContext<TenantMessage> context, ConsumeNext next) => next();
+    }
 
     private sealed class RecordingFilter(string name, List<string> log) : IStreamConsumeFilter
     {
-        public async Task OnConsume(StreamConsumeFilterContext context, ConsumeDelegate next, CancellationToken ct)
+        public async Task OnConsume(ConsumeContext context, ConsumeNext next)
         {
             log.Add($"{name}-in");
-            await next(context);
+            await next();
             log.Add($"{name}-out");
         }
     }
 
     private sealed class BusScopeFilter(List<string> log) : IStreamConsumeFilter
     {
-        public async Task OnConsume(StreamConsumeFilterContext context, ConsumeDelegate next, CancellationToken ct)
+        public async Task OnConsume(ConsumeContext context, ConsumeNext next)
         {
             log.Add("bus-in");
-            await next(context);
+            await next();
             log.Add("bus-out");
         }
     }
 
     private sealed class EndpointOuterFilter(List<string> log) : IStreamConsumeFilter
     {
-        public async Task OnConsume(StreamConsumeFilterContext context, ConsumeDelegate next, CancellationToken ct)
+        public async Task OnConsume(ConsumeContext context, ConsumeNext next)
         {
             log.Add("endpoint-outer-in");
-            await next(context);
+            await next();
             log.Add("endpoint-outer-out");
         }
     }
 
     private sealed class EndpointInnerFilter(List<string> log) : IStreamConsumeFilter
     {
-        public async Task OnConsume(StreamConsumeFilterContext context, ConsumeDelegate next, CancellationToken ct)
+        public async Task OnConsume(ConsumeContext context, ConsumeNext next)
         {
             log.Add("endpoint-inner-in");
-            await next(context);
+            await next();
             log.Add("endpoint-inner-out");
         }
     }
@@ -590,7 +624,7 @@ public sealed class PipelineSemanticsTests
     {
         public int Calls { get; private set; }
 
-        public Task OnConsume(StreamConsumeFilterContext context, ConsumeDelegate next, CancellationToken ct)
+        public Task OnConsume(ConsumeContext context, ConsumeNext next)
         {
             Calls++;
             return Task.CompletedTask;
@@ -599,21 +633,27 @@ public sealed class PipelineSemanticsTests
 
     private sealed class DoubleNextFilter : IStreamConsumeFilter
     {
-        public async Task OnConsume(StreamConsumeFilterContext context, ConsumeDelegate next, CancellationToken ct)
+        public async Task OnConsume(ConsumeContext context, ConsumeNext next)
         {
-            await next(context);
-            await next(context);
+            await next();
+            await next();
         }
     }
 
-    private sealed class SkipFilter(string key, string value) : IStreamConsumeFilter
+    private sealed class FireAndForgetNextFilter : IStreamConsumeFilter
     {
-        public bool CanSkip => true;
-
-        public Task OnConsume(StreamConsumeFilterContext context, ConsumeDelegate next, CancellationToken ct)
+        public Task OnConsume(ConsumeContext context, ConsumeNext next)
         {
-            context.OutputHeaders.Set(key, value);
-            context.SkipHandler = true;
+            _ = next();
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class FilteringFilter(string key, string value) : IStreamConsumeFilter
+    {
+        public Task OnConsume(ConsumeContext context, ConsumeNext next)
+        {
+            context.SendHeaders.Set(key, value);
             return Task.CompletedTask;
         }
     }
@@ -622,39 +662,52 @@ public sealed class PipelineSemanticsTests
     {
         public int Calls { get; private set; }
 
-        public Task OnConsume(StreamConsumeFilterContext context, ConsumeDelegate next, CancellationToken ct)
+        public Task OnConsume(ConsumeContext context, ConsumeNext next)
         {
             Calls++;
-            context.OutputHeaders.Set("tenant", "acme");
+            context.SendHeaders.Set("tenant", "acme");
             throw new InvalidOperationException("filter boom");
         }
     }
 
     private sealed class CollidingHeaderThrowingFilter : IStreamConsumeFilter
     {
-        public Task OnConsume(StreamConsumeFilterContext context, ConsumeDelegate next, CancellationToken ct)
+        public Task OnConsume(ConsumeContext context, ConsumeNext next)
         {
-            context.OutputHeaders.Set("streambus.error.source-stream", "hacked");
-            context.OutputHeaders.Set("tenant", "acme");
+            context.SendHeaders.Set("streambus.error.source-stream", "hacked");
+            context.SendHeaders.Set("tenant", "acme");
             throw new InvalidOperationException("filter boom");
+        }
+    }
+
+    private sealed class SetOnceThenThrowFilter : IStreamConsumeFilter
+    {
+        public int Calls { get; private set; }
+
+        public Task OnConsume(ConsumeContext context, ConsumeNext next)
+        {
+            Calls++;
+            if (Calls == 1)
+                context.SendHeaders.Set("tenant", "first-attempt");
+            throw new InvalidOperationException("boom");
         }
     }
 
     private sealed class PayloadWriterFilter : IStreamConsumeFilter
     {
-        public Task OnConsume(StreamConsumeFilterContext context, ConsumeDelegate next, CancellationToken ct)
+        public Task OnConsume(ConsumeContext context, ConsumeNext next)
         {
             context.SetPayload("tenant-acme");
-            return next(context);
+            return next();
         }
     }
 
     private sealed class PayloadReaderFilter(PayloadProbe probe) : IStreamConsumeFilter
     {
-        public Task OnConsume(StreamConsumeFilterContext context, ConsumeDelegate next, CancellationToken ct)
+        public Task OnConsume(ConsumeContext context, ConsumeNext next)
         {
             probe.Seen = context.GetPayload<string>();
-            return next(context);
+            return next();
         }
     }
 
@@ -740,44 +793,24 @@ public sealed class PipelineSemanticsTests
             => Task.FromResult<IStreamSystemHandle>(system);
     }
 
-    internal sealed class CapturingSystem : IStreamSystemHandle
+    internal sealed class CapturingSystem : ScriptedSystemHandle
     {
+        public CapturingSystem()
+        {
+            OnCreatePlainProducer = (stream, _) =>
+                Task.FromResult<IStreamPlainProducerHandle>(new CapturingPlainProducer(stream, this));
+        }
+
         public readonly List<CapturedEnvelope> Envelopes = new();
 
-        public bool IsClosed => false;
-
-        public Task<IStreamPlainProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct)
-            => Task.FromResult<IStreamPlainProducerHandle>(new CapturingPlainProducer(stream, this));
-
-        public Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
-            => CreatePlainProducerAsync(stream, ct);
-
-        public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
+        public override Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
             => throw new NotSupportedException("PipelineSemanticsTests publish error envelopes only.");
 
-        public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
+        public override Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
             => throw new NotSupportedException("PipelineSemanticsTests publish error envelopes only.");
 
-        public Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken ct) => Task.FromResult<ulong?>(null);
-
-        public Task StoreSystemOffsetAsync(string reference, string stream, ulong offset, CancellationToken ct) => Task.CompletedTask;
-
-        public Task<bool> StreamExistsAsync(string stream, CancellationToken ct) => Task.FromResult(true);
-
-        public Task<bool> SuperStreamExistsAsync(string superStream, CancellationToken ct) => Task.FromResult(false);
-
-        public Task<string[]> QueryPartitionAsync(string superStream, CancellationToken ct) => Task.FromResult(new[] { superStream });
-
-        public Task<ulong> QuerySequenceAsync(string reference, string stream, CancellationToken ct) => Task.FromResult(0UL);
-
-        public Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct)
+        public override Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct)
             => throw new NotSupportedException("PipelineSemanticsTests inject their own consumer factory.");
-
-        public Task CreateStreamAsync(StreamSpec spec, CancellationToken ct) => Task.CompletedTask;
-
-        public Task CreateSuperStreamAsync(PartitionsSuperStreamSpec spec, CancellationToken ct) => Task.CompletedTask;
-
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 
         public void Add(string stream, IReadOnlyDictionary<string, object?> properties)
         {
@@ -792,15 +825,9 @@ public sealed class PipelineSemanticsTests
         public Task SendAsync(ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct)
             => throw new NotSupportedException("PipelineSemanticsTests publish error envelopes only.");
 
-        public Task SendEnvelopeAsync(
-            ReadOnlyMemory<byte> body,
-            PublishOptions options,
-            IReadOnlyDictionary<string, object?> applicationProperties,
-            string? messageId,
-            string? correlationId,
-            CancellationToken ct)
+        public Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, StreamMessageProperties properties, CancellationToken ct)
         {
-            system.Add(stream, new Dictionary<string, object?>(applicationProperties, StringComparer.Ordinal));
+            system.Add(stream, new Dictionary<string, object?>(properties.Headers, StringComparer.Ordinal));
             return Task.CompletedTask;
         }
 
@@ -849,7 +876,6 @@ public sealed class PipelineSemanticsTests
                 "/",
                 producers,
                 loggerFactory: null,
-                results: new ResultProducerRegistry(supervisor, "/"),
                 scopeFactory: provider.GetRequiredService<IServiceScopeFactory>(),
                 consumerFactory: factory.CreateAsync,
                 consumeFilters: filterStore,

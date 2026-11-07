@@ -2,36 +2,8 @@ namespace StreamBus.UnitTests;
 
 using RabbitMQ.Stream.Client;
 
-file sealed class StubHandle : IStreamSystemHandle
+file sealed class StubHandle : StrictScriptedSystemHandle
 {
-    public bool IsClosed { get; set; }
-    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-    public Task<IStreamPlainProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct)
-        => throw new NotImplementedException("ConnectionSupervisorTests never publishes.");
-    public Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
-        => throw new NotImplementedException("ConnectionSupervisorTests never publishes.");
-    public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
-        => throw new NotImplementedException("ConnectionSupervisorTests never publishes.");
-    public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
-        => throw new NotImplementedException("StubHandle never creates stable super producers.");
-    public Task<ulong> QuerySequenceAsync(string reference, string stream, CancellationToken ct)
-        => throw new NotImplementedException("StubHandle never queries publishing sequences.");
-    public Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken ct)
-        => throw new NotImplementedException("ConnectionSupervisorTests never queries offsets.");
-    public Task StoreSystemOffsetAsync(string reference, string stream, ulong offset, CancellationToken ct)
-        => throw new NotImplementedException("ConnectionSupervisorTests never queries offsets.");
-    public Task<bool> StreamExistsAsync(string stream, CancellationToken ct)
-        => throw new NotImplementedException("ConnectionSupervisorTests never queries offsets.");
-    public Task<bool> SuperStreamExistsAsync(string superStream, CancellationToken ct)
-        => throw new NotImplementedException("ConnectionSupervisorTests never queries offsets.");
-    public Task<string[]> QueryPartitionAsync(string superStream, CancellationToken ct)
-        => throw new NotImplementedException("ConnectionSupervisorTests never queries offsets.");
-    public Task CreateStreamAsync(StreamSpec spec, CancellationToken ct)
-        => throw new NotImplementedException("ConnectionSupervisorTests never declares topology.");
-    public Task CreateSuperStreamAsync(PartitionsSuperStreamSpec spec, CancellationToken ct)
-        => throw new NotImplementedException("ConnectionSupervisorTests never declares topology.");
-    public Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct)
-        => throw new NotImplementedException("ConnectionSupervisorTests never consumes.");
 }
 
 file sealed class ScriptedConnector : IStreamSystemConnector

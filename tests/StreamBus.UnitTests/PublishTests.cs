@@ -22,7 +22,7 @@ file sealed class BlockingDisposeProducer : IProducer
     public ProducerInfo Info => throw new NotSupportedException("BlockingDisposeProducer never inspects the producer info.");
 }
 
-sealed class StubProducerHandle : IStreamSuperProducerHandle
+sealed class StubProducerHandle : IStreamPlainProducerHandle, IStreamSuperProducerHandle
 {
     private readonly Func<ReadOnlyMemory<byte>, string?, CancellationToken, Task> _send;
     public int SendCount;
@@ -33,57 +33,29 @@ sealed class StubProducerHandle : IStreamSuperProducerHandle
         SendCount++;
         return _send(body, options.RoutingKey, ct);
     }
-    public Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, PublishOptions options, IReadOnlyDictionary<string, object?> applicationProperties, string? messageId, string? correlationId, CancellationToken ct)
+    public Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, StreamMessageProperties properties, CancellationToken ct)
         => throw new NotImplementedException("PublishTests never sends envelopes.");
     public Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, PublishOptions options, CancellationToken ct)
         => throw new NotImplementedException("PublishTests never replays.");
-    public Task PublishWithIdAsync(ulong publishingId, ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct)
-        => throw new NotImplementedException("StubProducerHandle never publishes results.");
-    public Task PublishResultAsync(ReadOnlyMemory<byte> body, ulong publishingId, string? routingKey, CancellationToken ct)
-        => throw new NotImplementedException("StubProducerHandle never publishes results.");
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }
 
-sealed class StubSystemHandle : IStreamSystemHandle
+sealed class StubSystemHandle : StrictScriptedSystemHandle
 {
     public int PlainCreations;
     public int SuperCreations;
     public Func<string, CancellationToken, Task<IStreamPlainProducerHandle>>? OnCreatePlain;
-    public Func<string, CancellationToken, Task<IStreamSuperProducerHandle>>? OnCreateSuper = (_, _) => Task.FromResult<IStreamSuperProducerHandle>(new StubProducerHandle());
-    public bool IsClosed => false;
-    public Task<IStreamPlainProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct)
+    public StubSystemHandle() => OnCreateSuperProducer = (_, _) => Task.FromResult<IStreamSuperProducerHandle>(new StubProducerHandle());
+    public override Task<IStreamPlainProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct)
     {
         PlainCreations++;
         return OnCreatePlain is not null ? OnCreatePlain(stream, ct) : Task.FromResult<IStreamPlainProducerHandle>(new StubProducerHandle());
     }
-    public Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
-        => throw new NotImplementedException("PublishTests never replays.");
-    public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
+    public override Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
     {
         SuperCreations++;
-        return OnCreateSuper is not null ? OnCreateSuper(stream, ct) : Task.FromResult<IStreamSuperProducerHandle>(new StubProducerHandle());
+        return OnCreateSuperProducer is not null ? OnCreateSuperProducer(stream, ct) : Task.FromResult<IStreamSuperProducerHandle>(new StubProducerHandle());
     }
-    public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
-        => throw new NotImplementedException("StubSystemHandle never creates stable super producers.");
-    public Task<ulong> QuerySequenceAsync(string reference, string stream, CancellationToken ct)
-        => throw new NotImplementedException("StubSystemHandle never queries publishing sequences.");
-    public Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken ct)
-        => throw new NotImplementedException("PublishTests never queries offsets.");
-    public Task StoreSystemOffsetAsync(string reference, string stream, ulong offset, CancellationToken ct)
-        => throw new NotImplementedException("PublishTests never queries offsets.");
-    public Task<bool> StreamExistsAsync(string stream, CancellationToken ct)
-        => throw new NotImplementedException("PublishTests never queries offsets.");
-    public Task<bool> SuperStreamExistsAsync(string superStream, CancellationToken ct)
-        => throw new NotImplementedException("PublishTests never queries offsets.");
-    public Task<string[]> QueryPartitionAsync(string superStream, CancellationToken ct)
-        => throw new NotImplementedException("PublishTests never queries offsets.");
-    public Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct)
-        => throw new NotImplementedException("PublishTests never consumes.");
-    public Task CreateStreamAsync(StreamSpec spec, CancellationToken ct)
-        => throw new NotImplementedException("PublishTests never declares topology.");
-    public Task CreateSuperStreamAsync(PartitionsSuperStreamSpec spec, CancellationToken ct)
-        => throw new NotImplementedException("PublishTests never declares topology.");
-    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }
 
 sealed class ReadyConnector : IStreamSystemConnector

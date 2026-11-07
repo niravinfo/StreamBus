@@ -12,26 +12,34 @@ namespace StreamBus;
 /// </summary>
 public interface IStreamProducerHandle : IAsyncDisposable
 {
-    Task SendAsync(ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct);
+    /// <summary>Sends the body and awaits the broker confirmation; a non-Ok code throws <see cref="StreamBusPublishException"/>.</summary>
+    Task SendAsync(ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken cancellationToken);
 }
 
+/// <summary>Plain-stream producer surface, adding the routing-key-free envelope send and the fixed-id replay send.</summary>
 public interface IStreamPlainProducerHandle : IStreamProducerHandle
 {
+    /// <summary>Sends an envelope using only the supplied properties (no routing key); used for confirmed error-envelope-style sends.</summary>
     Task SendEnvelopeAsync(
         ReadOnlyMemory<byte> body,
-        PublishOptions options,
-        IReadOnlyDictionary<string, object?> applicationProperties,
-        string? messageId,
-        string? correlationId,
-        CancellationToken ct);
+        StreamMessageProperties properties,
+        CancellationToken cancellationToken);
 
-    Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, PublishOptions options, CancellationToken ct);
+    /// <summary>Sends the body under an explicit <paramref name="publishingId"/>, so duplicate ids are deduplicated broker-side (replay idempotency).</summary>
+    Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, PublishOptions options, CancellationToken cancellationToken);
 }
 
-public interface IStreamSuperProducerHandle : IStreamPlainProducerHandle
+/// <summary>
+/// Super-stream producer surface. Every send on a super stream must carry a
+/// routing key (the broker routes each message to one partition), so the
+/// envelope send — which has no routing key — is deliberately absent here
+/// and lives only on <see cref="IStreamPlainProducerHandle"/>. Calling code
+/// that tries it simply does not compile.
+/// </summary>
+public interface IStreamSuperProducerHandle : IStreamProducerHandle
 {
-    Task PublishWithIdAsync(ulong publishingId, ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct);
-    Task PublishResultAsync(ReadOnlyMemory<byte> body, ulong publishingId, string? routingKey, CancellationToken ct);
+    /// <summary>Sends the body under an explicit <paramref name="publishingId"/> with the options' routing key; duplicate ids are deduplicated broker-side (replay idempotency). The routing key is required.</summary>
+    Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, PublishOptions options, CancellationToken cancellationToken);
 }
 
 /// <summary>
@@ -43,10 +51,13 @@ internal sealed class SuperStreamRouting
 {
     private readonly ConcurrentDictionary<Message, string> _table = new();
 
+    /// <summary>Routing callback for the client: returns the routing value stamped for <paramref name="message"/>.</summary>
     public string Route(Message message) => _table[message];
 
+    /// <summary>Stamps the routing value to use for <paramref name="message"/> just before send.</summary>
     public void Stamp(Message message, string routing) => _table[message] = routing;
 
+    /// <summary>Removes the stamp for <paramref name="message"/> after send.</summary>
     public void Remove(Message message) => _table.TryRemove(message, out _);
 }
 
@@ -60,17 +71,20 @@ internal sealed class ConfirmationTracker
     private long _nextPublishingId;
     private readonly ConcurrentDictionary<ulong, TaskCompletionSource<ResponseCode>> _pending = new();
 
+    /// <summary>Allocates the next sequential publishing id for this handle.</summary>
     public ulong NextPublishingId() => (ulong)Interlocked.Increment(ref _nextPublishingId);
 
+    /// <summary>Resolves the pending waiter for a broker confirmation.</summary>
     public void Complete(Confirmation confirmation)
     {
         if (_pending.TryRemove(confirmation.PublishingId, out var tcs))
             tcs.TrySetResult(confirmation.Code);
     }
 
-    public async Task PublishAsync(IProducer producer, string stream, Message message, CancellationToken ct)
+    /// <summary>Sends with a fresh sequential publishing id and awaits its confirmation.</summary>
+    public async Task PublishAsync(IProducer producer, string stream, Message message, CancellationToken cancellationToken)
     {
-        ct.ThrowIfCancellationRequested();
+        cancellationToken.ThrowIfCancellationRequested();
         var publishingId = NextPublishingId();
         var confirmation = new TaskCompletionSource<ResponseCode>(TaskCreationOptions.RunContinuationsAsynchronously);
         _pending[publishingId] = confirmation;
@@ -83,14 +97,14 @@ internal sealed class ConfirmationTracker
             _pending.TryRemove(publishingId, out _);
             throw;
         }
-        using (ct.Register(static state => ((TaskCompletionSource<ResponseCode>)state!).TrySetCanceled(), confirmation))
+        using (cancellationToken.Register(static state => ((TaskCompletionSource<ResponseCode>)state!).TrySetCanceled(), confirmation))
         {
             ResponseCode code;
             try
             {
                 code = await confirmation.Task.ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 _pending.TryRemove(publishingId, out _);
                 throw;
@@ -100,6 +114,7 @@ internal sealed class ConfirmationTracker
         }
     }
 
+    /// <summary>Cancels every pending waiter (cancellation for the awaits).</summary>
     public void CancelAll()
     {
         CancelAll(error: null);
@@ -109,6 +124,7 @@ internal sealed class ConfirmationTracker
     // Resolve every pending waiter with the supplied error so awaiters stop
     // waiting and the registry invalidates the closed handle. Idempotent and
     // safe from any thread; must not throw.
+    /// <summary>Fails every still-uncleared publishing id with a transient error; a dropped connection never delivers confirms.</summary>
     public void OnConnectionLost()
         => CancelAll(new StreamBusTransientException(
             "Producer connection closed before confirmation; publish outcome unknown."));
@@ -126,9 +142,10 @@ internal sealed class ConfirmationTracker
         }
     }
 
-    public async Task PublishWithIdAsync(IProducer producer, string stream, ulong publishingId, Message message, CancellationToken ct)
+    /// <summary>Sends under an explicit <paramref name="publishingId"/> and awaits its confirmation; an in-flight duplicate id throws.</summary>
+    public async Task PublishWithIdAsync(IProducer producer, string stream, ulong publishingId, Message message, CancellationToken cancellationToken)
     {
-        ct.ThrowIfCancellationRequested();
+        cancellationToken.ThrowIfCancellationRequested();
         var confirmation = new TaskCompletionSource<ResponseCode>(TaskCreationOptions.RunContinuationsAsynchronously);
         if (!_pending.TryAdd(publishingId, confirmation))
             throw new StreamBusPublishException($"Replay publishing id {publishingId} is already in flight for stream '{stream}' (internal error).");
@@ -141,14 +158,14 @@ internal sealed class ConfirmationTracker
             _pending.TryRemove(publishingId, out _);
             throw;
         }
-        using (ct.Register(static state => ((TaskCompletionSource<ResponseCode>)state!).TrySetCanceled(), confirmation))
+        using (cancellationToken.Register(static state => ((TaskCompletionSource<ResponseCode>)state!).TrySetCanceled(), confirmation))
         {
             ResponseCode code;
             try
             {
                 code = await confirmation.Task.ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 _pending.TryRemove(publishingId, out _);
                 throw;
@@ -186,6 +203,7 @@ internal sealed class StreamProducerHandle : IStreamPlainProducerHandle
     private readonly ConfirmationTracker _confirmations;
     private readonly ILogger _logger;
 
+    /// <summary>Wraps a client plain producer; a null <paramref name="logger"/> falls back to a null logger.</summary>
     public StreamProducerHandle(IProducer producer, string stream, ConfirmationTracker confirmations, ILogger? logger = null)
     {
         ArgumentNullException.ThrowIfNull(producer);
@@ -197,43 +215,37 @@ internal sealed class StreamProducerHandle : IStreamPlainProducerHandle
         _logger = logger ?? NullLogger.Instance;
     }
 
-    public async Task SendAsync(ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct)
+    /// <summary>Sends the body with the options' properties/routing key and awaits confirmation.</summary>
+    public async Task SendAsync(ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(options);
-        ct.ThrowIfCancellationRequested();
+        cancellationToken.ThrowIfCancellationRequested();
         var message = new Message(body.ToArray());
-        StreamMessageProperties.ApplyTo(message, options.Properties);
-        await _confirmations.PublishAsync(_producer, _stream, message, ct).ConfigureAwait(false);
+        StreamMessageProperties.ApplyTo(message, options.Properties, options.RoutingKey);
+        await _confirmations.PublishAsync(_producer, _stream, message, cancellationToken).ConfigureAwait(false);
     }
 
-    public async Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, PublishOptions options, IReadOnlyDictionary<string, object?> applicationProperties, string? messageId, string? correlationId, CancellationToken ct)
+    /// <summary>Sends the body with the supplied properties only (no routing key) and awaits confirmation.</summary>
+    public async Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, StreamMessageProperties properties, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(properties);
+        cancellationToken.ThrowIfCancellationRequested();
+        var message = new Message(body.ToArray());
+        StreamMessageProperties.ApplyTo(message, properties);
+        await _confirmations.PublishAsync(_producer, _stream, message, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>Sends the body under an explicit publishing id (replay/dedup) and awaits confirmation.</summary>
+    public async Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, PublishOptions options, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(options);
-        ct.ThrowIfCancellationRequested();
-        ArgumentNullException.ThrowIfNull(applicationProperties);
+        cancellationToken.ThrowIfCancellationRequested();
         var message = new Message(body.ToArray());
-        if (messageId is not null || correlationId is not null)
-        {
-            message.Properties = new RabbitMQ.Stream.Client.AMQP.Properties { MessageId = messageId, CorrelationId = correlationId };
-        }
-        var app = new RabbitMQ.Stream.Client.AMQP.ApplicationProperties();
-        foreach (var kv in applicationProperties)
-        {
-            app[kv.Key] = kv.Value;
-        }
-        message.ApplicationProperties = app;
-        await _confirmations.PublishAsync(_producer, _stream, message, ct).ConfigureAwait(false);
+        StreamMessageProperties.ApplyTo(message, options.Properties, options.RoutingKey);
+        await _confirmations.PublishWithIdAsync(_producer, _stream, publishingId, message, cancellationToken).ConfigureAwait(false);
     }
 
-    public async Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, PublishOptions options, CancellationToken ct)
-    {
-        ArgumentNullException.ThrowIfNull(options);
-        ct.ThrowIfCancellationRequested();
-        var message = new Message(body.ToArray());
-        StreamMessageProperties.ApplyTo(message, options.Properties);
-        await _confirmations.PublishWithIdAsync(_producer, _stream, publishingId, message, ct).ConfigureAwait(false);
-    }
-
+    /// <summary>Cancels pending confirms and closes the producer off-thread, capped at 3s.</summary>
     public async ValueTask DisposeAsync()
     {
         _confirmations.CancelAll();
@@ -249,6 +261,7 @@ internal sealed class SuperStreamProducerHandle : IStreamSuperProducerHandle
     private readonly SuperStreamRouting _routing;
     private readonly ILogger _logger;
 
+    /// <summary>Wraps a client super-stream producer; every send requires a routing key in options.</summary>
     public SuperStreamProducerHandle(ISuperStreamProducer producer, string stream, ConfirmationTracker confirmations, SuperStreamRouting routing, ILogger? logger = null)
     {
         ArgumentNullException.ThrowIfNull(producer);
@@ -262,74 +275,43 @@ internal sealed class SuperStreamProducerHandle : IStreamSuperProducerHandle
         _logger = logger ?? NullLogger.Instance;
     }
 
-    public Task SendAsync(ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct)
+    /// <summary>Sends the body with the (required) options routing key and awaits confirmation.</summary>
+    public Task SendAsync(ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken cancellationToken)
         => SendMessageAsync(
             new Message(body.ToArray()),
             options,
             (message, token) => _confirmations.PublishAsync(_producer, _stream, message, token),
-            ct);
+            cancellationToken);
 
-    public Task SendEnvelopeAsync(
-        ReadOnlyMemory<byte> body,
-        PublishOptions options,
-        IReadOnlyDictionary<string, object?> applicationProperties,
-        string? messageId,
-        string? correlationId,
-        CancellationToken ct)
-    {
-        ArgumentNullException.ThrowIfNull(applicationProperties);
-        var message = new Message(body.ToArray());
-        if (messageId is not null || correlationId is not null)
-        {
-            message.Properties = new RabbitMQ.Stream.Client.AMQP.Properties { MessageId = messageId, CorrelationId = correlationId };
-        }
-        var app = new RabbitMQ.Stream.Client.AMQP.ApplicationProperties();
-        foreach (var kv in applicationProperties)
-            app[kv.Key] = kv.Value;
-        message.ApplicationProperties = app;
-        return SendMessageAsync(
-            message,
-            options,
-            (outgoing, token) => _confirmations.PublishAsync(_producer, _stream, outgoing, token),
-            ct);
-    }
+    // SendEnvelopeAsync is intentionally absent: it carries no routing key,
+    // so a super-stream envelope send cannot be routed. The interface split
+    // (IStreamSuperProducerHandle no longer derives from
+    // IStreamPlainProducerHandle) makes that a compile-time guarantee.
 
-    public Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, PublishOptions options, CancellationToken ct)
+    /// <summary>Sends the body under an explicit publishing id (replay/dedup) with the required routing key, and awaits confirmation.</summary>
+    public Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, PublishOptions options, CancellationToken cancellationToken)
         => SendMessageAsync(
             new Message(body.ToArray()),
             options,
             (message, token) => _confirmations.PublishWithIdAsync(_producer, _stream, publishingId, message, token),
-            ct);
+            cancellationToken);
 
-    public Task PublishWithIdAsync(ulong publishingId, ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct)
-        => SendMessageAsync(
-            new Message(body.ToArray()),
-            options,
-            (message, token) => _confirmations.PublishWithIdAsync(_producer, _stream, publishingId, message, token),
-            ct);
-
-    public Task PublishResultAsync(ReadOnlyMemory<byte> body, ulong publishingId, string? routingKey, CancellationToken ct)
-        => PublishWithIdAsync(
-            publishingId,
-            body,
-            new PublishOptions { IsSuperStream = true, RoutingKey = routingKey },
-            ct);
-
+    /// <summary>Stamps the routing key on the message for the client callback, then removes it after send.</summary>
     private async Task SendMessageAsync(
         Message message,
         PublishOptions options,
         Func<Message, CancellationToken, Task> send,
-        CancellationToken ct)
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(options);
         if (string.IsNullOrWhiteSpace(options.RoutingKey))
             throw new StreamBusConfigurationException($"Super-stream publish to '{_stream}' requires a routing key.");
-        ct.ThrowIfCancellationRequested();
-        StreamMessageProperties.ApplyTo(message, options.Properties);
+        cancellationToken.ThrowIfCancellationRequested();
+        StreamMessageProperties.ApplyTo(message, options.Properties, options.RoutingKey);
         _routing.Stamp(message, options.RoutingKey);
         try
         {
-            await send(message, ct).ConfigureAwait(false);
+            await send(message, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -337,6 +319,7 @@ internal sealed class SuperStreamProducerHandle : IStreamSuperProducerHandle
         }
     }
 
+    /// <summary>Cancels pending confirms and closes the producer off-thread, capped at 3s.</summary>
     public async ValueTask DisposeAsync()
     {
         _confirmations.CancelAll();

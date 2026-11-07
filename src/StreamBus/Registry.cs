@@ -5,19 +5,61 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace StreamBus;
 
+/// <summary>
+/// Registry that owns one bus (and its connection supervisor) per
+/// (bus type, vhost) pair. Buses are created lazily on first request and
+/// the same instance is returned for later requests.
+/// </summary>
 public interface IStreamBusRegistry
 {
+    /// <summary>Returns the untyped bus for the given vhost, creating it on
+    /// first use.</summary>
+    /// <param name="vhost">Virtual host to connect to.</param>
+    /// <returns>The shared <see cref="IStreamBus"/> for the vhost.</returns>
     IStreamBus GetOrCreateBus(string vhost);
+
+    /// <summary>Returns the typed bus for the given vhost, creating it on
+    /// first use.</summary>
+    /// <typeparam name="TBus">Marker type that identifies the bus.</typeparam>
+    /// <param name="vhost">Virtual host to connect to.</param>
+    /// <returns>The shared <see cref="IStreamBus{TBus}"/> for the vhost.</returns>
     IStreamBus<TBus> GetOrCreateBus<TBus>(string vhost);
+
+    /// <summary>Lists the current connection state of every bus the registry
+    /// created, for diagnostics and health reporting.</summary>
+    /// <returns>One tuple per (vhost, bus type) entry known to the registry.</returns>
     IEnumerable<(string Vhost, string BusType, BusConnectionState State)> DescribeStates();
+
+    /// <summary>Gets the cached registry entry for a bus type and vhost,
+    /// creating it on first use.</summary>
     internal BusEntry GetOrCreateEntry(Type busType, string vhost);
+
+    /// <summary>Gets the connection supervisor shared by all buses on the vhost.</summary>
     internal StreamBusConnectionSupervisor SupervisorFor(string vhost);
+
+    /// <summary>Drops the cached supervisor for the vhost so the next
+    /// request replaces it with a fresh one.</summary>
     internal void RemoveSupervisor(string vhost);
+
+    /// <summary>Gets the topology registry that declares streams for the vhost.</summary>
     internal StreamTopologyRegistry TopologyFor(string vhost);
+
+    /// <summary>Gets the health aggregator that reports the vhost's
+    /// connection and consumer states.</summary>
     internal StreamBusHealthAggregator HealthFor(string vhost);
+
+    /// <summary>Gets the AMQP transport shared by error-queue hand-offs on
+    /// the vhost.</summary>
     internal ErrorQueueTransport ErrorQueuesFor(string vhost);
+
+    /// <summary>All health aggregators known to the registry, one per vhost.</summary>
     internal IReadOnlyCollection<StreamBusHealthAggregator> HealthAggregators { get; }
+
+    /// <summary>Snapshot of all live consumer registrations across vhosts.</summary>
     internal IReadOnlyCollection<IStreamConsumer> ActiveConsumers { get; }
+
+    /// <summary>Disposes registry-owned resources; safe to call more than once.</summary>
+    internal ValueTask DisposeAsync();
 }
 
 internal sealed class BusEntry
@@ -27,7 +69,7 @@ internal sealed class BusEntry
     public required IReadOnlyDictionary<string, DeclaredStream> Declarations { get; init; }
 }
 
-public sealed class StreamBusRegistry : IStreamBusRegistry
+internal sealed class StreamBusRegistry : IStreamBusRegistry, IAsyncDisposable
 {
     private readonly ConcurrentDictionary<(Type BusType, string Vhost), BusEntry> _entries = new();
     private readonly Func<string, StreamBusOptions> _resolveOptions;
@@ -89,7 +131,7 @@ public sealed class StreamBusRegistry : IStreamBusRegistry
     internal ErrorQueueTransport ErrorQueuesFor(string vhost)
         => _errorQueues.GetOrAdd(vhost, _ => new ErrorQueueTransport(
             _resolveOptions(vhost),
-            null,
+            connector: null,
             _loggerFactory.CreateLogger<ErrorQueueTransport>()));
 
     ErrorQueueTransport IStreamBusRegistry.ErrorQueuesFor(string vhost) => ErrorQueuesFor(vhost);
@@ -97,13 +139,8 @@ public sealed class StreamBusRegistry : IStreamBusRegistry
     internal StreamProducerRegistry ProducersFor(string vhost)
         => _producers.GetOrAdd(vhost, _ => new StreamProducerRegistry(SupervisorForCore(vhost), vhost));
 
-    private readonly ConcurrentDictionary<string, ResultProducerRegistry> _results = new();
-
-    internal ResultProducerRegistry ResultProducersFor(string vhost)
-        => _results.GetOrAdd(vhost, _ => new ResultProducerRegistry(SupervisorForCore(vhost), vhost));
-
     internal StreamConsumerRegistry ConsumersFor(string vhost)
-        => _consumers.GetOrAdd(vhost, _ => new StreamConsumerRegistry(SupervisorForCore(vhost), vhost, ProducersFor(vhost), _loggerFactory, ResultProducersFor(vhost), _scopes, ErrorQueuesFor(vhost), HealthFor(vhost), consumeFilters: _consumeFilterStore, rootProvider: _rootProvider));
+        => _consumers.GetOrAdd(vhost, _ => new StreamConsumerRegistry(SupervisorForCore(vhost), vhost, ProducersFor(vhost), _loggerFactory, _scopes, ErrorQueuesFor(vhost), HealthFor(vhost), consumeFilters: _consumeFilterStore, rootProvider: _rootProvider));
 
     internal StreamBusHealthAggregator HealthFor(string vhost)
         => _health.GetOrAdd(vhost, static _ => new StreamBusHealthAggregator());
@@ -149,6 +186,25 @@ public sealed class StreamBusRegistry : IStreamBusRegistry
         return supervisor;
     }
 
+    private int _disposed;
+
+    public async ValueTask DisposeAsync()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) == 1) return;
+        var logger = _loggerFactory.CreateLogger<StreamBusRegistry>();
+        foreach (var (_, transport) in _errorQueues)
+        {
+            try { await transport.DisposeAsync().ConfigureAwait(false); }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Error queue transport dispose did not complete cleanly during registry disposal.");
+            }
+        }
+        _errorQueues.Clear();
+    }
+
+    ValueTask IStreamBusRegistry.DisposeAsync() => DisposeAsync();
+
     internal BusEntry GetOrCreateCore(Type busType, string vhost)
     {
         var key = (busType, vhost);
@@ -188,22 +244,12 @@ public sealed class StreamBusRegistry : IStreamBusRegistry
                     pipelines.GetOrCreate(registration.MessageType);
             }
         }
-        var options = _resolveOptions(vhost);
-        var busView = new StreamBusRegistrationView
-        {
-            Vhost = options.Vhost,
-            Host = options.Host,
-            StreamPort = options.StreamPort,
-            AmqpPort = options.AmqpPort,
-            HeartbeatSeconds = options.Heartbeat.TotalSeconds,
-        };
-
         IStreamBus bus = busType == typeof(DefaultBus)
-            ? new StreamBus(vhost, supervisor, ProducersFor(vhost), ConsumersFor(vhost), TopologyFor(vhost), serializer, _publishRouter, ErrorQueuesFor(vhost), findDeclaration, pipelines, _scopes, busView)
+            ? new StreamBus(vhost, supervisor, ProducersFor(vhost), ConsumersFor(vhost), TopologyFor(vhost), serializer, _publishRouter, ErrorQueuesFor(vhost), findDeclaration, pipelines, _scopes)
             : (IStreamBus)Activator.CreateInstance(
                 typeof(StreamBus<>).MakeGenericType(busType),
                 vhost, supervisor, ProducersFor(vhost), ConsumersFor(vhost), TopologyFor(vhost), serializer,
-                _publishRouter, ErrorQueuesFor(vhost), findDeclaration, pipelines, _scopes, busView)!;
+                _publishRouter, ErrorQueuesFor(vhost), findDeclaration, pipelines, _scopes)!;
         var created = new BusEntry { Supervisor = supervisor, Bus = bus, Declarations = declarations };
         StreamBusMetrics.Shared.TrackConnection(vhost, busType.FullName ?? busType.Name, () => created.Supervisor.State);
         return created;

@@ -62,17 +62,6 @@ await using var sub = await bus.ConsumeAsync(
 Raw consume also requires `Reference` — a missing group throws
 `StreamBusConfigurationException` at attach instead of guessing.
 
-## Effectively-once
-
-Read-process-write pipelines are unchanged apart from the bus they run
-on, which is unambiguous by construction. See
-`effectively-once.md` for the full projection example:
-
-```csharp
-await using var pipe = await bus.ConsumeEffectivelyOnceAsync("orders", "invoices",
-    new EffectivelyOnceOptions(), ctx => Task.FromResult<ReadOnlyMemory<byte>>(resultBytes), ct);
-```
-
 ## Pipelines
 
 Consume middleware is ordered, additive, and scope-aware. Bus-wide
@@ -90,12 +79,12 @@ cfg.ReceiveEndpoint("orders", e =>
 
 public sealed class TenantFilter : IStreamConsumeFilter
 {
-    public Task OnConsume(StreamConsumeFilterContext context, ConsumeDelegate next, CancellationToken ct)
+    public Task OnConsume(ConsumeContext context, ConsumeNext next)
     {
         var scope = (TenantScope)context.Services.GetRequiredService(typeof(TenantScope));
-        scope.Tenant = context.Message.Metadata.GetString("x-tenant");
+        scope.Tenant = context.Headers.GetString("x-tenant");
         context.SetPayload(scope.Tenant);
-        return next(context);
+        return next();
     }
 }
 ```
@@ -103,16 +92,31 @@ public sealed class TenantFilter : IStreamConsumeFilter
 One DI scope is created per delivered message and shared by the pipeline
 and the typed consumer, so scoped services resolve to the same instance in
 filters and consumer constructors. `SetPayload<T>` carries values between
-filters in the pipeline. Filters are singletons per bus. A filter must
-call `next` exactly once; zero without `SkipHandler`, or more than once,
-is retried and then
-exhausted rather than silently advancing the offset. Skipping requires
-`CanSkip => true`; raw endpoints skip freely, typed endpoints must opt in
-with `e.AllowPipelineSkip()`, and effectively-once pipelines reject
-skippable filters at attach. Headers written through
-`context.OutputHeaders` are carried on the exhaustion envelope and on
-effectively-once result publishes. Complete sample:
-`examples/StreamBus.Examples.Consumer/TenantFilter.cs`.
+filters in the pipeline. Filters are singletons per bus: instance types
+registered with `UseConsumeFilter` are added to DI as singletons, and a
+scoped or transient registration of a consume filter type is rejected when
+the consumer attaches — resolve scoped services from `context.Services` on
+each delivery. A normal consume
+filter may call `next` zero or one time: zero means the filter handled or
+filtered the delivery, the consumer handler is not invoked, and the offset
+still advances. More than one `next` call is retried and then exhausted
+rather than silently duplicating work. Headers written through
+`context.SendHeaders` are carried on the exhaustion envelope. Complete
+sample: `examples/StreamBus.Examples.Consumer/TenantFilter.cs`.
+
+The delivery's `Stream`, `Partition`, `Offset`, `MessageId`,
+`CorrelationId`, `SentTime`, `Services`, and `CancellationToken` are fixed
+for the lifetime of the context; `Headers` (read-only) and `SendHeaders`
+(writable) are the only mutable surface. The full shape:
+
+| Member | Type | Meaning |
+|---|---|---|
+| `MessageId` | `Guid?` | AMQP `message-id`; null when absent or not a Guid |
+| `CorrelationId` | `Guid?` | AMQP `correlation-id`; never invented |
+| `SentTime` | `DateTime?` | AMQP `creation-time`, UTC, millisecond precision |
+| `Headers` | `IStreamHeaders` | application properties as received, framework keys included |
+| `SendHeaders` | `IStreamSendHeaders` | headers carried on the error envelope |
+| `Stream` / `Partition` / `Offset` / `RoutingValue` / `Body` / `Services` / `CancellationToken` | — | unchanged semantics |
 
 ### Typed consume filters
 
@@ -128,32 +132,46 @@ cfg.UseConsumeFilter(typeof(TenantFilter<>));  // bus-wide, closes per endpoint 
 cfg.ReceiveEndpoint("orders", e =>
 {
     e.Consumer<OrderConsumer>("order-processors");
-    e.UseConsumeFilter<OrderEnrichmentFilter>(); // appended after bus-wide filters
+    e.UseConsumeFilter<OrderEnrichmentFilter, OrderEvent>(); // pins the message type
+    // e.UseConsumeFilter<OrderEnrichmentFilter>();           // runtime-discovery alternative
 });
 
 public sealed class OrderEnrichmentFilter : IStreamConsumeFilter<OrderEvent>
 {
-    public Task OnConsume(StreamConsumeFilterContext<OrderEvent> context, ConsumeDelegate next, CancellationToken ct)
+    public Task OnConsume(ConsumeContext<OrderEvent> context, ConsumeNext next)
     {
         context.SetPayload(context.Message.OrderId); // typed value for later filters
-        return next(context.Inner);
+        return next();
     }
 }
 ```
 
-A typed context exposes `context.Message` as `T` and `context.Raw` as the
-underlying `ConsumeContext`; headers, payloads, services, and
-`SkipHandler` delegate to `Inner`, the shared context that `next`
-expects. Deserialization timing changes as soon as one typed filter
-attaches: the message is deserialized before the pipeline on every
-delivery attempt, a deserialization failure is retried and exhausted
-without running filters or the consumer, and the consumer receives the
-same instance — no second deserialization. A pipeline of universal
-filters only keeps the lazy path, so a `CanSkip` filter that skips still
-avoids deserialization; a typed-filter pipeline deserializes before the
-skip. Raw and effectively-once pipelines never attach typed filters and
-retain the `CanSkip` rules above. Complete sample:
+A typed context *is* the shared context: `ConsumeContext<T>` derives
+from `ConsumeContext`, and `context.Message` is the deserialized `T`.
+Headers, `SendHeaders`, payloads, services, and the continuation are the
+same object that universal filters receive — there is no `Raw` wrapper.
+A typed endpoint deserializes before any filter runs on every delivery
+attempt; a deserialization failure is retried and exhausted without
+running filters or the consumer, and the consumer receives the same
+instance — no second deserialization. Raw pipelines never attach typed
+filters. Complete sample:
 `examples/StreamBus.Examples.Consumer/OrderEventFilter.cs`.
+
+`UseConsumeFilter<TFilter, TMessage>()` pins the endpoint message type at the
+call site and builds the typed adapter directly, avoiding a runtime generic
+closure for the adapter. The single-type-parameter overload discovers the
+filter's typed interfaces at configuration time and closes the adapter at
+runtime, so it carries `[RequiresUnreferencedCode]` / `[RequiresDynamicCode]`.
+Open-generic registration through a `Type` closes at runtime.
+
+StreamBus does not support trimming or NativeAOT end to end today: typed
+endpoints still close the message deserializer, typed consume context, and
+consumer invoker from a runtime type, and the default serializer is
+reflection-based. The annotations mark the dynamic paths; they are not a
+trimming-support guarantee.
+
+A filter that implements several typed interfaces can be pinned once per
+message type; each registration runs only for its own type.
 
 ## Full example
 

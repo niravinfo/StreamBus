@@ -459,10 +459,15 @@ public sealed class ConsumerIntegrationTests : IAsyncDisposable
         _streams.Add(stream);
         _superStreams.Add(super);
 
+        var messageId = Guid.Parse("0f8fad5b-d9cb-469f-a165-70867728950e");
+        var correlationId = Guid.Parse("6b1f5c1a-0d9e-4b6f-9a4e-1f2d3c4b5a69");
+        var noTimeId = Guid.Parse("1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d");
+        var sentTime = new DateTime(2026, 10, 31, 9, 12, 3, 284, DateTimeKind.Utc);
         var properties = new StreamMessageProperties
         {
-            MessageId = "m-props",
-            CorrelationId = "c-props",
+            MessageId = messageId,
+            CorrelationId = correlationId,
+            SentTime = sentTime,
             Headers = new Dictionary<string, object?>
             {
                 ["tenant"] = "acme",
@@ -479,6 +484,8 @@ public sealed class ConsumerIntegrationTests : IAsyncDisposable
             await pub.Bus.PublishRawAsync(stream, Body("plain"), new PublishOptions { Properties = properties }, ct);
             await pub.Bus.PublishRawAsync(super, Body("super"),
                 new PublishOptions { IsSuperStream = true, RoutingKey = "key-a", Properties = properties }, ct);
+            await pub.Bus.PublishRawAsync(stream, Body("no-time"),
+                new PublishOptions { Properties = new StreamMessageProperties { MessageId = noTimeId } }, ct);
         }
         finally { await pub.DisposeAsync(); }
 
@@ -504,21 +511,29 @@ public sealed class ConsumerIntegrationTests : IAsyncDisposable
                     return Task.CompletedTask;
                 },
                 ct);
-            await WaitForAsync(() => Count(seen) >= 2, TimeSpan.FromSeconds(30), "plain and super property messages");
+            await WaitForAsync(() => Count(seen) >= 3, TimeSpan.FromSeconds(30), "plain, super, and no-time property messages");
         }
         finally { await consumer.DisposeAsync(); }
 
         Assert.Contains(seen, x => x.Kind == "plain");
         Assert.Contains(seen, x => x.Kind == "super");
+        Assert.Contains(seen, x => x.Context.MessageId == noTimeId);
         foreach (var (_, context) in seen)
         {
-            Assert.Equal("m-props", context.Metadata.MessageId);
-            Assert.Equal("c-props", context.Metadata.CorrelationId);
-            Assert.Equal("acme", context.Metadata.GetString("tenant"));
-            Assert.Equal(3, context.Metadata.GetInt("attempt"));
-            Assert.Equal(9_000_000_000L, context.Metadata.GetLong("sequence"));
-            Assert.True(context.Metadata.GetBool("flag"));
-            var payload = context.Metadata.GetJson<PropertyHeaderPayload>("payload");
+            if (context.MessageId == noTimeId)
+            {
+                Assert.Null(context.SentTime);
+                continue;
+            }
+
+            Assert.Equal(messageId, context.MessageId);
+            Assert.Equal(correlationId, context.CorrelationId);
+            Assert.Equal(sentTime, context.SentTime);
+            Assert.Equal("acme", context.Headers.GetString("tenant"));
+            Assert.Equal(3, context.Headers.GetInt("attempt"));
+            Assert.Equal(9_000_000_000L, context.Headers.GetLong("sequence"));
+            Assert.True(context.Headers.GetBool("flag"));
+            var payload = context.Headers.GetJson<PropertyHeaderPayload>("payload");
             Assert.NotNull(payload);
             Assert.Equal(7, payload.Id);
         }

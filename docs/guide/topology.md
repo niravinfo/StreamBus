@@ -43,7 +43,7 @@ s.Partitions(3).MaxAge(TimeSpan.FromDays(7)); // does not compile
 
 `bus.Topology` declares streams and super streams idempotently at
 runtime. Repeated calls are cached; kind conflicts and super-stream
-partition mismatches throw `StreamConfigurationConflictException`.
+partition mismatches throw `StreamBusStreamConfigurationConflictException`.
 
 ```csharp
 await bus.Topology.EnsureStreamAsync(
@@ -66,7 +66,7 @@ destinations. Multiple references to the same stream must agree:
 
 - **Kind** (topology-shaping, one choice): super vs plain must agree
   across every reference. Conflicts throw
-  `StreamConfigurationConflictException` naming the stream and both
+  `StreamBusStreamConfigurationConflictException` naming the stream and both
   disagreeing references.
 - **Every knob** (per-knob agreement): where two references set the same
   knob, the values must match; where only one sets it, its value fills
@@ -84,7 +84,7 @@ destinations. Multiple references to the same stream must agree:
 
 Registration-owned streams are create-or-verify at startup. A
 conflicting detected pre-existing spec throws
-`StreamConfigurationConflictException`. Plain-stream argument drift is
+`StreamBusStreamConfigurationConflictException`. Plain-stream argument drift is
 not readable via the stream protocol, so an existing plain stream is
 adopted with a warning; keep specs in sync across services.
 
@@ -99,7 +99,7 @@ topology the broker owns:
 
 - broker has the expected kind → consumed directly (for super streams
   the broker-reported partition count rules);
-- broker has the other kind → `StreamConfigurationConflictException`;
+- broker has the other kind → `StreamBusStreamConfigurationConflictException`;
 - broker has nothing → the endpoint's registration declares it.
 
 ```csharp

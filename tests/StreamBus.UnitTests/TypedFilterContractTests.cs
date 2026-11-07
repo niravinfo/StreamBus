@@ -3,101 +3,81 @@ namespace StreamBus.UnitTests;
 public sealed class TypedFilterContractTests
 {
     [Fact]
-    public void Universal_publish_context_reports_declared_and_runtime_types()
-    {
-        var context = NewPublishContext(new ContractDerived("d-1"), declared: typeof(ContractBase));
-        Assert.Equal(typeof(ContractBase), context.MessageType);
-        Assert.Equal(typeof(ContractDerived), context.RuntimeMessageType);
-    }
-
-    [Fact]
     public async Task Typed_publish_adapter_names_the_user_filter_and_forwards_the_typed_message()
     {
         var filter = new ContractTypedPublishFilter();
         var adapter = new TypedPublishFilterAdapter<ContractDerived>(filter);
-        var inner = NewPublishContext(new ContractDerived("d-1"), declared: typeof(ContractDerived));
+        var context = NewTypedPublishContext(new ContractDerived("d-1"));
 
-        await adapter.OnPublish(inner, _ => Task.CompletedTask, TestContext.Current.CancellationToken);
+        await adapter.OnPublish(context, () => Task.CompletedTask);
 
+        Assert.Same(context, filter.SeenContext);
         Assert.Equal("d-1", filter.Seen!.Id);
         Assert.Equal(typeof(ContractTypedPublishFilter), FilterIdentity.TypeOf(adapter));
-        Assert.True(inner.Headers.TryGet("typed", out var value));
+        Assert.True(context.Headers.TryGet("typed", out var value));
         Assert.Equal("d-1", value);
     }
 
     [Fact]
-    public async Task Typed_consume_adapter_forwards_skip_payload_and_typed_message()
+    public async Task Typed_consume_adapter_forwards_payload_and_typed_message()
     {
         var filter = new ContractTypedConsumeFilter();
         var adapter = new TypedConsumeFilterAdapter<ContractDerived>(filter);
-        var inner = NewConsumeContext(new ContractDerived("d-1"));
+        var context = NewTypedConsumeContext(new ContractDerived("d-1"));
 
-        await adapter.OnConsume(inner, _ => Task.CompletedTask, TestContext.Current.CancellationToken);
+        await adapter.OnConsume(context, () => Task.CompletedTask);
 
+        Assert.Same(context, filter.SeenContext);
         Assert.Equal("d-1", filter.Seen!.Id);
-        Assert.True(adapter.CanSkip);
-        Assert.True(inner.SkipHandler);
-        Assert.Equal("typed", inner.GetPayload<string>());
+        Assert.Equal("typed", context.GetPayload<string>());
         Assert.Equal(typeof(ContractTypedConsumeFilter), FilterIdentity.TypeOf(adapter));
     }
 
     [Fact]
-    public void Typed_contexts_share_headers_payloads_skip_and_raw_context()
+    public void Typed_and_universal_consume_filters_share_one_instance()
     {
-        var innerPublish = NewPublishContext(new ContractDerived("d-1"), declared: typeof(ContractDerived));
-        var typedPublish = new StreamPublishFilterContext<ContractDerived> { Inner = innerPublish };
+        var typedPublish = NewTypedPublishContext(new ContractDerived("d-1"));
         typedPublish.Headers.Set("shared", true);
-        Assert.True(innerPublish.Headers.TryGet("shared", out _));
-        Assert.Same(innerPublish.Message, typedPublish.Message);
+        Assert.True(typedPublish.Headers.TryGet("shared", out _));
+        Assert.Same(typedPublish.Payload, typedPublish.Message);
 
-        var innerConsume = NewConsumeContext(new ContractDerived("d-1"));
-        var typedConsume = new StreamConsumeFilterContext<ContractDerived>
-        {
-            Inner = innerConsume,
-            Message = new ContractDerived("d-1"),
-        };
-        typedConsume.SetPayload("payload");
-        typedConsume.SkipHandler = true;
-        Assert.Equal("payload", innerConsume.GetPayload<string>());
-        Assert.True(innerConsume.SkipHandler);
-        Assert.Same(innerConsume.Message, typedConsume.Raw);
-        Assert.Same(innerConsume.OutputHeaders, typedConsume.OutputHeaders);
+        var typed = NewTypedConsumeContext(new ContractDerived("d-1"));
+        ConsumeContext universal = typed;
+        typed.SendHeaders.Set("shared", true);
+        typed.SetPayload("payload");
+        Assert.True(universal.SendHeaders.TryGet("shared", out _));
+        Assert.Equal("payload", typed.GetPayload<string>());
+        Assert.Same(typed, universal);
+        Assert.Same(typed.Headers, universal.Headers);
+        Assert.Same(typed.SendHeaders, universal.SendHeaders);
+        Assert.Same(typed.Services, universal.Services);
+        Assert.Equal(typed.CancellationToken, universal.CancellationToken);
     }
 
-    private static StreamPublishFilterContext NewPublishContext(object message, Type declared) => new()
+    private static PublishContext<ContractDerived> NewTypedPublishContext(ContractDerived message) => new()
     {
         Stream = "contracts",
         RoutingKey = null,
-        Message = message,
-        MessageType = declared,
-        Headers = new HeaderWriter(),
-        Bus = new StreamBusRegistrationView
-        {
-            Vhost = "/",
-            Host = "localhost",
-            StreamPort = 5552,
-            AmqpPort = 5672,
-            HeartbeatSeconds = 60,
-        },
+        Payload = message,
+        MessageId = Guid.NewGuid(),
+        SentTime = DateTime.UtcNow,
+        Headers = new StreamSendHeaders(null, SystemTextJsonStreamSerializer.Default),
         Services = EmptyProvider.Instance,
+        CancellationToken = TestContext.Current.CancellationToken,
     };
 
-    private static StreamConsumeFilterContext NewConsumeContext(object message) => new()
+    private static ConsumeContext<ContractDerived> NewTypedConsumeContext(ContractDerived message) => new()
     {
-        Message = new ConsumeContext
-        {
-            Stream = "contracts",
-            Partition = 0,
-            Offset = 0,
-            RoutingValue = null,
-            Body = ReadOnlyMemory<byte>.Empty,
-            Metadata = new MessageMetadata(),
-            CancellationToken = TestContext.Current.CancellationToken,
-        },
-        MessageType = message.GetType(),
-        TypedMessage = message,
-        OutputHeaders = new HeaderWriter(),
+        Stream = "contracts",
+        Partition = 0,
+        Offset = 0,
+        RoutingValue = null,
+        Body = ReadOnlyMemory<byte>.Empty,
+        Headers = new StreamHeaders(new Dictionary<string, object?>(), SystemTextJsonStreamSerializer.Default),
+        SendHeaders = new StreamSendHeaders(null, SystemTextJsonStreamSerializer.Default),
+        Message = message,
         Services = EmptyProvider.Instance,
+        CancellationToken = TestContext.Current.CancellationToken,
     };
 
     private record ContractBase(string Id);
@@ -107,33 +87,32 @@ public sealed class TypedFilterContractTests
     private sealed class ContractTypedPublishFilter : IStreamPublishFilter<ContractDerived>
     {
         public ContractDerived? Seen { get; private set; }
+        public PublishContext<ContractDerived>? SeenContext { get; private set; }
 
         public Task OnPublish(
-            StreamPublishFilterContext<ContractDerived> context,
-            PublishDelegate next,
-            CancellationToken ct)
+            PublishContext<ContractDerived> context,
+            PublishNext next)
         {
+            SeenContext = context;
             Seen = context.Message;
             context.Headers.Set("typed", context.Message.Id);
-            return next(context.Inner);
+            return next();
         }
     }
 
     private sealed class ContractTypedConsumeFilter : IStreamConsumeFilter<ContractDerived>
     {
         public ContractDerived? Seen { get; private set; }
-
-        public bool CanSkip => true;
+        public ConsumeContext<ContractDerived>? SeenContext { get; private set; }
 
         public Task OnConsume(
-            StreamConsumeFilterContext<ContractDerived> context,
-            ConsumeDelegate next,
-            CancellationToken ct)
+            ConsumeContext<ContractDerived> context,
+            ConsumeNext next)
         {
+            SeenContext = context;
             Seen = context.Message;
             context.SetPayload("typed");
-            context.SkipHandler = true;
-            return next(context.Inner);
+            return next();
         }
     }
 

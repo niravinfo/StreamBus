@@ -1,10 +1,18 @@
 using System.Diagnostics;
+using System.Reflection;
 
 namespace StreamBus;
 
 internal static class StreamBusActivity
 {
-    internal static readonly ActivitySource Source = new("StreamBus", "2.0.0");
+    // Derived from the assembly informational version so the ActivitySource
+    // version can never drift from the released package version.
+    internal static readonly ActivitySource Source = new(
+        "StreamBus",
+        typeof(StreamBusActivity).Assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+            ?.InformationalVersion
+            ?? "0.0.0");
 
     internal static Activity? StartPublish(string stream, string? routingKey)
     {
@@ -53,6 +61,10 @@ internal static class StreamBusActivity
         {
             ["exception.type"] = exception.GetType().FullName,
             ["exception.message"] = exception.Message,
+
+            // OpenTelemetry semantic conventions: exception.stacktrace carries
+            // the failure site (exception.ToString() includes type + message).
+            ["exception.stacktrace"] = exception.ToString(),
         }));
     }
 }

@@ -65,7 +65,7 @@ public sealed class AcceptanceTests : IDisposable
         Assert.Equal(1, new ConsumeOptions().OffsetStore.EveryMessages);
     }
 
-    private sealed class CountingHandle : IStreamSuperProducerHandle
+    private sealed class CountingHandle : IStreamPlainProducerHandle, IStreamSuperProducerHandle
     {
         public int SendCount;
         public Task SendAsync(ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct)
@@ -73,36 +73,24 @@ public sealed class AcceptanceTests : IDisposable
             Interlocked.Increment(ref SendCount);
             return Task.CompletedTask;
         }
-        public Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, PublishOptions options, IReadOnlyDictionary<string, object?> applicationProperties, string? messageId, string? correlationId, CancellationToken ct)
+        public Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, StreamMessageProperties properties, CancellationToken ct)
             => throw new NotImplementedException("Acceptance tests publish plain only.");
         public Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, PublishOptions options, CancellationToken ct)
-            => throw new NotImplementedException("Acceptance tests publish plain only.");
-        public Task PublishWithIdAsync(ulong publishingId, ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct)
-            => throw new NotImplementedException("Acceptance tests publish plain only.");
-        public Task PublishResultAsync(ReadOnlyMemory<byte> body, ulong publishingId, string? routingKey, CancellationToken ct)
             => throw new NotImplementedException("Acceptance tests publish plain only.");
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
-    private sealed class ScriptSystemHandle : IStreamSystemHandle
+    private sealed class ScriptSystemHandle : ScriptedSystemHandle
     {
-        private readonly CountingHandle _handle;
-        public ScriptSystemHandle(CountingHandle handle) => _handle = handle;
-        public bool IsClosed => false;
-        public Task<IStreamPlainProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct) => Task.FromResult<IStreamPlainProducerHandle>(_handle);
-        public Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct) => throw new NotImplementedException("Acceptance tests use the unique-name path.");
-        public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct) => throw new NotImplementedException("Acceptance tests publish plain only.");
-        public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct) => throw new NotImplementedException("Acceptance tests publish plain only.");
-        public Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct) => throw new NotImplementedException("Acceptance tests never attach.");
-        public Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken ct) => Task.FromResult<ulong?>(null);
-        public Task<ulong> QuerySequenceAsync(string reference, string stream, CancellationToken ct) => Task.FromResult(0UL);
-        public Task StoreSystemOffsetAsync(string reference, string stream, ulong offset, CancellationToken ct) => Task.CompletedTask;
-        public Task<bool> StreamExistsAsync(string stream, CancellationToken ct) => Task.FromResult(true);
-        public Task<bool> SuperStreamExistsAsync(string superStream, CancellationToken ct) => Task.FromResult(false);
-        public Task<string[]> QueryPartitionAsync(string superStream, CancellationToken ct) => Task.FromResult(new[] { superStream });
-        public Task CreateStreamAsync(StreamSpec spec, CancellationToken ct) => Task.CompletedTask;
-        public Task CreateSuperStreamAsync(PartitionsSuperStreamSpec spec, CancellationToken ct) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        public ScriptSystemHandle(CountingHandle handle) => PlainProducer = handle;
+        public override Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
+            => throw new NotImplementedException("Acceptance tests use the unique-name path.");
+        public override Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
+            => throw new NotImplementedException("Acceptance tests publish plain only.");
+        public override Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
+            => throw new NotImplementedException("Acceptance tests publish plain only.");
+        public override Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct)
+            => throw new NotImplementedException("Acceptance tests never attach.");
     }
 
     private sealed class DelayedConnector : IStreamSystemConnector
@@ -218,7 +206,7 @@ public sealed class AcceptanceTests : IDisposable
         var options = new StreamBusOptions { Vhost = "/", UserName = "app", Password = "secret" };
         await using var supervisor = new StreamBusConnectionSupervisor(options, new DelayedConnector(system, TimeSpan.FromMilliseconds(500)));
         await supervisor.StartAsync(TestContext.Current.CancellationToken);
-        var consumers = new StreamConsumerRegistry(supervisor, "/", new StreamProducerRegistry(supervisor, "/"), null, new ResultProducerRegistry(supervisor, "/"));
+        var consumers = new StreamConsumerRegistry(supervisor, "/", new StreamProducerRegistry(supervisor, "/"), null);
         var ct = TestContext.Current.CancellationToken;
         await Assert.ThrowsAsync<StreamBusNotReadyException>(() =>
             consumers.ConsumeAsync(typeof(DefaultBus), "s",

@@ -12,85 +12,54 @@ public sealed class HostingTests
     private sealed class OrdersBus;
     private sealed class BillingBus;
 
-    private sealed class StubHandle : IStreamSystemHandle
+    private sealed class StubHandle : ScriptedSystemHandle
     {
-        public readonly List<string> CreatedStreams = new();
-        public readonly List<string> CreatedSupers = new();
-        public Func<string, CancellationToken, Task<bool>> StreamExistsFunc = (_, _) => Task.FromResult(false);
-        public Func<string, CancellationToken, Task<bool>> SuperExistsFunc = (_, _) => Task.FromResult(false);
-        public bool IsClosed => false;
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-        public Task<IStreamPlainProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct)
+        public StubHandle()
+        {
+            StreamExistsFunc = (_, _) => Task.FromResult(false);
+            SuperStreamExistsFunc = (_, _) => Task.FromResult(false);
+        }
+
+        public Func<string, CancellationToken, Task<bool>>? SuperExistsFunc
+        {
+            get => SuperStreamExistsFunc;
+            set => SuperStreamExistsFunc = value;
+        }
+
+        public List<string> CreatedStreams => CreatedStreamNames;
+        public List<string> CreatedSupers => CreatedSuperNames;
+        public override Task<IStreamPlainProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct)
             => throw new NotImplementedException("HostingTests never publishes.");
-        public Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
+        public override Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
             => throw new NotImplementedException("HostingTests never publishes.");
-        public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
+        public override Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
             => throw new NotImplementedException("HostingTests never publishes.");
-        public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
+        public override Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
             => throw new NotImplementedException("StubHandle never creates stable super producers.");
-        public Task<ulong> QuerySequenceAsync(string reference, string stream, CancellationToken ct)
+        public override Task<ulong> QuerySequenceAsync(string reference, string stream, CancellationToken ct)
             => throw new NotImplementedException("StubHandle never queries publishing sequences.");
-        public Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken ct)
+        public override Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken ct)
             => throw new NotImplementedException("HostingTests never queries offsets.");
-        public Task StoreSystemOffsetAsync(string reference, string stream, ulong offset, CancellationToken ct)
+        public override Task StoreSystemOffsetAsync(string reference, string stream, ulong offset, CancellationToken ct)
             => throw new NotImplementedException("HostingTests never queries offsets.");
-        public Task<bool> StreamExistsAsync(string stream, CancellationToken ct)
-            => StreamExistsFunc(stream, ct);
-        public Task<bool> SuperStreamExistsAsync(string superStream, CancellationToken ct)
-            => SuperExistsFunc(superStream, ct);
-        public Task<string[]> QueryPartitionAsync(string superStream, CancellationToken ct)
+        public override Task<string[]> QueryPartitionAsync(string superStream, CancellationToken ct)
             => Task.FromResult(Array.Empty<string>());
-        public Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct)
+        public override Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct)
             => throw new NotImplementedException("HostingTests never consumes.");
-        public Task CreateStreamAsync(StreamSpec spec, CancellationToken ct)
-        {
-            lock (CreatedStreams) CreatedStreams.Add(spec.Name);
-            return Task.CompletedTask;
-        }
-        public Task CreateSuperStreamAsync(PartitionsSuperStreamSpec spec, CancellationToken ct)
-        {
-            lock (CreatedSupers) CreatedSupers.Add(spec.Name);
-            return Task.CompletedTask;
-        }
     }
 
-    private sealed class CountingHandle : IStreamSystemHandle
+    private sealed class CountingHandle : StrictScriptedSystemHandle
     {
         public int DisposedCount;
         public bool ThrowOnDispose;
-        public bool IsClosed => DisposedCount > 0;
-        public ValueTask DisposeAsync()
+        public override bool IsClosed => DisposedCount > 0;
+        public override ValueTask DisposeAsync()
         {
+            var dispose = base.DisposeAsync();
             Interlocked.Increment(ref DisposedCount);
             if (ThrowOnDispose) throw new InvalidOperationException("scripted supervisor dispose failure");
-            return ValueTask.CompletedTask;
+            return dispose;
         }
-        public Task<IStreamPlainProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct)
-            => throw new NotImplementedException("HostingTests never publishes.");
-        public Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
-            => throw new NotImplementedException("HostingTests never publishes.");
-        public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
-            => throw new NotImplementedException("HostingTests never publishes.");
-        public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
-            => throw new NotImplementedException("CountingHandle never creates stable super producers.");
-        public Task<ulong> QuerySequenceAsync(string reference, string stream, CancellationToken ct)
-            => throw new NotImplementedException("CountingHandle never queries publishing sequences.");
-        public Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken ct)
-            => throw new NotImplementedException("HostingTests never queries offsets.");
-        public Task StoreSystemOffsetAsync(string reference, string stream, ulong offset, CancellationToken ct)
-            => throw new NotImplementedException("HostingTests never queries offsets.");
-        public Task<bool> StreamExistsAsync(string stream, CancellationToken ct)
-            => throw new NotImplementedException("HostingTests never queries offsets.");
-        public Task<bool> SuperStreamExistsAsync(string superStream, CancellationToken ct)
-            => throw new NotImplementedException("HostingTests never queries offsets.");
-        public Task<string[]> QueryPartitionAsync(string superStream, CancellationToken ct)
-            => throw new NotImplementedException("HostingTests never queries offsets.");
-        public Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct)
-            => throw new NotImplementedException("HostingTests never consumes.");
-        public Task CreateStreamAsync(StreamSpec spec, CancellationToken ct)
-            => throw new NotImplementedException("HostingTests never declares topology.");
-        public Task CreateSuperStreamAsync(PartitionsSuperStreamSpec spec, CancellationToken ct)
-            => throw new NotImplementedException("HostingTests never declares topology.");
     }
 
     private sealed class SuccessConnector : IStreamSystemConnector
@@ -326,6 +295,48 @@ public sealed class HostingTests
         Assert.Contains("no buses registered", result.Description, StringComparison.Ordinal);
     }
 
+    private sealed class FailingConnector : IStreamSystemConnector
+    {
+        private readonly TaskCompletionSource _shutdownObserved = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public Task ShutdownObserved => _shutdownObserved.Task;
+        public Task<IStreamSystemHandle> ConnectAsync(StreamBusOptions options, CancellationToken ct)
+        {
+            ct.Register(() => _shutdownObserved.TrySetResult());
+            return Task.FromException<IStreamSystemHandle>(new IOException("broker down"));
+        }
+    }
+
+    [Fact]
+    public async Task StopAsync_disposes_and_deregisters_supervisors_that_never_connected()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddStreamBus((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("app", "secret")));
+        var connector = new FailingConnector();
+        services.AddSingleton<IStreamSystemConnector>(connector);
+        await using var sp = services.BuildServiceProvider();
+        var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+
+        await hosted.StartAsync(TestContext.Current.CancellationToken);
+        var registry = sp.GetRequiredService<IStreamBusRegistry>();
+        var before = registry.SupervisorFor("/");
+        // StartAsync is fire-and-forget; wait for the first failed attempt so
+        // the test pins the "supervisor alive but never ready" condition.
+        while (before.State != BusConnectionState.TransientFailure)
+        {
+            Assert.True(DateTime.UtcNow < deadline, $"Supervisor state was {before.State}, expected TransientFailure.");
+            await Task.Delay(10, TestContext.Current.CancellationToken);
+        }
+
+        await hosted.StopAsync(CancellationToken.None);
+
+        // Dispose ran: the retry loop observed cancellation.
+        await connector.ShutdownObserved.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        // Deregister ran: the registry no longer hands back the same supervisor.
+        Assert.NotSame(before, registry.SupervisorFor("/"));
+    }
+
     [Fact]
     public async Task Blocking_startup_succeeds_when_connector_answers()
     {
@@ -364,6 +375,100 @@ public sealed class HostingTests
             var ex = await Assert.ThrowsAsync<StreamBusTimeoutException>(() => hosted.StartAsync(TestContext.Current.CancellationToken));
             Assert.Contains("/", ex.Message, StringComparison.Ordinal);
             Assert.Contains(timeout.ToString(), ex.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            await hosted.StopAsync(CancellationToken.None);
+        }
+    }
+
+    // INF-7 refutation pin: "BlockUntilConsumersAttached treats rows.Count == 0 as
+    // success — startup can pass with zero consumers" is unreachable. The attach-wait
+    // loop only runs when BlockStartupUntilReady is true (StartAsync returns early
+    // otherwise), and the same StartAsync first awaits Task.WhenAll over the very
+    // consumer start tasks whose ConsumeCoreAsync upserts the health row synchronously
+    // and only returns after every partition's first attach. So a configured-but-
+    // unattached consumer can never let StartAsync finish successfully; rows.Count == 0
+    // at the loop can only mean "no typed consumers were registered" (correct success).
+    private sealed record PinEvent;
+
+    private sealed class PinConsumer : IConsumer<PinEvent>
+    {
+        public Task Consume(ConsumeContext<PinEvent> context) => Task.CompletedTask;
+    }
+
+    private sealed class NeverAttachingHandle : NeverReadyConsumerSystem
+    {
+        public override Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct)
+            => new TaskCompletionSource<RawConsumer>(TaskCreationOptions.RunContinuationsAsynchronously).Task;
+        public override Task<string[]> QueryPartitionAsync(string superStream, CancellationToken ct)
+            => Task.FromResult(Array.Empty<string>());
+    }
+
+    [Fact]
+    public async Task Blocking_startup_times_out_while_a_typed_consumer_is_unattached()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddStreamBus<OrdersBus>((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("app", "secret")));
+        services.AddStreamBusHosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(1)));
+        services.AddSingleton<IStreamSystemConnector>(new SuccessConnector(new NeverAttachingHandle()));
+        await using var sp = services.BuildServiceProvider();
+        sp.GetRequiredService<StreamBusConsumerStore>().Add(
+            typeof(OrdersBus), typeof(PinEvent), typeof(PinConsumer), "orders",
+            new ConsumeOptions { Reference = "pin-group" });
+        var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
+        try
+        {
+            var startTask = hosted.StartAsync(TestContext.Current.CancellationToken);
+
+            // The consumer's health row is upserted synchronously inside ConsumeCoreAsync
+            // (RegistrationTracker constructor), before the attach wait — so the pending
+            // start means rows for unattached consumers never read as "registered == 0".
+            var registry = sp.GetRequiredService<IStreamBusRegistry>();
+            BusRegistrationHealth? row = null;
+            var rowDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+            while (row is null)
+            {
+                Assert.True(DateTime.UtcNow < rowDeadline, "The typed consumer's health row never appeared.");
+                row = registry.HealthFor("/").Snapshot().Registrations.FirstOrDefault(r => r.Kind == "consumer");
+                if (row is null) await Task.Delay(10, TestContext.Current.CancellationToken);
+            }
+            Assert.Equal(BusRegistrationState.Attaching, row.State);
+
+            // Startup must NOT pass with the consumer unattached: the pending start
+            // task trips the startup budget, it can never return successfully.
+            var ex = await Assert.ThrowsAsync<StreamBusTimeoutException>(() => startTask);
+            Assert.NotEqual(BusRegistrationState.Attached, row.State);
+        }
+        finally
+        {
+            await hosted.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task Blocking_startup_with_no_typed_consumers_completes_with_zero_rows()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddStreamBus((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("app", "secret")));
+        services.AddStreamBusHosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(5)));
+        services.AddSingleton<IStreamSystemConnector>(new SuccessConnector());
+        await using var sp = services.BuildServiceProvider();
+        var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
+        try
+        {
+            await hosted.StartAsync(TestContext.Current.CancellationToken);
+
+            // rows.Count == 0 in the attach-wait loop means "no typed consumers were
+            // configured", which is a correct success — there is nothing to wait for.
+            var registry = sp.GetRequiredService<IStreamBusRegistry>();
+            Assert.DoesNotContain(
+                registry.HealthFor("/").Snapshot().Registrations,
+                r => r.Kind == "consumer");
+            var bus = sp.GetRequiredService<IStreamBus>();
+            Assert.Equal(BusConnectionState.Ready, bus.State);
         }
         finally
         {
@@ -623,12 +728,12 @@ public sealed class HostingTests
 
     private sealed class DerivedConsumer : IConsumer<DerivedEvent>
     {
-        public Task Consume(ConsumeContext<DerivedEvent> context, CancellationToken ct) => Task.CompletedTask;
+        public Task Consume(ConsumeContext<DerivedEvent> context) => Task.CompletedTask;
     }
 
     private sealed class OtherDerivedConsumer : IConsumer<DerivedEvent>
     {
-        public Task Consume(ConsumeContext<DerivedEvent> context, CancellationToken ct) => Task.CompletedTask;
+        public Task Consume(ConsumeContext<DerivedEvent> context) => Task.CompletedTask;
     }
 
     private static IReadOnlyList<DeclaredStream> DeclareSet(
@@ -688,7 +793,7 @@ public sealed class HostingTests
     [Fact]
     public void Endpoint_kind_conflict_throws_naming_stream()
     {
-        var ex = Assert.Throws<StreamConfigurationConflictException>(() => DeclareSet(
+        var ex = Assert.Throws<StreamBusStreamConfigurationConflictException>(() => DeclareSet(
             endpoints: new[]
             {
                 EndpointDescriptor("orders"),
@@ -842,7 +947,7 @@ public sealed class HostingTests
         var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
         try
         {
-            var ex = await Assert.ThrowsAsync<StreamConfigurationConflictException>(() => hosted.StartAsync(ct));
+            var ex = await Assert.ThrowsAsync<StreamBusStreamConfigurationConflictException>(() => hosted.StartAsync(ct));
             Assert.Contains("clashing", ex.Message, StringComparison.Ordinal);
         }
         finally

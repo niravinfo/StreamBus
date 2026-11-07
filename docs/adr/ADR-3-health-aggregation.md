@@ -50,5 +50,5 @@ the reported `Since` does not churn.
 ## Evidence
 
 - `HealthAggregatorTests` (status matrix, reason and `Since` behavior)
-- `BrokerRestartTests.Connections_kill_does_not_skip_or_gap` (consumer health
+- `BrokerRestartIntegrationTests.Connections_kill_does_not_skip_or_gap` (consumer health
   samples a non-Healthy window, then Healthy, V2-D2)

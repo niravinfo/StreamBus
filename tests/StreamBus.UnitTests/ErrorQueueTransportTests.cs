@@ -24,10 +24,9 @@ public sealed class ErrorQueueTransportTests
         ExceptionStack = "at Boom()",
         Attempts = 3,
         FailedAt = new DateTimeOffset(2026, 10, 15, 12, 0, 0, TimeSpan.Zero),
-        MessageId = "m-1",
-        CorrelationId = "c-1",
+        MessageId = Guid.Parse("0f8fad5b-d9cb-469f-a165-70867728950e"),
+        CorrelationId = Guid.Parse("6b1f5c1a-0d9e-4b6f-9a4e-1f2d3c4b5a69"),
         RoutingValue = "o-1",
-        ErrorRoutingValue = "orders",
     };
 
     private static DeadLetterOptions Queue(string name, TimeSpan? confirmTimeout = null) => new()
@@ -49,6 +48,9 @@ public sealed class ErrorQueueTransportTests
         public readonly List<TimeSpan> Timeouts = new();
         public Func<string, ErrorEnvelope, CancellationToken, Task>? Handler;
         public bool IsOpen { get; set; } = true;
+
+        public FakePublishChannel(Func<string, ErrorEnvelope, CancellationToken, Task>? handler = null)
+            => Handler = handler;
 
         public async Task PublishAsync(string queue, ErrorEnvelope envelope, TimeSpan confirmTimeout, CancellationToken ct)
         {
@@ -92,10 +94,12 @@ public sealed class ErrorQueueTransportTests
 
         public FakePublishChannel Current => PublishChannels[^1];
 
+        public Func<string, ErrorEnvelope, CancellationToken, Task>? NewChannelHandler { get; set; }
+
         public Task<IErrorQueuePublishChannel> CreatePublishChannelAsync(CancellationToken ct)
         {
             PublishChannelCreations++;
-            var channel = new FakePublishChannel();
+            var channel = new FakePublishChannel(NewChannelHandler);
             PublishChannels.Add(channel);
             return Task.FromResult<IErrorQueuePublishChannel>(channel);
         }
@@ -205,11 +209,77 @@ public sealed class ErrorQueueTransportTests
         Assert.Contains("stopping", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public async Task Caller_token_cancellation_resets_the_publish_channel()
+    {
+        // A publish interrupted by the caller's token leaves the outcome
+        // unknown: the channel must be reset so a late ack can never be
+        // mistaken for the next publish's confirm on the same channel.
+        var connection = new FakeConnection();
+        await using var transport = Transport(connection);
+        using var cts = new CancellationTokenSource();
+        var first = true;
+        connection.NewChannelHandler = (_, _, ct) =>
+        {
+            // First publish blocks until the caller cancels (outcome unknown);
+            // a fresh channel's publish proceeds normally.
+            if (first)
+            {
+                first = false;
+                return Task.Delay(Timeout.Infinite, ct);
+            }
+            return Task.CompletedTask;
+        };
+
+        var pending = transport.PublishAsync(Queue("orders-error"), Envelope(), cts.Token);
+        while (connection.PublishChannelCreations == 0 || connection.Current.PublishCount == 0)
+            await Task.Delay(10, TestContext.Current.CancellationToken);
+        cts.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending);
+
+        await transport.PublishAsync(Queue("orders-error"), Envelope(2), TestContext.Current.CancellationToken);
+
+        Assert.Equal(2, connection.PublishChannelCreations);
+    }
+
+    [Fact]
+    public async Task DisposeAsync_waits_for_the_inflight_publish_to_release_the_publish_gate()
+    {
+        // Disposal must not reset the cached publish channel while a publish
+        // holds the gate: the channel/connection pair is only swapped under
+        // the gate, so an in-flight publish always finishes on a live pair
+        // and Dispose waits for it instead of racing the swap.
+        var connection = new FakeConnection();
+        var transport = Transport(connection);
+        using var release = new SemaphoreSlim(0, 1);
+        connection.NewChannelHandler = (_, _, ct) => release.WaitAsync(ct);
+
+        var pending = transport.PublishAsync(Queue("orders-error"), Envelope(), TestContext.Current.CancellationToken);
+        while (connection.PublishChannelCreations == 0 || connection.Current.PublishCount == 0)
+            await Task.Delay(10, TestContext.Current.CancellationToken);
+
+        var disposing = transport.DisposeAsync().AsTask();
+        for (var i = 0; i < 100; i++)
+        {
+            if (disposing.IsCompleted) break;
+            await Task.Delay(10, TestContext.Current.CancellationToken);
+        }
+        Assert.False(disposing.IsCompleted);
+
+        release.Release();
+        await pending;
+        await disposing;
+
+        Assert.False(connection.IsOpen);
+        await Assert.ThrowsAsync<StreamBusTransientException>(() =>
+            transport.PublishAsync(Queue("orders-error"), Envelope(), TestContext.Current.CancellationToken));
+    }
+
     private sealed record OrderEvent(string Id);
 
     private sealed class OrderConsumer : IConsumer<OrderEvent>
     {
-        public Task Consume(ConsumeContext<OrderEvent> context, CancellationToken ct) => Task.CompletedTask;
+        public Task Consume(ConsumeContext<OrderEvent> context) => Task.CompletedTask;
     }
 
     [Fact]

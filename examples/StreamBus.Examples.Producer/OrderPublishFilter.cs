@@ -7,13 +7,13 @@ using StreamBus;
 // untouched.
 public sealed class OrderPublishFilter : IStreamPublishFilter<OrderEvent>
 {
-    public Task OnPublish(StreamPublishFilterContext<OrderEvent> context, PublishDelegate next, CancellationToken ct)
+    public Task OnPublish(PublishContext<OrderEvent> context, PublishNext next)
     {
         // Typed access: context.Message is OrderEvent, no casting.
         context.Headers.Set("x-order-id", context.Message.OrderId);
 
-        // The typed context wraps the shared universal context; the
-        // pipeline continues through it.
-        return next(context.Inner);
+        // Universal and typed filters share this one context; the pipeline
+        // continues through it.
+        return next();
     }
 }

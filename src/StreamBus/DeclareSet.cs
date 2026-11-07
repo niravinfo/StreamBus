@@ -7,7 +7,7 @@ internal enum DeclaredStreamSource
     DeadLetter,
 }
 
-public sealed record DeclaredStream
+internal sealed record DeclaredStream
 {
     public required string Name { get; init; }
     public required bool IsSuper { get; init; }
@@ -142,11 +142,11 @@ internal static class DeclareSetBuilder
             {
                 if (existing.Source == DeclaredStreamSource.Endpoint && source == DeclaredStreamSource.Endpoint)
                 {
-                    throw new StreamConfigurationConflictException(stream,
+                    throw new StreamBusStreamConfigurationConflictException(stream,
                         $"endpoint '{stream}' expects {(wantSuper ? "a super stream" : "a plain stream")}",
                         $"another endpoint '{stream}' expects {(existing.IsSuper ? "a super stream" : "a plain stream")}");
                 }
-                throw new StreamConfigurationConflictException(stream,
+                throw new StreamBusStreamConfigurationConflictException(stream,
                     $"{describe} expects {(wantSuper ? "a super stream" : "a plain stream")}",
                     $"{existing.Description} expects {(existing.IsSuper ? "a super stream" : "a plain stream")}");
             }
@@ -156,7 +156,7 @@ internal static class DeclareSetBuilder
             if (partitions is { } incomingPartitions)
             {
                 if (existing.Partitions is { } knownPartitions && knownPartitions != incomingPartitions)
-                    throw new StreamConfigurationConflictException(stream,
+                    throw new StreamBusStreamConfigurationConflictException(stream,
                         $"{existing.Description} sets Partitions {knownPartitions}",
                         $"{describe} sets Partitions {incomingPartitions}");
                 if (existing.Partitions is null)
@@ -165,7 +165,7 @@ internal static class DeclareSetBuilder
             if (maxAge is { } incomingMaxAge)
             {
                 if (existing.MaxAge is { } knownMaxAge && knownMaxAge != incomingMaxAge)
-                    throw new StreamConfigurationConflictException(stream,
+                    throw new StreamBusStreamConfigurationConflictException(stream,
                         $"{existing.Description} sets MaxAge {Format(knownMaxAge)}",
                         $"{describe} sets MaxAge {Format(incomingMaxAge)}");
                 if (existing.MaxAge is null)
@@ -174,7 +174,7 @@ internal static class DeclareSetBuilder
             if (maxLengthBytes is { } incomingMaxLength)
             {
                 if (existing.MaxLengthBytes is { } knownMaxLength && knownMaxLength != incomingMaxLength)
-                    throw new StreamConfigurationConflictException(stream,
+                    throw new StreamBusStreamConfigurationConflictException(stream,
                         $"{existing.Description} sets MaxLengthBytes {knownMaxLength}",
                         $"{describe} sets MaxLengthBytes {incomingMaxLength}");
                 if (existing.MaxLengthBytes is null)
@@ -183,7 +183,7 @@ internal static class DeclareSetBuilder
             if (maxSegmentSizeBytes is { } incomingMaxSegment)
             {
                 if (existing.MaxSegmentSizeBytes is { } knownMaxSegment && knownMaxSegment != incomingMaxSegment)
-                    throw new StreamConfigurationConflictException(stream,
+                    throw new StreamBusStreamConfigurationConflictException(stream,
                         $"{existing.Description} sets MaxSegmentSizeBytes {knownMaxSegment}",
                         $"{describe} sets MaxSegmentSizeBytes {incomingMaxSegment}");
                 if (existing.MaxSegmentSizeBytes is null)
@@ -192,7 +192,7 @@ internal static class DeclareSetBuilder
             if (leaderLocator is { } incomingLocator)
             {
                 if (existing.LeaderLocator is { } knownLocator && knownLocator != incomingLocator)
-                    throw new StreamConfigurationConflictException(stream,
+                    throw new StreamBusStreamConfigurationConflictException(stream,
                         $"{existing.Description} sets LeaderLocator {knownLocator}",
                         $"{describe} sets LeaderLocator {incomingLocator}");
                 if (existing.LeaderLocator is null)

@@ -1,3 +1,5 @@
+using System.Diagnostics.CodeAnalysis;
+
 namespace StreamBus;
 
 internal enum FilterRegistrationKind
@@ -10,7 +12,7 @@ internal enum FilterRegistrationKind
 internal static class FilterTypeInspector
 {
     public static (FilterRegistrationKind Kind, IReadOnlyList<Type> MessageTypes) Classify(
-        Type filterType,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.Interfaces)] Type filterType,
         Type universalInterface,
         Type typedInterfaceDefinition,
         string family)
@@ -37,8 +39,15 @@ internal static class FilterTypeInspector
 
             if (universalInterface.IsAssignableFrom(filterType))
             {
+                var typedMessageTypesForUniversal = TypedMessageTypes(filterType, typedInterfaceDefinition);
+                if (typedMessageTypesForUniversal.Count > 0)
+                {
+                    throw new StreamBusConfigurationException(
+                        $"{family} filter type '{filterType}' implements both {Describe(universalInterface)} and {Describe(typedInterfaceDefinition)}; register universal and typed filters separately.");
+                }
+
                 throw new StreamBusConfigurationException(
-                    $"{family} filter type '{filterType}' implements both {Describe(universalInterface)} and {Describe(typedInterfaceDefinition)}; register universal and typed filters separately.");
+                    $"{family} filter type '{filterType}' is an open generic universal filter implementing only {Describe(universalInterface)}; open generic registration supports only {Describe(typedInterfaceDefinition)}, so a closed universal filter must be registered.");
             }
 
             var parameter = parameters[0];
@@ -76,7 +85,9 @@ internal static class FilterTypeInspector
             : (FilterRegistrationKind.ConcreteTyped, typedTypes);
     }
 
-    private static List<Type> TypedMessageTypes(Type filterType, Type typedInterfaceDefinition)
+    private static List<Type> TypedMessageTypes(
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.Interfaces)] Type filterType,
+        Type typedInterfaceDefinition)
         => filterType.GetInterfaces()
             .Where(i => i.IsGenericType && i.GetGenericTypeDefinition() == typedInterfaceDefinition)
             .Select(i => i.GetGenericArguments()[0])
