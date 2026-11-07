@@ -188,13 +188,23 @@ internal sealed class StreamConsumerRegistry
                     }
                     var instance = _typedFilterInstances.GetOrAdd(
                         (busType, closedType),
-                        _ => registration.ResolveTyped(closedType, _rootProvider!));
+                        _ =>
+                        {
+                            FilterRegistrationSupport.EnsureSingletonLifetime(
+                                _rootProvider!, closedType, "Consume");
+                            return registration.ResolveTyped(closedType, _rootProvider!);
+                        });
                     filter = _typedFilterAdapters.GetOrAdd(
                         (busType, closedType, messageType),
                         _ => registration.WrapTyped(messageType, instance));
                 }
                 else
                 {
+                    if (registration.Instance is null)
+                    {
+                        FilterRegistrationSupport.EnsureSingletonLifetime(
+                            _rootProvider, registration.FilterType, "Consume");
+                    }
                     filter = _filterInstances.GetOrAdd(
                         (busType, registration),
                         _ => registration.CreateUniversal(_rootProvider!));

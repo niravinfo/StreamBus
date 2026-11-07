@@ -92,7 +92,11 @@ public sealed class TenantFilter : IStreamConsumeFilter
 One DI scope is created per delivered message and shared by the pipeline
 and the typed consumer, so scoped services resolve to the same instance in
 filters and consumer constructors. `SetPayload<T>` carries values between
-filters in the pipeline. Filters are singletons per bus. A normal consume
+filters in the pipeline. Filters are singletons per bus: instance types
+registered with `UseConsumeFilter` are added to DI as singletons, and a
+scoped or transient registration of a consume filter type is rejected when
+the consumer attaches — resolve scoped services from `context.Services` on
+each delivery. A normal consume
 filter may call `next` zero or one time: zero means the filter handled or
 filtered the delivery, the consumer handler is not invoked, and the offset
 still advances. More than one `next` call is retried and then exhausted

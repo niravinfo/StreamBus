@@ -211,7 +211,34 @@ public sealed class TypedFilterRegistrationTests
         => Configure(cfg => cfg.UseConsumeFilter<RegistrationInvoiceConsumeFilter>());
 
     [Fact]
-    public void Typed_filter_types_are_registered_as_transient_services()
+    public void Consume_filter_types_are_registered_as_singletons()
+    {
+        var services = new ServiceCollection();
+        services.AddStreamBus((_, cfg) =>
+        {
+            cfg.Host("localhost", "/", h => h.Credentials("app", "secret"));
+            cfg.UseConsumeFilter<RegistrationUniversalConsumeFilter>();
+            cfg.UseConsumeFilter<RegistrationTypedConsumeFilter>();
+            cfg.UseConsumeFilter(typeof(RegistrationOpenConsumeFilter<>));
+            cfg.ReceiveEndpoint("orders", e =>
+            {
+                e.Consumer<RegistrationConsumer>("grp");
+                e.UseConsumeFilter<RegistrationMultiConsumeFilter>();
+            });
+        });
+
+        var busUniversal = services.Single(d => d.ServiceType == typeof(RegistrationUniversalConsumeFilter));
+        var busTyped = services.Single(d => d.ServiceType == typeof(RegistrationTypedConsumeFilter));
+        var busOpenGeneric = services.Single(d => d.ServiceType == typeof(RegistrationOpenConsumeFilter<>));
+        var endpoint = services.Single(d => d.ServiceType == typeof(RegistrationMultiConsumeFilter));
+        Assert.Equal(ServiceLifetime.Singleton, busUniversal.Lifetime);
+        Assert.Equal(ServiceLifetime.Singleton, busTyped.Lifetime);
+        Assert.Equal(ServiceLifetime.Singleton, busOpenGeneric.Lifetime);
+        Assert.Equal(ServiceLifetime.Singleton, endpoint.Lifetime);
+    }
+
+    [Fact]
+    public void Typed_filter_types_are_registered_as_resolvable_services()
     {
         var services = new ServiceCollection();
         services.AddStreamBus((_, cfg) =>

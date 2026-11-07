@@ -140,6 +140,12 @@
   cached for the bus lifetime; a scoped or transient registration of a publish
   filter type is rejected at bus construction instead of silently becoming a
   captive dependency. Resolve scoped services from `PublishContext.Services`.
+- Consume filter types are now registered as singletons (previously
+  transient), matching the publish side. A filter instance is resolved once
+  when the consumer attaches and cached for the bus lifetime; a scoped or
+  transient registration of a consume filter type is rejected when the
+  consumer attaches instead of silently becoming a captive dependency.
+  Resolve scoped services from `ConsumeContext.Services`.
 - Exceptions thrown by publish filters (including foreign-token
   `OperationCanceledException`s) now surface unwrapped instead of being
   wrapped in `StreamBusPublishTransientException`, so callers no longer
