@@ -24,8 +24,8 @@
 
 1. **Before merge (Critical):** INF-1, INF-3, CON-1, CON-2, PUB-1, FLT-1. (INF-4 refuted — see header note.)
 2. **Same PR, second commit (Important correctness):** PUB-2, PUB-3, PUB-4, PUB-5, CON-3, CON-4,
-   CON-6, CON-7, CON-11, CON-13, INF-2, INF-5, INF-6, INF-7, FLT-2, FLT-3, FLT-4, FLT-5.
-   (CON-5 refuted as IMPORTANT — doc-only, see its entry.)
+   CON-6, CON-7, CON-11, CON-13, INF-2, INF-5, INF-6, FLT-2, FLT-3, FLT-4, FLT-5.
+   (INF-7 refuted — see its entry; CON-5 refuted as IMPORTANT — doc-only, see its entry.)
 3. **Polish batch:** DOC-1, DOC-2, DOC-3, DOC-5, DOC-7, DOC-8, DOC-12, and all minors.
 
 ---
@@ -1271,7 +1271,41 @@ private async Task<IErrorQueuePublishChannel> GetPublishChannelAsync(IErrorQueue
 
 ---
 
-**[INF-7] `BlockUntilConsumersAttached` treats `rows.Count == 0` as success — startup can pass with zero consumers**
+**[INF-7] ~~`BlockUntilConsumersAttached` treats `rows.Count == 0` as success — startup can pass with zero consumers~~ — REFUTED**
+- **Severity:** ~~IMPORTANT~~ → none (refuted; invariant pinned by tests)
+- **File:** src\StreamBus\Hosting.cs (lines 538–561)
+- **Refutation:** The claimed race requires the attach-wait loop to poll health *while the consumer
+  start tasks have not yet reached `ConsumeAsync`*. That state is unreachable:
+  1. `StartAsync` returns early at `Hosting.cs:484` when `BlockStartupUntilReady` is false, so the
+     loop only runs when blocking startup is on — and the builder makes the coupling explicit
+     (`BlockUntilConsumersAttached(true)` itself forces `_block = true`, `Hosting.cs:228`).
+  2. With blocking on, the very same `StartAsync` first awaits
+     `Task.WhenAll(startupTasks).WaitAsync(...)` (`Hosting.cs:529`), and `startupTasks` includes the
+     consumer start tasks (`StartConsumerUntilReadyAsync` → `ConsumeDeclaredEndpointAsync` /
+     `ConsumeAsync`). A transient attach failure keeps its start task pending inside
+     `RetryUntilAsync`, so `WhenAll` cannot complete before every consumer has returned from
+     `ConsumeAsync`.
+  3. `ConsumeCoreAsync` constructs its `RegistrationTracker` **synchronously**
+     (`ConsumerRegistry.cs:351`), whose constructor immediately upserts the `"consumer"` health row
+     (`ConsumerRegistry.cs:810` → `:851`), and only then awaits
+     `Task.WhenAll(FirstAttachAsync)` — "the attach point is fixed before ConsumeAsync returns"
+     (`ConsumerRegistry.cs:374-377`). Therefore a consumer start task cannot complete before its
+     health row exists, and `rows.Count == 0` at the loop can only mean **no typed consumers were
+     registered at all** (`consumerVhosts` is derived from `starters`, so it is empty) — which is a
+     correct success, with nothing to wait for. The reviewer's proposed
+     `expected = starters.Sum(...)` fix is also 0 in that case, so it changes nothing reachable.
+- **Resolution:** No code change. The invariant is pinned by two new tests in `HostingTests`:
+  - `Blocking_startup_times_out_while_a_typed_consumer_is_unattached` — a configured consumer
+    whose broker attach never completes keeps its start task pending, its health row appears in
+    `Attaching` state *before* `StartAsync` can possibly finish, and `StartAsync` throws
+    `StreamBusTimeoutException`; it cannot return successfully with zero attached consumers.
+  - `Blocking_startup_with_no_typed_consumers_completes_with_zero_rows` — with zero registered
+    consumers, blocking startup completes and there are no `"consumer"` health rows (the only
+    reachable meaning of `rows.Count == 0`).
+  UnitTests 490/490.
+- No original review text removed below for traceability:
+
+**[INF-7-ORIGINAL] `BlockUntilConsumersAttached` treats `rows.Count == 0` as success — startup can pass with zero consumers**
 - **Severity:** IMPORTANT
 - **File:** src\StreamBus\Hosting.cs (lines 538–561)
 - **Problem:** The attach-wait loop polls the health snapshot and breaks when `rows.Count == 0`. Health rows for consumers are only upserted from inside `StreamConsumerRegistry.ConsumeAsync`, which the just-launched start tasks reach seconds later. If the loop snapshots health before any consumer has registered, `StartAsync` completes believing all consumers are attached while none exist — the exact failure the option exists to prevent.
