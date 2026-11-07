@@ -474,15 +474,16 @@ internal sealed class StreamBusHostedService : IHostedService
                 declareTasks.Add(task);
             }
         }
-        var queuesByVhost = starters
+
+        foreach (var group in starters
             .Where(s => s.Reg.Options.DeadLetter is not null && s.Reg.Options.OnExhausted is null)
-            .GroupBy(s => s.Vhost, StringComparer.Ordinal)
-            .ToDictionary(
-                g => g.Key,
-                g => g.Select(s => s.Reg.Options.DeadLetter!).Distinct().ToList(),
-                StringComparer.Ordinal);
-        foreach (var (vhost, queues) in queuesByVhost)
+            .GroupBy(s => s.Vhost, StringComparer.Ordinal))
         {
+            // Single owner for the cohort filter: this is the same helper the
+            // drain/declare path pins in ErrorQueueTests, so the two can't drift.
+            var queues = ErrorQueueTransport.CollectQueueDeclarations(group.Select(s => s.Reg));
+            if (queues.Count == 0) continue;
+            var vhost = group.Key;
             var task = DeclareQueuesUntilReadyAsync(vhost, queues, startupCts.Token);
             if (!blocking)
             {
@@ -718,7 +719,7 @@ internal sealed class StreamBusHostedService : IHostedService
             cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task DeclareQueuesUntilReadyAsync(string vhost, List<DeadLetterOptions> queues, CancellationToken cancellationToken)
+    private async Task DeclareQueuesUntilReadyAsync(string vhost, IReadOnlyList<DeadLetterOptions> queues, CancellationToken cancellationToken)
     {
         var health = _registry.HealthFor(vhost);
         foreach (var queue in queues)

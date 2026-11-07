@@ -30,6 +30,9 @@
 - **FLT-5 is REFUTED (2026-11-07):** it was previously and incorrectly listed as moot alongside
   the EO removal, but its subject is the publish pipeline cache, which still exists unchanged.
   It is refuted on its own merits — see the FLT-5 entry.
+- **INF-8 is REFUTED (2026-11-07):** the startup-CTS disposal race is unreachable (all `.Token`
+  reads precede `StartAsync`'s first await; the host gates `StopAsync` on start completion;
+  and `.Token` does not throw on a disposed source anyway) — see the INF-8 entry.
 
 ## Suggested execution order
 
@@ -2148,7 +2151,29 @@ await using var messageScope =
 
 ---
 
-**[INF-8] `StopAsync` disposes the startup CTS that `StartAsync` and its continuations still reference**
+**[INF-8] ~~`StopAsync` disposes the startup CTS that `StartAsync` and its continuations still reference~~ — **REFUTED**
+- **Severity:** ~~MINOR~~ → none
+- **File:** src\StreamBus\Hosting.cs (Startup CTS creation/usage lines 439–523; disposal in `StopAsync` lines 804–817)
+- **Refutation (2026-11-07):** The claimed throwing path is unreachable, and the claimed throwing mechanism is wrong:
+  1. All three `startupCts.Token` dereferences (`DeclareDerivedUntilReadyAsync` / `DeclareQueuesUntilReadyAsync` /
+     `StartConsumerUntilReadyAsync` launch sites) execute in `StartAsync`'s *synchronous preamble*, before its first
+     `await` (`supervisor.WaitUntilReadyAsync`). Post-INF-4 `StartSupervisor` is synchronous too, so there is no yield
+     point at all before the tokens are captured — `StopAsync` cannot interleave with any of them.
+  2. The .NET generic host does not invoke `StopAsync` on a hosted service until its pending `StartAsync` task has
+     completed (it cancels the startup token, awaits outstanding start tasks, then stops services in reverse order,
+     including during a shutdown that races startup). The premise "StopAsync runs before StartAsync completes" is a
+     state the default host does not produce.
+  3. Even granting the race, `CancellationTokenSource.Token` is not a throwing member after `Dispose` — it returns
+     the already-created token; only `Cancel`/`Register`/linked-creation on a disposed source throw. The actual
+     post-disposal interactions in the code are the `ContinueWith` `startupCts.Cancel()` calls, and both are already
+     wrapped in `try/catch (ObjectDisposedException)` — which the original finding itself concedes. The tokens are
+     also cancelled *before* disposal in `StopAsync`.
+- The suggested fix would introduce a real CTS leak (no owner disposes the source when `StopAsync` is the only
+  unwind path) to close a window that cannot open. No change made.
+
+- No original review text removed below for traceability:
+
+**[INF-8-ORIGINAL] `StopAsync` disposes the startup CTS that `StartAsync` and its continuations still reference**
 - **Severity:** MINOR
 - **File:** src\StreamBus\Hosting.cs (lines 384–390, 404/431/451, 499–511, 762–772)
 - **Problem:** `StopAsync` nulls and disposes `_startupCts` while `StartAsync` may still be mid-flight. The `ContinueWith` `.Cancel()` calls guard `ObjectDisposedException`, but the plain `startupCts.Token` dereferences when launching tasks do not — reading `.Token` on a disposed CTS throws uncaught if `StopAsync` is invoked before `StartAsync` completes, which the `IHostedService` contract permits.
@@ -2158,17 +2183,12 @@ lock (_gate)
     startupCts = _startupCts;
     _startupCts = null;
 }
-if (startupCts is not null)
-{
-    try { startupCts.Cancel(); }
-    finally { startupCts.Dispose(); }   // disposed while StartAsync still references it
-}
 ```
 - **Solution:** Don't dispose the CTS in `StopAsync` — cancel and null the field only; ownership of disposal stays with `StartAsync` after its launched tasks complete.
 
 ---
 
-**[INF-9] Dead-letter-queue cohort logic duplicated in `Hosting` while `CollectQueueDeclarations` is dead code**
+**[INF-9] Dead-letter-queue cohort logic duplicated in `Hosting` while `CollectQueueDeclarations` is dead code — VALID, fixed (2026-11-07)**
 - **Severity:** MINOR
 - **File:** src\StreamBus\Hosting.cs (lines 422–428); src\StreamBus\ErrorQueueTransport.cs (lines 270–278)
 - **Problem:** `StartAsync` re-implements the "which queue dead-letters need declaring" filter, while `CollectQueueDeclarations` — written for precisely this — is referenced nowhere and has already drifted structurally (it drops the vhost grouping `Hosting` needs). Two paths that must agree will diverge on the next change.
@@ -2178,11 +2198,21 @@ var queuesByVhost = starters
     .Where(s => s.Reg.Options.DeadLetter is not null && s.Reg.Options.ExhaustionCallback is null)
     .GroupBy(s => s.Vhost, StringComparer.Ordinal)
     .ToDictionary(...);
-
-// ErrorQueueTransport.cs:271-277 — unused twin
-internal static IReadOnlyList<DeadLetterOptions> CollectQueueDeclarations(...)
 ```
 - **Solution:** Keep one owner: have `Hosting` group starters by vhost and call `CollectQueueDeclarations(groupMembers)`; delete the inline filter.
+
+- **Verification & resolution (2026-11-07):** Confirmed genuine, and slightly worse than
+  stated: `CollectQueueDeclarations` was referenced nowhere in production — its only callers were
+  three pinning tests (`ErrorQueueTests`), so the tests pinned a helper the live path never used
+  while `Hosting.StartAsync` re-implemented the identical predicate inline (`DeadLetter is not null
+  && OnExhausted is null`). The pinned behavior and the production behavior could silently diverge
+  with the suite staying green. Applied the suggested fix: `StartAsync` now groups starters by
+  vhost and calls `ErrorQueueTransport.CollectQueueDeclarations(group.Select(s => s.Reg))` per
+  group, deleting the inline filter; `DeclareQueuesUntilReadyAsync` was widened from
+  `List<DeadLetterOptions>` to `IReadOnlyList<DeadLetterOptions>` to accept the helper's return
+  type (its body only enumerates; `DeclareAsync` takes `IEnumerable`). Behavior is unchanged —
+  same predicate (the helper re-applies the `Where`, harmlessly), same `Distinct()`, same vhost key
+  (`StringComparer.Ordinal`) and grouping, same health/continuation wiring. UnitTests 470/470.
 
 ---
 
