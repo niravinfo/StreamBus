@@ -21,6 +21,20 @@ internal sealed class StreamTopologyRegistry : IStreamTopology
         _supervisor = supervisor;
         _vhost = vhost;
         _logger = logger ?? NullLogger<StreamTopologyRegistry>.Instance;
+
+        // A cached "declared" fingerprint is only valid for as long as the
+        // broker state it was observed against: across a reconnect or a
+        // broker-side deletion the stream may vanish, and the fast path would
+        // otherwise report success forever with no probe. Invalidate on every
+        // departure from Ready; the next Ensure re-establishes truth through
+        // the normal probe/create/compare path.
+        _supervisor.StateChanged += state =>
+        {
+            if (state != BusConnectionState.Ready)
+            {
+                _declared.Clear();
+            }
+        };
     }
 
     public string Vhost => _vhost;
