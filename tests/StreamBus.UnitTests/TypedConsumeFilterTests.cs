@@ -206,8 +206,8 @@ public sealed class TypedConsumeFilterTests
         await using var harness = await PipelineSemanticsTests.Harness.CreateAsync(filters, services =>
         {
             services.AddSingleton(probe);
-            services.AddTransient<TypedOrderFilter>();
-            services.AddTransient<TypedInvoiceFilter>();
+            services.AddSingleton<TypedOrderFilter>();
+            services.AddSingleton<TypedInvoiceFilter>();
             services.AddTransient<TypedOrderConsumer>();
         });
 
@@ -322,7 +322,7 @@ public sealed class TypedConsumeFilterTests
         await using var harness = await PipelineSemanticsTests.Harness.CreateAsync(configureServices: services =>
         {
             services.AddSingleton(probe);
-            services.AddTransient<TypedInvoiceFilter>();
+            services.AddSingleton<TypedInvoiceFilter>();
         });
 
         var options = TypedOptions(
@@ -348,7 +348,7 @@ public sealed class TypedConsumeFilterTests
         await using var harness = await PipelineSemanticsTests.Harness.CreateAsync(configureServices: services =>
         {
             services.AddSingleton(probe);
-            services.AddTransient(typeof(TypedOpenFilter<>), typeof(TypedOpenFilter<>));
+            services.AddSingleton(typeof(TypedOpenFilter<>), typeof(TypedOpenFilter<>));
         });
 
         var options = TypedOptions(
@@ -375,7 +375,7 @@ public sealed class TypedConsumeFilterTests
         await using (var harness = await PipelineSemanticsTests.Harness.CreateAsync(configureServices: services =>
         {
             services.AddSingleton(probe);
-            services.AddTransient(typeof(TypedOpenFilter<>), typeof(TypedOpenFilter<>));
+            services.AddSingleton(typeof(TypedOpenFilter<>), typeof(TypedOpenFilter<>));
         }))
         {
             harness.Filters.AddFilter(typeof(DefaultBus), ConsumeFilterRegistration.ForType(typeof(TypedOpenFilter<>)));
@@ -395,7 +395,7 @@ public sealed class TypedConsumeFilterTests
         await using (var harness = await PipelineSemanticsTests.Harness.CreateAsync(configureServices: services =>
         {
             services.AddSingleton(probe);
-            services.AddTransient(typeof(TypedOpenFilter<>), typeof(TypedOpenFilter<>));
+            services.AddSingleton(typeof(TypedOpenFilter<>), typeof(TypedOpenFilter<>));
         }))
         {
             var options = TypedOptions(
@@ -427,7 +427,7 @@ public sealed class TypedConsumeFilterTests
         await using var harness = await PipelineSemanticsTests.Harness.CreateAsync(filters, services =>
         {
             services.AddSingleton(probe);
-            services.AddTransient<TypedOrderFilter>();
+            services.AddSingleton<TypedOrderFilter>();
         });
 
         var options = TypedOptions(
@@ -454,7 +454,7 @@ public sealed class TypedConsumeFilterTests
         await using var harness = await PipelineSemanticsTests.Harness.CreateAsync(filters, services =>
         {
             services.AddSingleton(probe);
-            services.AddTransient<TypedOrderFilter>();
+            services.AddSingleton<TypedOrderFilter>();
             services.AddTransient<TypedOrderConsumer>();
         });
 
@@ -482,8 +482,8 @@ public sealed class TypedConsumeFilterTests
         await using var harness = await PipelineSemanticsTests.Harness.CreateAsync(filters, services =>
         {
             services.AddSingleton(probe);
-            services.AddTransient<UniversalCaptureFilter>();
-            services.AddTransient<TypedOrderFilter>();
+            services.AddSingleton<UniversalCaptureFilter>();
+            services.AddSingleton<TypedOrderFilter>();
             services.AddTransient<TypedOrderConsumer>();
         });
 
@@ -514,8 +514,8 @@ public sealed class TypedConsumeFilterTests
         await using var harness = await PipelineSemanticsTests.Harness.CreateAsync(filters, services =>
         {
             services.AddSingleton(probe);
-            services.AddTransient<UniversalCaptureFilter>();
-            services.AddTransient<TypedOrderFilter>();
+            services.AddSingleton<UniversalCaptureFilter>();
+            services.AddSingleton<TypedOrderFilter>();
             services.AddTransient<TypedOrderConsumer>();
         });
 
@@ -546,7 +546,7 @@ public sealed class TypedConsumeFilterTests
         await using var harness = await PipelineSemanticsTests.Harness.CreateAsync(filters, services =>
         {
             services.AddSingleton(probe);
-            services.AddTransient<TypedOrderFilter>();
+            services.AddSingleton<TypedOrderFilter>();
         });
 
         var handlerCalls = 0;
@@ -581,7 +581,7 @@ public sealed class TypedConsumeFilterTests
         await using var harness = await PipelineSemanticsTests.Harness.CreateAsync(configureServices: services =>
         {
             services.AddSingleton(probe);
-            services.AddTransient<CountingTypedFilteringFilter>();
+            services.AddSingleton<CountingTypedFilteringFilter>();
         });
 
         var options = TypedOptions(
@@ -620,7 +620,7 @@ public sealed class TypedConsumeFilterTests
         await using var harness = await PipelineSemanticsTests.Harness.CreateAsync(configureServices: services =>
         {
             services.AddSingleton(probe);
-            services.AddTransient<CountingUniversalFilteringFilter>();
+            services.AddSingleton<CountingUniversalFilteringFilter>();
             services.AddTransient<TypedOrderConsumer>();
         });
 
@@ -651,7 +651,7 @@ public sealed class TypedConsumeFilterTests
         await using var harness = await PipelineSemanticsTests.Harness.CreateAsync(filters, services =>
         {
             services.AddSingleton(probe);
-            services.AddTransient<MultiMessageBusConsumeFilter>();
+            services.AddSingleton<MultiMessageBusConsumeFilter>();
             services.AddTransient<MultiInterfaceOrderConsumer>();
             services.AddTransient<MultiInterfaceInvoiceConsumer>();
         });
@@ -683,7 +683,7 @@ public sealed class TypedConsumeFilterTests
     {
         await using var harness = await PipelineSemanticsTests.Harness.CreateAsync(configureServices: services =>
         {
-            services.AddTransient<TypedFilteringFilter>();
+            services.AddSingleton<TypedFilteringFilter>();
         });
 
         var options = TypedOptions(

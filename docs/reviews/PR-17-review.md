@@ -1395,8 +1395,8 @@ catch (StreamBusFilterContractException fex)
 
 ---
 
-**[FLT-4] Consume-side filter caches resolve once from the root provider — captive dependency risk, undocumented singleton contract**
-- **Severity:** IMPORTANT
+**[FLT-4] Consume-side filter caches resolve once from the root provider — captive dependency risk, undocumented singleton contract — VALID, fixed (2026-11-07)**
+- **Severity:** IMPORTANT → resolved
 - **File:** src\StreamBus\ConsumerRegistry.cs (lines 91–93, 163–174)
 - **Problem:** `BuildPipeline` resolves both universal and typed filters via `GetOrAdd` from `_rootProvider` and caches them for the process lifetime — yet the registration tests register typed filter types as *transient* services. A user who registers a filter (or one of its constructor dependencies) as `Scoped` gets a captive dependency silently resolved at the root; the "transient" registration is effectively a singleton. Contrast the handler path, which correctly resolves `TConsumer` from the per-delivery scope (`context.Services`). The publish side has the same defect (PUB-2) and shares the fix direction.
 ```csharp
@@ -1425,6 +1425,39 @@ internal sealed class ScopedConsumeFilter(Type filterType) : IStreamConsumeFilte
     }
 }
 ```
+
+- **Verification & resolution (2026-11-07):** Confirmed genuine on every factual claim, and the defect
+  was exactly the one the PUB-2 fix had already resolved on the publish side (PUB-2's notes explicitly
+  deferred the consume half here): `StreamConsumerRegistry.BuildPipeline` resolved universal and typed
+  filters from `_rootProvider` via `GetOrAdd` with no lifetime validation, while `AddCore` registered
+  consume filter types with `TryAddTransient` — transient-typed registrations silently behaving as
+  singletons, and a scoped user registration becoming a silent captive dependency.
+  1. The reviewer's option (a) (per-delivery resolution) was rejected for the same reason it was rejected
+     in PUB-2: `docs/guide/consume.md` already documents "Filters are singletons per bus," and the
+     per-delivery DI scope exists so singleton filters can resolve scoped services through
+     `context.Services`, mirroring MassTransit. Option (b) — make the singleton contract explicit and
+     enforced — was applied.
+  2. **Applied fix:** consume filter types (bus-level and endpoint-level) are registered with
+     `TryAddSingleton` in `AddCore`; `ConsumerRegistry.BuildPipeline` now calls
+     `FilterRegistrationSupport.EnsureSingletonLifetime` for universal registrations (skipped for
+     instance/factory registrations, which are singleton-by-construction) and for typed registrations
+     inside the `_typedFilterInstances.GetOrAdd` factory, exactly mirroring `PublishPipelineCache`.
+     Rejection surfaces at consumer attach (the consume pipeline is built when the consumer attaches,
+     not at bus construction), with the shared "register the filter as a singleton and resolve scoped
+     services from the context's Services member" message.
+  3. Docs: singleton/thread-safe contract added to `IStreamConsumeFilter`, `IStreamConsumeFilter<T>`,
+     all `UseConsumeFilter` overloads (bus and endpoint configurators), `docs/guide/consume.md`, and
+     the CHANGELOG `### Breaking` entry.
+  4. Tests (TDD — all four watched RED first, failing for the expected reasons: lifetime-diff assert and
+     "no exception was thrown"): `Consume_filter_types_are_registered_as_singletons`,
+     `Scoped_consume_filter_is_rejected_when_the_consumer_attaches`,
+     `Transient_consume_filter_is_rejected_when_the_consumer_attaches`,
+     `Scoped_typed_consume_filter_is_rejected_when_the_consumer_attaches`. As with PUB-2, the
+     `TypedConsumeFilterTests` probe *filters* were re-registered as singletons (they test pipeline
+     composition, not DI lifetime); probe *consumers* stay transient (they resolve per delivery). The
+     misnamed `Typed_filter_types_are_registered_as_transient_services` was renamed to
+     `..._as_resolvable_services` (it asserts resolvability, not lifetime). UnitTests 463/463;
+     IntegrationTests 59/59 passed with 2 pre-existing skips (a broker was available this run).
 
 ---
 

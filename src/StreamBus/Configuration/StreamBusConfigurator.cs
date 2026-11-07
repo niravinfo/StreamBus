@@ -73,6 +73,14 @@ public interface IStreamBusConfigurator
     /// publish on the bus.
     /// </summary>
     void UsePublishFilter(IStreamPublishFilter instance);
+    /// <summary>
+    /// Registers a consume filter, discovering its typed message interfaces at
+    /// runtime. Use
+    /// <see cref="UseConsumeFilter{TFilter,TMessage}()"/> to avoid closing the
+    /// adapter at runtime. The filter type is registered as a singleton because
+    /// consume filters are resolved once per bus and cached; register the type
+    /// as a singleton yourself if you add it before this call.
+    /// </summary>
     [RequiresUnreferencedCode(RuntimeGeneric.TrimMessage)]
     [RequiresDynamicCode(RuntimeGeneric.AotMessage)]
     void UseConsumeFilter<[DynamicallyAccessedMembers(RuntimeGeneric.FilterMembers)] TFilter>() where TFilter : class;
@@ -80,13 +88,27 @@ public interface IStreamBusConfigurator
     /// Registers a typed consume filter whose endpoint message type is
     /// <typeparamref name="TMessage"/>. Unlike
     /// <see cref="UseConsumeFilter{TFilter}()"/>, this overload closes the typed
-    /// adapter at the call site and needs no runtime generic closing.
+    /// adapter at the call site and needs no runtime generic closing. The
+    /// filter type is registered as a singleton because consume filters are
+    /// resolved once per bus and cached.
     /// </summary>
     void UseConsumeFilter<[DynamicallyAccessedMembers(RuntimeGeneric.FilterMembers)] TFilter, TMessage>() where TFilter : class, IStreamConsumeFilter<TMessage>;
+    /// <summary>
+    /// Registers a consume filter by type. The type is registered as a
+    /// singleton because consume filters are resolved once per bus and cached.
+    /// </summary>
     [RequiresUnreferencedCode(RuntimeGeneric.TrimMessage)]
     [RequiresDynamicCode(RuntimeGeneric.AotMessage)]
     void UseConsumeFilter([DynamicallyAccessedMembers(RuntimeGeneric.FilterMembers)] Type filterType);
+    /// <summary>
+    /// Registers a consume filter created by <paramref name="factory"/>. The
+    /// factory runs once per bus; its result is cached for the bus lifetime.
+    /// </summary>
     void UseConsumeFilter(Func<IServiceProvider, IStreamConsumeFilter> factory);
+    /// <summary>
+    /// Registers an existing consume filter instance, which is used for every
+    /// delivery on the bus.
+    /// </summary>
     void UseConsumeFilter(IStreamConsumeFilter instance);
 }
 
@@ -104,7 +126,9 @@ public interface IReceiveEndpointConfigurator
     /// Registers a consume filter on this endpoint and discovers its typed
     /// message interfaces at runtime. Use
     /// <see cref="UseConsumeFilter{TFilter,TMessage}()"/> to avoid closing the
-    /// adapter at runtime.
+    /// adapter at runtime. The filter type is registered as a singleton
+    /// because consume filters are resolved once per bus and cached; register
+    /// the type as a singleton yourself if you add it before this call.
     /// </summary>
     [RequiresUnreferencedCode(RuntimeGeneric.TrimMessage)]
     [RequiresDynamicCode(RuntimeGeneric.AotMessage)]
@@ -115,13 +139,29 @@ public interface IReceiveEndpointConfigurator
     /// adapter at the call site and therefore avoids closing a generic type at
     /// runtime. It removes one trim/AOT hazard; it does not by itself make
     /// trimming or NativeAOT consume supported (the typed consumer and default
-    /// serializer are still reflection-based).
+    /// serializer are still reflection-based). The filter type is registered as
+    /// a singleton because consume filters are resolved once per bus and
+    /// cached.
     /// </summary>
     void UseConsumeFilter<[DynamicallyAccessedMembers(RuntimeGeneric.FilterMembers)] TFilter, TMessage>() where TFilter : class, IStreamConsumeFilter<TMessage>;
+    /// <summary>
+    /// Registers a consume filter on this endpoint by type. The type is
+    /// registered as a singleton because consume filters are resolved once per
+    /// bus and cached.
+    /// </summary>
     [RequiresUnreferencedCode(RuntimeGeneric.TrimMessage)]
     [RequiresDynamicCode(RuntimeGeneric.AotMessage)]
     void UseConsumeFilter([DynamicallyAccessedMembers(RuntimeGeneric.FilterMembers)] Type filterType);
+    /// <summary>
+    /// Registers a consume filter on this endpoint created by
+    /// <paramref name="factory"/>. The factory runs once per bus; its result
+    /// is cached for the bus lifetime.
+    /// </summary>
     void UseConsumeFilter(Func<IServiceProvider, IStreamConsumeFilter> factory);
+    /// <summary>
+    /// Registers an existing consume filter instance, which is used for every
+    /// delivery on this endpoint.
+    /// </summary>
     void UseConsumeFilter(IStreamConsumeFilter instance);
     void DeadLetterToStream(string name, Action<IStreamOptionsBuilder>? configure = null);
     void DeadLetterToStream(string name, StreamOptions spec);
@@ -737,8 +777,13 @@ public static class StreamBusConfiguratorExtensions
         foreach (var filter in configurator.ConsumeFilters)
         {
             consumeFilterStore.AddFilter(busType, filter);
+            // Consume filters are resolved once when the consumer attaches and
+            // cached for the bus lifetime (StreamConsumerRegistry); see the
+            // matching publish-side comment above. Registering them as
+            // singletons makes that contract explicit; the registry rejects
+            // scoped/transient registrations when the pipeline is built.
             if (filter.FilterType is { } filterType && filter.Instance is null)
-                services.TryAddTransient(filterType, filterType);
+                services.TryAddSingleton(filterType, filterType);
         }
         consumeFilterStore.Seal(busType);
         var endpointStore = ServiceCollectionExtensions.GetOrCreateEndpointStore(services);
@@ -750,7 +795,7 @@ public static class StreamBusConfiguratorExtensions
             foreach (var filter in descriptor.ConsumeFilters)
             {
                 if (filter.FilterType is { } filterType && filter.Instance is null)
-                    services.TryAddTransient(filterType, filterType);
+                    services.TryAddSingleton(filterType, filterType);
             }
             var busName = busType.FullName ?? busType.Name;
             var derived = RetryDerivation.Derive(

@@ -483,6 +483,54 @@ public sealed class PipelineSemanticsTests
             MessageType = messageType,
         };
 
+    private static async Task<StreamBusConfigurationException> AssertFilterLifetimeRejectedAsync(
+        Action<IServiceCollection> configureServices,
+        ConsumeFilterRegistration registration,
+        Type? messageType = null)
+    {
+        await using var harness = await Harness.CreateAsync(configureServices: configureServices);
+        harness.Filters.AddFilter(typeof(DefaultBus), registration);
+
+        var ex = await Assert.ThrowsAsync<StreamBusConfigurationException>(() =>
+            harness.Registry.ConsumeAsync(
+                typeof(DefaultBus), "orders", DispatchOptions(messageType: messageType), _ => Task.CompletedTask,
+                TestContext.Current.CancellationToken));
+
+        Assert.Contains("singleton", ex.Message, StringComparison.Ordinal);
+        return ex;
+    }
+
+    [Fact]
+    public async Task Scoped_consume_filter_is_rejected_when_the_consumer_attaches()
+    {
+        var ex = await AssertFilterLifetimeRejectedAsync(
+            services => services.AddScoped<ScopedLifetimeConsumeFilter>(),
+            ConsumeFilterRegistration.ForType(typeof(ScopedLifetimeConsumeFilter)));
+
+        Assert.Contains(nameof(ScopedLifetimeConsumeFilter), ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Transient_consume_filter_is_rejected_when_the_consumer_attaches()
+    {
+        var ex = await AssertFilterLifetimeRejectedAsync(
+            services => services.AddTransient<TransientLifetimeConsumeFilter>(),
+            ConsumeFilterRegistration.ForType(typeof(TransientLifetimeConsumeFilter)));
+
+        Assert.Contains(nameof(TransientLifetimeConsumeFilter), ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Scoped_typed_consume_filter_is_rejected_when_the_consumer_attaches()
+    {
+        var ex = await AssertFilterLifetimeRejectedAsync(
+            services => services.AddScoped<ScopedLifetimeTypedConsumeFilter>(),
+            ConsumeFilterRegistration.ForType(typeof(ScopedLifetimeTypedConsumeFilter)),
+            messageType: typeof(TenantMessage));
+
+        Assert.Contains(nameof(ScopedLifetimeTypedConsumeFilter), ex.Message, StringComparison.Ordinal);
+    }
+
     private static ErrorEnvelope NewEnvelope(IReadOnlyDictionary<string, object?>? outputHeaders = null) => new()
     {
         ErrorStream = "errors",
@@ -501,6 +549,21 @@ public sealed class PipelineSemanticsTests
         RoutingValue = null,
         SendHeaders = outputHeaders,
     };
+
+    private sealed class ScopedLifetimeConsumeFilter : IStreamConsumeFilter
+    {
+        public Task OnConsume(ConsumeContext context, ConsumeDelegate next) => next();
+    }
+
+    private sealed class TransientLifetimeConsumeFilter : IStreamConsumeFilter
+    {
+        public Task OnConsume(ConsumeContext context, ConsumeDelegate next) => next();
+    }
+
+    private sealed class ScopedLifetimeTypedConsumeFilter : IStreamConsumeFilter<TenantMessage>
+    {
+        public Task OnConsume(ConsumeContext<TenantMessage> context, ConsumeDelegate next) => next();
+    }
 
     private sealed class RecordingFilter(string name, List<string> log) : IStreamConsumeFilter
     {

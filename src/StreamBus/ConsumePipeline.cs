@@ -7,6 +7,13 @@ namespace StreamBus;
 /// <summary>
 /// Universal consume filter that runs for every delivery on the bus.
 /// </summary>
+/// <remarks>
+/// Filter instances are resolved once when the consumer attaches and cached
+/// for the bus lifetime, so a filter must be thread-safe. Register filter
+/// types with a singleton lifetime: a scoped or transient registration is
+/// rejected when the consumer attaches. Scoped services are available
+/// through <see cref="ConsumeContext.Services"/>.
+/// </remarks>
 public interface IStreamConsumeFilter
 {
     /// <summary>
@@ -27,6 +34,13 @@ public interface IStreamConsumeFilter
 /// <typeparamref name="T"/>.
 /// </summary>
 /// <typeparam name="T">The endpoint message type.</typeparam>
+/// <remarks>
+/// Filter instances are resolved once when the consumer attaches and cached
+/// for the bus lifetime, so a filter must be thread-safe. Register filter
+/// types with a singleton lifetime: a scoped or transient registration is
+/// rejected when the consumer attaches. Scoped services are available
+/// through <see cref="ConsumeContext.Services"/>.
+/// </remarks>
 public interface IStreamConsumeFilter<T>
 {
     /// <summary>
