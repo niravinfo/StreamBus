@@ -62,17 +62,6 @@ await using var sub = await bus.ConsumeAsync(
 Raw consume also requires `Reference` — a missing group throws
 `StreamBusConfigurationException` at attach instead of guessing.
 
-## Effectively-once
-
-Read-process-write pipelines are unchanged apart from the bus they run
-on, which is unambiguous by construction. See
-`effectively-once.md` for the full projection example:
-
-```csharp
-await using var pipe = await bus.ConsumeEffectivelyOnceAsync("orders", "invoices",
-    new EffectivelyOnceOptions(), ctx => Task.FromResult<ReadOnlyMemory<byte>>(resultBytes), ct);
-```
-
 ## Pipelines
 
 Consume middleware is ordered, additive, and scope-aware. Bus-wide
@@ -107,10 +96,8 @@ filters in the pipeline. Filters are singletons per bus. A normal consume
 filter may call `next` zero or one time: zero means the filter handled or
 filtered the delivery, the consumer handler is not invoked, and the offset
 still advances. More than one `next` call is retried and then exhausted
-rather than silently duplicating work. Effectively-once pipelines require
-exactly one `next`; a zero-`next` filter there is a runtime contract error.
-Headers written through `context.SendHeaders` are carried on the
-exhaustion envelope and on effectively-once result publishes. Complete
+rather than silently duplicating work. Headers written through
+`context.SendHeaders` are carried on the exhaustion envelope. Complete
 sample: `examples/StreamBus.Examples.Consumer/TenantFilter.cs`.
 
 The delivery's `Stream`, `Partition`, `Offset`, `MessageId`,
@@ -124,7 +111,7 @@ for the lifetime of the context; `Headers` (read-only) and `SendHeaders`
 | `CorrelationId` | `Guid?` | AMQP `correlation-id`; never invented |
 | `SentTime` | `DateTime?` | AMQP `creation-time`, UTC, millisecond precision |
 | `Headers` | `IStreamHeaders` | application properties as received, framework keys included |
-| `SendHeaders` | `IStreamSendHeaders` | headers carried on the error envelope or effectively-once result |
+| `SendHeaders` | `IStreamSendHeaders` | headers carried on the error envelope |
 | `Stream` / `Partition` / `Offset` / `RoutingValue` / `Body` / `Services` / `CancellationToken` | — | unchanged semantics |
 
 ### Typed consume filters
@@ -162,8 +149,8 @@ same object that universal filters receive — there is no `Raw` wrapper.
 A typed endpoint deserializes before any filter runs on every delivery
 attempt; a deserialization failure is retried and exhausted without
 running filters or the consumer, and the consumer receives the same
-instance — no second deserialization. Raw and effectively-once pipelines
-never attach typed filters. Complete sample:
+instance — no second deserialization. Raw pipelines never attach typed
+filters. Complete sample:
 `examples/StreamBus.Examples.Consumer/OrderEventFilter.cs`.
 
 `UseConsumeFilter<TFilter, TMessage>()` pins the endpoint message type at the

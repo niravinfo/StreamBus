@@ -9,10 +9,9 @@ state:
   `/|StreamBus.DefaultBus`).
 - `{vhost}|{registration}` - one row per consumer or declaration. Consumer
   rows carry the bus type so several buses on one vhost stay attributable:
-  `endpoint:{busType}:{stream}` for typed receive endpoints,
+  `endpoint:{busType}:{stream}` for typed receive endpoints, and
   `raw:{busType}:{stream}` for `IStreamBus.ConsumeAsync` (with `:2`, `:3`, ...
-  on repeat consumes of the same stream on that bus), and
-  `effectively-once:{busType}:{sourceStream}` for effectively-once consumers. Declarations
+  on repeat consumes of the same stream on that bus). Declarations
   use `declare:{name}`. The value is `consumer:<state>` or `declare:<state>`,
   with the reason and `since` timestamp when present.
 
@@ -43,8 +42,7 @@ listener (for example OpenTelemetry):
 | `streambus_pipeline_duration` | histogram (seconds) | kind = publish \| consume |
 
 The lag gauge compares the last delivered offset against the last stored
-offset per partition. It is not meaningful on effectively-once
-references (the source never stores offsets).
+offset per partition.
 
 The pipeline duration covers the whole chain, including filters and the
 terminal handler. It is recorded only when a pipeline actually runs

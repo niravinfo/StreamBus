@@ -19,6 +19,14 @@
   scaffolding (unreachable fatal-throw, transient-warning log, `IsFatalStartFailure`) was removed
   and the fire-and-forget contract documented in `Hosting.cs`; ownership is pinned by
   `HostingTests.StopAsync_disposes_and_deregisters_supervisors_that_never_connected`.
+- **FLT-3, FLT-5, and the effectively-once portions of CON-13 are MOOT (2026-11-07):** the
+  effectively-once pipeline was removed entirely by product decision — StreamBus is at-least-once
+  and deduplication is the application's responsibility (see
+  `docs/superpowers/plans/2026-11-07-remove-effectively-once.md` and the CHANGELOG `### Breaking`
+  entry). The code these findings describe (`DispatchEffectivelyOnceAsync`,
+  `ConsumePipeline(requiresContinuation)`, EO deserialization ordering) no longer exists, so the
+  findings have no remaining subject. The replay/dead-letter machinery they touched incidentally
+  is kept and still pinned by `ConfirmationCloseTests`/`ReplayReattachTests`.
 
 ## Suggested execution order
 

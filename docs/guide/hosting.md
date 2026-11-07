@@ -69,8 +69,7 @@ two shapes:
   rows carry the bus type so several buses on one vhost stay attributable:
   `endpoint:{busType}:{stream}` for typed receive endpoints,
   `raw:{busType}:{stream}` for `IStreamBus.ConsumeAsync` (with `:2`, `:3`, ...
-  when the same stream is consumed more than once on that bus), and
-  `effectively-once:{busType}:{sourceStream}` for effectively-once consumers. Declarations
+  when the same stream is consumed more than once on that bus). Declarations
   use `declare:{name}`. The value is `consumer:<state>` or `declare:<state>`,
   with the failure reason and `since` timestamp appended when present.
 

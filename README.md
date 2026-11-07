@@ -88,7 +88,6 @@ Every capability points to its guide section:
 - Typed publish: route table, keyed super publish, overrides, raw bytes (`docs/guide/publish.md`)
 - Endpoints: required groups, scale-out, SAC/offset/store knobs (`docs/guide/consume.md`)
 - Raw consume + manual offset get/set (`docs/guide/consume.md`)
-- Effectively-once pipelines + manual result publish (`docs/guide/effectively-once.md`)
 - Retry: global + per-endpoint schedules, escape hatch (`docs/guide/errors.md`)
 - Exhaustion: stream / classic+quorum queue (bounded schedule, no destination or callback: `{stream}_error`) / owning callback (`docs/guide/errors.md`)
 - Replay (streams) and requeue (queues) (`docs/guide/errors.md`)
@@ -125,7 +124,6 @@ Every capability points to its guide section:
 - `docs/guide/hosting.md` - startup blocking, readiness, health checks.
 - `docs/guide/publish.md` - typed publish, super streams, escape hatches.
 - `docs/guide/consume.md` - endpoints, groups, raw consume, offsets.
-- `docs/guide/effectively-once.md` - read-process-write pipelines.
 - `docs/guide/multi-bus.md` - marker buses and shared consumers.
 - `docs/guide/errors.md` - retry layering, dead letters, requeue, exception table.
 - `docs/guide/topology.md` - declarations, runtime topology, derivation, adopt rule.
