@@ -1936,8 +1936,8 @@ if (!seen.Add(filterType))
 
 ---
 
-**[CON-8] Sync-over-async `DisposeAsync().AsTask().GetAwaiter().GetResult()` in `ReplayAsync` producer disposal**
-- **Severity:** MINOR
+**[CON-8] Sync-over-async `DisposeAsync().AsTask().GetAwaiter().GetResult()` in `ReplayAsync` producer disposal — VALID, fixed (2026-11-07)**
+- **Severity:** MINOR → resolved
 - **File:** src\StreamBus\ConsumerRegistry.cs (lines 571–585)
 - **Problem:** Replay producers are disposed with a blocking `.GetAwaiter().GetResult()` inside a `finally` of an async method — a thread-pool blocking call that adds no value where `await` is available.
 ```csharp
@@ -1951,6 +1951,19 @@ void DisposeProducers()
         }
 ```
 - **Solution:** Convert to `async Task DisposeProducersAsync()` and `await producer.DisposeAsync()` in a try/catch, then await it in the outer `finally`.
+
+- **Verification & resolution (2026-11-07):** Confirmed genuine. The blocking
+  call existed exactly as described (the only `GetAwaiter().GetResult()` in
+  `src`), and the reviewer's line numbers were merely stale (current code:
+  545–559 for the local function, 648 for the `finally` call). No correctness
+  impact — disposal ran on every exit path with exceptions logged — purely a
+  thread-blocking hazard. Applied the reviewer's fix verbatim:
+  `DisposeProducers` became `async Task DisposeProducersAsync()` awaiting each
+  `producer.DisposeAsync()` (per-producer try/catch and `producers.Clear()`
+  unchanged), and the outer `finally` now `await`s it with
+  `ConfigureAwait(false)`. No behavioral change; no new test needed since the
+  disposal paths are already covered by the replay tests. Build clean,
+  UnitTests 463/463.
 
 ---
 
