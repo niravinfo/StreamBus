@@ -91,7 +91,7 @@ public sealed class TypedFilterContractTests
 
         public Task OnPublish(
             PublishContext<ContractDerived> context,
-            PublishDelegate next)
+            PublishNext next)
         {
             SeenContext = context;
             Seen = context.Message;
@@ -107,7 +107,7 @@ public sealed class TypedFilterContractTests
 
         public Task OnConsume(
             ConsumeContext<ContractDerived> context,
-            ConsumeDelegate next)
+            ConsumeNext next)
         {
             SeenContext = context;
             Seen = context.Message;

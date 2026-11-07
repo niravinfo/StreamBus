@@ -8,7 +8,7 @@ namespace StreamBus.UnitTests;
 
 internal sealed class ConsumePipelineConfigFilter : IStreamConsumeFilter
 {
-    public Task OnConsume(ConsumeContext context, ConsumeDelegate next)
+    public Task OnConsume(ConsumeContext context, ConsumeNext next)
         => next();
 }
 
@@ -38,7 +38,7 @@ internal sealed class TenantProbe
 
 internal sealed class TenantProbeFilter(TenantProbe probe) : IStreamConsumeFilter
 {
-    public Task OnConsume(ConsumeContext context, ConsumeDelegate next)
+    public Task OnConsume(ConsumeContext context, ConsumeNext next)
     {
         var accessor = (TenantAccessor)context.Services.GetRequiredService(typeof(TenantAccessor));
         accessor.Tenant = context.Headers.All["tenant"]?.ToString();
@@ -552,22 +552,22 @@ public sealed class PipelineSemanticsTests
 
     private sealed class ScopedLifetimeConsumeFilter : IStreamConsumeFilter
     {
-        public Task OnConsume(ConsumeContext context, ConsumeDelegate next) => next();
+        public Task OnConsume(ConsumeContext context, ConsumeNext next) => next();
     }
 
     private sealed class TransientLifetimeConsumeFilter : IStreamConsumeFilter
     {
-        public Task OnConsume(ConsumeContext context, ConsumeDelegate next) => next();
+        public Task OnConsume(ConsumeContext context, ConsumeNext next) => next();
     }
 
     private sealed class ScopedLifetimeTypedConsumeFilter : IStreamConsumeFilter<TenantMessage>
     {
-        public Task OnConsume(ConsumeContext<TenantMessage> context, ConsumeDelegate next) => next();
+        public Task OnConsume(ConsumeContext<TenantMessage> context, ConsumeNext next) => next();
     }
 
     private sealed class RecordingFilter(string name, List<string> log) : IStreamConsumeFilter
     {
-        public async Task OnConsume(ConsumeContext context, ConsumeDelegate next)
+        public async Task OnConsume(ConsumeContext context, ConsumeNext next)
         {
             log.Add($"{name}-in");
             await next();
@@ -577,7 +577,7 @@ public sealed class PipelineSemanticsTests
 
     private sealed class BusScopeFilter(List<string> log) : IStreamConsumeFilter
     {
-        public async Task OnConsume(ConsumeContext context, ConsumeDelegate next)
+        public async Task OnConsume(ConsumeContext context, ConsumeNext next)
         {
             log.Add("bus-in");
             await next();
@@ -587,7 +587,7 @@ public sealed class PipelineSemanticsTests
 
     private sealed class EndpointOuterFilter(List<string> log) : IStreamConsumeFilter
     {
-        public async Task OnConsume(ConsumeContext context, ConsumeDelegate next)
+        public async Task OnConsume(ConsumeContext context, ConsumeNext next)
         {
             log.Add("endpoint-outer-in");
             await next();
@@ -597,7 +597,7 @@ public sealed class PipelineSemanticsTests
 
     private sealed class EndpointInnerFilter(List<string> log) : IStreamConsumeFilter
     {
-        public async Task OnConsume(ConsumeContext context, ConsumeDelegate next)
+        public async Task OnConsume(ConsumeContext context, ConsumeNext next)
         {
             log.Add("endpoint-inner-in");
             await next();
@@ -609,7 +609,7 @@ public sealed class PipelineSemanticsTests
     {
         public int Calls { get; private set; }
 
-        public Task OnConsume(ConsumeContext context, ConsumeDelegate next)
+        public Task OnConsume(ConsumeContext context, ConsumeNext next)
         {
             Calls++;
             return Task.CompletedTask;
@@ -618,7 +618,7 @@ public sealed class PipelineSemanticsTests
 
     private sealed class DoubleNextFilter : IStreamConsumeFilter
     {
-        public async Task OnConsume(ConsumeContext context, ConsumeDelegate next)
+        public async Task OnConsume(ConsumeContext context, ConsumeNext next)
         {
             await next();
             await next();
@@ -627,7 +627,7 @@ public sealed class PipelineSemanticsTests
 
     private sealed class FilteringFilter(string key, string value) : IStreamConsumeFilter
     {
-        public Task OnConsume(ConsumeContext context, ConsumeDelegate next)
+        public Task OnConsume(ConsumeContext context, ConsumeNext next)
         {
             context.SendHeaders.Set(key, value);
             return Task.CompletedTask;
@@ -638,7 +638,7 @@ public sealed class PipelineSemanticsTests
     {
         public int Calls { get; private set; }
 
-        public Task OnConsume(ConsumeContext context, ConsumeDelegate next)
+        public Task OnConsume(ConsumeContext context, ConsumeNext next)
         {
             Calls++;
             context.SendHeaders.Set("tenant", "acme");
@@ -648,7 +648,7 @@ public sealed class PipelineSemanticsTests
 
     private sealed class CollidingHeaderThrowingFilter : IStreamConsumeFilter
     {
-        public Task OnConsume(ConsumeContext context, ConsumeDelegate next)
+        public Task OnConsume(ConsumeContext context, ConsumeNext next)
         {
             context.SendHeaders.Set("streambus.error.source-stream", "hacked");
             context.SendHeaders.Set("tenant", "acme");
@@ -660,7 +660,7 @@ public sealed class PipelineSemanticsTests
     {
         public int Calls { get; private set; }
 
-        public Task OnConsume(ConsumeContext context, ConsumeDelegate next)
+        public Task OnConsume(ConsumeContext context, ConsumeNext next)
         {
             Calls++;
             if (Calls == 1)
@@ -671,7 +671,7 @@ public sealed class PipelineSemanticsTests
 
     private sealed class PayloadWriterFilter : IStreamConsumeFilter
     {
-        public Task OnConsume(ConsumeContext context, ConsumeDelegate next)
+        public Task OnConsume(ConsumeContext context, ConsumeNext next)
         {
             context.SetPayload("tenant-acme");
             return next();
@@ -680,7 +680,7 @@ public sealed class PipelineSemanticsTests
 
     private sealed class PayloadReaderFilter(PayloadProbe probe) : IStreamConsumeFilter
     {
-        public Task OnConsume(ConsumeContext context, ConsumeDelegate next)
+        public Task OnConsume(ConsumeContext context, ConsumeNext next)
         {
             probe.Seen = context.GetPayload<string>();
             return next();
@@ -769,44 +769,24 @@ public sealed class PipelineSemanticsTests
             => Task.FromResult<IStreamSystemHandle>(system);
     }
 
-    internal sealed class CapturingSystem : IStreamSystemHandle
+    internal sealed class CapturingSystem : ScriptedSystemHandle
     {
+        public CapturingSystem()
+        {
+            OnCreatePlainProducer = (stream, _) =>
+                Task.FromResult<IStreamPlainProducerHandle>(new CapturingPlainProducer(stream, this));
+        }
+
         public readonly List<CapturedEnvelope> Envelopes = new();
 
-        public bool IsClosed => false;
-
-        public Task<IStreamPlainProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct)
-            => Task.FromResult<IStreamPlainProducerHandle>(new CapturingPlainProducer(stream, this));
-
-        public Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
-            => CreatePlainProducerAsync(stream, ct);
-
-        public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
+        public override Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
             => throw new NotSupportedException("PipelineSemanticsTests publish error envelopes only.");
 
-        public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
+        public override Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
             => throw new NotSupportedException("PipelineSemanticsTests publish error envelopes only.");
 
-        public Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken ct) => Task.FromResult<ulong?>(null);
-
-        public Task StoreSystemOffsetAsync(string reference, string stream, ulong offset, CancellationToken ct) => Task.CompletedTask;
-
-        public Task<bool> StreamExistsAsync(string stream, CancellationToken ct) => Task.FromResult(true);
-
-        public Task<bool> SuperStreamExistsAsync(string superStream, CancellationToken ct) => Task.FromResult(false);
-
-        public Task<string[]> QueryPartitionAsync(string superStream, CancellationToken ct) => Task.FromResult(new[] { superStream });
-
-        public Task<ulong> QuerySequenceAsync(string reference, string stream, CancellationToken ct) => Task.FromResult(0UL);
-
-        public Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct)
+        public override Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct)
             => throw new NotSupportedException("PipelineSemanticsTests inject their own consumer factory.");
-
-        public Task CreateStreamAsync(StreamSpec spec, CancellationToken ct) => Task.CompletedTask;
-
-        public Task CreateSuperStreamAsync(PartitionsSuperStreamSpec spec, CancellationToken ct) => Task.CompletedTask;
-
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 
         public void Add(string stream, IReadOnlyDictionary<string, object?> properties)
         {

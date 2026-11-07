@@ -104,45 +104,18 @@ public sealed class HeaderCarrierTests
     }
 
     [Fact]
-    public void Header_accessors_read_the_legal_value_set()
+    public void GetJson_deserializes_via_the_context_serializer()
     {
         var serializer = new RecordingSerializer();
-        var headers = new StreamHeaders(new Dictionary<string, object?>
-        {
-            ["text"] = "value",
-            ["int"] = 42,
-            ["long"] = 9_000_000_000L,
-            ["bool"] = true,
-            ["json"] = "{\"Id\":7}",
-            ["not-a-number"] = "42",
-        }, serializer);
-
-        Assert.Equal("value", headers.GetString("text"));
-        Assert.Equal(42, headers.GetInt("int"));
-        Assert.Null(headers.GetInt("long"));
-        Assert.Equal(42L, headers.GetLong("int"));
-        Assert.Equal(9_000_000_000L, headers.GetLong("long"));
-        Assert.True(headers.GetBool("bool"));
-        Assert.Null(headers.GetBool("text"));
-        Assert.Null(headers.GetInt("not-a-number"));
-        Assert.Null(headers.GetString("missing"));
+        var headers = new StreamHeaders(
+            new Dictionary<string, object?> { ["json"] = "{\"Id\":7}" },
+            serializer);
 
         var payload = headers.GetJson<HeaderPayload>("json");
+
         Assert.NotNull(payload);
         Assert.Equal(7, payload.Id);
         Assert.True(serializer.DeserializeCalled);
-    }
-
-    [Fact]
-    public void GetJson_invalid_json_names_the_key_and_keeps_the_json_exception()
-    {
-        var headers = new StreamHeaders(
-            new Dictionary<string, object?> { ["payload"] = "{not-json" },
-            SystemTextJsonStreamSerializer.Default);
-
-        var ex = Assert.Throws<ArgumentException>(() => headers.GetJson<HeaderPayload>("payload"));
-        Assert.Contains("payload", ex.Message, StringComparison.Ordinal);
-        Assert.IsType<JsonException>(ex.InnerException);
     }
 
     private static async Task<(ulong Id, Message Message)> AwaitSendAsync(

@@ -8,7 +8,7 @@ public sealed record PipelineOrder(string Id);
 
 public sealed class PipelineTenantFilter : IStreamPublishFilter
 {
-    public Task OnPublish(PublishContext context, PublishDelegate next)
+    public Task OnPublish(PublishContext context, PublishNext next)
     {
         context.Headers.Set("tenant", "acme");
         return next();

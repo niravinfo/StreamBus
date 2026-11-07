@@ -50,7 +50,8 @@ terminal handler. It is recorded only when a pipeline actually runs
 
 ## Activities
 
-`ActivitySource` name: `StreamBus` (version `2.0.0`). It is always
+`ActivitySource` name: `StreamBus` (version matches the released
+package version, generated from the assembly). It is always
 available and costs nothing when no listener samples it.
 
 | Span | Kind | Tags |

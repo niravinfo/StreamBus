@@ -79,7 +79,7 @@ cfg.ReceiveEndpoint("orders", e =>
 
 public sealed class TenantFilter : IStreamConsumeFilter
 {
-    public Task OnConsume(ConsumeContext context, ConsumeDelegate next)
+    public Task OnConsume(ConsumeContext context, ConsumeNext next)
     {
         var scope = (TenantScope)context.Services.GetRequiredService(typeof(TenantScope));
         scope.Tenant = context.Headers.GetString("x-tenant");
@@ -138,7 +138,7 @@ cfg.ReceiveEndpoint("orders", e =>
 
 public sealed class OrderEnrichmentFilter : IStreamConsumeFilter<OrderEvent>
 {
-    public Task OnConsume(ConsumeContext<OrderEvent> context, ConsumeDelegate next)
+    public Task OnConsume(ConsumeContext<OrderEvent> context, ConsumeNext next)
     {
         context.SetPayload(context.Message.OrderId); // typed value for later filters
         return next();

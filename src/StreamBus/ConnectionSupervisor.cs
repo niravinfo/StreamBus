@@ -29,17 +29,17 @@ internal sealed class StreamBusConnectionSupervisor : IAsyncDisposable
             throw new StreamBusConfigurationException(error);
     }
 
-    public Task StartAsync(CancellationToken ct)
+    public Task StartAsync(CancellationToken cancellationToken)
     {
         lock (_gate)
         {
-            _cts ??= CancellationTokenSource.CreateLinkedTokenSource(ct);
+            _cts ??= CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             _loop ??= RunLoopAsync(_cts.Token);
         }
         return Task.CompletedTask;
     }
 
-    public async Task<BusReadiness> WaitUntilReadyAsync(ReadinessPolicy policy, CancellationToken ct = default)
+    public async Task<BusReadiness> WaitUntilReadyAsync(ReadinessPolicy policy, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(policy);
         if (State == BusConnectionState.Ready) return BusReadiness.Ready;
@@ -47,13 +47,13 @@ internal sealed class StreamBusConnectionSupervisor : IAsyncDisposable
         return policy switch
         {
             ReadinessPolicy.FailFast => BusReadiness.TimedOut,
-            ReadinessPolicy.WaitIndefinitely => await WaitForStateAsync(null, ct).ConfigureAwait(false),
-            ReadinessPolicy.WaitUpTo w => await WaitForStateAsync(w.Timeout, ct).ConfigureAwait(false),
+            ReadinessPolicy.WaitIndefinitely => await WaitForStateAsync(null, cancellationToken).ConfigureAwait(false),
+            ReadinessPolicy.WaitUpTo w => await WaitForStateAsync(w.Timeout, cancellationToken).ConfigureAwait(false),
             _ => throw new StreamBusConfigurationException($"Unknown readiness policy {policy.GetType().Name}."),
         };
     }
 
-    private async Task<BusReadiness> WaitForStateAsync(TimeSpan? timeout, CancellationToken ct)
+    private async Task<BusReadiness> WaitForStateAsync(TimeSpan? timeout, CancellationToken cancellationToken)
     {
         var tcs = new TaskCompletionSource<BusReadiness>(TaskCreationOptions.RunContinuationsAsynchronously);
         void Handler(BusConnectionState s)
@@ -66,30 +66,30 @@ internal sealed class StreamBusConnectionSupervisor : IAsyncDisposable
         {
             if (State == BusConnectionState.Ready) return BusReadiness.Ready;
             if (State == BusConnectionState.Fatal) return BusReadiness.Fatal;
-            if (timeout is null) return await tcs.Task.WaitAsync(ct).ConfigureAwait(false);
+            if (timeout is null) return await tcs.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
             if (timeout.Value <= TimeSpan.Zero) return BusReadiness.TimedOut;
-            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             cts.CancelAfter(timeout.Value);
             try { return await tcs.Task.WaitAsync(cts.Token).ConfigureAwait(false); }
-            catch (OperationCanceledException) when (!ct.IsCancellationRequested) { return BusReadiness.TimedOut; }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) { return BusReadiness.TimedOut; }
         }
         finally { StateChanged -= Handler; }
     }
 
-    private async Task RunLoopAsync(CancellationToken ct)
+    private async Task RunLoopAsync(CancellationToken cancellationToken)
     {
         var attempt = 0;
-        while (!ct.IsCancellationRequested)
+        while (!cancellationToken.IsCancellationRequested)
         {
             try
             {
-                var handle = await _connector.ConnectAsync(_options, ct).ConfigureAwait(false);
+                var handle = await _connector.ConnectAsync(_options, cancellationToken).ConfigureAwait(false);
                 SwapHandle(handle);
                 attempt = 0; // a successful connect clears the backoff streak
                 SetState(BusConnectionState.Ready);
-                await MonitorAsync(handle, ct).ConfigureAwait(false);
+                await MonitorAsync(handle, cancellationToken).ConfigureAwait(false);
                 // MonitorAsync returns only when the handle closed or we are stopping.
-                if (ct.IsCancellationRequested) return;
+                if (cancellationToken.IsCancellationRequested) return;
                 await ReleaseHandleAsync(handle).ConfigureAwait(false);
                 SetState(BusConnectionState.TransientFailure);
             }
@@ -103,17 +103,17 @@ internal sealed class StreamBusConnectionSupervisor : IAsyncDisposable
             {
                 attempt++;
                 SetState(BusConnectionState.TransientFailure);
-                await Task.Delay(ComputeDelay(attempt), ct).ConfigureAwait(false);
+                await Task.Delay(ComputeDelay(attempt), cancellationToken).ConfigureAwait(false);
             }
         }
     }
 
-    private async Task MonitorAsync(IStreamSystemHandle handle, CancellationToken ct)
+    private async Task MonitorAsync(IStreamSystemHandle handle, CancellationToken cancellationToken)
     {
         var interval = _options.Connection.MonitorInterval;
-        while (!ct.IsCancellationRequested)
+        while (!cancellationToken.IsCancellationRequested)
         {
-            await Task.Delay(interval, ct).ConfigureAwait(false);
+            await Task.Delay(interval, cancellationToken).ConfigureAwait(false);
             if (handle.IsClosed) return;
         }
     }

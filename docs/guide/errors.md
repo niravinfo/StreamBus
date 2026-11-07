@@ -174,7 +174,7 @@ type-specific:
 |---|---|---|
 | `StreamBusException` | Abstract base for every StreamBus exception. | Catch-all only. |
 | `StreamBusConfigurationException` | Invalid or contradictory configuration. | No - fix the configuration. |
-| `StreamConfigurationConflictException` | Existing broker topology disagrees with the declaration. | No - align the declaration or recreate the stream. |
+| `StreamBusStreamConfigurationConflictException` | Existing broker topology disagrees with the declaration. | No - align the declaration or recreate the stream. |
 | `StreamBusStartupBlockedException` | A typed consumer could not attach during blocking startup. | No - fix the consumer or dependency first. |
 | `StreamBusFatalException` | The bus connection is fatal. | No - reconnect/operator action. |
 | `StreamBusNotReadyException` | The bus is not ready for the operation yet. | Yes - transient. |

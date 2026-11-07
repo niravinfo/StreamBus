@@ -39,21 +39,25 @@ internal sealed class RecordingProducer : IStreamPlainProducerHandle
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }
 
-internal sealed class RecordingSystem : IStreamSystemHandle
+internal sealed class RecordingSystem : ScriptedSystemHandle
 {
     private readonly object _gate = new();
-    private readonly List<string> _existenceChecks = new();
     private readonly List<RecordingProducer> _producers = new();
     private int _closed;
 
-    public bool IsClosed => Volatile.Read(ref _closed) == 1;
-    public void MarkClosed() => Volatile.Write(ref _closed, 1);
+    public override bool IsClosed
+    {
+        get => Volatile.Read(ref _closed) == 1;
+        set => Volatile.Write(ref _closed, value ? 1 : 0);
+    }
 
-    public int ExistenceCheckCount { get { lock (_gate) return _existenceChecks.Count; } }
+    public void MarkClosed() => IsClosed = true;
+
+    public int ExistenceCheckCount { get { lock (ExistenceChecks) return ExistenceChecks.Count; } }
 
     public bool CheckedExistence(string stream)
     {
-        lock (_gate) return _existenceChecks.Contains(stream);
+        lock (ExistenceChecks) return ExistenceChecks.Contains(stream);
     }
 
     public RecordingProducer[] Producers()
@@ -74,49 +78,24 @@ internal sealed class RecordingSystem : IStreamSystemHandle
         }
     }
 
-    public Task<bool> StreamExistsAsync(string stream, CancellationToken ct)
-    {
-        lock (_gate) _existenceChecks.Add(stream);
-        return Task.FromResult(true);
-    }
-
-    public Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
+    public override Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
     {
         var producer = new RecordingProducer(stream, reference);
         lock (_gate) _producers.Add(producer);
         return Task.FromResult<IStreamPlainProducerHandle>(producer);
     }
 
-    public Task<IStreamPlainProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct)
+    public override Task<IStreamPlainProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct)
         => throw new NotSupportedException("Replay uses reference-scoped producers.");
 
-    public Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct)
+    public override Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct)
         => throw new NotSupportedException("Tests inject their own consumer factory.");
 
-    public Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken ct)
-        => Task.FromResult<ulong?>(null);
-
-    public Task<ulong> QuerySequenceAsync(string reference, string stream, CancellationToken ct)
-        => Task.FromResult(0UL);
-
-    public Task StoreSystemOffsetAsync(string reference, string stream, ulong offset, CancellationToken ct)
-        => Task.CompletedTask;
-
-    public Task<bool> SuperStreamExistsAsync(string superStream, CancellationToken ct)
-        => Task.FromResult(false);
-
-    public Task<string[]> QueryPartitionAsync(string superStream, CancellationToken ct)
-        => Task.FromResult(new[] { superStream });
-
-    public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
+    public override Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
         => throw new NotSupportedException("These tests use plain targets.");
 
-    public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
+    public override Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
         => throw new NotSupportedException("These tests use plain targets.");
-
-    public Task CreateStreamAsync(StreamSpec spec, CancellationToken ct) => Task.CompletedTask;
-    public Task CreateSuperStreamAsync(PartitionsSuperStreamSpec spec, CancellationToken ct) => Task.CompletedTask;
-    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }
 
 internal sealed class SwappingConnector : IStreamSystemConnector

@@ -55,7 +55,7 @@ internal sealed class TypedPublishFilterAdapter<T> : IStreamPublishFilter, IType
 
     public Type FilterType { get; }
 
-    public Task OnPublish(PublishContext context, PublishDelegate next)
+    public Task OnPublish(PublishContext context, PublishNext next)
         => _filter.OnPublish(
             context as PublishContext<T>
                 ?? throw new StreamBusConfigurationException(
@@ -75,7 +75,7 @@ internal sealed class TypedConsumeFilterAdapter<T> : IStreamConsumeFilter, IType
 
     public Type FilterType { get; }
 
-    public Task OnConsume(ConsumeContext context, ConsumeDelegate next)
+    public Task OnConsume(ConsumeContext context, ConsumeNext next)
         => _filter.OnConsume(
             context as ConsumeContext<T>
                 ?? throw new StreamBusConfigurationException(

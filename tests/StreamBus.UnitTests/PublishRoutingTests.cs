@@ -24,39 +24,27 @@ public sealed class PublishRoutingTests
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
-    private sealed class CapturingSystem : IStreamSystemHandle
+    private sealed class CapturingSystem : ScriptedSystemHandle
     {
-        public readonly List<string> PlainStreams = new();
-        public readonly List<string> SuperStreams = new();
         public readonly CapturingHandle Plain = new();
         public readonly CapturingHandle Super = new();
-        public bool IsClosed => false;
-        public Task<IStreamPlainProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct)
+
+        public CapturingSystem()
         {
-            lock (PlainStreams) PlainStreams.Add(stream);
-            return Task.FromResult<IStreamPlainProducerHandle>(Plain);
+            OnCreatePlainProducer = (_, _) => Task.FromResult<IStreamPlainProducerHandle>(Plain);
+            OnCreateSuperProducer = (_, _) => Task.FromResult<IStreamSuperProducerHandle>(Super);
+            StreamExistsResult = _ => false;
+            PartitionsResult = _ => Array.Empty<string>();
         }
-        public Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
+
+        public override Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
             => throw new NotImplementedException("PublishRoutingTests never replays.");
-        public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
-        {
-            lock (SuperStreams) SuperStreams.Add(stream);
-            return Task.FromResult<IStreamSuperProducerHandle>(Super);
-        }
-        public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
+        public override Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
             => throw new NotImplementedException("PublishRoutingTests never replays.");
-        public Task<ulong> QuerySequenceAsync(string reference, string stream, CancellationToken ct)
+        public override Task<ulong> QuerySequenceAsync(string reference, string stream, CancellationToken ct)
             => throw new NotImplementedException("PublishRoutingTests never queries sequences.");
-        public Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken ct) => Task.FromResult<ulong?>(null);
-        public Task StoreSystemOffsetAsync(string reference, string stream, ulong offset, CancellationToken ct) => Task.CompletedTask;
-        public Task<bool> StreamExistsAsync(string stream, CancellationToken ct) => Task.FromResult(false);
-        public Task<bool> SuperStreamExistsAsync(string superStream, CancellationToken ct) => Task.FromResult(false);
-        public Task<string[]> QueryPartitionAsync(string superStream, CancellationToken ct) => Task.FromResult(Array.Empty<string>());
-        public Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct)
+        public override Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct)
             => throw new NotImplementedException("PublishRoutingTests never consumes.");
-        public Task CreateStreamAsync(StreamSpec spec, CancellationToken ct) => Task.CompletedTask;
-        public Task CreateSuperStreamAsync(PartitionsSuperStreamSpec spec, CancellationToken ct) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
     private sealed class ReadyConnector : IStreamSystemConnector
@@ -163,7 +151,7 @@ public sealed class PublishRoutingTests
     {
         var (registry, system) = CreateRegistry(s => s.Add(typeof(DefaultBus), typeof(OrderEvent), "orders-super", isSuper: true));
         var bus = registry.GetOrCreateBus("/");
-        await bus.PublishSuperAsync(new OrderEvent("o-1", 1), "o-1", ct: TestContext.Current.CancellationToken);
+        await bus.PublishSuperAsync(new OrderEvent("o-1", 1), "o-1", cancellationToken: TestContext.Current.CancellationToken);
         Assert.Contains("orders-super", system.SuperStreams);
         var sent = Assert.Single(system.Super.Sent);
         Assert.Equal("o-1", sent.RoutingKey);
@@ -175,7 +163,7 @@ public sealed class PublishRoutingTests
         var (registry, _) = CreateRegistry(s => s.Add(typeof(DefaultBus), typeof(OrderEvent), "orders-super", isSuper: true));
         var bus = registry.GetOrCreateBus("/");
         await Assert.ThrowsAsync<ArgumentException>(() =>
-            bus.PublishSuperAsync(new OrderEvent("o-1", 1), "", ct: TestContext.Current.CancellationToken));
+            bus.PublishSuperAsync(new OrderEvent("o-1", 1), "", cancellationToken: TestContext.Current.CancellationToken));
     }
 
     [Fact]
@@ -184,13 +172,13 @@ public sealed class PublishRoutingTests
         var (plainRegistry, _) = CreateRegistry(s => s.Add(typeof(DefaultBus), typeof(OrderEvent), "orders", isSuper: false));
         var plainBus = plainRegistry.GetOrCreateBus("/");
         var plainEx = await Assert.ThrowsAsync<StreamBusConfigurationException>(() =>
-            plainBus.PublishSuperAsync(new OrderEvent("o-1", 1), "o-1", ct: TestContext.Current.CancellationToken));
+            plainBus.PublishSuperAsync(new OrderEvent("o-1", 1), "o-1", cancellationToken: TestContext.Current.CancellationToken));
         Assert.Contains("Use PublishAsync", plainEx.Message, StringComparison.Ordinal);
 
         var (superRegistry, _) = CreateRegistry(s => s.Add(typeof(DefaultBus), typeof(OrderEvent), "orders-super", isSuper: true));
         var superBus = superRegistry.GetOrCreateBus("/");
         var superEx = await Assert.ThrowsAsync<StreamBusConfigurationException>(() =>
-            superBus.PublishAsync(new OrderEvent("o-1", 1), ct: TestContext.Current.CancellationToken));
+            superBus.PublishAsync(new OrderEvent("o-1", 1), cancellationToken: TestContext.Current.CancellationToken));
         Assert.Contains("Use PublishSuperAsync", superEx.Message, StringComparison.Ordinal);
     }
 
@@ -213,31 +201,27 @@ public sealed class PublishRoutingTests
         Assert.Equal("o-1", Assert.Single(system.Super.Sent).RoutingKey);
     }
 
-    private sealed class NotFoundSystem : IStreamSystemHandle
+    private sealed class NotFoundSystem : ScriptedSystemHandle
     {
-        public bool IsClosed => false;
-        public Task<IStreamPlainProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct)
-            => Task.FromException<IStreamPlainProducerHandle>(new RabbitMQ.Stream.Client.CreateProducerException(
-                "producer could not be created code: StreamDoesNotExist",
-                RabbitMQ.Stream.Client.ResponseCode.StreamDoesNotExist));
-        public Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
+        public NotFoundSystem()
+        {
+            OnCreatePlainProducer = (_, _) => Task.FromException<IStreamPlainProducerHandle>(
+                new CreateProducerException(
+                    "producer could not be created code: StreamDoesNotExist",
+                    ResponseCode.StreamDoesNotExist));
+            StreamExistsResult = _ => false;
+            PartitionsResult = _ => Array.Empty<string>();
+        }
+        public override Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
             => throw new NotImplementedException("NotFoundSystem never replays.");
-        public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
+        public override Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
             => throw new NotImplementedException("NotFoundSystem never creates super producers.");
-        public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
+        public override Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
             => throw new NotImplementedException("NotFoundSystem never replays.");
-        public Task<ulong> QuerySequenceAsync(string reference, string stream, CancellationToken ct)
+        public override Task<ulong> QuerySequenceAsync(string reference, string stream, CancellationToken ct)
             => throw new NotImplementedException("NotFoundSystem never queries sequences.");
-        public Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken ct) => Task.FromResult<ulong?>(null);
-        public Task StoreSystemOffsetAsync(string reference, string stream, ulong offset, CancellationToken ct) => Task.CompletedTask;
-        public Task<bool> StreamExistsAsync(string stream, CancellationToken ct) => Task.FromResult(false);
-        public Task<bool> SuperStreamExistsAsync(string superStream, CancellationToken ct) => Task.FromResult(false);
-        public Task<string[]> QueryPartitionAsync(string superStream, CancellationToken ct) => Task.FromResult(Array.Empty<string>());
-        public Task<RabbitMQ.Stream.Client.RawConsumer> CreateRawConsumerAsync(RabbitMQ.Stream.Client.RawConsumerConfig config, CancellationToken ct)
+        public override Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct)
             => throw new NotImplementedException("NotFoundSystem never consumes.");
-        public Task CreateStreamAsync(RabbitMQ.Stream.Client.StreamSpec spec, CancellationToken ct) => Task.CompletedTask;
-        public Task CreateSuperStreamAsync(RabbitMQ.Stream.Client.PartitionsSuperStreamSpec spec, CancellationToken ct) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
     [Fact]

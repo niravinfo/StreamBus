@@ -18,7 +18,7 @@ internal sealed class ConsumePipelineTenantProbe
 
 internal sealed class ConsumePipelineTenantFilter : IStreamConsumeFilter
 {
-    public Task OnConsume(ConsumeContext context, ConsumeDelegate next)
+    public Task OnConsume(ConsumeContext context, ConsumeNext next)
     {
         var scope = (ConsumePipelineTenantScope)context.Services.GetRequiredService(typeof(ConsumePipelineTenantScope));
         scope.Tenant = context.Headers.All.TryGetValue("tenant", out var value)
@@ -42,7 +42,7 @@ internal sealed class ConsumePipelineTenantConsumer(
 
 internal sealed class ConsumePipelineHeaderThrowingFilter : IStreamConsumeFilter
 {
-    public Task OnConsume(ConsumeContext context, ConsumeDelegate next)
+    public Task OnConsume(ConsumeContext context, ConsumeNext next)
     {
         if (context.Headers.All.TryGetValue("tenant", out var tenant))
             context.SendHeaders.Set("tenant", tenant);
@@ -52,7 +52,7 @@ internal sealed class ConsumePipelineHeaderThrowingFilter : IStreamConsumeFilter
 
 internal sealed class ConsumePipelineFilteringFilter : IStreamConsumeFilter
 {
-    public Task OnConsume(ConsumeContext context, ConsumeDelegate next)
+    public Task OnConsume(ConsumeContext context, ConsumeNext next)
         => Task.CompletedTask;
 }
 

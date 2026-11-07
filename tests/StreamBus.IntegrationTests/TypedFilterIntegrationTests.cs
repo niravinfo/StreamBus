@@ -56,7 +56,7 @@ internal sealed class TypedFilterOrderPublishFilter : IStreamPublishFilter<Typed
 {
     public Task OnPublish(
         PublishContext<TypedFilterOrder> context,
-        PublishDelegate next)
+        PublishNext next)
     {
         context.Headers.Set(TypedFilterHeaders.Order, context.Message.Id);
         return next();
@@ -68,7 +68,7 @@ internal sealed class TypedFilterOrderConsumeFilter(TypedFilterProbe probe)
 {
     public Task OnConsume(
         ConsumeContext<TypedFilterOrder> context,
-        ConsumeDelegate next)
+        ConsumeNext next)
     {
         probe.Record(
             TypedFilterProbe.TypedConsume,
@@ -82,7 +82,7 @@ internal sealed class TypedFilterOrderConsumeFilter(TypedFilterProbe probe)
 
 internal sealed class TypedFilterUniversalConsumeFilter(TypedFilterProbe probe) : IStreamConsumeFilter
 {
-    public Task OnConsume(ConsumeContext context, ConsumeDelegate next)
+    public Task OnConsume(ConsumeContext context, ConsumeNext next)
     {
         probe.Record(
             TypedFilterProbe.UniversalConsume,

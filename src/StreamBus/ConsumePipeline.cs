@@ -26,7 +26,7 @@ public interface IStreamConsumeFilter
     /// handled and advance the offset without invoking the handler.
     /// </param>
     /// <returns>A task that completes when the filter and any continuation finish.</returns>
-    Task OnConsume(ConsumeContext context, ConsumeDelegate next);
+    Task OnConsume(ConsumeContext context, ConsumeNext next);
 }
 
 /// <summary>
@@ -53,7 +53,7 @@ public interface IStreamConsumeFilter<T>
     /// handled and advance the offset without invoking the handler.
     /// </param>
     /// <returns>A task that completes when the filter and any continuation finish.</returns>
-    Task OnConsume(ConsumeContext<T> context, ConsumeDelegate next);
+    Task OnConsume(ConsumeContext<T> context, ConsumeNext next);
 }
 
 /// <summary>
@@ -61,7 +61,7 @@ public interface IStreamConsumeFilter<T>
 /// zero skips the delivery (the handler is not invoked and the offset
 /// advances); more than one call is rejected.
 /// </summary>
-public delegate Task ConsumeDelegate();
+public delegate Task ConsumeNext();
 
 internal sealed class ConsumeFilterRegistration
 {
@@ -240,14 +240,14 @@ internal sealed class ConsumePipeline
 
     public int Count => _filters.Length;
 
-    public Task RunAsync(ConsumeContext context, ConsumeDelegate terminal)
+    public Task RunAsync(ConsumeContext context, ConsumeNext terminal)
     {
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(terminal);
         return RunMeasuredAsync(context, terminal);
     }
 
-    private async Task RunMeasuredAsync(ConsumeContext context, ConsumeDelegate terminal)
+    private async Task RunMeasuredAsync(ConsumeContext context, ConsumeNext terminal)
     {
         var started = Stopwatch.GetTimestamp();
         try
@@ -260,7 +260,7 @@ internal sealed class ConsumePipeline
         }
     }
 
-    private async Task InvokeAsync(int index, ConsumeContext context, ConsumeDelegate terminal)
+    private async Task InvokeAsync(int index, ConsumeContext context, ConsumeNext terminal)
     {
         if (index == _filters.Length)
         {

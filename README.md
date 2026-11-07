@@ -94,7 +94,7 @@ Every capability points to its guide section:
 - Topology derivation, runtime `bus.Topology`, adopt rule, conflicts (`docs/guide/topology.md`)
 - Multi-bus markers + shared consumer classes (`docs/guide/multi-bus.md`)
 - Message properties: message/correlation IDs and typed headers (`docs/guide/publish.md`)
-- Middleware: ordered publish/consume filters, explicit consume skip, telemetry (`docs/guide/publish.md`, `docs/guide/consume.md`)
+- Middleware: ordered publish/consume filters, telemetry (`docs/guide/publish.md`, `docs/guide/consume.md`)
 - Observability: per-registration health, metrics, log events (`docs/guide/observability.md`)
 
 ## Concepts

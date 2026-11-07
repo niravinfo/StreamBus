@@ -19,7 +19,7 @@ internal sealed class TypedOrderProbe
 
 internal sealed class TypedOrderFilter(TypedOrderProbe probe) : IStreamConsumeFilter<TypedOrderMessage>
 {
-    public Task OnConsume(ConsumeContext<TypedOrderMessage> context, ConsumeDelegate next)
+    public Task OnConsume(ConsumeContext<TypedOrderMessage> context, ConsumeNext next)
     {
         lock (probe.TypedContexts) probe.TypedContexts.Add(context);
         lock (probe.FilterMessages) probe.FilterMessages.Add(context.Message);
@@ -29,7 +29,7 @@ internal sealed class TypedOrderFilter(TypedOrderProbe probe) : IStreamConsumeFi
 
 internal sealed class TypedInvoiceFilter(TypedOrderProbe probe) : IStreamConsumeFilter<TypedInvoiceMessage>
 {
-    public Task OnConsume(ConsumeContext<TypedInvoiceMessage> context, ConsumeDelegate next)
+    public Task OnConsume(ConsumeContext<TypedInvoiceMessage> context, ConsumeNext next)
     {
         Interlocked.Increment(ref probe.InvoiceFilterCalls);
         return next();
@@ -52,7 +52,7 @@ internal sealed class TypedOpenFilterProbe
 
 internal sealed class TypedOpenFilter<T>(TypedOpenFilterProbe probe) : IStreamConsumeFilter<T>
 {
-    public Task OnConsume(ConsumeContext<T> context, ConsumeDelegate next)
+    public Task OnConsume(ConsumeContext<T> context, ConsumeNext next)
     {
         lock (probe.Messages) probe.Messages.Add(context.Message!);
         return next();
@@ -61,13 +61,13 @@ internal sealed class TypedOpenFilter<T>(TypedOpenFilterProbe probe) : IStreamCo
 
 internal sealed class TypedFilteringFilter : IStreamConsumeFilter<TypedOrderMessage>
 {
-    public Task OnConsume(ConsumeContext<TypedOrderMessage> context, ConsumeDelegate next)
+    public Task OnConsume(ConsumeContext<TypedOrderMessage> context, ConsumeNext next)
         => Task.CompletedTask;
 }
 
 internal sealed class UniversalCaptureFilter(TypedOrderProbe probe) : IStreamConsumeFilter
 {
-    public Task OnConsume(ConsumeContext context, ConsumeDelegate next)
+    public Task OnConsume(ConsumeContext context, ConsumeNext next)
     {
         lock (probe.UniversalContexts) probe.UniversalContexts.Add(context);
         return next();
@@ -76,7 +76,7 @@ internal sealed class UniversalCaptureFilter(TypedOrderProbe probe) : IStreamCon
 
 internal sealed class CountingTypedFilteringFilter(TypedOrderProbe probe) : IStreamConsumeFilter<TypedOrderMessage>
 {
-    public Task OnConsume(ConsumeContext<TypedOrderMessage> context, ConsumeDelegate next)
+    public Task OnConsume(ConsumeContext<TypedOrderMessage> context, ConsumeNext next)
     {
         Interlocked.Increment(ref probe.TypedFilteredCalls);
         return Task.CompletedTask;
@@ -85,7 +85,7 @@ internal sealed class CountingTypedFilteringFilter(TypedOrderProbe probe) : IStr
 
 internal sealed class CountingUniversalFilteringFilter(TypedOrderProbe probe) : IStreamConsumeFilter
 {
-    public Task OnConsume(ConsumeContext context, ConsumeDelegate next)
+    public Task OnConsume(ConsumeContext context, ConsumeNext next)
     {
         Interlocked.Increment(ref probe.UniversalFilteredCalls);
         return Task.CompletedTask;
@@ -110,13 +110,13 @@ internal sealed class MultiMessageBusConsumeFilter : IStreamConsumeFilter<TypedO
         Interlocked.Increment(ref probe.Instances);
     }
 
-    public Task OnConsume(ConsumeContext<TypedOrderMessage> context, ConsumeDelegate next)
+    public Task OnConsume(ConsumeContext<TypedOrderMessage> context, ConsumeNext next)
     {
         Interlocked.Increment(ref _probe.Calls);
         return next();
     }
 
-    public Task OnConsume(ConsumeContext<TypedInvoiceMessage> context, ConsumeDelegate next)
+    public Task OnConsume(ConsumeContext<TypedInvoiceMessage> context, ConsumeNext next)
     {
         Interlocked.Increment(ref _probe.Calls);
         return next();
@@ -143,13 +143,13 @@ internal sealed class MultiInterfaceInvoiceConsumer(MultiInterfaceConsumeProbe p
 
 internal sealed class NoNextTypedFilter : IStreamConsumeFilter<TypedOrderMessage>
 {
-    public Task OnConsume(ConsumeContext<TypedOrderMessage> context, ConsumeDelegate next)
+    public Task OnConsume(ConsumeContext<TypedOrderMessage> context, ConsumeNext next)
         => Task.CompletedTask;
 }
 
 internal sealed class DoubleNextTypedFilter : IStreamConsumeFilter<TypedOrderMessage>
 {
-    public async Task OnConsume(ConsumeContext<TypedOrderMessage> context, ConsumeDelegate next)
+    public async Task OnConsume(ConsumeContext<TypedOrderMessage> context, ConsumeNext next)
     {
         await next();
         await next();
@@ -158,7 +158,7 @@ internal sealed class DoubleNextTypedFilter : IStreamConsumeFilter<TypedOrderMes
 
 internal sealed class LoggingUniversalFilter<TTag>(string name, List<string> log) : IStreamConsumeFilter
 {
-    public async Task OnConsume(ConsumeContext context, ConsumeDelegate next)
+    public async Task OnConsume(ConsumeContext context, ConsumeNext next)
     {
         lock (log) log.Add($"{name}-in");
         await next();
@@ -168,7 +168,7 @@ internal sealed class LoggingUniversalFilter<TTag>(string name, List<string> log
 
 internal sealed class LoggingTypedFilter<TMessage, TTag>(string name, List<string> log) : IStreamConsumeFilter<TMessage>
 {
-    public async Task OnConsume(ConsumeContext<TMessage> context, ConsumeDelegate next)
+    public async Task OnConsume(ConsumeContext<TMessage> context, ConsumeNext next)
     {
         lock (log) log.Add($"{name}-in");
         await next();

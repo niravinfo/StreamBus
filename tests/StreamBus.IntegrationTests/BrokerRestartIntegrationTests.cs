@@ -8,11 +8,11 @@ using RabbitMQ.Stream.Client;
 namespace StreamBus.IntegrationTests;
 
 [Collection(ChaosCollection.Name)]
-public sealed class BrokerRestartTests : IAsyncDisposable
+public sealed class BrokerRestartIntegrationTests : IAsyncDisposable
 {
     private const int LoadMessages = 40;
 
-    public BrokerRestartTests() => IntegrationLane.RequireBroker();
+    public BrokerRestartIntegrationTests() => IntegrationLane.RequireBroker();
 
     private static string User() => Environment.GetEnvironmentVariable("STREAMBUS_USER") ?? "app";
     private static string Password() => Environment.GetEnvironmentVariable("STREAMBUS_PASSWORD") ?? "password";

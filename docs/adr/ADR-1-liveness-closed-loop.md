@@ -54,8 +54,8 @@ Recovery is a closed loop owned by the entity that owns the resource:
 
 - `ConnectionSupervisorTests.Supervisor_reconnects_after_system_handle_closes`
 - `ConsumerDeathTests` (unit close-callback and attach-loop tests)
-- `ConsumerDeathTests.Connection_closed_while_idle_reattaches_within_bounds` and
-  `ConsumerDeathTests.Metadata_event_close_reattaches_and_promotes_correctly`
+- `ConsumerDeathIntegrationTests.Connection_closed_while_idle_reattaches_within_bounds` and
+  `ConsumerDeathIntegrationTests.Metadata_event_close_reattaches_and_promotes_correctly`
   (integration, V2-A1)
-- `BrokerRestartTests.Connections_kill_does_not_skip_or_gap` (integration,
+- `BrokerRestartIntegrationTests.Connections_kill_does_not_skip_or_gap` (integration,
   V2-D2)

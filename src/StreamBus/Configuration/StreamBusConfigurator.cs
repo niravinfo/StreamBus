@@ -6,33 +6,110 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace StreamBus;
 
+/// <summary>Service collection passed to the bus configuration callback.</summary>
 public interface IStreamRegistrationContext
 {
+    /// <summary>The service collection the bus is being added to.</summary>
     IServiceCollection Services { get; }
 }
 
+/// <summary>Configures broker connection settings inside <c>Host</c>.</summary>
 public interface IHostConfigurator
 {
+    /// <summary>Sets the broker credentials.</summary>
+    /// <param name="user">User name; must not be null.</param>
+    /// <param name="password">Password; must not be null.</param>
     void Credentials(string user, string password);
+
+    /// <summary>Sets the stream protocol port.</summary>
+    /// <param name="port">Stream port; default 5552.</param>
     void StreamPort(int port = 5552);
+
+    /// <summary>Sets the AMQP port used for dead-letter queues and topology.</summary>
+    /// <param name="port">AMQP port; default 5672.</param>
     void AmqpPort(int port = 5672);
+
+    /// <summary>Sets the requested heartbeat interval.</summary>
+    /// <param name="heartbeat">Heartbeat interval; must be positive.</param>
     void Heartbeat(TimeSpan heartbeat);
+
+    /// <summary>Sets the connection monitor interval.</summary>
+    /// <param name="interval">Interval between monitor passes; positive, at most 60 seconds.</param>
     void MonitorInterval(TimeSpan interval);
+
+    /// <summary>Sets producers multiplexed per connection.</summary>
+    /// <param name="count">Producer count; 1..255.</param>
     void ProducersPerConnection(int count = 1);
+
+    /// <summary>Sets consumers multiplexed per connection.</summary>
+    /// <param name="count">Consumer count; 1..255.</param>
     void ConsumersPerConnection(int count = 1);
 }
 
+/// <summary>Configures one StreamBus bus: connection, topology, and retry.</summary>
 public interface IStreamBusConfigurator
 {
+    /// <summary>Sets the broker connection; exactly one per bus.</summary>
+    /// <param name="host">Broker host name or address; must not be empty.</param>
+    /// <param name="vhost">RabbitMQ virtual host; must not be empty.</param>
+    /// <param name="configure">Connection settings callback.</param>
+    /// <exception cref="StreamBusConfigurationException">Called more than once for this bus.</exception>
     void Host(string host, string vhost, Action<IHostConfigurator> configure);
+
+    /// <summary>Replaces the message serializer.</summary>
+    /// <param name="serializer">Serializer used by typed publish and consume.</param>
     void Serializer(IStreamSerializer serializer);
+
+    /// <summary>
+    /// Replaces the message serializer with a System.Text.Json serializer built
+    /// from a fresh <see cref="JsonSerializerOptions"/> configured by
+    /// <paramref name="configure"/>.
+    /// </summary>
+    /// <param name="configure">Callback that mutates the new options.</param>
     void Serializer(Action<JsonSerializerOptions> configure);
+
+    /// <summary>Declares a publish stream for <typeparamref name="TMessage"/>.</summary>
+    /// <typeparam name="TMessage">The publish message type.</typeparam>
+    /// <param name="stream">Stream name; must not be empty.</param>
+    /// <param name="configure">Optional stream declaration callback.</param>
     void Publish<TMessage>(string stream, Action<IStreamOptionsBuilder>? configure = null);
+
+    /// <summary>Declares a publish stream for <typeparamref name="TMessage"/> with an explicit declaration spec.</summary>
+    /// <typeparam name="TMessage">The publish message type.</typeparam>
+    /// <param name="stream">Stream name; must not be empty.</param>
+    /// <param name="spec">Stream declaration spec.</param>
     void Publish<TMessage>(string stream, StreamOptions spec);
+
+    /// <summary>Declares a super-stream publish for <typeparamref name="TMessage"/>.</summary>
+    /// <typeparam name="TMessage">The publish message type.</typeparam>
+    /// <param name="stream">Super-stream name; must not be empty.</param>
+    /// <param name="configure">Super-stream declaration callback.</param>
     void PublishSuper<TMessage>(string stream, Action<ISuperStreamOptionsBuilder> configure);
+
+    /// <summary>Declares a super-stream publish for <typeparamref name="TMessage"/> with an explicit declaration spec.</summary>
+    /// <typeparam name="TMessage">The publish message type.</typeparam>
+    /// <param name="stream">Super-stream name; must not be empty.</param>
+    /// <param name="spec">Super-stream declaration spec.</param>
     void PublishSuper<TMessage>(string stream, StreamOptions spec);
+
+    /// <summary>Declares a receive endpoint on <paramref name="stream"/> for one consumer and consumer group.</summary>
+    /// <param name="stream">Stream name; must not be empty.</param>
+    /// <param name="configure">Endpoint configuration callback.</param>
     void ReceiveEndpoint(string stream, Action<IReceiveEndpointConfigurator> configure);
+
+    /// <summary>
+    /// Configures the bus-wide retry schedule; endpoints inherit it unless they
+    /// override it with their own schedule.
+    /// </summary>
+    /// <param name="configure">Retry configuration callback.</param>
+    /// <exception cref="StreamBusConfigurationException">The callback sets no schedule.</exception>
     void UseMessageRetry(Action<IRetryConfigurator> configure);
+
+    /// <summary>
+    /// Sets the bus-wide retry schedule from a raw policy, an escape hatch for
+    /// schedules the fluent configurator cannot express.
+    /// </summary>
+    /// <param name="policy">The retry policy to inherit by every endpoint without its own schedule.</param>
     void UseRetry(RetryPolicy policy);
     /// <summary>
     /// Registers a publish filter, discovering its typed message interfaces at
@@ -112,15 +189,52 @@ public interface IStreamBusConfigurator
     void UseConsumeFilter(IStreamConsumeFilter instance);
 }
 
+/// <summary>Configures one receive endpoint: consumer, offset, retry, and exhaustion behavior.</summary>
 public interface IReceiveEndpointConfigurator
 {
+    /// <summary>
+    /// Sets the endpoint's typed consumer and its consumer group; exactly once
+    /// per endpoint. The consumer class must implement
+    /// <c>IConsumer&lt;T&gt;</c> for exactly one message type.
+    /// </summary>
+    /// <typeparam name="TConsumer">The consumer class; registered as transient.</typeparam>
+    /// <param name="consumerGroup">Consumer group name; required, at most 255 UTF-8 bytes.</param>
+    /// <exception cref="StreamBusConfigurationException">Called twice, the group name is empty, the group name exceeds the broker's 255-byte limit, or the consumer type implements <c>IConsumer&lt;T&gt;</c> for zero or multiple message types.</exception>
     void Consumer<TConsumer>(string consumerGroup) where TConsumer : class;
+
+    /// <summary>Marks the endpoint's stream as a super-stream.</summary>
+    /// <param name="enabled">Whether the stream is a super-stream.</param>
     void SuperStream(bool enabled = true);
+
+    /// <summary>Enables or disables single-active-consumer semantics for the consumer group.</summary>
+    /// <param name="enabled">Whether only one consumer instance in the group is active.</param>
     void SingleActiveConsumer(bool enabled = true);
+
+    /// <summary>Sets where the consumer starts when no stored offset exists.</summary>
+    /// <param name="offset">The first-offset policy.</param>
     void Offset(ConsumeOffset offset);
+
+    /// <summary>Sets the offset-tracking store options.</summary>
+    /// <param name="options">Offset store configuration.</param>
     void OffsetStore(OffsetStoreOptions options);
+
+    /// <summary>Sets the readiness policy for the consumer.</summary>
+    /// <param name="policy">The readiness policy.</param>
     void Readiness(ReadinessPolicy policy);
+
+    /// <summary>
+    /// Configures this endpoint's retry schedule, overriding the bus-wide
+    /// schedule for messages delivered to this endpoint.
+    /// </summary>
+    /// <param name="configure">Retry configuration callback.</param>
+    /// <exception cref="StreamBusConfigurationException">The callback sets no schedule.</exception>
     void UseMessageRetry(Action<IRetryConfigurator> configure);
+
+    /// <summary>
+    /// Sets this endpoint's retry schedule from a raw policy, overriding the
+    /// bus-wide schedule.
+    /// </summary>
+    /// <param name="policy">The retry policy for this endpoint.</param>
     void UseRetry(RetryPolicy policy);
     /// <summary>
     /// Registers a consume filter on this endpoint and discovers its typed
@@ -163,16 +277,83 @@ public interface IReceiveEndpointConfigurator
     /// delivery on this endpoint.
     /// </summary>
     void UseConsumeFilter(IStreamConsumeFilter instance);
+    /// <summary>
+    /// Declares a stream dead-letter destination for messages whose retry
+    /// schedule is exhausted; at most one dead-letter destination per endpoint.
+    /// The destination is declared at startup with the given spec (partitions
+    /// are not allowed).
+    /// </summary>
+    /// <param name="name">Destination stream name; must not be empty.</param>
+    /// <param name="configure">Optional stream declaration callback.</param>
+    /// <exception cref="StreamBusConfigurationException">A dead-letter destination is already configured, or the declaration spec is invalid.</exception>
     void DeadLetterToStream(string name, Action<IStreamOptionsBuilder>? configure = null);
+
+    /// <summary>
+    /// Declares a stream dead-letter destination with an explicit declaration
+    /// spec; at most one dead-letter destination per endpoint.
+    /// </summary>
+    /// <param name="name">Destination stream name; must not be empty.</param>
+    /// <param name="spec">Destination stream declaration spec; partitions are not allowed.</param>
+    /// <exception cref="StreamBusConfigurationException">A dead-letter destination is already configured, or the declaration spec is invalid.</exception>
     void DeadLetterToStream(string name, StreamOptions spec);
+
+    /// <summary>
+    /// Declares a durable AMQP queue dead-letter destination; at most one
+    /// dead-letter destination per endpoint.
+    /// </summary>
+    /// <param name="name">Destination queue name; must not be empty.</param>
+    /// <param name="type">Queue type; must be a defined <see cref="DeadLetterQueueType"/> value.</param>
+    /// <exception cref="StreamBusConfigurationException">A dead-letter destination is already configured, or <paramref name="type"/> is undefined.</exception>
     void DeadLetterToQueue(string name, DeadLetterQueueType type);
+
+    /// <summary>
+    /// Declares a durable AMQP queue dead-letter destination with configured
+    /// error-queue options; at most one dead-letter destination per endpoint.
+    /// </summary>
+    /// <param name="name">Destination queue name; must not be empty.</param>
+    /// <param name="type">Queue type; must be a defined <see cref="DeadLetterQueueType"/> value.</param>
+    /// <param name="configure">Error-queue options callback (e.g. confirm timeout).</param>
+    /// <exception cref="StreamBusConfigurationException">A dead-letter destination is already configured, or <paramref name="type"/> is undefined.</exception>
     void DeadLetterToQueue(string name, DeadLetterQueueType type, Action<IErrorQueueOptionsBuilder> configure);
+
+    /// <summary>
+    /// Sets the confirmation budget for a stream dead-letter hand-off. Values
+    /// below one second are raised to one second.
+    /// </summary>
+    /// <param name="timeout">The stream hand-off confirmation timeout; must be positive.</param>
+    /// <exception cref="StreamBusConfigurationException"><paramref name="timeout"/> is not positive.</exception>
     void ErrorHandoffTimeout(TimeSpan timeout);
+
+    /// <summary>
+    /// Registers a callback that owns the outcome for messages whose retry
+    /// schedule is exhausted. It shadows a declared dead-letter destination
+    /// with a startup warning; returning advances past the message, throwing
+    /// recycles the attach for redelivery. Last call wins.
+    /// </summary>
+    /// <param name="handler">The exhaustion callback.</param>
     void OnExhausted(Func<ExhaustedContext, CancellationToken, Task> handler);
+
+    /// <summary>
+    /// Marks the endpoint's stream as a super-stream partitioned into
+    /// <paramref name="partitions"/> partitions.
+    /// </summary>
+    /// <param name="partitions">Partition count for the super-stream; must be >= 1.</param>
     void Partitions(int partitions);
+
+    /// <summary>Sets the stream's maximum age before segment truncation.</summary>
+    /// <param name="maxAge">The maximum age.</param>
     void MaxAge(TimeSpan maxAge);
+
+    /// <summary>Sets the stream's maximum length in bytes before segment truncation.</summary>
+    /// <param name="maxLengthBytes">The maximum length in bytes.</param>
     void MaxLengthBytes(ulong maxLengthBytes);
+
+    /// <summary>Sets the maximum size of a single stream segment in bytes.</summary>
+    /// <param name="maxSegmentSizeBytes">The segment size limit in bytes.</param>
     void MaxSegmentSizeBytes(int maxSegmentSizeBytes);
+
+    /// <summary>Sets the stream's leader locator strategy.</summary>
+    /// <param name="locator">The leader locator.</param>
     void LeaderLocator(StreamLeaderLocator locator);
 }
 
@@ -730,8 +911,17 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
     }
 }
 
+/// <summary>AddStreamBus entry points for the service collection.</summary>
 public static class StreamBusConfiguratorExtensions
 {
+    /// <summary>
+    /// Adds the default bus (<see cref="IStreamBus"/>) configured by
+    /// <paramref name="configure"/>: topology declarations, retry schedules,
+    /// and receive endpoints are validated and registered immediately.
+    /// </summary>
+    /// <param name="services">The service collection.</param>
+    /// <param name="configure">The bus configuration callback.</param>
+    /// <exception cref="StreamBusConfigurationException">The configuration is invalid or contradictory.</exception>
     public static IServiceCollection AddStreamBus(
         this IServiceCollection services,
         Action<IStreamRegistrationContext, IStreamBusConfigurator> configure)
@@ -741,6 +931,16 @@ public static class StreamBusConfiguratorExtensions
         return AddCore(services, typeof(DefaultBus), configure);
     }
 
+    /// <summary>
+    /// Adds a named bus (<typeparamref name="TBus"/>, exposed as
+    /// <c>IStreamBus&lt;TBus&gt;</c>) configured by <paramref name="configure"/>:
+    /// topology declarations, retry schedules, and receive endpoints are
+    /// validated and registered immediately.
+    /// </summary>
+    /// <typeparam name="TBus">Marker type that identifies this bus.</typeparam>
+    /// <param name="services">The service collection.</param>
+    /// <param name="configure">The bus configuration callback.</param>
+    /// <exception cref="StreamBusConfigurationException">The configuration is invalid or contradictory.</exception>
     public static IServiceCollection AddStreamBus<TBus>(
         this IServiceCollection services,
         Action<IStreamRegistrationContext, IStreamBusConfigurator> configure)
