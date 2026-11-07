@@ -34,7 +34,7 @@ public sealed class SentContextProbe
 
 public sealed class SentProbeFilter(SentContextProbe probe) : IStreamPublishFilter
 {
-    public Task OnPublish(PublishContext context, PublishDelegate next)
+    public Task OnPublish(PublishContext context, PublishNext next)
     {
         probe.Record(context);
         return next();
@@ -65,7 +65,7 @@ public sealed class SharedPublishContextProbe
 
 public sealed class SharedUniversalPublishFilter(SharedPublishContextProbe probe) : IStreamPublishFilter
 {
-    public Task OnPublish(PublishContext context, PublishDelegate next)
+    public Task OnPublish(PublishContext context, PublishNext next)
     {
         probe.RecordUniversal(context);
         return next();
@@ -74,7 +74,7 @@ public sealed class SharedUniversalPublishFilter(SharedPublishContextProbe probe
 
 public sealed class SharedTypedPublishFilter(SharedPublishContextProbe probe) : IStreamPublishFilter<PipelineOrder>
 {
-    public Task OnPublish(PublishContext<PipelineOrder> context, PublishDelegate next)
+    public Task OnPublish(PublishContext<PipelineOrder> context, PublishNext next)
     {
         probe.RecordTyped(context);
         return next();
@@ -118,7 +118,7 @@ public sealed class MultiMessagePublishFilter : IStreamPublishFilter<PipelineOrd
 
     public Task OnPublish(
         PublishContext<PipelineOrder> context,
-        PublishDelegate next)
+        PublishNext next)
     {
         _probe.RecordCall();
         return next();
@@ -126,7 +126,7 @@ public sealed class MultiMessagePublishFilter : IStreamPublishFilter<PipelineOrd
 
     public Task OnPublish(
         PublishContext<PipelineInvoice> context,
-        PublishDelegate next)
+        PublishNext next)
     {
         _probe.RecordCall();
         return next();
@@ -137,7 +137,7 @@ public sealed class OrderOnlyPublishFilter(TypedPublishProbe probe) : IStreamPub
 {
     public Task OnPublish(
         PublishContext<PipelineOrder> context,
-        PublishDelegate next)
+        PublishNext next)
     {
         probe.Record();
         context.Headers.Set("order", context.Message.Id);
@@ -147,7 +147,7 @@ public sealed class OrderOnlyPublishFilter(TypedPublishProbe probe) : IStreamPub
 
 public sealed class ContextProbePublishFilter(PublishContextProbe probe) : IStreamPublishFilter
 {
-    public Task OnPublish(PublishContext context, PublishDelegate next)
+    public Task OnPublish(PublishContext context, PublishNext next)
     {
         probe.Record(context);
         return next();
@@ -156,7 +156,7 @@ public sealed class ContextProbePublishFilter(PublishContextProbe probe) : IStre
 
 public sealed class PipelineLogAFilter(PublishPipelineLog log) : IStreamPublishFilter
 {
-    public async Task OnPublish(PublishContext context, PublishDelegate next)
+    public async Task OnPublish(PublishContext context, PublishNext next)
     {
         log.Add("A-in");
         await next();
@@ -166,7 +166,7 @@ public sealed class PipelineLogAFilter(PublishPipelineLog log) : IStreamPublishF
 
 public sealed class PipelineLogCFilter(PublishPipelineLog log) : IStreamPublishFilter
 {
-    public async Task OnPublish(PublishContext context, PublishDelegate next)
+    public async Task OnPublish(PublishContext context, PublishNext next)
     {
         log.Add("C-in");
         await next();
@@ -178,7 +178,7 @@ public sealed class OrderLogPublishFilter(PublishPipelineLog log) : IStreamPubli
 {
     public async Task OnPublish(
         PublishContext<PipelineOrder> context,
-        PublishDelegate next)
+        PublishNext next)
     {
         log.Add("typed-in");
         await next();
@@ -188,25 +188,25 @@ public sealed class OrderLogPublishFilter(PublishPipelineLog log) : IStreamPubli
 
 public sealed class OpenGenericPublishFilter<T> : IStreamPublishFilter<T>
 {
-    public Task OnPublish(PublishContext<T> context, PublishDelegate next)
+    public Task OnPublish(PublishContext<T> context, PublishNext next)
         => next();
 }
 
 public sealed class ClassOnlyPublishFilter<T> : IStreamPublishFilter<T> where T : class
 {
-    public Task OnPublish(PublishContext<T> context, PublishDelegate next)
+    public Task OnPublish(PublishContext<T> context, PublishNext next)
         => next();
 }
 
 public sealed class PipelineNoopFilter : IStreamPublishFilter
 {
-    public Task OnPublish(PublishContext context, PublishDelegate next)
+    public Task OnPublish(PublishContext context, PublishNext next)
         => next();
 }
 
 public sealed class TenantPublishFilter : IStreamPublishFilter
 {
-    public Task OnPublish(PublishContext context, PublishDelegate next)
+    public Task OnPublish(PublishContext context, PublishNext next)
     {
         context.Headers.Set("tenant", "acme");
         return next();
@@ -215,7 +215,7 @@ public sealed class TenantPublishFilter : IStreamPublishFilter
 
 public sealed class RemoveTenantPublishFilter : IStreamPublishFilter
 {
-    public Task OnPublish(PublishContext context, PublishDelegate next)
+    public Task OnPublish(PublishContext context, PublishNext next)
     {
         context.Headers.Remove("tenant");
         return next();
@@ -224,13 +224,13 @@ public sealed class RemoveTenantPublishFilter : IStreamPublishFilter
 
 public sealed class ScopedPublishFilter : IStreamPublishFilter
 {
-    public Task OnPublish(PublishContext context, PublishDelegate next)
+    public Task OnPublish(PublishContext context, PublishNext next)
         => next();
 }
 
 public sealed class ScopedTypedPublishFilter : IStreamPublishFilter<PipelineOrder>
 {
-    public Task OnPublish(PublishContext<PipelineOrder> context, PublishDelegate next)
+    public Task OnPublish(PublishContext<PipelineOrder> context, PublishNext next)
         => next();
 }
 
@@ -852,7 +852,7 @@ public sealed class PublishPipelineTests
 
     private sealed class RecordingFilter(string name, List<string> log) : IStreamPublishFilter
     {
-        public async Task OnPublish(PublishContext context, PublishDelegate next)
+        public async Task OnPublish(PublishContext context, PublishNext next)
         {
             log.Add($"{name}-in");
             await next();
@@ -862,13 +862,13 @@ public sealed class PublishPipelineTests
 
     private sealed class ZeroNextFilter : IStreamPublishFilter
     {
-        public Task OnPublish(PublishContext context, PublishDelegate next)
+        public Task OnPublish(PublishContext context, PublishNext next)
             => Task.CompletedTask;
     }
 
     private sealed class DoubleNextFilter : IStreamPublishFilter
     {
-        public async Task OnPublish(PublishContext context, PublishDelegate next)
+        public async Task OnPublish(PublishContext context, PublishNext next)
         {
             await next();
             await next();
@@ -879,7 +879,7 @@ public sealed class PublishPipelineTests
     {
         public int Calls { get; private set; }
 
-        public Task OnPublish(PublishContext context, PublishDelegate next)
+        public Task OnPublish(PublishContext context, PublishNext next)
         {
             Calls++;
             throw new InvalidOperationException("filter boom");
@@ -890,7 +890,7 @@ public sealed class PublishPipelineTests
     {
         public CancellationTokenSource Own { get; } = new();
 
-        public Task OnPublish(PublishContext context, PublishDelegate next)
+        public Task OnPublish(PublishContext context, PublishNext next)
         {
             Own.Cancel();
             Own.Token.ThrowIfCancellationRequested();
@@ -958,7 +958,7 @@ public sealed class PublishPipelineTests
     {
         public int Calls { get; private set; }
 
-        public Task OnPublish(PublishContext context, PublishDelegate next)
+        public Task OnPublish(PublishContext context, PublishNext next)
         {
             Calls++;
             return next();
@@ -967,7 +967,7 @@ public sealed class PublishPipelineTests
 
     private sealed class HeaderOnlyFilter : IStreamPublishFilter
     {
-        public Task OnPublish(PublishContext context, PublishDelegate next)
+        public Task OnPublish(PublishContext context, PublishNext next)
         {
             context.Headers.Set("x-filter", "1");
             return next();
@@ -1035,36 +1035,25 @@ public sealed class PublishPipelineTests
             => Task.FromResult<IStreamSystemHandle>(system);
     }
 
-    private sealed class CapturingSystem : IStreamSystemHandle
+    private sealed class CapturingSystem : ScriptedSystemHandle
     {
+        public CapturingSystem()
+        {
+            OnCreatePlainProducer = (stream, _) =>
+                Task.FromResult<IStreamPlainProducerHandle>(new CapturingPlainHandle(stream, this));
+            OnCreateSuperProducer = (stream, _) =>
+                Task.FromResult<IStreamSuperProducerHandle>(new CapturingSuperHandle(stream, this));
+            OffsetResult = 0;
+            SuperStreamExistsResult = _ => true;
+            PartitionsResult = superStream => new[] { $"{superStream}-0" };
+        }
+
         public readonly List<CapturedPublish> Publishes = new();
         public PublishPipelineLog? Log { get; set; }
         public Exception? SendFailure { get; set; }
 
-        public bool IsClosed => false;
-
-        public Task<IStreamPlainProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct)
-            => Task.FromResult<IStreamPlainProducerHandle>(new CapturingPlainHandle(stream, this));
-
-        public Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
-            => CreatePlainProducerAsync(stream, ct);
-
-        public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
-            => Task.FromResult<IStreamSuperProducerHandle>(new CapturingSuperHandle(stream, this));
-
-        public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
-            => CreateSuperStreamProducerAsync(stream, ct);
-
-        public Task<ulong> QuerySequenceAsync(string reference, string stream, CancellationToken ct) => Task.FromResult(0UL);
-        public Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct) => throw new NotSupportedException();
-        public Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken ct) => Task.FromResult<ulong?>(0);
-        public Task StoreSystemOffsetAsync(string reference, string stream, ulong offset, CancellationToken ct) => Task.CompletedTask;
-        public Task<bool> StreamExistsAsync(string stream, CancellationToken ct) => Task.FromResult(true);
-        public Task<bool> SuperStreamExistsAsync(string superStream, CancellationToken ct) => Task.FromResult(true);
-        public Task<string[]> QueryPartitionAsync(string superStream, CancellationToken ct) => Task.FromResult(new[] { $"{superStream}-0" });
-        public Task CreateStreamAsync(StreamSpec spec, CancellationToken ct) => Task.CompletedTask;
-        public Task CreateSuperStreamAsync(PartitionsSuperStreamSpec spec, CancellationToken ct) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        public override Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct)
+            => throw new NotSupportedException();
 
         public void Add(string stream, ReadOnlyMemory<byte> body, PublishOptions options)
         {

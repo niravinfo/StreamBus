@@ -20,7 +20,7 @@ public interface IStreamPublishFilter
     /// <param name="context">The shared publish context for this message.</param>
     /// <param name="next">The continuation; call it exactly once.</param>
     /// <returns>A task that completes when the filter and its continuation finish.</returns>
-    Task OnPublish(PublishContext context, PublishDelegate next);
+    Task OnPublish(PublishContext context, PublishNext next);
 }
 
 /// <summary>
@@ -43,13 +43,13 @@ public interface IStreamPublishFilter<T>
     /// <param name="context">The typed publish context for this message.</param>
     /// <param name="next">The continuation; call it exactly once.</param>
     /// <returns>A task that completes when the filter and its continuation finish.</returns>
-    Task OnPublish(PublishContext<T> context, PublishDelegate next);
+    Task OnPublish(PublishContext<T> context, PublishNext next);
 }
 
 /// <summary>
 /// Continues a publish pipeline. Publish filters must invoke it exactly once.
 /// </summary>
-public delegate Task PublishDelegate();
+public delegate Task PublishNext();
 
 /// <summary>
 /// Shared context for one typed publish. Universal and typed publish filters
@@ -57,6 +57,13 @@ public delegate Task PublishDelegate();
 /// </summary>
 public class PublishContext
 {
+    /// <summary>
+    /// Construction is pinned to library code (and test assemblies via
+    /// <see langword="InternalsVisibleTo"/>): filters receive and enrich a
+    /// context built by StreamBus; they never construct their own.
+    /// </summary>
+    protected internal PublishContext() { }
+
     /// <summary>Target stream resolved by the publish call.</summary>
     public required string Stream { get; init; }
 
@@ -114,14 +121,14 @@ internal sealed class PublishPipeline
 
     public int Count => _filters.Length;
 
-    public Task RunAsync(PublishContext context, PublishDelegate terminal)
+    public Task RunAsync(PublishContext context, PublishNext terminal)
     {
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(terminal);
         return RunMeasuredAsync(context, terminal);
     }
 
-    private async Task RunMeasuredAsync(PublishContext context, PublishDelegate terminal)
+    private async Task RunMeasuredAsync(PublishContext context, PublishNext terminal)
     {
         var started = Stopwatch.GetTimestamp();
         try
@@ -134,7 +141,7 @@ internal sealed class PublishPipeline
         }
     }
 
-    private async Task InvokeAsync(int index, PublishContext context, PublishDelegate terminal)
+    private async Task InvokeAsync(int index, PublishContext context, PublishNext terminal)
     {
         if (index == _filters.Length)
         {

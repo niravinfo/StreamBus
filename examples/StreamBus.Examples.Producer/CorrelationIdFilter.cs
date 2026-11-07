@@ -8,7 +8,7 @@ using StreamBus;
 // PublishOptions.Properties.CorrelationId (a Guid) when you need it.
 public sealed class CorrelationIdFilter : IStreamPublishFilter
 {
-    public Task OnPublish(PublishContext context, PublishDelegate next)
+    public Task OnPublish(PublishContext context, PublishNext next)
     {
         var correlationId = Activity.Current?.TraceId.ToString() ?? Guid.NewGuid().ToString("N");
         context.Headers.Set("x-correlation-id", correlationId);

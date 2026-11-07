@@ -44,7 +44,7 @@
   `PublishContext` (`StreamPublishFilterContext*` → `PublishContext`, typed
   filters use `PublishContext<T>`). The wrapper contexts and `context.Inner`
   are removed, and universal and typed filters see the same instance.
-  `PublishDelegate` and `ConsumeDelegate` stay parameterless; filters call
+  `PublishNext` and `ConsumeNext` stay parameterless; filters call
   `next()`.
 - `ConsumeContext` exposes `Stream`, `Partition`, `Offset`, `RoutingValue`,
   `Body`, `MessageId`, `CorrelationId`, `SentTime`, incoming `Headers`,
@@ -163,6 +163,24 @@
   exception is documented to mean). Callers that caught
   `StreamBusConfigurationException` around this call must catch
   `InvalidOperationException` instead.
+- Every public `CancellationToken` parameter is renamed `ct` →
+  `cancellationToken`, per .NET naming guidelines. Callers passing the token
+  positionally are unaffected; callers using named arguments (`ct: token`)
+  must update the name.
+- The public filter-continuation delegates `PublishDelegate` and
+  `ConsumeDelegate` are renamed `PublishNext` and `ConsumeNext` (CA1711: no
+  public type ships a `Delegate`-suffixed name). Implementations of
+  `IStreamPublishFilter`/`IStreamConsumeFilter` update their `OnPublish`/
+  `OnConsume` signatures accordingly.
+- `StreamConfigurationConflictException` is renamed
+  `StreamBusStreamConfigurationConflictException`, restoring the
+  `StreamBus*` prefix shared by every other public exception so ADR-5's
+  "catch the whole library surface with one type" convention holds.
+- `ConsumeContext` and `PublishContext` declare a `protected internal`
+  constructor. Filters receive and enrich contexts built by StreamBus but
+  never construct their own (a user-crafted instance could not honor the
+  internal per-delivery payload reset); the restriction is invisible to
+  library consumers and test assemblies.
 
 ### Added
 
@@ -203,6 +221,13 @@
   carry `[DynamicallyAccessedMembers]`. Trimming and NativeAOT remain
   unsupported end to end (the default serializer is reflection-based and typed
   consume still closes generics from runtime types).
+- SourceLink: the package embeds the repository URL and commit hash
+  (`Microsoft.SourceLink.GitHub`, `EmbedUntrackedSources`,
+  `DeterministicSourcePaths`), so the snupkg PDBs are source-indexed and
+  traceable to the GitHub commit.
+- The `StreamBus` `ActivitySource` version is generated from the assembly
+  informational version instead of a hardcoded `2.0.0` that matched no
+  released package.
 
 ### Fixed
 

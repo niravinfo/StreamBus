@@ -6,7 +6,7 @@ using StreamBus;
 // sees it. A filter exception follows the normal retry/exhaustion path.
 public sealed class OrderEventFilter : IStreamConsumeFilter<OrderEvent>
 {
-    public Task OnConsume(ConsumeContext<OrderEvent> context, ConsumeDelegate next)
+    public Task OnConsume(ConsumeContext<OrderEvent> context, ConsumeNext next)
     {
         // Typed access: context.Message is OrderEvent. Blank ids are a
         // poison-message shape, so reject loudly instead of handling.

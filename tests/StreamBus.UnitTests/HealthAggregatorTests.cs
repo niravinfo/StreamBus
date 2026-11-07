@@ -3,24 +3,10 @@ using RabbitMQ.Stream.Client;
 
 namespace StreamBus.UnitTests;
 
-file sealed class HealthSystemHandle : IStreamSystemHandle
+file sealed class HealthSystemHandle : NeverReadyConsumerSystem
 {
-    public bool IsClosed => false;
-    public Task<bool> StreamExistsAsync(string stream, CancellationToken ct) => Task.FromResult(true);
-    public Task<bool> SuperStreamExistsAsync(string superStream, CancellationToken ct) => Task.FromResult(false);
-    public Task<string[]> QueryPartitionAsync(string superStream, CancellationToken ct) => Task.FromResult(new[] { superStream });
-    public Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct)
+    public override Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct)
         => throw new NotSupportedException("HealthAggregatorTests inject their own consumer factory.");
-    public Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken ct) => Task.FromResult<ulong?>(null);
-    public Task StoreSystemOffsetAsync(string reference, string stream, ulong offset, CancellationToken ct) => Task.CompletedTask;
-    public Task<IStreamPlainProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct) => throw new NotSupportedException();
-    public Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct) => throw new NotSupportedException();
-    public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct) => throw new NotSupportedException();
-    public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct) => throw new NotSupportedException();
-    public Task<ulong> QuerySequenceAsync(string reference, string stream, CancellationToken ct) => throw new NotSupportedException();
-    public Task CreateStreamAsync(StreamSpec spec, CancellationToken ct) => Task.CompletedTask;
-    public Task CreateSuperStreamAsync(PartitionsSuperStreamSpec spec, CancellationToken ct) => Task.CompletedTask;
-    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }
 
 file sealed class HealthConnector : IStreamSystemConnector

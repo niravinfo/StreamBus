@@ -9,7 +9,7 @@ public sealed record ActivityMessage(string Value);
 
 internal sealed class ActivityDoubleNextFilter : IStreamConsumeFilter
 {
-    public async Task OnConsume(ConsumeContext context, ConsumeDelegate next)
+    public async Task OnConsume(ConsumeContext context, ConsumeNext next)
     {
         await next();
         await next();
@@ -201,34 +201,17 @@ public sealed class ActivityTests
             => Task.FromResult<IStreamSystemHandle>(_system);
     }
 
-    private sealed class SystemHandle : IStreamSystemHandle
+    private sealed class SystemHandle : ScriptedSystemHandle
     {
-        public bool IsClosed => false;
+        public SystemHandle()
+        {
+            OnCreatePlainProducer = (_, _) => Task.FromResult<IStreamPlainProducerHandle>(new Handle());
+            OnCreateSuperProducer = (_, _) => Task.FromResult<IStreamSuperProducerHandle>(new SuperHandle());
+            SuperStreamExistsResult = _ => true;
+        }
 
-        public Task<IStreamPlainProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct)
-            => Task.FromResult<IStreamPlainProducerHandle>(new Handle());
-
-        public Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
-            => CreatePlainProducerAsync(stream, ct);
-
-        public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
-            => Task.FromResult<IStreamSuperProducerHandle>(new SuperHandle());
-
-        public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
-            => CreateSuperStreamProducerAsync(stream, ct);
-
-        public Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct)
+        public override Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct)
             => throw new NotSupportedException("ActivityTests publish only.");
-
-        public Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken ct) => Task.FromResult<ulong?>(null);
-        public Task StoreSystemOffsetAsync(string reference, string stream, ulong offset, CancellationToken ct) => Task.CompletedTask;
-        public Task<bool> StreamExistsAsync(string stream, CancellationToken ct) => Task.FromResult(true);
-        public Task<bool> SuperStreamExistsAsync(string superStream, CancellationToken ct) => Task.FromResult(true);
-        public Task<string[]> QueryPartitionAsync(string superStream, CancellationToken ct) => Task.FromResult(new[] { superStream });
-        public Task<ulong> QuerySequenceAsync(string reference, string stream, CancellationToken ct) => Task.FromResult(0UL);
-        public Task CreateStreamAsync(StreamSpec spec, CancellationToken ct) => Task.CompletedTask;
-        public Task CreateSuperStreamAsync(PartitionsSuperStreamSpec spec, CancellationToken ct) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
     private class Handle : IStreamPlainProducerHandle

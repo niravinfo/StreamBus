@@ -27,10 +27,18 @@
          UsePublishFilter<TFilter,TMessage> / UseConsumeFilter<TFilter,TMessage>
          overloads avoid runtime generic closing, so consumers can see where the
          dynamic paths are before a trim/AOT lane is enabled. -->
-    <!-- Documentation is added incrementally; keep the build clean until the
-         remaining public API carries XML comments. -->
-    <NoWarn>$(NoWarn);1591</NoWarn>
   </PropertyGroup>
+  <!-- SourceLink: embeds repository URL + commit hash into the PDB so the
+       snupkg symbols are source-indexed and traceable to the GitHub commit.
+       DeterministicSourcePaths is required for portable, reproducible paths;
+       EmbedUntrackedSources keeps the PDB self-contained about tracked files. -->
+  <PropertyGroup>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <DeterministicSourcePaths>true</DeterministicSourcePaths>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="All" />
+  </ItemGroup>
   <ItemGroup>
     <PackageReference Include="RabbitMQ.Stream.Client" />
     <PackageReference Include="RabbitMQ.Client" />

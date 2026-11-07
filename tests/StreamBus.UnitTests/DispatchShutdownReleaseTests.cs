@@ -23,25 +23,12 @@ public sealed class DispatchShutdownReleaseTests
         Assert.True(condition(), $"condition was not met within {timeout}");
     }
 
-    private sealed class ScriptedSystem : IStreamSystemHandle
+    private sealed class ScriptedSystem : NeverReadyConsumerSystem
     {
-        public bool IsClosed => false;
-        public Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken ct)
-            => Task.FromResult<ulong?>(null);
-        public Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct)
+        public override Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct)
             => throw new NotSupportedException("DispatchShutdownReleaseTests inject their own consumer factory.");
-        public Task<IStreamPlainProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct) => throw new NotSupportedException();
-        public Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct) => throw new NotSupportedException();
-        public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct) => throw new NotSupportedException();
-        public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct) => throw new NotSupportedException();
-        public Task<ulong> QuerySequenceAsync(string reference, string stream, CancellationToken ct) => throw new NotSupportedException();
-        public Task StoreSystemOffsetAsync(string reference, string stream, ulong offset, CancellationToken ct) => Task.CompletedTask;
-        public Task<bool> StreamExistsAsync(string stream, CancellationToken ct) => Task.FromResult(true);
-        public Task<bool> SuperStreamExistsAsync(string superStream, CancellationToken ct) => Task.FromResult(false);
-        public Task<string[]> QueryPartitionAsync(string superStream, CancellationToken ct) => throw new NotSupportedException();
-        public Task CreateStreamAsync(StreamSpec spec, CancellationToken ct) => Task.CompletedTask;
-        public Task CreateSuperStreamAsync(PartitionsSuperStreamSpec spec, CancellationToken ct) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        public override Task<string[]> QueryPartitionAsync(string superStream, CancellationToken ct)
+            => throw new NotSupportedException("Dispatch tests never list partitions.");
     }
 
     private sealed class NeverReadyConnector : IStreamSystemConnector

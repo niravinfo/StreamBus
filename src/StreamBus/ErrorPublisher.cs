@@ -17,7 +17,7 @@ internal sealed class ErrorPublisher
         _queues = queues;
     }
 
-    public Task PublishHandoffAsync(string errorStream, ErrorEnvelope envelope, TimeSpan confirmTimeout, CancellationToken ct)
+    public Task PublishHandoffAsync(string errorStream, ErrorEnvelope envelope, TimeSpan confirmTimeout, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(errorStream);
         ArgumentNullException.ThrowIfNull(envelope);
@@ -30,17 +30,17 @@ internal sealed class ErrorPublisher
             ContentType = envelope.ContentType,
             Headers = envelope.ToApplicationProperties(),
         };
-        return _producers.PublishEnvelopeAsync(errorStream, envelope.Body, properties, confirmTimeout, ct);
+        return _producers.PublishEnvelopeAsync(errorStream, envelope.Body, properties, confirmTimeout, cancellationToken);
     }
 
-    public Task PublishQueueHandoffAsync(DeadLetterOptions queue, ErrorEnvelope envelope, CancellationToken ct)
+    public Task PublishQueueHandoffAsync(DeadLetterOptions queue, ErrorEnvelope envelope, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(queue);
         ArgumentNullException.ThrowIfNull(envelope);
         if (_queues is null)
             throw new StreamBusConfigurationException("Queue dead-letter destinations require an error-queue transport (internal error).");
         LogSendHeaderCollisions(envelope);
-        return _queues.PublishAsync(queue, envelope, ct);
+        return _queues.PublishAsync(queue, envelope, cancellationToken);
     }
 
     private void LogSendHeaderCollisions(ErrorEnvelope envelope)
@@ -69,14 +69,14 @@ internal sealed class ErrorPublisher
             || StreamBusErrorClassification.IsFatal(ex);
 
     // Orchestration with injectable transport (unit-testable without a broker):
-    // retry the confirmed publish until it lands or ct fires, then run the
+    // retry the confirmed publish until it lands or cancellationToken fires, then run the
     // advance-store exactly once. Never advances past an unconfirmed handoff.
     public async Task HandOffAsync(
         ErrorEnvelope envelope,
         Func<ErrorEnvelope, CancellationToken, Task> publish,
         Func<Task> commitStore,
         Func<int, Exception, TimeSpan> delayFor,
-        CancellationToken ct,
+        CancellationToken cancellationToken,
         TimeSpan? confirmTimeout = null)
     {
         ArgumentNullException.ThrowIfNull(envelope);
@@ -86,14 +86,14 @@ internal sealed class ErrorPublisher
         var attempt = 0;
         while (true)
         {
-            ct.ThrowIfCancellationRequested();
+            cancellationToken.ThrowIfCancellationRequested();
             attempt++;
             try
             {
-                await publish(envelope, ct).ConfigureAwait(false);
+                await publish(envelope, cancellationToken).ConfigureAwait(false);
                 break;
             }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 throw;
             }
@@ -116,7 +116,7 @@ internal sealed class ErrorPublisher
                     confirmTimeout?.TotalSeconds);
                 var delay = delayFor(attempt, ex);
                 if (delay < TimeSpan.Zero) delay = TimeSpan.Zero;
-                await Task.Delay(delay, ct).ConfigureAwait(false);
+                await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
             }
         }
         await commitStore().ConfigureAwait(false);

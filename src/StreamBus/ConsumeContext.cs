@@ -6,6 +6,13 @@ namespace StreamBus;
 /// </summary>
 public class ConsumeContext
 {
+    /// <summary>
+    /// Construction is pinned to library code (and test assemblies via
+    /// <see langword="InternalsVisibleTo"/>): filters receive and enrich a
+    /// context built by StreamBus; they never construct their own.
+    /// </summary>
+    protected internal ConsumeContext() { }
+
     /// <summary>Source stream name.</summary>
     public required string Stream { get; init; }
 

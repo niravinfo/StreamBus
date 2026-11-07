@@ -213,8 +213,8 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
         _errors = errorPublisher;
         _logger = logger ?? NullLogger<StreamPartitionConsumer>.Instance;
         _createConsumer = consumerFactory
-            ?? (async (resolvedSystem, config, ct) => new RawConsumerHandle(
-                await resolvedSystem.CreateRawConsumerAsync(config, ct).ConfigureAwait(false)));
+            ?? (async (resolvedSystem, config, cancellationToken) => new RawConsumerHandle(
+                await resolvedSystem.CreateRawConsumerAsync(config, cancellationToken).ConfigureAwait(false)));
         _health = health;
         _serializer = serializer ?? SystemTextJsonStreamSerializer.Default;
         _pipeline = pipeline ?? new ConsumePipeline(Array.Empty<IStreamConsumeFilter>());
@@ -239,9 +239,9 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
     // AlwaysNext tail can never miss them to a subscribe race).
     internal Task FirstAttachAsync => _firstAttach.Task;
 
-    public async Task RunAsync(CancellationToken ct)
+    public async Task RunAsync(CancellationToken cancellationToken)
     {
-        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _loopCts.Token);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _loopCts.Token);
         var loopCt = linked.Token;
         var failures = 0;
         while (!loopCt.IsCancellationRequested)
@@ -735,7 +735,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                 _stream, _partitionIndex, offset, attempts, queue.Name);
             await _errors.HandOffAsync(
                 queueEnvelope,
-                (env, ct) => _errors.PublishQueueHandoffAsync(queue, env, ct),
+                (env, cancellationToken) => _errors.PublishQueueHandoffAsync(queue, env, cancellationToken),
                 () => AdmitAndCommitStoreAsync(consumer, offset, attach, attach.LoopToken),
                 (n, ex) => RetryDelays.ResolveDelay(_options.Retry, n, ex, _logger),
                 attach.LoopToken).ConfigureAwait(false);
@@ -772,14 +772,14 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
         // MaxInterval timer then skips it via IsStored.
         await _errors.HandOffAsync(
             envelope,
-            (env, ct) => _errors.PublishHandoffAsync(errorStream, env, _options.HandoffConfirmTimeout, ct),
+            (env, cancellationToken) => _errors.PublishHandoffAsync(errorStream, env, _options.HandoffConfirmTimeout, cancellationToken),
             () => AdmitAndCommitStoreAsync(consumer, offset, attach, attach.LoopToken),
             (n, ex) => RetryDelays.ResolveDelay(_options.Retry, n, ex, _logger),
             attach.LoopToken,
             _options.HandoffConfirmTimeout).ConfigureAwait(false);
     }
 
-    private ConsumeContext BuildContext(ulong offset, Message message, CancellationToken ct, IServiceProvider services, StreamSendHeaders sendHeaders)
+    private ConsumeContext BuildContext(ulong offset, Message message, CancellationToken cancellationToken, IServiceProvider services, StreamSendHeaders sendHeaders)
     {
         var body = message.Data.Contents.ToArray();
         IDictionary<string, object>? appProps = message.ApplicationProperties;
@@ -801,11 +801,11 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
             Headers = new StreamHeaders(app, _serializer),
             SendHeaders = sendHeaders,
             Services = services,
-            CancellationToken = ct,
+            CancellationToken = cancellationToken,
         };
     }
 
-    private async Task StoreAndTrackAsync(IStreamConsumerHandle consumer, ulong offset, AttachState attach, CancellationToken ct)
+    private async Task StoreAndTrackAsync(IStreamConsumerHandle consumer, ulong offset, AttachState attach, CancellationToken cancellationToken)
     {
         // Admission precedes the gated commit: a rejected (non-forward) candidate only
         // counts the metric and never reaches the wire. A rejection racing a newer
@@ -818,7 +818,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
         }
         try
         {
-            await CommitStoreAsync(consumer, offset, attach, ct).ConfigureAwait(false);
+            await CommitStoreAsync(consumer, offset, attach, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -838,11 +838,11 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
     // issued on a cancelled attach at all: teardown is in progress and the next
     // attach redelivers, so storing would risk advancing past unprocessed messages
     // (the G-5b teardown window). The next attach redelivers instead.
-    private async Task CommitStoreAsync(IStreamConsumerHandle consumer, ulong offset, AttachState attach, CancellationToken ct)
+    private async Task CommitStoreAsync(IStreamConsumerHandle consumer, ulong offset, AttachState attach, CancellationToken cancellationToken)
     {
         try
         {
-            await _storeGate.WaitAsync(ct).ConfigureAwait(false);
+            await _storeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -850,11 +850,11 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
         }
         try
         {
-            if (ct.IsCancellationRequested)
+            if (cancellationToken.IsCancellationRequested)
             {
                 return;
             }
-            await SendAndBookkeepAsync(consumer, offset, attach, ct).ConfigureAwait(false);
+            await SendAndBookkeepAsync(consumer, offset, attach, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -871,11 +871,11 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
     // landing between the check and the send, or a local send throw after admission)
     // is accepted: the broker store path has no acknowledgement, so no local
     // arrangement can be fully atomic; at-least-once is preserved regardless.
-    private async Task AdmitAndCommitStoreAsync(IStreamConsumerHandle consumer, ulong offset, AttachState attach, CancellationToken ct)
+    private async Task AdmitAndCommitStoreAsync(IStreamConsumerHandle consumer, ulong offset, AttachState attach, CancellationToken cancellationToken)
     {
         try
         {
-            await _storeGate.WaitAsync(ct).ConfigureAwait(false);
+            await _storeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -883,7 +883,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
         }
         try
         {
-            if (ct.IsCancellationRequested)
+            if (cancellationToken.IsCancellationRequested)
             {
                 return;
             }
@@ -891,7 +891,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
             {
                 return;
             }
-            await SendAndBookkeepAsync(consumer, offset, attach, ct).ConfigureAwait(false);
+            await SendAndBookkeepAsync(consumer, offset, attach, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -899,7 +899,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
         }
     }
 
-    private async Task SendAndBookkeepAsync(IStreamConsumerHandle consumer, ulong offset, AttachState attach, CancellationToken ct)
+    private async Task SendAndBookkeepAsync(IStreamConsumerHandle consumer, ulong offset, AttachState attach, CancellationToken cancellationToken)
     {
         _logger.LogDebug(
             "Storing offset {Offset} for stream {Stream} partition {Partition} reference {Reference}.",
@@ -912,16 +912,16 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
         Interlocked.Exchange(ref _state.LastStored, (long)offset);
         if (Interlocked.Exchange(ref attach.RegressionChecked, 1) == 0)
         {
-            await CheckRegressionAsync(ct).ConfigureAwait(false);
+            await CheckRegressionAsync(cancellationToken).ConfigureAwait(false);
         }
     }
 
-    private async Task CheckRegressionAsync(CancellationToken ct)
+    private async Task CheckRegressionAsync(CancellationToken cancellationToken)
     {
         ulong? brokerHeld;
         try
         {
-            brokerHeld = await ResolveSystem().TryQueryOffsetAsync(_reference, _partitionStream, ct).ConfigureAwait(false);
+            brokerHeld = await ResolveSystem().TryQueryOffsetAsync(_reference, _partitionStream, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -1012,8 +1012,8 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
 
     // Resume from the stored offset (the broker's per-reference stored value);
     // create, promote, and reconnect attach alike.
-    private Task<ulong?> QueryStoredAsync(CancellationToken ct)
-        => ResolveSystem().TryQueryOffsetAsync(_reference, _partitionStream, ct);
+    private Task<ulong?> QueryStoredAsync(CancellationToken cancellationToken)
+        => ResolveSystem().TryQueryOffsetAsync(_reference, _partitionStream, cancellationToken);
 
     private async Task<IOffsetType> OnPromotedCoreAsync(string reference, string stream, bool promotedAsActive)
     {

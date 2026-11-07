@@ -7,7 +7,7 @@ using StreamBus;
 // untouched.
 public sealed class OrderPublishFilter : IStreamPublishFilter<OrderEvent>
 {
-    public Task OnPublish(PublishContext<OrderEvent> context, PublishDelegate next)
+    public Task OnPublish(PublishContext<OrderEvent> context, PublishNext next)
     {
         // Typed access: context.Message is OrderEvent, no casting.
         context.Headers.Set("x-order-id", context.Message.OrderId);

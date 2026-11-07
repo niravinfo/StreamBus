@@ -82,13 +82,13 @@ public sealed class PipelineMetricsTests : IDisposable
 
     private sealed class NoopPublishFilter : IStreamPublishFilter
     {
-        public Task OnPublish(PublishContext context, PublishDelegate next)
+        public Task OnPublish(PublishContext context, PublishNext next)
             => next();
     }
 
     private sealed class NoopConsumeFilter : IStreamConsumeFilter
     {
-        public Task OnConsume(ConsumeContext context, ConsumeDelegate next)
+        public Task OnConsume(ConsumeContext context, ConsumeNext next)
             => next();
     }
 

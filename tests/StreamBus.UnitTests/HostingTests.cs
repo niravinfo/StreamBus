@@ -12,85 +12,54 @@ public sealed class HostingTests
     private sealed class OrdersBus;
     private sealed class BillingBus;
 
-    private sealed class StubHandle : IStreamSystemHandle
+    private sealed class StubHandle : ScriptedSystemHandle
     {
-        public readonly List<string> CreatedStreams = new();
-        public readonly List<string> CreatedSupers = new();
-        public Func<string, CancellationToken, Task<bool>> StreamExistsFunc = (_, _) => Task.FromResult(false);
-        public Func<string, CancellationToken, Task<bool>> SuperExistsFunc = (_, _) => Task.FromResult(false);
-        public bool IsClosed => false;
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-        public Task<IStreamPlainProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct)
+        public StubHandle()
+        {
+            StreamExistsFunc = (_, _) => Task.FromResult(false);
+            SuperStreamExistsFunc = (_, _) => Task.FromResult(false);
+        }
+
+        public Func<string, CancellationToken, Task<bool>>? SuperExistsFunc
+        {
+            get => SuperStreamExistsFunc;
+            set => SuperStreamExistsFunc = value;
+        }
+
+        public List<string> CreatedStreams => CreatedStreamNames;
+        public List<string> CreatedSupers => CreatedSuperNames;
+        public override Task<IStreamPlainProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct)
             => throw new NotImplementedException("HostingTests never publishes.");
-        public Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
+        public override Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
             => throw new NotImplementedException("HostingTests never publishes.");
-        public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
+        public override Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
             => throw new NotImplementedException("HostingTests never publishes.");
-        public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
+        public override Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
             => throw new NotImplementedException("StubHandle never creates stable super producers.");
-        public Task<ulong> QuerySequenceAsync(string reference, string stream, CancellationToken ct)
+        public override Task<ulong> QuerySequenceAsync(string reference, string stream, CancellationToken ct)
             => throw new NotImplementedException("StubHandle never queries publishing sequences.");
-        public Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken ct)
+        public override Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken ct)
             => throw new NotImplementedException("HostingTests never queries offsets.");
-        public Task StoreSystemOffsetAsync(string reference, string stream, ulong offset, CancellationToken ct)
+        public override Task StoreSystemOffsetAsync(string reference, string stream, ulong offset, CancellationToken ct)
             => throw new NotImplementedException("HostingTests never queries offsets.");
-        public Task<bool> StreamExistsAsync(string stream, CancellationToken ct)
-            => StreamExistsFunc(stream, ct);
-        public Task<bool> SuperStreamExistsAsync(string superStream, CancellationToken ct)
-            => SuperExistsFunc(superStream, ct);
-        public Task<string[]> QueryPartitionAsync(string superStream, CancellationToken ct)
+        public override Task<string[]> QueryPartitionAsync(string superStream, CancellationToken ct)
             => Task.FromResult(Array.Empty<string>());
-        public Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct)
+        public override Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct)
             => throw new NotImplementedException("HostingTests never consumes.");
-        public Task CreateStreamAsync(StreamSpec spec, CancellationToken ct)
-        {
-            lock (CreatedStreams) CreatedStreams.Add(spec.Name);
-            return Task.CompletedTask;
-        }
-        public Task CreateSuperStreamAsync(PartitionsSuperStreamSpec spec, CancellationToken ct)
-        {
-            lock (CreatedSupers) CreatedSupers.Add(spec.Name);
-            return Task.CompletedTask;
-        }
     }
 
-    private sealed class CountingHandle : IStreamSystemHandle
+    private sealed class CountingHandle : StrictScriptedSystemHandle
     {
         public int DisposedCount;
         public bool ThrowOnDispose;
-        public bool IsClosed => DisposedCount > 0;
-        public ValueTask DisposeAsync()
+        public override bool IsClosed => DisposedCount > 0;
+        public override ValueTask DisposeAsync()
         {
+            var dispose = base.DisposeAsync();
             Interlocked.Increment(ref DisposedCount);
             if (ThrowOnDispose) throw new InvalidOperationException("scripted supervisor dispose failure");
-            return ValueTask.CompletedTask;
+            return dispose;
         }
-        public Task<IStreamPlainProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct)
-            => throw new NotImplementedException("HostingTests never publishes.");
-        public Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
-            => throw new NotImplementedException("HostingTests never publishes.");
-        public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
-            => throw new NotImplementedException("HostingTests never publishes.");
-        public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
-            => throw new NotImplementedException("CountingHandle never creates stable super producers.");
-        public Task<ulong> QuerySequenceAsync(string reference, string stream, CancellationToken ct)
-            => throw new NotImplementedException("CountingHandle never queries publishing sequences.");
-        public Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken ct)
-            => throw new NotImplementedException("HostingTests never queries offsets.");
-        public Task StoreSystemOffsetAsync(string reference, string stream, ulong offset, CancellationToken ct)
-            => throw new NotImplementedException("HostingTests never queries offsets.");
-        public Task<bool> StreamExistsAsync(string stream, CancellationToken ct)
-            => throw new NotImplementedException("HostingTests never queries offsets.");
-        public Task<bool> SuperStreamExistsAsync(string superStream, CancellationToken ct)
-            => throw new NotImplementedException("HostingTests never queries offsets.");
-        public Task<string[]> QueryPartitionAsync(string superStream, CancellationToken ct)
-            => throw new NotImplementedException("HostingTests never queries offsets.");
-        public Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct)
-            => throw new NotImplementedException("HostingTests never consumes.");
-        public Task CreateStreamAsync(StreamSpec spec, CancellationToken ct)
-            => throw new NotImplementedException("HostingTests never declares topology.");
-        public Task CreateSuperStreamAsync(PartitionsSuperStreamSpec spec, CancellationToken ct)
-            => throw new NotImplementedException("HostingTests never declares topology.");
     }
 
     private sealed class SuccessConnector : IStreamSystemConnector
@@ -428,32 +397,12 @@ public sealed class HostingTests
         public Task Consume(ConsumeContext<PinEvent> context) => Task.CompletedTask;
     }
 
-    private sealed class NeverAttachingHandle : IStreamSystemHandle
+    private sealed class NeverAttachingHandle : NeverReadyConsumerSystem
     {
-        public bool IsClosed => false;
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-        public Task<IStreamPlainProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct)
-            => throw new NotImplementedException("HostingTests never publishes.");
-        public Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
-            => throw new NotImplementedException("HostingTests never publishes.");
-        public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
-            => throw new NotImplementedException("HostingTests never publishes.");
-        public Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
-            => throw new NotImplementedException("NeverAttachingHandle never creates stable super producers.");
-        public Task<ulong> QuerySequenceAsync(string reference, string stream, CancellationToken ct)
-            => throw new NotImplementedException("HostingTests never queries publishing sequences.");
-        public Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken ct)
-            => Task.FromResult<ulong?>(null);
-        public Task StoreSystemOffsetAsync(string reference, string stream, ulong offset, CancellationToken ct)
-            => Task.CompletedTask;
-        public Task<bool> StreamExistsAsync(string stream, CancellationToken ct) => Task.FromResult(true);
-        public Task<bool> SuperStreamExistsAsync(string superStream, CancellationToken ct) => Task.FromResult(false);
-        public Task<string[]> QueryPartitionAsync(string superStream, CancellationToken ct)
-            => Task.FromResult(Array.Empty<string>());
-        public Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct)
+        public override Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct)
             => new TaskCompletionSource<RawConsumer>(TaskCreationOptions.RunContinuationsAsynchronously).Task;
-        public Task CreateStreamAsync(StreamSpec spec, CancellationToken ct) => Task.CompletedTask;
-        public Task CreateSuperStreamAsync(PartitionsSuperStreamSpec spec, CancellationToken ct) => Task.CompletedTask;
+        public override Task<string[]> QueryPartitionAsync(string superStream, CancellationToken ct)
+            => Task.FromResult(Array.Empty<string>());
     }
 
     [Fact]
@@ -844,7 +793,7 @@ public sealed class HostingTests
     [Fact]
     public void Endpoint_kind_conflict_throws_naming_stream()
     {
-        var ex = Assert.Throws<StreamConfigurationConflictException>(() => DeclareSet(
+        var ex = Assert.Throws<StreamBusStreamConfigurationConflictException>(() => DeclareSet(
             endpoints: new[]
             {
                 EndpointDescriptor("orders"),
@@ -998,7 +947,7 @@ public sealed class HostingTests
         var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
         try
         {
-            var ex = await Assert.ThrowsAsync<StreamConfigurationConflictException>(() => hosted.StartAsync(ct));
+            var ex = await Assert.ThrowsAsync<StreamBusStreamConfigurationConflictException>(() => hosted.StartAsync(ct));
             Assert.Contains("clashing", ex.Message, StringComparison.Ordinal);
         }
         finally

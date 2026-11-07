@@ -76,7 +76,7 @@ cfg.UsePublishFilter<CorrelationIdFilter>();
 
 public sealed class TenantFilter(TenantScope ambient) : IStreamPublishFilter
 {
-    public Task OnPublish(PublishContext context, PublishDelegate next)
+    public Task OnPublish(PublishContext context, PublishNext next)
     {
         context.Headers.Set("x-tenant", ambient.Tenant);
         return next();
@@ -109,7 +109,7 @@ filter:
 ```csharp
 public sealed class OrderPublishFilter : IStreamPublishFilter<OrderEvent>
 {
-    public Task OnPublish(PublishContext<OrderEvent> context, PublishDelegate next)
+    public Task OnPublish(PublishContext<OrderEvent> context, PublishNext next)
     {
         context.Headers.Set("x-order-id", context.Message.OrderId);
         return next();
@@ -118,7 +118,7 @@ public sealed class OrderPublishFilter : IStreamPublishFilter<OrderEvent>
 
 public sealed class TenantFilter<T> : IStreamPublishFilter<T> // open generic
 {
-    public Task OnPublish(PublishContext<T> context, PublishDelegate next)
+    public Task OnPublish(PublishContext<T> context, PublishNext next)
     {
         context.Headers.Set("x-message-type", typeof(T).Name);
         return next();
@@ -173,7 +173,10 @@ Complete sample: `examples/StreamBus.Examples.Producer/OrderPublishFilter.cs`.
 populated before the pipeline runs: `MessageId` is generated when
 `PublishOptions.Properties.MessageId` is absent, and `SentTime` defaults to
 `DateTime.UtcNow` truncated to milliseconds. Supplied values are
-preserved. `CorrelationId` is never generated — it stays null unless the
+preserved. Header values and restrictions on
+`PublishOptions.Properties.Headers` are documented on the
+`StreamMessageProperties` API reference. `CorrelationId` is never generated —
+it stays null unless the
 caller supplies `PublishOptions.Properties.CorrelationId`. The four
 framework keys (`streambus.message-id`, `streambus.correlation-id`,
 `streambus.sent-time`, `streambus.routing-key`) are rejected in

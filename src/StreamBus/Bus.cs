@@ -3,37 +3,151 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace StreamBus;
 
+/// <summary>
+/// Publish/consume surface for one bus. A message type resolves its target
+/// stream from the publish registration unless an explicit stream name
+/// overrides it; wrong-kind calls (plain vs super) throw
+/// <see cref="StreamBusConfigurationException"/> naming the method to use.
+/// </summary>
 public interface IStreamBus
 {
+    /// <summary>Virtual host this bus is registered against.</summary>
     string Vhost { get; }
+
+    /// <summary>Live connection state of the underlying supervisor.</summary>
     BusConnectionState State { get; }
-    Task<BusReadiness> WaitUntilReadyAsync(ReadinessPolicy policy, CancellationToken ct = default);
-    Task PublishAsync<T>(T message, PublishOptions? options = null, CancellationToken ct = default);
-    Task PublishAsync<T>(T message, CancellationToken ct);
-    Task PublishAsync<T>(string stream, T message, PublishOptions? options = null, CancellationToken ct = default);
-    Task PublishAsync<T>(string stream, T message, CancellationToken ct);
-    Task PublishSuperAsync<T>(T message, string routingKey, PublishOptions? options = null, CancellationToken ct = default);
-    Task PublishSuperAsync<T>(T message, string routingKey, CancellationToken ct);
-    Task PublishSuperAsync<T>(string stream, T message, string routingKey, PublishOptions? options = null, CancellationToken ct = default);
-    Task PublishSuperAsync<T>(string stream, T message, string routingKey, CancellationToken ct);
-    Task PublishRawAsync(string stream, ReadOnlyMemory<byte> body, PublishOptions? options = null, CancellationToken ct = default);
-    Task<int> RequeueErrorsAsync(string stream, string errorQueue, CancellationToken ct = default);
-    Task<IStreamConsumer> ConsumeAsync(string stream, ConsumeOptions options, Func<ConsumeContext, Task> handler, CancellationToken ct = default);
-    Task<ulong?> GetConsumerOffsetAsync(string stream, string reference, int partition, CancellationToken ct = default);
-    Task SetConsumerOffsetAsync(string stream, string reference, int partition, ulong offset, CancellationToken ct = default);
-    Task<int> ReplayErrorStreamAsync(string errorStream, string? targetStream = null, CancellationToken ct = default);
+
+    /// <summary>Waits until the connection is ready, per <paramref name="policy"/>.</summary>
+    /// <param name="policy">How long/whether to wait (fail fast, bounded, or forever).</param>
+    /// <param name="cancellationToken">Cancels the wait.</param>
+    /// <returns>The outcome: <see cref="BusReadiness.Ready"/>, <see cref="BusReadiness.TimedOut"/>, or <see cref="BusReadiness.Fatal"/>.</returns>
+    Task<BusReadiness> WaitUntilReadyAsync(ReadinessPolicy policy, CancellationToken cancellationToken = default);
+
+    /// <summary>Publishes to the stream registered for <typeparamref name="T"/>, with options.</summary>
+    /// <typeparam name="T">Registered message type; resolves the target stream.</typeparam>
+    /// <param name="message">The message to serialize and send.</param>
+    /// <param name="options">Optional per-call publish options.</param>
+    /// <param name="cancellationToken">Cancels the publish.</param>
+    Task PublishAsync<T>(T message, PublishOptions? options = null, CancellationToken cancellationToken = default);
+
+    /// <summary>Publishes to the stream registered for <typeparamref name="T"/>.</summary>
+    /// <typeparam name="T">Registered message type; resolves the target stream.</typeparam>
+    /// <param name="message">The message to serialize and send.</param>
+    /// <param name="cancellationToken">Cancels the publish.</param>
+    Task PublishAsync<T>(T message, CancellationToken cancellationToken);
+
+    /// <summary>Publishes to an explicitly named plain stream, with options. The target must be declared or <see cref="StreamBusStreamNotFoundException"/> surfaces.</summary>
+    /// <typeparam name="T">The message type; not used for routing.</typeparam>
+    /// <param name="stream">Explicit plain-stream target (overrides the registration).</param>
+    /// <param name="message">The message to serialize and send.</param>
+    /// <param name="options">Optional per-call publish options.</param>
+    /// <param name="cancellationToken">Cancels the publish.</param>
+    Task PublishAsync<T>(string stream, T message, PublishOptions? options = null, CancellationToken cancellationToken = default);
+
+    /// <summary>Publishes to an explicitly named plain stream.</summary>
+    /// <typeparam name="T">The message type; not used for routing.</typeparam>
+    /// <param name="stream">Explicit plain-stream target (overrides the registration).</param>
+    /// <param name="message">The message to serialize and send.</param>
+    /// <param name="cancellationToken">Cancels the publish.</param>
+    Task PublishAsync<T>(string stream, T message, CancellationToken cancellationToken);
+
+    /// <summary>Routed super-stream publish to the stream registered for <typeparamref name="T"/>, with options.</summary>
+    /// <typeparam name="T">Message type registered with PublishSuper.</typeparam>
+    /// <param name="message">The message to serialize and send.</param>
+    /// <param name="routingKey">Required routing value; the broker routes it to one partition.</param>
+    /// <param name="options">Optional per-call publish options.</param>
+    /// <param name="cancellationToken">Cancels the publish.</param>
+    Task PublishSuperAsync<T>(T message, string routingKey, PublishOptions? options = null, CancellationToken cancellationToken = default);
+
+    /// <summary>Routed super-stream publish to the stream registered for <typeparamref name="T"/>.</summary>
+    /// <typeparam name="T">Message type registered with PublishSuper.</typeparam>
+    /// <param name="message">The message to serialize and send.</param>
+    /// <param name="routingKey">Required routing value; the broker routes it to one partition.</param>
+    /// <param name="cancellationToken">Cancels the publish.</param>
+    Task PublishSuperAsync<T>(T message, string routingKey, CancellationToken cancellationToken);
+
+    /// <summary>Routed super-stream publish to an explicitly named super stream, with options.</summary>
+    /// <typeparam name="T">The message type; not used for routing.</typeparam>
+    /// <param name="stream">Explicit super-stream target (overrides the registration).</param>
+    /// <param name="message">The message to serialize and send.</param>
+    /// <param name="routingKey">Required routing value; the broker routes it to one partition.</param>
+    /// <param name="options">Optional per-call publish options.</param>
+    /// <param name="cancellationToken">Cancels the publish.</param>
+    Task PublishSuperAsync<T>(string stream, T message, string routingKey, PublishOptions? options = null, CancellationToken cancellationToken = default);
+
+    /// <summary>Routed super-stream publish to an explicitly named super stream.</summary>
+    /// <typeparam name="T">The message type; not used for routing.</typeparam>
+    /// <param name="stream">Explicit super-stream target (overrides the registration).</param>
+    /// <param name="message">The message to serialize and send.</param>
+    /// <param name="routingKey">Required routing value; the broker routes it to one partition.</param>
+    /// <param name="cancellationToken">Cancels the publish.</param>
+    Task PublishSuperAsync<T>(string stream, T message, string routingKey, CancellationToken cancellationToken);
+
+    /// <summary>Sends pre-serialized bytes to <paramref name="stream"/>, bypassing serialization and the publish pipeline.</summary>
+    /// <param name="stream">Target stream.</param>
+    /// <param name="body">Already-serialized message body.</param>
+    /// <param name="options">Optional publish options (properties, routing key for super streams).</param>
+    /// <param name="cancellationToken">Cancels the publish.</param>
+    Task PublishRawAsync(string stream, ReadOnlyMemory<byte> body, PublishOptions? options = null, CancellationToken cancellationToken = default);
+
+    /// <summary>Drains <paramref name="errorQueue"/> (an AMQP queue written by <c>DeadLetterToQueue</c>) and requeues each envelope, unmodified, onto <paramref name="stream"/>.</summary>
+    /// <param name="stream">Destination stream for the requeued bodies.</param>
+    /// <param name="errorQueue">Queue to drain.</param>
+    /// <param name="cancellationToken">Cancels the drain.</param>
+    /// <returns>The number of messages requeued.</returns>
+    Task<int> RequeueErrorsAsync(string stream, string errorQueue, CancellationToken cancellationToken = default);
+
+    /// <summary>Attaches a raw (untyped) consumer to <paramref name="stream"/>; dispose the returned consumer to detach.</summary>
+    /// <param name="stream">Stream (or super stream) to consume.</param>
+    /// <param name="options">Consume settings; <see cref="ConsumeOptions.Reference"/> is required.</param>
+    /// <param name="handler">Invoked per delivery; exceptions drive the retry/error pipeline.</param>
+    /// <param name="cancellationToken">Cancels the attach.</param>
+    Task<IStreamConsumer> ConsumeAsync(string stream, ConsumeOptions options, Func<ConsumeContext, Task> handler, CancellationToken cancellationToken = default);
+
+    /// <summary>Queries the stored broker-side offset for a consumer group on one partition.</summary>
+    /// <param name="stream">Stream name.</param>
+    /// <param name="reference">Consumer group (reference) name.</param>
+    /// <param name="partition">Partition index; 0 for plain streams.</param>
+    /// <param name="cancellationToken">Cancels the query.</param>
+    /// <returns>The stored offset, or null when the group has no stored offset.</returns>
+    Task<ulong?> GetConsumerOffsetAsync(string stream, string reference, int partition, CancellationToken cancellationToken = default);
+
+    /// <summary>Stores the broker-side offset for a consumer group on one partition.</summary>
+    /// <param name="stream">Stream name.</param>
+    /// <param name="reference">Consumer group (reference) name.</param>
+    /// <param name="partition">Partition index; 0 for plain streams.</param>
+    /// <param name="offset">Offset to store; the group resumes after it.</param>
+    /// <param name="cancellationToken">Cancels the store.</param>
+    Task SetConsumerOffsetAsync(string stream, string reference, int partition, ulong offset, CancellationToken cancellationToken = default);
+
+    /// <summary>Replays an error stream (written by <c>DeadLetterToStream</c>): each
+    /// error envelope is republished, unmodified, to its original source. Publishing
+    /// ids are deterministic, so replays onto the same destination are idempotent.</summary>
+    /// <param name="errorStream">Plain error stream to read. Malformed messages and vanished partition streams are skipped.</param>
+    /// <param name="targetStream">Optional explicit destination stream; when null each envelope returns to the partition stream it came from.</param>
+    /// <param name="cancellationToken">Cancels the replay.</param>
+    /// <returns>The number of error envelopes replayed.</returns>
+    Task<int> ReplayErrorStreamAsync(string errorStream, string? targetStream = null, CancellationToken cancellationToken = default);
+
     /// <summary>
-    /// Declares streams and super streams idempotently (FR-7). Startup
-    /// declarations configured via topology are declared automatically;
-    /// these methods cover explicit/operator-driven declaration anytime.
+    /// Idempotent topology declaration surface. Startup declarations configured
+    /// via topology are declared automatically when the bus starts; use this
+    /// property for explicit or operator-driven declaration at any time.
     /// </summary>
     IStreamTopology Topology { get; }
 }
 
+/// <summary>
+/// A bus keyed by a marker type <typeparamref name="TBus"/>: the same surface as
+/// <see cref="IStreamBus"/>, typed so several independently configured buses
+/// (each with its own registrations) resolve distinctly from DI.
+/// </summary>
+/// <typeparam name="TBus">Marker type identifying this bus registration.</typeparam>
 public interface IStreamBus<TBus> : IStreamBus
 {
 }
 
+/// <summary>Default marker used by the non-generic (<c>AddStreamBus</c>) registration; inject <see cref="IStreamBus"/> for that bus.</summary>
 public sealed class DefaultBus;
 
 internal abstract class StreamBusCore<TBus> : IStreamBus
@@ -68,33 +182,45 @@ internal abstract class StreamBusCore<TBus> : IStreamBus
             null);
         _publishScopeFactory = publishScopeFactory;
     }
+    /// <summary>Virtual host this bus is registered against.</summary>
     public string Vhost { get; }
+    /// <summary>Idempotent topology declaration surface (see <see cref="IStreamBus.Topology"/>).</summary>
     public IStreamTopology Topology => _topology;
+    /// <summary>Live connection state of the underlying supervisor.</summary>
     public BusConnectionState State => _supervisor.State;
-    public Task<BusReadiness> WaitUntilReadyAsync(ReadinessPolicy policy, CancellationToken ct = default)
-        => _supervisor.WaitUntilReadyAsync(policy, ct);
-    public Task PublishAsync<T>(T message, PublishOptions? options = null, CancellationToken ct = default)
+    /// <summary>Waits until the connection is ready, per <paramref name="policy"/>.</summary>
+    /// <param name="policy">How long/whether to wait (fail fast, bounded, or forever).</param>
+    /// <param name="cancellationToken">Cancels the wait.</param>
+    /// <returns>The outcome: <see cref="BusReadiness.Ready"/>, <see cref="BusReadiness.TimedOut"/>, or <see cref="BusReadiness.Fatal"/>.</returns>
+    public Task<BusReadiness> WaitUntilReadyAsync(ReadinessPolicy policy, CancellationToken cancellationToken = default)
+        => _supervisor.WaitUntilReadyAsync(policy, cancellationToken);
+    /// <summary>Publishes to the stream registered for <typeparamref name="T"/>, with options. Throws <see cref="StreamBusConfigurationException"/> for a PublishSuper registration.</summary>
+    public Task PublishAsync<T>(T message, PublishOptions? options = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(message);
         var reg = _router.Resolve(typeof(TBus), typeof(T));
         if (reg.IsSuper)
             throw new StreamBusConfigurationException($"Message {typeof(T).FullName} is registered with PublishSuper for stream '{reg.Stream}'. Use PublishSuperAsync (routing key required).");
         var effective = (options ?? new PublishOptions()) with { IsSuperStream = false, RoutingKey = null };
-        return PublishThroughPipelineAsync(reg.Stream, routingKey: null, message, effective, ct);
+        return PublishThroughPipelineAsync(reg.Stream, routingKey: null, message, effective, cancellationToken);
     }
-    public Task PublishAsync<T>(T message, CancellationToken ct)
-        => PublishAsync(message, null, ct);
-    public Task PublishAsync<T>(string stream, T message, PublishOptions? options = null, CancellationToken ct = default)
+    /// <summary>Publishes to the stream registered for <typeparamref name="T"/>.</summary>
+    public Task PublishAsync<T>(T message, CancellationToken cancellationToken)
+        => PublishAsync(message, null, cancellationToken);
+    /// <summary>Publishes to an explicitly named plain stream, with options. The target must be declared or <see cref="StreamBusStreamNotFoundException"/> surfaces.</summary>
+    public Task PublishAsync<T>(string stream, T message, PublishOptions? options = null, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(stream);
         ArgumentNullException.ThrowIfNull(message);
         DeclareSetBuilder.ValidateCallTarget(_findDeclaration(stream), stream, wantSuper: false);
         var effective = (options ?? new PublishOptions()) with { IsSuperStream = false, RoutingKey = null };
-        return PublishThroughPipelineAsync(stream, routingKey: null, message, effective, ct);
+        return PublishThroughPipelineAsync(stream, routingKey: null, message, effective, cancellationToken);
     }
-    public Task PublishAsync<T>(string stream, T message, CancellationToken ct)
-        => PublishAsync(stream, message, null, ct);
-    public Task PublishSuperAsync<T>(T message, string routingKey, PublishOptions? options = null, CancellationToken ct = default)
+    /// <summary>Publishes to an explicitly named plain stream.</summary>
+    public Task PublishAsync<T>(string stream, T message, CancellationToken cancellationToken)
+        => PublishAsync(stream, message, null, cancellationToken);
+    /// <summary>Routed super-stream publish to the stream registered for <typeparamref name="T"/>, with options. Throws <see cref="StreamBusConfigurationException"/> for a plain Publish registration.</summary>
+    public Task PublishSuperAsync<T>(T message, string routingKey, PublishOptions? options = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(message);
         ArgumentException.ThrowIfNullOrWhiteSpace(routingKey);
@@ -102,27 +228,30 @@ internal abstract class StreamBusCore<TBus> : IStreamBus
         if (!reg.IsSuper)
             throw new StreamBusConfigurationException($"Message {typeof(T).FullName} is registered with Publish for stream '{reg.Stream}'. Use PublishAsync (no routing key).");
         var effective = (options ?? new PublishOptions()) with { IsSuperStream = true, RoutingKey = routingKey };
-        return PublishThroughPipelineAsync(reg.Stream, routingKey, message, effective, ct);
+        return PublishThroughPipelineAsync(reg.Stream, routingKey, message, effective, cancellationToken);
     }
-    public Task PublishSuperAsync<T>(T message, string routingKey, CancellationToken ct)
-        => PublishSuperAsync(message, routingKey, null, ct);
-    public Task PublishSuperAsync<T>(string stream, T message, string routingKey, PublishOptions? options = null, CancellationToken ct = default)
+    /// <summary>Routed super-stream publish to the stream registered for <typeparamref name="T"/>.</summary>
+    public Task PublishSuperAsync<T>(T message, string routingKey, CancellationToken cancellationToken)
+        => PublishSuperAsync(message, routingKey, null, cancellationToken);
+    /// <summary>Routed super-stream publish to an explicitly named super stream, with options.</summary>
+    public Task PublishSuperAsync<T>(string stream, T message, string routingKey, PublishOptions? options = null, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(stream);
         ArgumentNullException.ThrowIfNull(message);
         ArgumentException.ThrowIfNullOrWhiteSpace(routingKey);
         DeclareSetBuilder.ValidateCallTarget(_findDeclaration(stream), stream, wantSuper: true);
         var effective = (options ?? new PublishOptions()) with { IsSuperStream = true, RoutingKey = routingKey };
-        return PublishThroughPipelineAsync(stream, routingKey, message, effective, ct);
+        return PublishThroughPipelineAsync(stream, routingKey, message, effective, cancellationToken);
     }
-    public Task PublishSuperAsync<T>(string stream, T message, string routingKey, CancellationToken ct)
-        => PublishSuperAsync(stream, message, routingKey, null, ct);
+    /// <summary>Routed super-stream publish to an explicitly named super stream.</summary>
+    public Task PublishSuperAsync<T>(string stream, T message, string routingKey, CancellationToken cancellationToken)
+        => PublishSuperAsync(stream, message, routingKey, null, cancellationToken);
     private async Task PublishThroughPipelineAsync<T>(
         string stream,
         string? routingKey,
         T message,
         PublishOptions effective,
-        CancellationToken ct)
+        CancellationToken cancellationToken)
     {
         using var activity = StreamBusActivity.StartPublish(stream, routingKey);
         StreamMessageProperties.ValidateHeaders(effective.Properties?.Headers);
@@ -136,7 +265,7 @@ internal abstract class StreamBusCore<TBus> : IStreamBus
         {
             if (pipeline.Count == 0)
             {
-                await SendTypedAsync(stream, message, effective, ct, activity).ConfigureAwait(false);
+                await SendTypedAsync(stream, message, effective, cancellationToken, activity).ConfigureAwait(false);
                 return;
             }
 
@@ -155,7 +284,7 @@ internal abstract class StreamBusCore<TBus> : IStreamBus
                 SentTime = sentTime,
                 Headers = headers,
                 Services = publishScope.ServiceProvider,
-                CancellationToken = ct,
+                CancellationToken = cancellationToken,
             };
 
             await pipeline.RunAsync(
@@ -164,7 +293,7 @@ internal abstract class StreamBusCore<TBus> : IStreamBus
                     stream,
                     message,
                     effective with { Properties = headers.Materialize(effective.Properties) },
-                    ct,
+                    cancellationToken,
                     activity)).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
@@ -188,38 +317,52 @@ internal abstract class StreamBusCore<TBus> : IStreamBus
         string stream,
         T message,
         PublishOptions effective,
-        CancellationToken ct,
+        CancellationToken cancellationToken,
         Activity? activity = null)
     {
         var body = _serializer.Serialize(message);
         StreamBusActivity.SetSize(activity, body.Length);
         var properties = (effective.Properties ?? new StreamMessageProperties()) with { ContentType = _serializer.ContentType };
-        await _producers.PublishAsync(stream, body, effective with { Properties = properties }, ct).ConfigureAwait(false);
+        await _producers.PublishAsync(stream, body, effective with { Properties = properties }, cancellationToken).ConfigureAwait(false);
     }
 
-    public async Task PublishRawAsync(string stream, ReadOnlyMemory<byte> body, PublishOptions? options = null, CancellationToken ct = default)
+    /// <summary>Sends pre-serialized bytes to <paramref name="stream"/>, bypassing serialization and the publish pipeline.</summary>
+    public async Task PublishRawAsync(string stream, ReadOnlyMemory<byte> body, PublishOptions? options = null, CancellationToken cancellationToken = default)
     {
         using var activity = StreamBusActivity.StartPublish(stream, options?.RoutingKey);
         StreamMessageProperties.ValidateHeaders(options?.Properties?.Headers);
         StreamBusActivity.SetSize(activity, body.Length);
-        await _producers.PublishAsync(stream, body, options ?? new PublishOptions(), ct).ConfigureAwait(false);
+        await _producers.PublishAsync(stream, body, options ?? new PublishOptions(), cancellationToken).ConfigureAwait(false);
     }
-    public Task<int> RequeueErrorsAsync(string stream, string errorQueue, CancellationToken ct = default)
+    /// <summary>Drains <paramref name="errorQueue"/> (an AMQP queue written by <c>DeadLetterToQueue</c>) and requeues each envelope, unmodified, onto <paramref name="stream"/>.</summary>
+    /// <returns>The number of messages requeued.</returns>
+    public Task<int> RequeueErrorsAsync(string stream, string errorQueue, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(stream);
         ArgumentException.ThrowIfNullOrWhiteSpace(errorQueue);
         return _errorQueues.DrainAsync(errorQueue, (envelope, ct2) =>
-            _producers.PublishAsync(stream, envelope.Body, envelope.ToReplayOptions(), ct2), ct);
+            _producers.PublishAsync(stream, envelope.Body, envelope.ToReplayOptions(), ct2), cancellationToken);
     }
-    public Task<IStreamConsumer> ConsumeAsync(string stream, ConsumeOptions options, Func<ConsumeContext, Task> handler, CancellationToken ct = default)
-        => _consumers.ConsumeAsync(typeof(TBus), stream, options, handler, ct, serializer: _serializer);
-    public Task<ulong?> GetConsumerOffsetAsync(string stream, string reference, int partition, CancellationToken ct = default)
-        => _consumers.GetOffsetAsync(stream, reference, partition, ct);
-    public Task SetConsumerOffsetAsync(string stream, string reference, int partition, ulong offset, CancellationToken ct = default)
-        => _consumers.SetOffsetAsync(stream, reference, partition, offset, ct);
-    public Task<int> ReplayErrorStreamAsync(string errorStream, string? targetStream = null, CancellationToken ct = default)
-        => _consumers.ReplayAsync(errorStream, targetStream, ct);
-    internal Task StartAsync(CancellationToken ct) => _supervisor.StartAsync(ct);
+    /// <summary>Attaches a raw (untyped) consumer to <paramref name="stream"/>; dispose the returned consumer to detach.</summary>
+    public Task<IStreamConsumer> ConsumeAsync(string stream, ConsumeOptions options, Func<ConsumeContext, Task> handler, CancellationToken cancellationToken = default)
+        => _consumers.ConsumeAsync(typeof(TBus), stream, options, handler, cancellationToken, serializer: _serializer);
+    /// <summary>Queries the stored broker-side offset for a consumer group on one partition; null when none is stored.</summary>
+    public Task<ulong?> GetConsumerOffsetAsync(string stream, string reference, int partition, CancellationToken cancellationToken = default)
+        => _consumers.GetOffsetAsync(stream, reference, partition, cancellationToken);
+    /// <summary>Stores the broker-side offset for a consumer group on one partition.</summary>
+    public Task SetConsumerOffsetAsync(string stream, string reference, int partition, ulong offset, CancellationToken cancellationToken = default)
+        => _consumers.SetOffsetAsync(stream, reference, partition, offset, cancellationToken);
+    /// <summary>Replays an error stream: each error envelope is republished, unmodified,
+    /// to its original source. Publishing ids are deterministic, so replays onto the
+    /// same destination are idempotent. Malformed messages and vanished partition
+    /// streams are skipped.</summary>
+    /// <param name="errorStream">Plain error stream to read.</param>
+    /// <param name="targetStream">Optional explicit destination stream; when null each envelope returns to the partition stream it came from.</param>
+    /// <param name="cancellationToken">Propagates notification that the replay should be canceled.</param>
+    /// <returns>The number of error envelopes replayed.</returns>
+    public Task<int> ReplayErrorStreamAsync(string errorStream, string? targetStream = null, CancellationToken cancellationToken = default)
+        => _consumers.ReplayAsync(errorStream, targetStream, cancellationToken);
+    internal Task StartAsync(CancellationToken cancellationToken) => _supervisor.StartAsync(cancellationToken);
 }
 
 internal sealed class StreamBus : StreamBusCore<DefaultBus>, IStreamBus

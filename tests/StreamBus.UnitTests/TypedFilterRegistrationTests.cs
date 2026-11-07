@@ -703,7 +703,7 @@ public sealed class TypedFilterRegistrationTests
     {
         public static int Invocations;
 
-        public Task OnPublish(PublishContext<T> context, PublishDelegate next)
+        public Task OnPublish(PublishContext<T> context, PublishNext next)
         {
             Invocations++;
             return next();
@@ -712,7 +712,7 @@ public sealed class TypedFilterRegistrationTests
 
     private sealed class RegistrationUniversalPublishFilter : IStreamPublishFilter
     {
-        public Task OnPublish(PublishContext context, PublishDelegate next)
+        public Task OnPublish(PublishContext context, PublishNext next)
             => next();
     }
 
@@ -720,7 +720,7 @@ public sealed class TypedFilterRegistrationTests
     {
         public Task OnPublish(
             PublishContext<RegistrationOrder> context,
-            PublishDelegate next)
+            PublishNext next)
             => next();
     }
 
@@ -729,58 +729,58 @@ public sealed class TypedFilterRegistrationTests
     {
         public Task OnPublish(
             PublishContext<RegistrationOrder> context,
-            PublishDelegate next)
+            PublishNext next)
             => next();
 
         public Task OnPublish(
             PublishContext<RegistrationInvoice> context,
-            PublishDelegate next)
+            PublishNext next)
             => next();
     }
 
     private sealed class RegistrationOpenPublishFilter<T> : IStreamPublishFilter<T>
     {
-        public Task OnPublish(PublishContext<T> context, PublishDelegate next)
+        public Task OnPublish(PublishContext<T> context, PublishNext next)
             => next();
     }
 
     private sealed class RegistrationTwoArityPublishFilter<T1, T2> : IStreamPublishFilter<T1>
     {
-        public Task OnPublish(PublishContext<T1> context, PublishDelegate next)
+        public Task OnPublish(PublishContext<T1> context, PublishNext next)
             => next();
     }
 
     private sealed class RegistrationWrongParameterPublishFilter<T> : IStreamPublishFilter<string>
     {
-        public Task OnPublish(PublishContext<string> context, PublishDelegate next)
+        public Task OnPublish(PublishContext<string> context, PublishNext next)
             => next();
     }
 
     private sealed class RegistrationDualPublishFilter
         : IStreamPublishFilter, IStreamPublishFilter<RegistrationOrder>
     {
-        public Task OnPublish(PublishContext context, PublishDelegate next)
+        public Task OnPublish(PublishContext context, PublishNext next)
             => next();
 
         public Task OnPublish(
             PublishContext<RegistrationOrder> context,
-            PublishDelegate next)
+            PublishNext next)
             => next();
     }
 
     private sealed class RegistrationDualOpenPublishFilter<T>
         : IStreamPublishFilter, IStreamPublishFilter<T>
     {
-        public Task OnPublish(PublishContext context, PublishDelegate next)
+        public Task OnPublish(PublishContext context, PublishNext next)
             => next();
 
-        public Task OnPublish(PublishContext<T> context, PublishDelegate next)
+        public Task OnPublish(PublishContext<T> context, PublishNext next)
             => next();
     }
 
     private sealed class RegistrationUniversalOpenPublishFilter<T> : IStreamPublishFilter
     {
-        public Task OnPublish(PublishContext context, PublishDelegate next)
+        public Task OnPublish(PublishContext context, PublishNext next)
             => next();
     }
 
@@ -788,12 +788,12 @@ public sealed class TypedFilterRegistrationTests
     {
         public abstract Task OnPublish(
             PublishContext<RegistrationOrder> context,
-            PublishDelegate next);
+            PublishNext next);
     }
 
     private sealed class RegistrationUniversalConsumeFilter : IStreamConsumeFilter
     {
-        public Task OnConsume(ConsumeContext context, ConsumeDelegate next)
+        public Task OnConsume(ConsumeContext context, ConsumeNext next)
             => next();
     }
 
@@ -801,7 +801,7 @@ public sealed class TypedFilterRegistrationTests
     {
         public Task OnConsume(
             ConsumeContext<RegistrationOrder> context,
-            ConsumeDelegate next)
+            ConsumeNext next)
             => next();
     }
 
@@ -810,48 +810,48 @@ public sealed class TypedFilterRegistrationTests
     {
         public Task OnConsume(
             ConsumeContext<RegistrationInvoice> context,
-            ConsumeDelegate next)
+            ConsumeNext next)
             => next();
 
         public Task OnConsume(
             ConsumeContext<RegistrationOrder> context,
-            ConsumeDelegate next)
+            ConsumeNext next)
             => next();
     }
 
     private sealed class RegistrationOpenConsumeFilter<T> : IStreamConsumeFilter<T>
     {
-        public Task OnConsume(ConsumeContext<T> context, ConsumeDelegate next)
+        public Task OnConsume(ConsumeContext<T> context, ConsumeNext next)
             => next();
     }
 
     private sealed class RegistrationTwoArityConsumeFilter<T1, T2> : IStreamConsumeFilter<T1>
     {
-        public Task OnConsume(ConsumeContext<T1> context, ConsumeDelegate next)
+        public Task OnConsume(ConsumeContext<T1> context, ConsumeNext next)
             => next();
     }
 
     private sealed class RegistrationWrongParameterConsumeFilter<T> : IStreamConsumeFilter<string>
     {
-        public Task OnConsume(ConsumeContext<string> context, ConsumeDelegate next)
+        public Task OnConsume(ConsumeContext<string> context, ConsumeNext next)
             => next();
     }
 
     private sealed class RegistrationDualConsumeFilter
         : IStreamConsumeFilter, IStreamConsumeFilter<RegistrationOrder>
     {
-        public Task OnConsume(ConsumeContext context, ConsumeDelegate next)
+        public Task OnConsume(ConsumeContext context, ConsumeNext next)
             => next();
 
         public Task OnConsume(
             ConsumeContext<RegistrationOrder> context,
-            ConsumeDelegate next)
+            ConsumeNext next)
             => next();
     }
 
     private sealed class RegistrationUniversalOpenConsumeFilter<T> : IStreamConsumeFilter
     {
-        public Task OnConsume(ConsumeContext context, ConsumeDelegate next)
+        public Task OnConsume(ConsumeContext context, ConsumeNext next)
             => next();
     }
 
@@ -859,7 +859,7 @@ public sealed class TypedFilterRegistrationTests
     {
         public Task OnConsume(
             ConsumeContext<RegistrationInvoice> context,
-            ConsumeDelegate next)
+            ConsumeNext next)
             => next();
     }
 
@@ -867,7 +867,7 @@ public sealed class TypedFilterRegistrationTests
     {
         public abstract Task OnConsume(
             ConsumeContext<RegistrationOrder> context,
-            ConsumeDelegate next);
+            ConsumeNext next);
     }
 
     private sealed class RegistrationConsumer : IConsumer<RegistrationOrder>

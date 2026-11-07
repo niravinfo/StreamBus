@@ -26,7 +26,7 @@ public sealed class DeclarationCacheTests
 
         for (var i = 0; i < 3; i++)
             await Assert.ThrowsAsync<StreamBusNotReadyException>(() =>
-                bus.PublishAsync("orders", new object(), ct: TestContext.Current.CancellationToken));
+                bus.PublishAsync("orders", new object(), cancellationToken: TestContext.Current.CancellationToken));
 
         Assert.Equal(1, calls);
     }

@@ -20,7 +20,7 @@ internal static class StreamRuntimeLoop
         int maxAttempts,
         ILogger logger,
         string operation,
-        CancellationToken ct)
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(attempt);
         ArgumentNullException.ThrowIfNull(classify);
@@ -33,7 +33,7 @@ internal static class StreamRuntimeLoop
         {
             try
             {
-                return await attempt(ct).ConfigureAwait(false);
+                return await attempt(cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
@@ -45,7 +45,7 @@ internal static class StreamRuntimeLoop
                 currentAttempt++;
                 if (currentAttempt >= maxAttempts) throw;
                 logger.LogWarning(ex, "{Operation} attempt {Attempt} failed; retrying.", operation, currentAttempt);
-                await Task.Delay(StreamBusDelays.ExponentialCapped(currentAttempt, baseDelay, maxDelay), ct).ConfigureAwait(false);
+                await Task.Delay(StreamBusDelays.ExponentialCapped(currentAttempt, baseDelay, maxDelay), cancellationToken).ConfigureAwait(false);
             }
         }
     }

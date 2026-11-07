@@ -38,6 +38,10 @@
    CON-6, CON-7, CON-11, CON-13, INF-2, INF-5, INF-6, FLT-2, FLT-3, FLT-4. (FLT-5 refuted — see its entry.)
    (INF-7 refuted — see its entry; CON-5 refuted as IMPORTANT — doc-only, see its entry.)
 3. **Polish batch:** DOC-1, DOC-2, DOC-3, DOC-5, DOC-7, DOC-8, DOC-12, and all minors.
+   (All thirteen DOC items were reviewed, verified, and resolved on 2026-11-07 — see each entry's
+   resolution note. DOC-4's fix exposed two genuine hidden CA1711 violations — the public
+   `PublishDelegate`/`ConsumeDelegate` — which were renamed `PublishNext`/`ConsumeNext` as part of the
+   DOC-2 breaking batch and are recorded under both entries.)
 
 ---
 
@@ -1541,6 +1545,17 @@ BusConnectionState State { get; }
 Task<BusReadiness> WaitUntilReadyAsync(ReadinessPolicy policy, CancellationToken cancellationToken = default);
 ```
 
+- **Verification & resolution (2026-11-07):** Confirmed genuine with a minor count correction: `IStreamBus`
+  has ~25 public members and exactly **one** carried XML docs (`Topology`). The `NoWarn 1591` suppression was
+  confirmed at `StreamBus.csproj:32` (its comment admitted the gap was deliberate), and the `Topology` doc
+  wording described methods rather than the property (the declaration methods themselves were never removed —
+  they live on `IStreamTopology` — so the "stale" claim was an overstatement; misplaced rather than false).
+  Resolved fully: removing the suppression exposed **574** undocumented public members across the whole
+  library, and all of them are now documented in the existing one-liner style (`ConsumeContext.cs`-style;
+  semantic accuracy checked against the guides). The `Topology` property doc is rewritten, the suppression is
+  deleted, and the full solution builds with **0 warnings / 0 errors** under `TreatWarningsAsErrors` — CS1591
+  is now CI-enforced for every future public member. Unit suite 462/462.
+
 ---
 
 **[DOC-2] Public `CancellationToken` parameters named `ct` violate .NET naming guidelines**
@@ -1557,6 +1572,14 @@ Task<BusReadiness> WaitUntilReadyAsync(ReadinessPolicy policy, CancellationToken
 Task PublishAsync<T>(T message, PublishOptions? options = null, CancellationToken cancellationToken = default);
 ```
 
+- **Verification & resolution (2026-11-07):** Confirmed genuine — every public `IStreamBus` signature used
+  `ct` (~143 `CancellationToken ct` occurrences in src, only placement was correct). Renamed
+  `ct` → `cancellationToken` across the entire library (public signatures **and** the internal call graph,
+  including `IStreamSystemHandle`), via a whole-word rename; the only callers passing the token by name were
+  two test files (`DeclarationCacheTests`, `PublishRoutingTests`), updated as well. Recorded in CHANGELOG
+  (`### Breaking`). Only test-local sample variables named `ct` remain in guides, which are not StreamBus
+  parameters.
+
 ---
 
 **[DOC-3] README still advertises the removed "explicit consume skip" feature**
@@ -1570,6 +1593,10 @@ Task PublishAsync<T>(T message, PublishOptions? options = null, CancellationToke
 ```text
 - Middleware: ordered publish/consume filters, telemetry (`docs/guide/publish.md`, `docs/guide/consume.md`)
 ```
+
+- **Verification & resolution (2026-11-07):** Confirmed at README line 97 and fixed — the bullet now reads
+  "Middleware: ordered publish/consume filters, telemetry". It was the only remaining "explicit consume skip"
+  claim in living docs.
 
 ---
 
@@ -1593,6 +1620,15 @@ Task PublishAsync<T>(T message, PublishOptions? options = null, CancellationToke
 </ItemGroup>
 ```
 
+- **Verification & resolution (2026-11-07):** Confirmed genuine — the csproj emitted snupkg + repository URL
+  with no SourceLink. Applied with one amendment: the reviewer-suggested package pins were not used; probing
+  showed `Microsoft.SourceLink.GitHub` 8.0.0 drags `Microsoft.Build.Tasks.Git` 8.0.0, which trips NU1902
+  (GHSA-23fw-v26w-5fgq), so the current **10.0.403** is pinned in `Directory.Packages.props` instead, with
+  `EmbedUntrackedSources` + `DeterministicSourcePaths` in the csproj. Verified end to end: a full
+  `dotnet pack` produces a snupkg whose `StreamBus.pdb` contains the source-link mapping
+  `https://raw.githubusercontent.com/niravinfo/StreamBus/<head-commit>/*` with the exact working-tree commit
+  hash. CHANGELOG records the addition.
+
 ---
 
 **[DOC-7] `StreamConfigurationConflictException` breaks the `StreamBus*` prefix convention**
@@ -1606,6 +1642,14 @@ public sealed class StreamConfigurationConflictException : StreamBusException
         : base($"Stream '{stream}' already exists with a conflicting spec ...")
 ```
 - **Solution:** Rename the class, constructor, and all seven throw sites to `StreamBusStreamConfigurationConflictException` (or merge under `StreamBusConfigurationException` with a `Conflict` property). Update `docs/guide/topology.md` references.
+
+- **Verification & resolution (2026-11-07):** Confirmed genuine — it was the lone un-prefixed public
+  exception (checked against `Exceptions.cs`). Renamed to
+  `StreamBusStreamConfigurationConflictException` everywhere the type is *live*: src (Declaration throw
+  sites, `Hosting`, `ErrorQueueTransport`, `TopologyRegistry`), both test assemblies, and the living guides
+  (`docs/guide/topology.md`, `docs/guide/errors.md`). Historical design docs / requirements / dated plans /
+  this review file were left untouched as records. Recorded in CHANGELOG (`### Breaking`). Note the "seven
+  throw sites" undercounted: 15 throw/construction sites plus 6 pattern-match sites were renamed.
 
 ---
 
@@ -1622,6 +1666,14 @@ public sealed class ConsumerDeathTests : IAsyncDisposable
 public sealed class BrokerRestartTests : IAsyncDisposable
 ```
 - **Solution:** Rename the integration classes (and files) to `ConsumerDeathIntegrationTests` and `BrokerRestartIntegrationTests`; update the ADR references.
+
+- **Verification & resolution (2026-11-07):** Confirmed genuine — `ConsumerDeathTests` existed in both
+  assemblies and `BrokerRestartTests` broke the `*IntegrationTests` suffix convention. Both files were
+  `git mv`-renamed and the classes renamed. ADR references were updated with care: ADR-1's
+  `Reattach_queries_through_current_system_after_supervisor_swap` and the "unit close-callback and
+  attach-loop tests" bullet point at the **unit** class, which still bears `ConsumerDeathTests`; only the
+  integration citations became `ConsumerDeathIntegrationTests.*` / `BrokerRestartIntegrationTests.*`
+  (also corrected in ADR-3). Duplicate-name collision is gone.
 
 ---
 
@@ -1643,6 +1695,14 @@ public class ConsumeContext
     ...
 }
 ```
+
+- **Verification & resolution (2026-11-07):** Confirmed genuine on the constructor-contract point, with a
+  correction: both classes were already fully XML-documented and the payload APIs carried docs — the only
+  real gap was the implicit public constructor. Both `ConsumeContext` and `PublishContext` now declare a
+  `protected internal ConsumeContext()`/`PublishContext()` constructor carrying a "construction is pinned
+  to library code; filters receive and enrich but never construct" doc. `InternalsVisibleTo` is already
+  declared for both test assemblies (`AssemblyInfo.cs`), so the unit tests that construct contexts directly
+  still compile and pass. Recorded in CHANGELOG (`### Breaking`).
 
 ---
 
@@ -2162,6 +2222,17 @@ a declaration, not System.IO.Stream. ... -->
 ```
 - **Solution:** Remove `CA1711` from the `NoWarn` list, delete its rationale sentence, and build to confirm no warning appears.
 
+- **Verification & resolution (2026-11-07):** Confirmed genuine — `DeclaredStream` is `internal`
+  (`DeclareSet.cs:10`) so the rationale was dead. But the finding's premise that nothing else tripped
+  CA1711 was wrong: removing the suppression exposed **two genuine violations on public API** the
+  suppression had been hiding — `PublishDelegate` and `ConsumeDelegate` (`CS1711`, the shipped rule
+  flags public `*Delegate` suffixes). Resolved by folding into the DOC-2 breaking batch: both delegates are
+  renamed **`PublishNext` / `ConsumeNext`** (matching the `next` parameter vocabulary of the filter
+  contract), so the library itself now ships with CA1711 enforced. `CA1711` remains suppressed **only in
+  test assemblies** (`Directory.Build.props`, conditioned on the project name ending in `Tests`), where
+  xunit collection fixtures conventionally end in `Collection` (`ChaosCollection`,
+  `PipelineMetricsCollection`). Recorded in CHANGELOG (`### Breaking`).
+
 ---
 
 **[DOC-6] ActivitySource version "2.0.0" contradicts package version 0.2.0**
@@ -2173,6 +2244,12 @@ internal static readonly ActivitySource Source = new("StreamBus", "2.0.0");
 ```
 - **Solution:** Prefer generating the version from the MSBuild `$(Version)` property so it can never drift; at minimum hardcode "0.2.0" and update `observability.md:50` to match.
 
+- **Verification & resolution (2026-11-07):** Confirmed genuine. Resolved with the stronger variant: the
+  `ActivitySource` is now constructed from
+  `AssemblyInformationalVersionAttribute` (`StreamBusActivity.cs`), so the telemetry version is the
+  assembly/package version by construction and can never drift. `observability.md` updated to say the
+  version matches the released package version. CHANGELOG records the change.
+
 ---
 
 **[DOC-9] Duplicated header-bag test assertions across HeaderCarrierTests and HeadersTests**
@@ -2181,6 +2258,13 @@ internal static readonly ActivitySource Source = new("StreamBus", "2.0.0");
 - **Problem:** `Header_accessors_read_the_legal_value_set` and `GetJson_invalid_json_names_the_key_and_keeps_the_json_exception` are copy-pasted verbatim in both files, testing the same `StreamHeaders` type with no distinct coverage — duplicated maintenance cost.
 - **Solution:** Keep exactly one legal-value-set test and one invalid-JSON test in `HeadersTests.cs`; keep only the serializer-usage assertion in `HeaderCarrierTests` as a narrow test (e.g., `GetJson_deserializes_via_the_context_serializer`).
 
+- **Verification & resolution (2026-11-07):** Confirmed genuine — both tests were copy-pasted verbatim.
+  Applied exactly as suggested: the two duplicates were removed from `HeaderCarrierTests`, which now keeps a
+  single narrow `GetJson_deserializes_via_the_context_serializer` test (pinning that `StreamHeaders.GetJson`
+  routes through the context-supplied serializer via the existing `RecordingSerializer` probe), while
+  `HeadersTests` remains the owner of the legal-value-set and invalid-JSON coverage. Suite green: 462/462
+  (two fewer duplicate tests; baseline count moves accordingly elsewhere).
+
 ---
 
 **[DOC-10] Hand-rolled `IStreamSystemHandle` fakes copy-pasted across ~15 unit test files (18 private declarations)**
@@ -2188,6 +2272,19 @@ internal static readonly ActivitySource Source = new("StreamBus", "2.0.0");
 - **File:** tests\StreamBus.UnitTests\AcceptanceTests.cs (line 87), ActivityTests.cs (line 204), ConsumerDeathTests.cs (line 44), EffectivelyOnceTests.cs (line 155), HostingTests.cs (lines 15, 57), PublishRoutingTests.cs (lines 31, 220), and 9 more files
 - **Problem:** Each file contains a private hand-rolled implementation of the fourteen-member interface, almost all `Task.CompletedTask`/`NotImplementedException` boilerplate except one or two scripted behaviors. Duplicated, unreviewed code silently rots each time the interface grows — several hundred duplicated lines.
 - **Solution:** Create one shared `Fakes\RecordingSystemHandle.cs` with virtual no-op members and recording lists; express per-test behavior by subclassing and overriding one member. Replace the 18 private duplicates.
+
+- **Verification & resolution (2026-11-07):** Confirmed genuine — the count was actually **19** private
+  `IStreamSystemHandle` implementations. Consolidated into
+  `tests\StreamBus.UnitTests\Fakes\ScriptedSystemHandle.cs`: a non-sealed `ScriptedSystemHandle` base with
+  every member `virtual`, safe no-op defaults, recording collections (producer creates, stream/super
+  creates, existence probes, offset stores/queries) and scriptable result properties so most tests
+  configure instead of subclass; a `StrictScriptedSystemHandle` subclass (every non-overridden member
+  throws `NotImplementedException`) to express the "must not be called" disposition; and a shared
+  `NeverReadyConsumerSystem` consume-only script reused by five former duplicates. All 19 private
+  duplicates were replaced; no fake was left inline. Two never-reached deviations: strict-base
+  `NotImplementedException`s carry generic messages (no test asserted the bespoke ones), and some
+  previously-silent no-ops now record calls additively. Verified: full-solution build 0 warnings/0 errors,
+  unit suite 462/462 / 0 failed (identical to baseline), test bodies unchanged.
 
 ---
 
@@ -2200,6 +2297,9 @@ if (string.IsNullOrWhiteSpace(Host))
     yield return "Host host must be supplied.";
 ```
 - **Solution:** `yield return "Host must be supplied.";` and update any tests comparing the text.
+
+- **Verification & resolution (2026-11-07):** Confirmed at `Options.cs:48` and fixed. A repo-wide grep found
+  no test comparing the message text, so no test updates were required.
 
 ---
 
@@ -2217,3 +2317,11 @@ public sealed record StreamMessageProperties
     public IReadOnlyDictionary<string, object?> Headers { get; init; } = new Dictionary<string, object?>();
 ```
 - **Solution:** Add a `<summary>` explaining the AMQP mapping, value restrictions, and reserved-key rejection; document each public property; link from `docs/guide/publish.md`.
+
+- **Verification & resolution (2026-11-07):** Confirmed genuine (the record had zero docs). The now-public
+  member set is fully documented on `StreamMessageProperties` — the record summary explains the AMQP
+  property mapping, and the `Headers` doc states the string/bool/int/long value restriction,
+  the reserved `streambus.*` key rejection, and that publish-filter writes win over values supplied here
+  (consistent with the PUB-1 resolution). `docs/guide/publish.md`'s Identity section now points at the
+  `StreamMessageProperties` reference for header restrictions. (The `ContentType` member is `internal` —
+  stamped from the configured serializer — and the summary notes the media type is not caller-set.)
