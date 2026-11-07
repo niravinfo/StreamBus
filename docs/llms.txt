@@ -91,8 +91,7 @@
   must call `next()` exactly once and cannot short-circuit. A normal consume
   filter may call `next()` zero or one time; zero filters the delivery
   (handler skipped, offset advances) and more than one is retried then
-  exhausted. Effectively-once pipelines require exactly one `next()`.
-  Universal and typed filters share one context; typed filters expose
+  exhausted. Universal and typed filters share one context; typed filters expose
   `Message` and do not pass a wrapper to `next`. Typed filters registered
   through `UsePublishFilter<TFilter, TMessage>()` /
   `UseConsumeFilter<TFilter, TMessage>()` close their adapter at the call
@@ -101,10 +100,9 @@
   Trimming and NativeAOT are not supported end to end (the default serializer
   is reflection-based and typed consume still closes generics from runtime
   types); the annotations mark the dynamic paths.
-- Effectively-once (`ConsumeEffectivelyOnceAsync`) stores no source
-  offsets and publishes results with `publishing-id = source offset`.
-  Resume is recomputed from the target; one pipeline per (source, target)
-  pair.
+- Delivery semantics are at-least-once; broker-side publishing-id dedup is
+  used only by `ReplayErrorStreamAsync` (idempotent replay of error-stream
+  messages). Applications own deduplication and idempotency everywhere else.
 - Observability: meter `StreamBus` (`streambus_partition_lag/_inflight/_retry_blocked`,
   `streambus_connection_state`, `streambus_offset_store_rejected_total`,
   `streambus_offset_regressed_total`, `streambus_offset_fallback_total`,

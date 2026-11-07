@@ -178,7 +178,7 @@ type-specific:
 | `StreamBusStartupBlockedException` | A typed consumer could not attach during blocking startup. | No - fix the consumer or dependency first. |
 | `StreamBusFatalException` | The bus connection is fatal. | No - reconnect/operator action. |
 | `StreamBusNotReadyException` | The bus is not ready for the operation yet. | Yes - transient. |
-| `StreamBusStreamNotFoundException` | A referenced publish, consume, replay, or effectively-once stream is missing. | No at runtime; a blocking startup attach may retry while declarations converge. |
+| `StreamBusStreamNotFoundException` | A referenced publish, consume, or replay stream is missing. | No at runtime; a blocking startup attach may retry while declarations converge. |
 | `StreamBusTimeoutException` | A budget expired; the outcome may be unknown. | Only when the operation is safe/idempotent. |
 | `StreamBusPublishTransientException` | A publish failed transiently and the producer was discarded. | Yes - retry. |
 | `StreamBusPublishException` | A publish was rejected, returned, or otherwise failed without a transient classification. | Do not blindly retry. |

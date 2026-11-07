@@ -4,6 +4,20 @@
 
 ### Breaking
 
+- The effectively-once (read-process-write) pipeline is removed entirely, along
+  with every result-publish surface: `ConsumeEffectivelyOnceAsync`,
+  `EffectivelyOnceOptions`, `PublishResultAsync`, `PublishResultOptions`,
+  `IStreamSuperProducerHandle.PublishWithIdAsync`/`PublishResultAsync`, and
+  the `ResultProducerRegistry`/`ResultPublisher` internals. StreamBus delivery
+  semantics are at-least-once; broker-side publishing-id dedup now serves only
+  the error-stream replay path (`ReplayErrorStreamAsync`), and applications own
+  deduplication/idempotency everywhere else. Callers of the removed APIs should
+  consume with `ConsumeAsync` (or typed receive endpoints) and publish with
+  `PublishAsync`, implementing idempotency in the handler where needed. The
+  consume-side filter contract simplifies accordingly: every consume pipeline
+  now allows zero `next()` (skip the delivery) and rejects a second call with
+  `StreamBusTransientException` (recycled attach).
+
 - Publish-filter contract violations (calling `next()` zero times or more
   than once) now throw the newly public
   `StreamBusFilterContractException` instead of
