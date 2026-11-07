@@ -14,7 +14,6 @@ internal sealed class StreamProducerRegistry
         public readonly object Gate = new();
         public TaskCompletionSource<IStreamProducerHandle>? Pending;
         public TaskCompletionSource<IStreamProducerHandle>? Success;
-        public bool Failed;
     }
 
     public StreamProducerRegistry(StreamBusConnectionSupervisor supervisor, string vhost)
@@ -172,7 +171,6 @@ internal sealed class StreamProducerRegistry
             {
                 owner = new TaskCompletionSource<IStreamProducerHandle>(TaskCreationOptions.RunContinuationsAsynchronously);
                 slot.Pending = owner;
-                slot.Failed = false;
             }
             else
                 pending = slot.Pending;
@@ -189,7 +187,6 @@ internal sealed class StreamProducerRegistry
             {
                 slot.Success = owner!;
                 slot.Pending = null;
-                slot.Failed = false;
                 owner!.TrySetResult(handle);
             }
             return handle;
@@ -199,7 +196,6 @@ internal sealed class StreamProducerRegistry
             lock (slot.Gate)
             {
                 slot.Pending = null;
-                slot.Failed = true;
                 owner!.TrySetException(ex);
             }
             throw;
