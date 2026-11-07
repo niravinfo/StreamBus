@@ -542,13 +542,13 @@ internal sealed class StreamConsumerRegistry
         var skipped = 0;
         long lastTicks = DateTimeOffset.UtcNow.UtcTicks; // cross-thread via Interlocked below.
         var producers = new Dictionary<(string Source, string Partition), IStreamPlainProducerHandle>();
-        void DisposeProducers()
+        async Task DisposeProducersAsync()
         {
             foreach (var (_, producer) in producers)
             {
                 try
                 {
-                    producer.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                    await producer.DisposeAsync().ConfigureAwait(false);
                 }
                 catch (Exception ex)
                 {
@@ -645,7 +645,7 @@ internal sealed class StreamConsumerRegistry
         }
         finally
         {
-            DisposeProducers();
+            await DisposeProducersAsync().ConfigureAwait(false);
         }
     }
 
