@@ -88,7 +88,7 @@ public sealed class TopologyTests
         public Func<string, bool> StreamExists = _ => false;
         public Func<string, bool> SuperExists = _ => false;
         public Func<string, string[]> Partitions = _ => Array.Empty<string>();
-        public bool IsClosed => false;
+        public bool IsClosed { get; set; }
         public Task CreateStreamAsync(StreamSpec spec, CancellationToken ct)
         {
             lock (CreatedStreams) CreatedStreams.Add(spec.Name);
@@ -123,14 +123,29 @@ public sealed class TopologyTests
     }
 
     private static (StreamTopologyRegistry Registry, ScriptSystem System) CreateRegistry()
+        => CreateRegistry(TimeSpan.FromSeconds(5));
+
+    private static (StreamTopologyRegistry Registry, ScriptSystem System) CreateRegistry(TimeSpan monitorInterval)
+    {
+        var (registry, system, _) = CreateRegistryCore(monitorInterval);
+        return (registry, system);
+    }
+
+    private static (StreamTopologyRegistry Registry, ScriptSystem System, StreamBusConnectionSupervisor Supervisor) CreateRegistryCore(TimeSpan monitorInterval)
     {
         var system = new ScriptSystem();
-        var options = new StreamBusOptions { Vhost = "/", UserName = "app", Password = "secret" };
+        var options = new StreamBusOptions
+        {
+            Vhost = "/",
+            UserName = "app",
+            Password = "secret",
+            Connection = new StreamBusConnectionOptions { MonitorInterval = monitorInterval },
+        };
         var supervisor = new StreamBusConnectionSupervisor(options, new ReadyConnector(system));
         supervisor.StartAsync(CancellationToken.None).GetAwaiter().GetResult();
         var readiness = supervisor.WaitUntilReadyAsync(ReadinessPolicy.Indefinitely, new CancellationTokenSource(TimeSpan.FromSeconds(5)).Token).GetAwaiter().GetResult();
         Assert.Equal(BusReadiness.Ready, readiness);
-        return (new StreamTopologyRegistry(supervisor, "/"), system);
+        return (new StreamTopologyRegistry(supervisor, "/"), system, supervisor);
     }
 
     [Fact]
@@ -280,5 +295,39 @@ public sealed class TopologyTests
         system.StreamExists = _ => true;
         await registry.EnsureStreamAsync(new StreamDeclaration { Name = "s" }, ct);
         Assert.Empty(system.CreatedStreams);
+    }
+
+    [Fact]
+    public async Task Reconnect_clears_declared_cache_and_recreates_a_broker_deleted_stream()
+    {
+        var (registry, system, supervisor) = CreateRegistryCore(TimeSpan.FromMilliseconds(50));
+        var ct = TestContext.Current.CancellationToken;
+        var decl = new StreamDeclaration { Name = "s" };
+        await registry.EnsureStreamAsync(decl, ct);
+        Assert.Single(system.CreatedStreams);
+
+        // A connection drop (monitor sees the handle closed) must invalidate the
+        // cache: after the reconnect, the next Ensure re-probes and re-creates a
+        // stream that was deleted on the broker while disconnected.
+        var nonReady = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        void OnState(BusConnectionState s) { if (s != BusConnectionState.Ready) nonReady.TrySetResult(); }
+        supervisor.StateChanged += OnState;
+        try
+        {
+            system.IsClosed = true;
+            await nonReady.Task.WaitAsync(TimeSpan.FromSeconds(5), ct);
+        }
+        finally
+        {
+            supervisor.StateChanged -= OnState;
+            system.IsClosed = false;
+        }
+
+        var readiness = await supervisor.WaitUntilReadyAsync(
+            ReadinessPolicy.Indefinitely, new CancellationTokenSource(TimeSpan.FromSeconds(5)).Token);
+        Assert.Equal(BusReadiness.Ready, readiness);
+
+        await registry.EnsureStreamAsync(decl, ct);
+        Assert.Equal(2, system.CreatedStreams.Count);
     }
 }

@@ -1144,7 +1144,7 @@ catch (Exception ex)
 
 ---
 
-**[INF-5] `TopologyRegistry._declared` cache never invalidated across reconnect or broker-side deletion**
+**[INF-5] `TopologyRegistry._declared` cache never invalidated across reconnect or broker-side deletion — VALID, fixed (2026-11-07)**
 - **Severity:** IMPORTANT
 - **File:** src\StreamBus\TopologyRegistry.cs (lines 14–15, 83–88, 101)
 - **Problem:** After a successful declare, the fingerprint is cached in `_declared` keyed only by stream name. The fast path then returns success without any probe for the rest of the process lifetime — across supervisor reconnects, broker restarts, and streams deleted externally. `EnsureStreamAsync` then reports success while publishing fails with `StreamBusStreamNotFoundException`, and the cache can never recover because nothing clears it.
@@ -1165,6 +1165,33 @@ _supervisor.StateChanged += state =>
         _declared.Clear();
 };
 ```
+
+- **Verification & resolution (2026-11-07):** Confirmed genuine on every factual point.
+  1. `_declared` is written only (`TopologyRegistry.cs` lines 101/117, fast path 87–88) and never
+     cleared anywhere in the codebase — no `TryRemove`, no `Clear`, no invalidation hook. The topology
+     registry lives for the bus lifetime and survives supervisor reconnects (the supervisor swaps
+     handles without notifying it), so a fingerprint cached at startup is trusted forever.
+  2. Impact bounded to the public surface: the internal declare loop
+     (`DeclareDerivedUntilReadyAsync`, called only from hosted `StartAsync`) runs once at startup, so
+     the stale-fast-path matters when `bus.Topology.EnsureStreamAsync` (`IStreamTopology` is public,
+     `Bus.cs:96`) is invoked after a broker-side deletion — it returns instantly with false success,
+     and worse, the cache *blocks the self-healing* a post-reconnect re-probe would otherwise provide.
+     IMPORTANT severity confirmed.
+  3. **Applied fix:** `StreamTopologyRegistry` now subscribes to
+     `StreamBusConnectionSupervisor.StateChanged` in its constructor (the same pattern
+     `Registry.cs` already uses for health) and clears `_declared` whenever the state leaves
+     `Ready`, so the next `Ensure` re-establishes truth through the probe/create/compare path.
+     A benign residual race remains (a declare completing on the old handle as the connection
+     drops may repopulate one stale entry; the next disconnect clears it) — accepted, not worth
+     machinery.
+  4. Test (TDD — watched RED first, failing exactly at the second-create assert:
+     `Assert.Equal(2, CreatedStreams.Count)` got 1, proving the reconnect left the cache intact):
+     `TopologyTests.Reconnect_clears_declared_cache_and_recreates_a_broker_deleted_stream`
+     drives a real supervisor connection drop (monitor observes a closed handle at a 50 ms
+     interval → `TransientFailure` → reconnect → `Ready`), then asserts the next
+     `EnsureStreamAsync` re-probes and re-creates the broker-deleted stream. The test harness's
+     `ScriptSystem.IsClosed` became settable to script the drop. UnitTests 487/487; the brokered
+     integration suite could not run in this environment (no RabbitMQ broker is listening).
 
 ---
 
