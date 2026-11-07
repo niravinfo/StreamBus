@@ -8,7 +8,6 @@ internal sealed class PublishPipelineCache
     private readonly IServiceProvider? _rootProvider;
     private readonly Dictionary<PublishFilterRegistration, IStreamPublishFilter> _universal = new();
     private readonly ConcurrentDictionary<Type, object> _typedInstances = new();
-    private readonly ConcurrentDictionary<(Type ClosedFilterType, Type MessageType), IStreamPublishFilter> _typed = new();
     private readonly ConcurrentDictionary<Type, PublishPipeline> _pipelines = new();
 
     public PublishPipelineCache(
@@ -92,9 +91,9 @@ internal sealed class PublishPipelineCache
                         return registration.ResolveTyped(type, _rootProvider!);
                     });
 
-                filter = _typed.GetOrAdd(
-                    (closedFilterType, messageType),
-                    key => registration.WrapTyped(key.MessageType, instance));
+                // Build runs once per message type (_pipelines is the cache), so
+                // the adapter needs no second cache keyed by (filter, message).
+                filter = registration.WrapTyped(messageType, instance);
             }
 
             var filterType = FilterIdentity.TypeOf(filter);
