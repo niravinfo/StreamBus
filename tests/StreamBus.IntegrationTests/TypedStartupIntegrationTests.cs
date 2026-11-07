@@ -156,7 +156,7 @@ public sealed class TypedStartupIntegrationTests : IAsyncDisposable
                     e.DeadLetterToStream("typed-invalid-errors");
                 });
             }));
-        Assert.Contains("bound", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("no attempt limit", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

@@ -59,6 +59,15 @@ internal sealed class ErrorPublisher
         }
     }
 
+    // Publish failures that can never be fixed by retrying the handoff: the
+    // supervisor/AMQP transport latches fatal state (no in-process recovery) and
+    // a configuration error is permanent. Transient and topology failures (a
+    // missing error stream, not-ready, timeouts) keep retrying: the message must
+    // never advance past an unconfirmed handoff.
+    private static bool IsFatalHandoffFailure(Exception ex)
+        => ex is StreamBusFatalException or StreamBusConfigurationException
+            || StreamBusErrorClassification.IsFatal(ex);
+
     // Orchestration with injectable transport (unit-testable without a broker):
     // retry the confirmed publish until it lands or ct fires, then run the
     // advance-store exactly once. Never advances past an unconfirmed handoff.
@@ -86,6 +95,17 @@ internal sealed class ErrorPublisher
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
+                throw;
+            }
+            catch (Exception ex) when (IsFatalHandoffFailure(ex))
+            {
+                // A fatal destination failure cannot recover in-process (latched
+                // connection/transport state or invalid configuration). Retrying
+                // would wedge the partition forever with only warning logs; surface
+                // it so the dispatch safety net records a failed attach.
+                _logger.LogError(ex,
+                    "Error-stream handoff publish failed fatally for {Source} offset {Offset} (attempt {Attempt}); surfacing instead of retrying.",
+                    envelope.SourcePartitionStream, envelope.SourceOffset, attempt);
                 throw;
             }
             catch (Exception ex)

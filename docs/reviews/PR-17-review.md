@@ -1062,7 +1062,7 @@ _ = dispatch.ContinueWith(
 
 ---
 
-**[INF-2] `HandOffAsync` retries every exception forever, including fatal ones — partition wedges permanently**
+**[INF-2] `HandOffAsync` retries every exception forever, including fatal ones — partition wedges permanently — VALID, fixed (2026-11-06)**
 - **Severity:** IMPORTANT
 - **File:** src\StreamBus\ErrorPublisher.cs (lines 64–101)
 - **Problem:** The handoff retry loop is `while (true)` with a bare `catch (Exception ex)`; only cancellation escapes. Fatal, non-recoverable errors — a missing error stream, an auth failure, `StreamBusFatalException` — spin forever at the caller-supplied delay. This loop runs on the error-handoff path of a partition dispatch loop whose contract is "never advances past an unconfirmed handoff", so one permanently broken error destination wedges that partition for the process lifetime with only warning logs. Every other retry loop in the codebase classifies fatal vs transient; this one doesn't.
@@ -1096,6 +1096,51 @@ catch (Exception ex)
     ...
 }
 ```
+
+- **Verification & resolution (2026-11-06):** Confirmed genuine on the core mechanics; IMPORTANT
+  is the correct severity. Three corrections to the review's framing:
+  1. **"A missing error stream" is not fatal by the proposed classifier.** `CreateAsync` maps
+     `ResponseCode.StreamDoesNotExist` to `StreamBusStreamNotFoundException`
+     (`ProducerRegistry.cs:213-216`), which `StreamBusErrorClassification.IsFatal` does not match.
+     Retrying it is correct (topology convergence: the destination may be declared or recreated),
+     so the classifier deliberately keeps it on the retry path. The genuinely unrecoverable cases
+     are `StreamBusFatalException` (the supervisor latches `Fatal` and returns —
+     `ConnectionSupervisor.cs:97-101`; the AMQP transport latches `_fatal` —
+     `ErrorQueueTransport.cs:485-500`), fatal protocol/SSL/auth errors, and configuration errors.
+  2. **The reviewer's snippet alone would not catch fatal stream-path transport errors.**
+     `ProducerRegistry.PublishEnvelopeAsync` had no fatal arm (unlike `PublishAsync`), so a
+     `ProtocolException`/`SslException`/auth failure from `SendEnvelopeAsync` was wrapped as
+     `StreamBusPublishTransientException`; `IsFatal(ex)` in `HandOffAsync` would only ever have
+     matched a raw `StreamBusFatalException` from the readiness latch (and the queue transport).
+     A matching fatal arm was added to `PublishEnvelopeAsync` (`ProducerRegistry.cs:102-111`).
+  3. **Throwing is visibility, not recovery.** It converts a silent stall into
+     `FailAttach` → health `FailedRetrying`/`Unhealthy` → attach recycle → redelivery (handler
+     re-runs, never a skip). Infinite retry stays the rule for transient/topology failures, per
+     the phase-6 ruling ("handoff publish failure retries until confirmed or cancelled and NEVER
+     advances", `docs/superpowers/plans/2026-10-13-streambus-phase6-retry.md:65`). The v2 plan had
+     already specified an `isFatal` classifier for `HandOffAsync`
+     (`docs/superpowers/plans/2026-10-19-streambus-v2-architecture-and-middleware.md:137`); it was
+     never implemented, which corroborates the gap.
+  4. **Applied fix** (`ErrorPublisher.HandOffAsync`): new `IsFatalHandoffFailure` guard
+     (`StreamBusFatalException`, `StreamBusConfigurationException`, or
+     `StreamBusErrorClassification.IsFatal`) logs at Error and rethrows before the generic retry
+     catch, so the dispatch safety net owns the failure without consuming an error-destination
+     retry. `ProducerRegistry.PublishEnvelopeAsync` rethrows fatal transport errors raw instead of
+     wrapping them as transient, mirroring `PublishAsync`.
+  5. **Tests (TDD — all three watched RED):**
+     `Fatal_handoff_failure_is_not_retried_and_commits_nothing` (pre-fix: the loop retried until
+     the test CTS fired, so the await threw `TaskCanceledException` instead of
+     `StreamBusFatalException`), `Protocol_handoff_failure_is_not_retried` (`IsFatal` path), and
+     `Fatal_envelope_failure_is_not_wrapped_as_transient` (pre-fix: the envelope registry returned
+     `StreamBusPublishTransientException` wrapping the protocol error).
+     `Missing_error_stream_is_retried_until_the_destination_exists` pins the deliberate
+     non-fatal classification. `ErrorHandoffTests.Publish_failure_retries_then_commits_once_after_confirmation`
+     continues to pin transient retry. Build clean (0 warnings); UnitTests 486/486;
+     IntegrationTests 70/70 with 2 pre-existing cluster-gated skips. The integration run also
+     surfaced one pre-existing stale assertion from the CON-5 wording change
+     (`TypedStartupIntegrationTests.Unbounded_retry_with_destination_fails_at_registration`
+     still expected `"bound"` after the messages moved to "no attempt limit"); it now asserts
+     the current wording. Unrelated to INF-2, but the suite was red without it.
 
 ---
 

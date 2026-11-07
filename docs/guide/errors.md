@@ -97,6 +97,15 @@ lost confirmation wedge the partition:
   message; requeue/replay only when the destination can tolerate a
   duplicate.
 
+A hand-off that fails transiently (not-ready, timeout, broker unreachable,
+or a destination stream that does not exist yet) is retried without
+advancing: the message is never skipped. A *fatal* failure — a latched
+connection/transport state (`StreamBusFatalException`), a fatal
+protocol/SSL/auth error, or a configuration error — cannot recover by
+retrying, so it surfaces immediately: the partition is marked failed and
+recycled (redelivery, never a skip) instead of retrying forever at the
+backoff delay.
+
 `OnExhausted` runs with the full `ExhaustedContext` (stream, partition,
 offset, body, message id, correlation id, sent time, headers, attempts,
 exception, services). Returning advances past the message; throwing

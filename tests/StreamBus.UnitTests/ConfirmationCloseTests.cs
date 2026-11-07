@@ -47,6 +47,25 @@ file sealed class NeverConfirmedEnvelopeHandle : IStreamPlainProducerHandle
     }
 }
 
+file sealed class FatalEnvelopeHandle : IStreamPlainProducerHandle
+{
+    public int Sends;
+
+    public Task SendAsync(ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct)
+        => throw new NotSupportedException("ConfirmationCloseTests only publish envelopes.");
+
+    public Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, StreamMessageProperties properties, CancellationToken ct)
+    {
+        Sends++;
+        return Task.FromException(new GenericProtocolException(ResponseCode.InternalError, "protocol"));
+    }
+
+    public Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, PublishOptions options, CancellationToken ct)
+        => throw new NotSupportedException("ConfirmationCloseTests never replay.");
+
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+}
+
 file sealed class RecordingEnvelopeHandle : IStreamPlainProducerHandle
 {
     public int Sends;
@@ -132,6 +151,25 @@ public sealed class ConfirmationCloseTests
 
         Assert.Equal(1, replay.Sends);
         Assert.Equal(2, system.PlainCreations);
+    }
+
+    [Fact]
+    public async Task Fatal_envelope_failure_is_not_wrapped_as_transient()
+    {
+        var system = new StubSystemHandle();
+        var handle = new FatalEnvelopeHandle();
+        system.OnCreatePlain = (_, _) => Task.FromResult<IStreamPlainProducerHandle>(handle);
+        var (registry, _) = CreateRegistry(system);
+
+        await Assert.ThrowsAsync<GenericProtocolException>(() =>
+            registry.PublishEnvelopeAsync(
+                "errors",
+                new byte[] { 5 },
+                new StreamMessageProperties { Headers = NoHeaders },
+                confirmTimeout: TimeSpan.FromSeconds(5),
+                TestContext.Current.CancellationToken));
+
+        Assert.Equal(1, handle.Sends);
     }
 
     private static (StreamProducerRegistry Registry, StubSystemHandle System) CreateRegistry(StubSystemHandle system)
