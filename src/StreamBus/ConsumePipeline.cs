@@ -357,10 +357,3 @@ internal sealed class TypedConsumeContextFactory<T> : ITypedConsumeContextFactor
             Message = (T)message,
         };
 }
-
-internal sealed class EmptyServiceProvider : IServiceProvider
-{
-    public static readonly EmptyServiceProvider Instance = new();
-
-    public object? GetService(Type serviceType) => null;
-}

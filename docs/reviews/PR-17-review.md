@@ -2073,6 +2073,35 @@ internal sealed class EmptyServiceProvider : IServiceProvider
 ```
 - **Solution:** Move it to its own small infrastructure file (e.g., next to `Registry.cs`), and guide `GetRequiredService` usage in `ConsumeContext.Services` docs.
 
+- **Verification & resolution (2026-11-07):** Confirmed genuine, and understated: the sharper defect
+  the reviewer missed is that a consumer with `_pipeline.Count > 0` but no `IServiceScopeFactory`
+  (a manually constructed bus without DI) ran every filter against the empty provider, silently
+  resolving *all* services to `null`, while the publish path rejects the identical situation
+  explicitly (`Bus.cs`: "Publish filters are configured, but no IServiceScopeFactory is available").
+  Reachability is bounded — under hosted usage `AddStreamBus` always resolves an
+  `IServiceScopeFactory` — which is why MINOR is the correct severity; the typed-consumer path
+  already fails loudly because its invoker uses `GetRequiredService`. Applied fix:
+  1. `EmptyServiceProvider` moved from the bottom of `ConsumePipeline.cs` to its own
+     `src\StreamBus\EmptyServiceProvider.cs`, with a doc comment stating its null-object contract:
+     it is only ever the `Services` value for deliveries that create no scope (filterless untyped
+     endpoints, non-DI buses), filters never observe it, and it is unreachable for filter
+     pipelines because those now fail at construction.
+  2. `StreamPartitionConsumer`'s constructor throws `StreamBusConfigurationException`
+     ("Consume filters are configured for stream '{stream}' but no IServiceScopeFactory is
+     available (internal error).") when the pipeline has filters and no scope factory — mirroring
+     `Bus.cs` and the existing `OnExhausted` guard. Under DI-based hosted usage this is
+     unreachable, so no hosted behavior changes.
+  3. `ConsumeContext.Services` now documents the no-scope case: prefer `GetRequiredService`; on
+     filterless/no-DI endpoints every resolve returns `null` — treat `null` there as "no DI",
+     not "service not registered".
+  4. Tests (TDD — `Consume_scope_validation_tests`: the rejection test was watched RED first,
+     failing because no exception was thrown):
+     `Consume_filters_without_a_scope_factory_are_rejected_at_construction`, plus two pins that
+     the allowed configurations (filters + scope factory; filterless without scope factory)
+     still construct. CHANGELOG records the behavior change under `### Fixed`. UnitTests
+     468/468; the brokered integration suite could not run in this environment (no RabbitMQ
+     broker is listening) but the solution builds clean.
+
 ---
 
 **[CON-14] `CreateScope()` used instead of `CreateAsyncScope()` for per-message scopes**
