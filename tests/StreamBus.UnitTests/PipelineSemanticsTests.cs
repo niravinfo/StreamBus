@@ -144,6 +144,21 @@ public sealed class PipelineSemanticsTests
         Assert.Equal(new[] { "outer-in" }, log);
     }
 
+    [Fact]
+    public async Task Fire_and_forget_next_is_rejected_as_a_filter_contract_violation()
+    {
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var pipeline = new ConsumePipeline(new IStreamConsumeFilter[] { new FireAndForgetNextFilter() });
+
+        var ex = await Assert.ThrowsAsync<StreamBusFilterContractException>(() =>
+            pipeline.RunAsync(NewContext(), () => release.Task));
+
+        Assert.Contains(nameof(FireAndForgetNextFilter), ex.Message, StringComparison.Ordinal);
+        Assert.Contains("before its continuation completed", ex.Message, StringComparison.Ordinal);
+        Assert.False(release.Task.IsCompleted, "the escaped continuation must not be awaited by the pipeline");
+        release.SetResult();
+    }
+
     // ---------------------------------------------------------------------
     // Configuration rejection
     // ---------------------------------------------------------------------
@@ -622,6 +637,15 @@ public sealed class PipelineSemanticsTests
         {
             await next();
             await next();
+        }
+    }
+
+    private sealed class FireAndForgetNextFilter : IStreamConsumeFilter
+    {
+        public Task OnConsume(ConsumeContext context, ConsumeNext next)
+        {
+            _ = next();
+            return Task.CompletedTask;
         }
     }
 

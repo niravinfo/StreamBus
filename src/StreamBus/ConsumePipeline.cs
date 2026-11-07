@@ -22,8 +22,10 @@ public interface IStreamConsumeFilter
     /// </summary>
     /// <param name="context">The shared consume context for this delivery.</param>
     /// <param name="next">
-    /// The continuation. Call it at most once; zero calls mark the delivery as
-    /// handled and advance the offset without invoking the handler.
+    /// The continuation. Call it at most once and await the returned task
+    /// before returning: a filter that returns while the continuation is still
+    /// running is rejected. Zero calls mark the delivery as handled and advance
+    /// the offset without invoking the handler.
     /// </param>
     /// <returns>A task that completes when the filter and any continuation finish.</returns>
     Task OnConsume(ConsumeContext context, ConsumeNext next);
@@ -49,17 +51,20 @@ public interface IStreamConsumeFilter<T>
     /// </summary>
     /// <param name="context">The typed consume context for this delivery.</param>
     /// <param name="next">
-    /// The continuation. Call it at most once; zero calls mark the delivery as
-    /// handled and advance the offset without invoking the handler.
+    /// The continuation. Call it at most once and await the returned task
+    /// before returning: a filter that returns while the continuation is still
+    /// running is rejected. Zero calls mark the delivery as handled and advance
+    /// the offset without invoking the handler.
     /// </param>
     /// <returns>A task that completes when the filter and any continuation finish.</returns>
     Task OnConsume(ConsumeContext<T> context, ConsumeNext next);
 }
 
 /// <summary>
-/// Continues a consume pipeline. A filter may call it zero or one times:
-/// zero skips the delivery (the handler is not invoked and the offset
-/// advances); more than one call is rejected.
+/// Continues a consume pipeline. A filter may call it zero or one times: zero
+/// skips the delivery (the handler is not invoked and the offset advances);
+/// more than one call is rejected. A filter that calls it must await the
+/// returned task before returning.
 /// </summary>
 public delegate Task ConsumeNext();
 
@@ -271,6 +276,7 @@ internal sealed class ConsumePipeline
         var filter = _filters[index];
         var filterName = FilterIdentity.TypeOf(filter).Name;
         var nextCalls = 0;
+        Task? nextTask = null;
         Task Next()
         {
             var call = Interlocked.Increment(ref nextCalls);
@@ -280,7 +286,8 @@ internal sealed class ConsumePipeline
                     $"Consume filter '{filterName}' invoked next {call} times; a message must be handled at most once.");
             }
 
-            return InvokeAsync(index + 1, context, terminal);
+            nextTask = InvokeAsync(index + 1, context, terminal);
+            return nextTask;
         }
 
         await filter.OnConsume(context, Next).ConfigureAwait(false);
@@ -291,6 +298,15 @@ internal sealed class ConsumePipeline
             // A consume filter may skip a delivery by returning without calling
             // next: the handler is not invoked and the offset advances.
             return;
+        }
+        if (Volatile.Read(ref nextTask) is not { IsCompleted: true })
+        {
+            // The filter called next but returned before awaiting it: the
+            // continuation (including the handler) is still running while the
+            // pipeline would report completion, advancing the offset under a
+            // live handler and hiding faults. Reject loudly instead.
+            throw new StreamBusFilterContractException(
+                $"Consume filter '{filterName}' returned before its continuation completed; await next().");
         }
     }
 }

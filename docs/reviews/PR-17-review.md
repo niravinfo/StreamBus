@@ -2027,6 +2027,36 @@ if (calls == 1 && nextTask is { IsCompleted: false })
         $"Consume filter '{filterName}' returned before its continuation completed; await next().");
 ```
 
+- **Verification & resolution (2026-11-07):** Confirmed genuine. The current code retains
+  the quoted shape exactly (`ConsumePipeline.InvokeAsync`): `Next()` only counted calls and
+  returned the continuation task, and after `OnConsume` returned the pipeline checked only
+  `calls == 0`, never whether the single `next()` call had completed. A filter calling
+  `_ = next(); return Task.CompletedTask;` passed silently while the handler ran detached —
+  the offset store in `DispatchAsync` could then advance *before* the handler finished
+  (worse than an at-least-once violation: a crash in that window loses the message,
+  contradicting the post-EO-removal contract), and a faulted continuation went unobserved. Two
+  corrections to the finding:
+  1. **Stale framing:** the title's "escapes the exactly-once counter" rationale is moot
+     (the EO machinery was removed 2026-11-07) — the finding's substance never depended on
+     it. Severity MINOR (only a misbehaving user filter triggers it) is fair.
+  2. **Symmetric hole on the publish side:** `PublishPipeline.InvokeAsync` had the identical
+     shape, which the reviewer did not flag. It was fixed in the same change (a fire-and-forget
+     publish continuation escaped with the send and its confirmation still in flight).
+  **Applied fix:** both pipelines' `Next()` now records the continuation task, and after the
+  filter returns, `calls >= 1` with an incomplete task throws
+  `StreamBusFilterContractException` ("returned before its continuation completed; await
+  next()"). Correctly-behaved filters are unaffected (they await `next()`, so the task is
+  completed when they return); consume zero-call skip semantics are unchanged. The
+  await-contract is now documented on `ConsumeNext`, `IStreamConsumeFilter.OnConsume`,
+  `IStreamConsumeFilter<T>.OnConsume`, `PublishNext`, and both
+  `IStreamPublishFilter.OnPublish` overloads. Tests (TDD — both watched RED first, failing
+  with "No exception was thrown" as expected:
+  `PipelineSemanticsTests.Fire_and_forget_next_is_rejected_as_a_filter_contract_violation`
+  and `PublishPipelineTests.Fire_and_forget_next_is_rejected_as_a_filter_contract_violation`;
+  each also asserts the escaped continuation is not silently awaited by the pipeline).
+  UnitTests 465/465; the brokered integration suite could not run in this environment
+  (no RabbitMQ broker is listening). CHANGELOG records the fix under `### Fixed`.
+
 ---
 
 **[CON-12] `EmptyServiceProvider` is misplaced in `ConsumePipeline.cs` and surprises raw `GetService` callers**
