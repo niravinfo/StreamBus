@@ -18,7 +18,7 @@ public interface IStreamPublishFilter
     /// Runs before the publish is serialized and sent.
     /// </summary>
     /// <param name="context">The shared publish context for this message.</param>
-    /// <param name="next">The continuation; call it exactly once.</param>
+    /// <param name="next">The continuation; call it exactly once and await the returned task before returning.</param>
     /// <returns>A task that completes when the filter and its continuation finish.</returns>
     Task OnPublish(PublishContext context, PublishNext next);
 }
@@ -41,13 +41,14 @@ public interface IStreamPublishFilter<T>
     /// Runs before the publish is serialized and sent.
     /// </summary>
     /// <param name="context">The typed publish context for this message.</param>
-    /// <param name="next">The continuation; call it exactly once.</param>
+    /// <param name="next">The continuation; call it exactly once and await the returned task before returning.</param>
     /// <returns>A task that completes when the filter and its continuation finish.</returns>
     Task OnPublish(PublishContext<T> context, PublishNext next);
 }
 
 /// <summary>
-/// Continues a publish pipeline. Publish filters must invoke it exactly once.
+/// Continues a publish pipeline. Publish filters must invoke it exactly once
+/// and await the returned task before returning.
 /// </summary>
 public delegate Task PublishNext();
 
@@ -161,6 +162,7 @@ internal sealed class PublishPipeline
         var filterType = FilterIdentity.TypeOf(filter);
         var filterName = filterType.FullName ?? filterType.Name;
         var nextCalls = 0;
+        Task? nextTask = null;
         Task Next()
         {
             var call = Interlocked.Increment(ref nextCalls);
@@ -172,7 +174,8 @@ internal sealed class PublishPipeline
 
             // Stream, routing key, payload, identity and services are resolved
             // before the pipeline; a filter can only mutate Headers in place.
-            return InvokeAsync(index + 1, context, terminal);
+            nextTask = InvokeAsync(index + 1, context, terminal);
+            return nextTask;
         }
 
         await filter.OnPublish(context, Next).ConfigureAwait(false);
@@ -187,6 +190,15 @@ internal sealed class PublishPipeline
         {
             throw new StreamBusFilterContractException(
                 $"Publish filter {filterName} invoked next {calls} times; exactly one continuation is allowed.");
+        }
+        if (nextTask is not { IsCompleted: true })
+        {
+            // The filter called next but returned before awaiting it: the
+            // continuation (including the send) is still running while the
+            // pipeline would report completion, so publish results and faults
+            // would escape unobserved. Reject loudly instead.
+            throw new StreamBusFilterContractException(
+                $"Publish filter '{filterName}' returned before its continuation completed; await next().");
         }
     }
 }

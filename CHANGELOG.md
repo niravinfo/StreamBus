@@ -303,6 +303,14 @@
   disposal can no longer reset or dispose a channel while a publish holds the
   gate; the mismatched-pair torn read the two-field layout allowed is no longer
   representable.
+- Consume and publish filters that call `next()` without awaiting it are
+  rejected with `StreamBusFilterContractException` instead of being silently
+  accepted (CON-10). A fire-and-forget continuation previously escaped the
+  pipeline: the offset could advance (consume) or the send could complete
+  reporting (publish) while the detached continuation was still running, with
+  its faults unobserved. The `ConsumeNext`/`PublishNext` contracts now state
+  that the returned task must be awaited before returning (zero-call consume
+  filtering is unchanged).
 
 ### Validation
 
