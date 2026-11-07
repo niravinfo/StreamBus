@@ -1967,8 +1967,8 @@ void DisposeProducers()
 
 ---
 
-**[CON-9] Replay's 5 s idle termination silently truncates a stalled backlog and is unconfigurable**
-- **Severity:** MINOR
+**[CON-9] Replay's 5 s idle termination silently truncates a stalled backlog and is unconfigurable — MOOT (2026-11-07): replay feature scheduled for removal**
+- **Severity:** ~~MINOR~~ → none (moot by product decision)
 - **File:** src\StreamBus\ConsumerRegistry.cs (lines 645–654)
 - **Problem:** Replay terminates on "5 s with no delivery and nothing in flight" because no usable broker end offset exists. A broker stall longer than the hardcoded 5 s (throttled stream, network hiccup) makes `ReplayAsync` return a short count with no error — silently incomplete replay treated as success.
 ```csharp
@@ -1977,6 +1977,22 @@ void DisposeProducers()
 var idle = TimeSpan.FromSeconds(5);
 ```
 - **Solution:** Expose the idle window (internal constant at minimum, ideally a `ReplayOptions.IdleTimeout`), and log a warning on idle termination stating the replay may be incomplete for slow trickle backlogs.
+
+- **Moot note (2026-11-07):** Verified genuine on the facts — the idle window is
+  hardcoded (`ConsumerRegistry.cs:621`), unconfigurable (no `ReplayOptions`/timeout
+  parameter on either `ReplayAsync` or the public `Bus.ReplayErrorStreamAsync`), and idle
+  termination logs at Information with no signal that the backlog may be incomplete.
+  **Not fixed; moot by product decision.** Replay is scheduled for removal in the next PR:
+  the library's contract ends at publishing the failed message (with identifying envelope
+  metadata) to the error destination; what happens next — requeue, consuming the error
+  stream directly, or ignoring — is the application's responsibility. All three sub-issues
+  (fixed window, silent truncation, missing configurability) concern code that exists only
+  to decide when a replay is "done", so removal eliminates the entire subject. Two removal-PR
+  notes recorded: (1) `ErrorEnvelope` and the PUB-4 header/ContentType capture stay
+  load-bearing for users consuming the error stream raw; (2) the stop-condition quirk
+  inherits to users writing their own drain tool (no broker end-offset exists — the
+  "Phase 5 Round 2" comment), which deserves one sentence in `docs/guide/errors.md` at
+  removal time, not more machinery.
 
 ---
 
