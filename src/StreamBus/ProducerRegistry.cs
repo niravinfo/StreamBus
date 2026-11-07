@@ -103,6 +103,13 @@ internal sealed class StreamProducerRegistry
         {
             throw;
         }
+        catch (Exception ex) when (!IsCallerCancel(ex, ct) && StreamBusErrorClassification.IsFatal(ex))
+        {
+            // Fatal transport errors (protocol/SSL/auth) are not retryable; surface
+            // them raw so the handoff retry loop can classify them as fatal instead
+            // of retrying a wrapped "transient" failure forever.
+            throw;
+        }
         catch (Exception ex) when (!IsCallerCancel(ex, ct))
         {
             await InvalidateAsync(entry, handle).ConfigureAwait(false);

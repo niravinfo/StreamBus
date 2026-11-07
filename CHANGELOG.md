@@ -232,6 +232,15 @@
   the attach or invoking the handler. The gate does not cancel waiters and the
   current-generation attach is not drained at dispose time, so the disposed
   flag is checked immediately after the gate is acquired.
+- Error hand-off no longer retries fatal failures forever (INF-2). A
+  `StreamBusFatalException`, a configuration error, or a fatal transport error
+  (protocol/SSL/auth) now surfaces immediately so the dispatch safety net marks
+  the partition failed and recycles it, instead of spinning at the backoff delay
+  for the process lifetime while health still reports the partition attached.
+  Transient and topology failures (a missing error stream, not-ready, timeouts)
+  still retry without advancing. The stream hand-off path also stops wrapping
+  fatal transport errors as `StreamBusPublishTransientException`, matching the
+  normal publish path.
 
 ### Validation
 
