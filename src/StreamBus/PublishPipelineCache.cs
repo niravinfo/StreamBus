@@ -65,6 +65,13 @@ internal sealed class PublishPipelineCache
     private PublishPipeline Build(Type messageType)
     {
         var filters = new List<IStreamPublishFilter>(_registrations.Count);
+
+        // Registration-time ConflictsWith only sees declared FilterTypes; factory
+        // registrations carry none, and a typed registration's resolved class can
+        // collide with a factory-produced universal instance (universal duplicates
+        // are caught eagerly in the constructor, typed ones can only be checked
+        // once per message type — open-generic registrations have no enumerable
+        // message-type set). Hence this resolved-identity check at first publish.
         var seen = new HashSet<Type>();
 
         foreach (var registration in _registrations)
