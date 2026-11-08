@@ -6,6 +6,8 @@ namespace StreamBus.IntegrationTests;
 
 public sealed class BusCoreIntegrationTests
 {
+    public BusCoreIntegrationTests() => IntegrationLane.RequireBroker();
+
     private static string User() => Environment.GetEnvironmentVariable("STREAMBUS_USER") ?? "app";
     private static string Password() => Environment.GetEnvironmentVariable("STREAMBUS_PASSWORD") ?? "password";
 
@@ -46,7 +48,7 @@ public sealed class BusCoreIntegrationTests
             var check = sp.GetServices<IHealthCheck>().OfType<StreamBusHealthCheck>().Single();
             var result = await check.CheckHealthAsync(new HealthCheckContext(), CancellationToken.None);
             Assert.Equal(HealthStatus.Healthy, result.Status);
-            Assert.Contains(result.Data.Keys, k => k.StartsWith("/|"));
+            Assert.Contains(result.Data.Keys, k => k.StartsWith("/|", StringComparison.Ordinal));
         }
         finally
         {

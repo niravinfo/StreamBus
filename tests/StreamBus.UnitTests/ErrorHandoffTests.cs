@@ -1,3 +1,5 @@
+using RabbitMQ.Stream.Client;
+
 namespace StreamBus.UnitTests;
 
 public sealed class ErrorHandoffTests
@@ -18,7 +20,6 @@ public sealed class ErrorHandoffTests
         MessageId = null,
         CorrelationId = null,
         RoutingValue = null,
-        ErrorRoutingValue = "s",
     };
 
     private sealed class NeverReadyConnector : IStreamSystemConnector
@@ -56,6 +57,74 @@ public sealed class ErrorHandoffTests
         Assert.Equal(3, publishes);
         Assert.Equal(1, commits);
         Assert.Equal(new[] { "publish#1", "publish#2", "publish#3", "commit" }, order);
+    }
+
+    [Fact]
+    public async Task Fatal_handoff_failure_is_not_retried_and_commits_nothing()
+    {
+        var publisher = Publisher();
+        var publishes = 0;
+        var commits = 0;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMilliseconds(300));
+
+        var ex = await Assert.ThrowsAsync<StreamBusFatalException>(() =>
+            publisher.HandOffAsync(Sample(),
+                (_, _) =>
+                {
+                    publishes++;
+                    return Task.FromException(new StreamBusFatalException("fatal"));
+                },
+                () => { commits++; return Task.CompletedTask; },
+                (_, _) => TimeSpan.FromMilliseconds(25),
+                cts.Token));
+
+        Assert.Equal("fatal", ex.Message);
+        Assert.Equal(1, publishes);
+        Assert.Equal(0, commits);
+    }
+
+    [Fact]
+    public async Task Protocol_handoff_failure_is_not_retried()
+    {
+        var publisher = Publisher();
+        var publishes = 0;
+        var commits = 0;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMilliseconds(300));
+
+        await Assert.ThrowsAsync<GenericProtocolException>(() =>
+            publisher.HandOffAsync(Sample(),
+                (_, _) =>
+                {
+                    publishes++;
+                    return Task.FromException(new GenericProtocolException(ResponseCode.InternalError, "protocol"));
+                },
+                () => { commits++; return Task.CompletedTask; },
+                (_, _) => TimeSpan.FromMilliseconds(25),
+                cts.Token));
+
+        Assert.Equal(1, publishes);
+        Assert.Equal(0, commits);
+    }
+
+    [Fact]
+    public async Task Missing_error_stream_is_retried_until_the_destination_exists()
+    {
+        var publisher = Publisher();
+        var publishes = 0;
+        var commits = 0;
+
+        await publisher.HandOffAsync(Sample(),
+            (_, _) => ++publishes == 1
+                ? Task.FromException(new StreamBusStreamNotFoundException("errors"))
+                : Task.CompletedTask,
+            () => { commits++; return Task.CompletedTask; },
+            (_, _) => TimeSpan.Zero,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(2, publishes);
+        Assert.Equal(1, commits);
     }
 
     [Fact]

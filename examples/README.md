@@ -21,6 +21,8 @@ Prerequisite: RabbitMQ 4.x with streams enabled reachable on
 (`app` / `password`) match the repo's local dev broker; adjust
 `UserName`/`Password` in each `appsettings.json`, or override them with
 the environment variables `StreamBus__UserName` / `StreamBus__Password`.
+Each example reads these values in its own `Program.cs` and passes them to
+`cfg.Host`; StreamBus itself never binds `appsettings.json`.
 
 Run the producer first (it owns the topology), then the consumer:
 

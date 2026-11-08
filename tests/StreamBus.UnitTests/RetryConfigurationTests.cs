@@ -9,7 +9,7 @@ public sealed class RetryConfigurationTests
 
     private sealed class OrderConsumer : IConsumer<OrderEvent>
     {
-        public Task Consume(ConsumeContext<OrderEvent> context, CancellationToken ct) => Task.CompletedTask;
+        public Task Consume(ConsumeContext<OrderEvent> context) => Task.CompletedTask;
     }
 
     private static ConsumeOptions EndpointOptions(Action<IReceiveEndpointConfigurator> endpoint, Action<IStreamBusConfigurator>? bus = null)
@@ -41,14 +41,13 @@ public sealed class RetryConfigurationTests
         var options = EndpointOptions(e =>
         {
             e.Consumer<OrderConsumer>("grp");
-            e.UseMessageRetry(r => r.Intervals(TimeSpan.FromMilliseconds(200), TimeSpan.FromSeconds(2)));
+            e.UseRetry(r => r.Intervals(TimeSpan.FromMilliseconds(200), TimeSpan.FromSeconds(2)));
             e.DeadLetterToStream("audit-errors");
         });
-        Assert.Equal(FailureMode.SkipAfterDeadline, options.Retry.FailureMode);
         Assert.Equal(3, options.Retry.MaxAttempts);
         Assert.Equal("audit-errors", options.ErrorStream?.Stream);
         Assert.Null(options.DeadLetter);
-        Assert.Null(options.ExhaustionCallback);
+        Assert.Null(options.OnExhausted);
     }
 
     [Fact]
@@ -57,11 +56,11 @@ public sealed class RetryConfigurationTests
         var options = EndpointOptions(e =>
         {
             e.Consumer<OrderConsumer>("grp");
-            e.UseMessageRetry(r => r.Immediate(5));
+            e.UseRetry(r => r.Immediate(5));
             e.OnExhausted((_, _) => Task.CompletedTask);
         });
         Assert.Equal(6, options.Retry.MaxAttempts);
-        Assert.NotNull(options.ExhaustionCallback);
+        Assert.NotNull(options.OnExhausted);
         Assert.Null(options.ErrorStream);
         Assert.Null(options.DeadLetter);
     }
@@ -72,9 +71,8 @@ public sealed class RetryConfigurationTests
         var options = EndpointOptions(e =>
         {
             e.Consumer<OrderConsumer>("grp");
-            e.UseMessageRetry(r => r.Interval(3, TimeSpan.FromMilliseconds(100)));
+            e.UseRetry(r => r.Interval(3, TimeSpan.FromMilliseconds(100)));
         });
-        Assert.Equal(FailureMode.SkipAfterDeadline, options.Retry.FailureMode);
         Assert.Equal(4, options.Retry.MaxAttempts);
         Assert.Null(options.ErrorStream);
         Assert.NotNull(options.DeadLetter);
@@ -86,11 +84,10 @@ public sealed class RetryConfigurationTests
     public void Unbounded_default_is_strict_forever()
     {
         var options = EndpointOptions(e => e.Consumer<OrderConsumer>("grp"));
-        Assert.Equal(FailureMode.Strict, options.Retry.FailureMode);
         Assert.Null(options.Retry.MaxAttempts);
         Assert.Null(options.ErrorStream);
         Assert.Null(options.DeadLetter);
-        Assert.Null(options.ExhaustionCallback);
+        Assert.Null(options.OnExhausted);
     }
 
     [Fact]
@@ -107,7 +104,7 @@ public sealed class RetryConfigurationTests
                     e.DeadLetterToStream("audit-errors");
                 });
             }));
-        Assert.Contains("bound", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("attempt limit", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -124,7 +121,7 @@ public sealed class RetryConfigurationTests
                     e.OnExhausted((_, _) => Task.CompletedTask);
                 });
             }));
-        Assert.Contains("bound", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("attempt limit", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -133,7 +130,7 @@ public sealed class RetryConfigurationTests
         var options = EndpointOptions(e =>
         {
             e.Consumer<OrderConsumer>("grp");
-            e.UseMessageRetry(r => r.None());
+            e.UseRetry(r => r.None());
         });
         Assert.Equal(1, options.Retry.MaxAttempts);
         Assert.Equal("orders_error", options.DeadLetter?.Name);
@@ -145,11 +142,11 @@ public sealed class RetryConfigurationTests
         var options = EndpointOptions(e =>
         {
             e.Consumer<OrderConsumer>("grp");
-            e.UseMessageRetry(r => r.Immediate(1));
+            e.UseRetry(r => r.Immediate(1));
             e.DeadLetterToStream("audit-errors");
             e.OnExhausted((_, _) => Task.CompletedTask);
         });
-        Assert.NotNull(options.ExhaustionCallback);
+        Assert.NotNull(options.OnExhausted);
         Assert.Null(options.ErrorStream);
         Assert.Equal("audit-errors", options.ShadowedDeadLetter?.Name);
     }
@@ -161,9 +158,9 @@ public sealed class RetryConfigurationTests
             e =>
             {
                 e.Consumer<OrderConsumer>("grp");
-                e.UseMessageRetry(r => r.Immediate(0));
+                e.UseRetry(r => r.Immediate(0));
             },
-            cfg => cfg.UseMessageRetry(r => r.Intervals(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(2))));
+            cfg => cfg.UseRetry(r => r.Intervals(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(2))));
         Assert.Equal(1, options.Retry.MaxAttempts);
     }
 
@@ -172,7 +169,7 @@ public sealed class RetryConfigurationTests
     {
         var options = EndpointOptions(
             e => e.Consumer<OrderConsumer>("grp"),
-            cfg => cfg.UseMessageRetry(r => r.Intervals(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(10))));
+            cfg => cfg.UseRetry(r => r.Intervals(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(10))));
         Assert.Equal(4, options.Retry.MaxAttempts);
     }
 
@@ -228,7 +225,7 @@ public sealed class RetryConfigurationTests
         Partition = 0,
         Offset = 7,
         Body = new ReadOnlyMemory<byte>(new byte[] { 1 }),
-        Metadata = new MessageMetadata(),
+        Headers = new StreamHeaders(new Dictionary<string, object?>(), SystemTextJsonStreamSerializer.Default),
         Attempts = 3,
         Exception = new InvalidOperationException("boom"),
         FailedAt = DateTimeOffset.UtcNow,
@@ -297,6 +294,10 @@ public sealed class RetryConfigurationTests
         await using var sp = services.BuildServiceProvider();
         var ctx = CallbackContext(sp);
         Assert.Equal("hello", ctx.GetService<string>());
-        Assert.Throws<StreamBusConfigurationException>(() => ctx.GetService<int>());
+
+        // A missing DI registration is a runtime resolution miss, not invalid
+        // bus configuration: surface the standard required-service failure.
+        var missing = Assert.Throws<InvalidOperationException>(() => ctx.GetService<int>());
+        Assert.Contains("System.Int32", missing.Message);
     }
 }

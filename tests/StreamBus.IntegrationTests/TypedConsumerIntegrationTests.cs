@@ -7,12 +7,14 @@ namespace StreamBus.IntegrationTests;
 
 public sealed class TypedConsumerIntegrationTests : IAsyncDisposable
 {
+    public TypedConsumerIntegrationTests() => IntegrationLane.RequireBroker();
+
     private static string User() => Environment.GetEnvironmentVariable("STREAMBUS_USER") ?? "app";
     private static string Password() => Environment.GetEnvironmentVariable("STREAMBUS_PASSWORD") ?? "password";
     private readonly List<string> _streams = new();
     private readonly List<string> _superStreams = new();
 
-    private async Task<StreamSystem> ConnectAdminAsync()
+    private static async Task<StreamSystem> ConnectAdminAsync()
         => await StreamSystem.Create(new StreamSystemConfig
         {
             UserName = User(),
@@ -81,7 +83,7 @@ public sealed class TypedConsumerIntegrationTests : IAsyncDisposable
     {
         private readonly List<(ConsumeContext<OrderEvent> Ctx, byte[] Raw)> _got;
         public OrderConsumer(List<(ConsumeContext<OrderEvent>, byte[])> got) => _got = got;
-        public Task Consume(ConsumeContext<OrderEvent> context, CancellationToken ct)
+        public Task Consume(ConsumeContext<OrderEvent> context)
         {
             lock (_got) _got.Add((context, context.Body.ToArray()));
             return Task.CompletedTask;
@@ -99,7 +101,7 @@ public sealed class TypedConsumerIntegrationTests : IAsyncDisposable
             _attempts = attempts;
             _got = got;
         }
-        public Task Consume(ConsumeContext<OrderEvent> context, CancellationToken ct)
+        public Task Consume(ConsumeContext<OrderEvent> context)
         {
             int attempt;
             lock (_attempts)
@@ -279,7 +281,7 @@ public sealed class TypedConsumerIntegrationTests : IAsyncDisposable
             cfg => cfg.ReceiveEndpoint(stream, e =>
             {
                 e.Consumer<OrderConsumer>("poison-group");
-                e.UseRetry(new RetryPolicy { FailureMode = FailureMode.SkipAfterDeadline, MaxAttempts = 2, BaseDelay = TimeSpan.FromMilliseconds(10), MaxJitter = TimeSpan.Zero });
+                e.UseRetry(new RetryPolicy { MaxAttempts = 2, BaseDelay = TimeSpan.FromMilliseconds(10), MaxJitter = TimeSpan.Zero });
                 e.DeadLetterToStream(error);
             }));
         await using var pub = await BusInstance.StartAsync();
@@ -385,7 +387,7 @@ public sealed class TypedConsumerIntegrationTests : IAsyncDisposable
             cfg => cfg.ReceiveEndpoint(stream, e =>
             {
                 e.Consumer<OrderConsumer>("mismatch-group");
-                e.UseRetry(new RetryPolicy { FailureMode = FailureMode.SkipAfterDeadline, MaxAttempts = 1, BaseDelay = TimeSpan.FromMilliseconds(10), MaxJitter = TimeSpan.Zero });
+                e.UseRetry(new RetryPolicy { MaxAttempts = 1, BaseDelay = TimeSpan.FromMilliseconds(10), MaxJitter = TimeSpan.Zero });
                 e.DeadLetterToStream(error);
             }));
         await using var pub = await BusInstance.StartAsync();

@@ -2,38 +2,52 @@ using Microsoft.Extensions.Logging;
 
 namespace StreamBus;
 
-public enum FailureMode
-{
-    Strict = 0,
-    SkipAfterDeadline = 1,
-}
-
+/// <summary>
+/// Retry timing and attempt limit. <see cref="MaxAttempts"/> is the total number
+/// of attempts per message, including the first; <see langword="null"/> means
+/// no attempt limit (retried forever), <c>1</c> means no retry.
+/// </summary>
 public sealed record RetryPolicy
 {
-    public FailureMode FailureMode { get; init; } = FailureMode.Strict;
+    /// <summary>
+    /// Total attempts including the initial one. <see langword="null"/> means no
+    /// attempt limit (retried until it succeeds); <c>1</c> means no retry.
+    /// </summary>
+    /// <remarks>
+    /// With no attempt limit there is no hand-off destination: a handler that
+    /// keeps failing blocks its partition until it succeeds (back-pressure;
+    /// nothing is skipped or dead-lettered). To cap attempts and hand the
+    /// message off, set <see cref="MaxAttempts"/> and configure an error
+    /// stream, a dead-letter queue, or an <c>OnExhausted</c> callback.
+    /// </remarks>
     public int? MaxAttempts { get; init; }
+
+    /// <summary>Base delay for the exponential schedule.</summary>
     public TimeSpan BaseDelay { get; init; } = TimeSpan.FromMilliseconds(200);
+
+    /// <summary>Exponential backoff multiplier.</summary>
     public double Multiplier { get; init; } = 2.0;
+
+    /// <summary>Upper bound for a computed delay.</summary>
     public TimeSpan MaxDelay { get; init; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>Maximum random jitter added to a computed delay.</summary>
     public TimeSpan MaxJitter { get; init; } = TimeSpan.FromSeconds(1);
+
+    /// <summary>
+    /// Optional caller-supplied delay. When set, it overrides the exponential
+    /// schedule; throwing or negative results fall back safely.
+    /// </summary>
     public Func<int, Exception, TimeSpan>? DelayCalculator { get; init; }
 }
 
+/// <summary>
+/// Stream destination for exhausted messages.
+/// </summary>
 public sealed record ErrorStreamOptions
 {
+    /// <summary>Error stream name.</summary>
     public required string Stream { get; init; }
-    public string? RoutingValue { get; init; }
-}
-
-public sealed record ErrorHandoff
-{
-    public required string ErrorStream { get; init; }
-    public required string SourceStream { get; init; }
-    public required int SourcePartition { get; init; }
-    public required ulong SourceOffset { get; init; }
-    public required int Attempts { get; init; }
-    public required DateTimeOffset FailedAt { get; init; }
-    public required Exception Exception { get; init; }
 }
 
 internal static class RetryDelays

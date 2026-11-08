@@ -8,12 +8,12 @@ public sealed class ReceiveEndpointTests
 
     private sealed class OrderConsumer : IConsumer<OrderEvent>
     {
-        public Task Consume(ConsumeContext<OrderEvent> context, CancellationToken ct) => Task.CompletedTask;
+        public Task Consume(ConsumeContext<OrderEvent> context) => Task.CompletedTask;
     }
 
     private sealed class AuditConsumer : IConsumer<OrderEvent>
     {
-        public Task Consume(ConsumeContext<OrderEvent> context, CancellationToken ct) => Task.CompletedTask;
+        public Task Consume(ConsumeContext<OrderEvent> context) => Task.CompletedTask;
     }
 
     private sealed class NotAConsumer;
@@ -28,11 +28,49 @@ public sealed class ReceiveEndpointTests
     {
         var options = new StreamBusOptions { Vhost = "/", UserName = "app", Password = "secret" };
         var supervisor = new StreamBusConnectionSupervisor(options, new NeverReadyConnector());
-        return new StreamConsumerRegistry(supervisor, "/", new StreamProducerRegistry(supervisor, "/"), null, new ResultProducerRegistry(supervisor, "/"));
+        return new StreamConsumerRegistry(supervisor, "/", new StreamProducerRegistry(supervisor, "/"), null);
     }
 
     private static IReadOnlyList<TypedConsumerRegistration> RegistrationsFor(IServiceProvider sp)
         => sp.GetRequiredService<StreamBusConsumerStore>().Registrations;
+
+    [Fact]
+    public void Handoff_confirm_timeout_defaults_and_clamps()
+    {
+        var defaults = new ServiceCollection();
+        defaults.AddStreamBus((_, cfg) =>
+        {
+            cfg.Host("localhost", "/", h => h.Credentials("app", "secret"));
+            cfg.ReceiveEndpoint("orders", e => e.Consumer<OrderConsumer>("order-processors"));
+        });
+        Assert.Equal(TimeSpan.FromSeconds(10),
+            Assert.Single(RegistrationsFor(defaults.BuildServiceProvider())).Options.HandoffConfirmTimeout);
+
+        var clamped = new ServiceCollection();
+        clamped.AddStreamBus((_, cfg) =>
+        {
+            cfg.Host("localhost", "/", h => h.Credentials("app", "secret"));
+            cfg.ReceiveEndpoint("orders", e =>
+            {
+                e.Consumer<OrderConsumer>("order-processors");
+                e.ErrorHandoffTimeout(TimeSpan.FromMilliseconds(5));
+            });
+        });
+        Assert.Equal(TimeSpan.FromSeconds(1),
+            Assert.Single(RegistrationsFor(clamped.BuildServiceProvider())).Options.HandoffConfirmTimeout);
+
+        var invalid = new ServiceCollection();
+        Assert.Throws<StreamBusConfigurationException>(() =>
+            invalid.AddStreamBus((_, cfg) =>
+            {
+                cfg.Host("localhost", "/", h => h.Credentials("app", "secret"));
+                cfg.ReceiveEndpoint("orders", e =>
+                {
+                    e.Consumer<OrderConsumer>("order-processors");
+                    e.ErrorHandoffTimeout(TimeSpan.Zero);
+                });
+            }));
+    }
 
     [Fact]
     public void Group_is_used_verbatim()

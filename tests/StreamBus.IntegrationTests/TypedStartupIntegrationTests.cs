@@ -6,12 +6,14 @@ namespace StreamBus.IntegrationTests;
 
 public sealed class TypedStartupIntegrationTests : IAsyncDisposable
 {
+    public TypedStartupIntegrationTests() => IntegrationLane.RequireBroker();
+
     private static string User() => Environment.GetEnvironmentVariable("STREAMBUS_USER") ?? "app";
     private static string Password() => Environment.GetEnvironmentVariable("STREAMBUS_PASSWORD") ?? "password";
     private readonly List<string> _streams = new();
     private readonly List<string> _superStreams = new();
 
-    private async Task<StreamSystem> ConnectAdminAsync()
+    private static async Task<StreamSystem> ConnectAdminAsync()
         => await StreamSystem.Create(new StreamSystemConfig
         {
             UserName = User(),
@@ -80,7 +82,7 @@ public sealed class TypedStartupIntegrationTests : IAsyncDisposable
     {
         private readonly List<(string Who, int Seq)> _got;
         public OrderConsumer(List<(string Who, int Seq)> got) => _got = got;
-        public Task Consume(ConsumeContext<OrderEvent> context, CancellationToken ct)
+        public Task Consume(ConsumeContext<OrderEvent> context)
         {
             lock (_got) _got.Add((nameof(OrderConsumer), context.Message.Seq));
             return Task.CompletedTask;
@@ -91,7 +93,7 @@ public sealed class TypedStartupIntegrationTests : IAsyncDisposable
     {
         private readonly List<(string Who, int Seq)> _got;
         public AuditConsumer(List<(string Who, int Seq)> got) => _got = got;
-        public Task Consume(ConsumeContext<OrderEvent> context, CancellationToken ct)
+        public Task Consume(ConsumeContext<OrderEvent> context)
         {
             lock (_got) _got.Add((nameof(AuditConsumer), context.Message.Seq));
             return Task.CompletedTask;
@@ -154,7 +156,7 @@ public sealed class TypedStartupIntegrationTests : IAsyncDisposable
                     e.DeadLetterToStream("typed-invalid-errors");
                 });
             }));
-        Assert.Contains("bound", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("no attempt limit", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

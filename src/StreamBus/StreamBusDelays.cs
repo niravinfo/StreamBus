@@ -14,7 +14,7 @@ internal static class StreamBusDelays
     public static TimeSpan ExponentialCapped(int attempt, TimeSpan baseDelay, TimeSpan maxDelay, double multiplier, TimeSpan maxJitter)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(attempt, 1);
-        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(multiplier, 1.0 - double.Epsilon); // multiplier < 1 rejected; == 1 allowed (constant delay)
+        ArgumentOutOfRangeException.ThrowIfLessThan(multiplier, 1.0); // multiplier < 1 rejected; == 1 allowed (constant delay)
         // Overflow-proof: astronomical knobs (or a hostile direct call) clamp to maxDelay
         // instead of throwing out of the dispatch loop. Registry validation rejects
         // non-finite multipliers; this guards the computation itself.

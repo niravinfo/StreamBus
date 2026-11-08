@@ -6,14 +6,14 @@ using RabbitMQ.Client.Exceptions;
 
 namespace StreamBus;
 
-public interface IErrorQueueConnectionFactory
+internal interface IErrorQueueConnectionFactory
 {
-    Task<IConnection> ConnectAsync(StreamBusOptions options, CancellationToken ct);
+    Task<IConnection> ConnectAsync(StreamBusOptions options, CancellationToken cancellationToken);
 }
 
 internal sealed class AmqpConnectionFactory : IErrorQueueConnectionFactory
 {
-    public async Task<IConnection> ConnectAsync(StreamBusOptions options, CancellationToken ct)
+    public async Task<IConnection> ConnectAsync(StreamBusOptions options, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(options);
         var factory = new ConnectionFactory
@@ -28,7 +28,7 @@ internal sealed class AmqpConnectionFactory : IErrorQueueConnectionFactory
         };
         try
         {
-            return await factory.CreateConnectionAsync(ct).ConfigureAwait(false);
+            return await factory.CreateConnectionAsync(cancellationToken).ConfigureAwait(false);
         }
         catch (AuthenticationFailureException ex)
         {
@@ -39,30 +39,246 @@ internal sealed class AmqpConnectionFactory : IErrorQueueConnectionFactory
     }
 }
 
-public sealed class ErrorQueueTransport : IAsyncDisposable
+// Minimal AMQP seam for the error-queue transport. The transport only needs
+// three shapes: a connection that can hand out channels, a control channel
+// for declare/drain, and a publisher-confirm channel. Keeping those shapes
+// narrow makes the channel-reuse and shutdown behaviour unit-testable without
+// a broker.
+internal interface IErrorQueueConnection : IAsyncDisposable
 {
-    private static readonly TimeSpan ConfirmTimeout = TimeSpan.FromSeconds(10);
+    bool IsOpen { get; }
+    Task<IErrorQueuePublishChannel> CreatePublishChannelAsync(CancellationToken cancellationToken);
+    Task<IErrorQueueControlChannel> CreateControlChannelAsync(CancellationToken cancellationToken);
+    Task CloseAsync(CancellationToken cancellationToken);
+}
+
+internal interface IErrorQueuePublishChannel : IAsyncDisposable
+{
+    bool IsOpen { get; }
+    Task PublishAsync(string queue, ErrorEnvelope envelope, TimeSpan confirmTimeout, CancellationToken cancellationToken);
+}
+
+internal interface IErrorQueueControlChannel : IAsyncDisposable
+{
+    bool IsOpen { get; }
+    Task DeclareAsync(string queue, IReadOnlyDictionary<string, object?> arguments, CancellationToken cancellationToken);
+    Task DeclarePassiveAsync(string queue, CancellationToken cancellationToken);
+    Task<ErrorQueueDelivery?> GetAsync(string queue, CancellationToken cancellationToken);
+    Task AckAsync(ulong deliveryTag, CancellationToken cancellationToken);
+}
+
+internal sealed record ErrorQueueDelivery(
+    ulong DeliveryTag,
+    ReadOnlyMemory<byte> Body,
+    IReadOnlyDictionary<string, object?> Headers);
+
+internal sealed class AmqpErrorQueueConnection : IErrorQueueConnection
+{
+    private readonly IConnection _connection;
+
+    public AmqpErrorQueueConnection(IConnection connection) => _connection = connection;
+
+    public bool IsOpen => _connection.IsOpen;
+
+    public async Task<IErrorQueuePublishChannel> CreatePublishChannelAsync(CancellationToken cancellationToken)
+    {
+        var channel = await _connection
+            .CreateChannelAsync(new CreateChannelOptions(true, true, null, null), cancellationToken)
+            .ConfigureAwait(false);
+        return new AmqpPublishChannel(channel);
+    }
+
+    public async Task<IErrorQueueControlChannel> CreateControlChannelAsync(CancellationToken cancellationToken)
+    {
+        var channel = await _connection
+            .CreateChannelAsync(new CreateChannelOptions(false, false, null, null), cancellationToken)
+            .ConfigureAwait(false);
+        return new AmqpControlChannel(channel);
+    }
+
+    public async Task CloseAsync(CancellationToken cancellationToken)
+        => await _connection.CloseAsync(200, "disposing", TimeSpan.FromSeconds(5), abort: false, cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
+
+    public async ValueTask DisposeAsync()
+        => await _connection.DisposeAsync().ConfigureAwait(false);
+}
+
+internal sealed class AmqpPublishChannel : IErrorQueuePublishChannel
+{
+    private readonly IChannel _channel;
+
+    public AmqpPublishChannel(IChannel channel) => _channel = channel;
+
+    public bool IsOpen => _channel.IsOpen;
+
+    public async Task PublishAsync(string queue, ErrorEnvelope envelope, TimeSpan confirmTimeout, CancellationToken cancellationToken)
+    {
+        var confirmed = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        void Complete(Exception? error)
+        {
+            if (error is null) confirmed.TrySetResult(true);
+            else confirmed.TrySetException(error);
+        }
+
+        // Confirms are pending per delivery tag on this channel; a late ack or
+        // nack from an earlier unknown-outcome publish must not resolve this
+        // publish's confirm. Publishes are serialized by the transport gate,
+        // so the next sequence number read here is this publish's own tag.
+        var deliveryTag = await _channel.GetNextPublishSequenceNumberAsync(cancellationToken).ConfigureAwait(false);
+        void CompleteIfOwn(ulong tag, bool multiple, Exception? error)
+        {
+            // An ack/nack with multiple=true covers every tag up to DeliveryTag.
+            if (tag != deliveryTag && !(multiple && tag > deliveryTag))
+                return;
+            Complete(error);
+        }
+
+        AsyncEventHandler<BasicAckEventArgs> onAck = (_, e) => { CompleteIfOwn(e.DeliveryTag, e.Multiple, null); return Task.CompletedTask; };
+        AsyncEventHandler<BasicNackEventArgs> onNack = (_, e) => { CompleteIfOwn(e.DeliveryTag, e.Multiple, new StreamBusPublishException($"Error queue '{queue}' negatively confirmed the handoff (delivery tag {e.DeliveryTag}).")); return Task.CompletedTask; };
+        AsyncEventHandler<BasicReturnEventArgs> onReturn = (_, e) => { Complete(new StreamBusPublishException($"Error queue '{queue}' returned the handoff as unroutable (reply {e.ReplyCode} {e.ReplyText}).")); return Task.CompletedTask; };
+        AsyncEventHandler<ShutdownEventArgs> onShutdown = (_, e) => { Complete(new StreamBusTimeoutException($"Publish to error queue '{queue}' ended with an unknown confirm outcome (channel closed: {e.ReplyText}).")); return Task.CompletedTask; };
+        _channel.BasicAcksAsync += onAck;
+        _channel.BasicNacksAsync += onNack;
+        _channel.BasicReturnAsync += onReturn;
+        _channel.ChannelShutdownAsync += onShutdown;
+        try
+        {
+            var properties = new BasicProperties
+            {
+                Persistent = true,
+                DeliveryMode = DeliveryModes.Persistent,
+                MessageId = envelope.MessageId?.ToString("D"),
+                CorrelationId = envelope.CorrelationId?.ToString("D"),
+                ContentType = envelope.ContentType,
+                Headers = envelope.ToHeaders(),
+            };
+            // The confirm budget covers the send as well as the ack/nack: a blocked
+            // AMQP publish must not hold the partition dispatch gate past the budget.
+            using var timeout = new CancellationTokenSource(confirmTimeout);
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
+            try
+            {
+                await _channel.BasicPublishAsync(
+                    exchange: string.Empty,
+                    routingKey: queue,
+                    mandatory: true,
+                    basicProperties: properties,
+                    body: envelope.Body,
+                    cancellationToken: linked.Token).ConfigureAwait(false);
+                await confirmed.Task.WaitAsync(linked.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                throw new StreamBusTimeoutException($"Publish to error queue '{queue}' was not confirmed within {confirmTimeout} (outcome unknown).");
+            }
+        }
+        finally
+        {
+            _channel.BasicAcksAsync -= onAck;
+            _channel.BasicNacksAsync -= onNack;
+            _channel.BasicReturnAsync -= onReturn;
+            _channel.ChannelShutdownAsync -= onShutdown;
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+        => await _channel.DisposeAsync().ConfigureAwait(false);
+}
+
+internal sealed class AmqpControlChannel : IErrorQueueControlChannel
+{
+    private readonly IChannel _channel;
+
+    public AmqpControlChannel(IChannel channel) => _channel = channel;
+
+    public bool IsOpen => _channel.IsOpen;
+
+    public async Task DeclareAsync(string queue, IReadOnlyDictionary<string, object?> arguments, CancellationToken cancellationToken)
+        => await _channel.QueueDeclareAsync(
+            queue: queue,
+            durable: true,
+            exclusive: false,
+            autoDelete: false,
+            arguments: new Dictionary<string, object?>(arguments),
+            passive: false,
+            noWait: false,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+
+    public async Task DeclarePassiveAsync(string queue, CancellationToken cancellationToken)
+        => await _channel.QueueDeclarePassiveAsync(queue, cancellationToken).ConfigureAwait(false);
+
+    public async Task<ErrorQueueDelivery?> GetAsync(string queue, CancellationToken cancellationToken)
+    {
+        var delivery = await _channel.BasicGetAsync(queue, autoAck: false, cancellationToken: cancellationToken).ConfigureAwait(false);
+        if (delivery is null) return null;
+        var headers = delivery.BasicProperties?.Headers is { } raw
+            ? new Dictionary<string, object?>(raw, StringComparer.Ordinal)
+            : new Dictionary<string, object?>(StringComparer.Ordinal);
+        return new ErrorQueueDelivery(delivery.DeliveryTag, delivery.Body, headers);
+    }
+
+    public async Task AckAsync(ulong deliveryTag, CancellationToken cancellationToken)
+        => await _channel.BasicAckAsync(deliveryTag, multiple: false, cancellationToken: cancellationToken).ConfigureAwait(false);
+
+    public async ValueTask DisposeAsync()
+        => await _channel.DisposeAsync().ConfigureAwait(false);
+}
+
+internal sealed class ErrorQueueTransport : IAsyncDisposable
+{
+    private sealed record PublishChannelState(IErrorQueuePublishChannel Channel, IErrorQueueConnection Connection);
+
     private static readonly TimeSpan DrainIdle = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan DrainPoll = TimeSpan.FromMilliseconds(200);
 
     private readonly StreamBusOptions _options;
-    private readonly IErrorQueueConnectionFactory _connector;
+    private readonly Func<StreamBusOptions, CancellationToken, Task<IErrorQueueConnection>> _connect;
     private readonly ILogger<ErrorQueueTransport> _logger;
     private readonly SemaphoreSlim _gate = new(1, 1);
-    private IConnection? _connection;
+    private readonly SemaphoreSlim _publishGate = new(1, 1);
+    private IErrorQueueConnection? _connection;
+
+    // The cached publish channel and the connection it was created on are one
+    // atomic pair: a torn observation (channel from one connection, connection
+    // field from another) can never happen because the pair is swapped with a
+    // single reference write. All writes happen under _publishGate.
+    private PublishChannelState? _publishState;
     private bool _fatal;
     private Exception? _fatalError;
+    private int _disposed;
 
     public ErrorQueueTransport(
         StreamBusOptions options,
         IErrorQueueConnectionFactory? connector = null,
         ILogger<ErrorQueueTransport>? logger = null)
+        : this(options, Wrap(connector ?? new AmqpConnectionFactory()), logger, marker: true)
+    {
+    }
+
+    private ErrorQueueTransport(
+        StreamBusOptions options,
+        Func<StreamBusOptions, CancellationToken, Task<IErrorQueueConnection>> connect,
+        ILogger<ErrorQueueTransport>? logger,
+        bool marker)
     {
         ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(connect);
         _options = options;
-        _connector = connector ?? new AmqpConnectionFactory();
+        _connect = connect;
         _logger = logger ?? NullLogger<ErrorQueueTransport>.Instance;
     }
+
+    internal static ErrorQueueTransport ForTest(
+        StreamBusOptions options,
+        Func<StreamBusOptions, CancellationToken, Task<IErrorQueueConnection>> connect,
+        ILogger<ErrorQueueTransport>? logger = null)
+        => new(options, connect, logger, marker: true);
+
+    private static Func<StreamBusOptions, CancellationToken, Task<IErrorQueueConnection>> Wrap(
+        IErrorQueueConnectionFactory connector)
+        => async (options, cancellationToken) =>
+            new AmqpErrorQueueConnection(await connector.ConnectAsync(options, cancellationToken).ConfigureAwait(false));
 
     internal static Dictionary<string, object?> QueueArguments(DeadLetterQueueType type) => new()
     {
@@ -73,131 +289,151 @@ public sealed class ErrorQueueTransport : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(registrations);
         return registrations
-            .Where(r => r.Options.DeadLetter is not null && r.Options.ExhaustionCallback is null)
+            .Where(r => r.Options.DeadLetter is not null && r.Options.OnExhausted is null)
             .Select(r => r.Options.DeadLetter!)
             .Distinct()
             .ToList();
     }
 
-    public async Task DeclareAsync(IEnumerable<DeadLetterOptions> queues, CancellationToken ct = default)
+    public async Task DeclareAsync(IEnumerable<DeadLetterOptions> queues, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(queues);
         var distinct = queues.Distinct().ToList();
         if (distinct.Count == 0) return;
-        var connection = await GetConnectionAsync(ct).ConfigureAwait(false);
+        var connection = await GetConnectionAsync(cancellationToken).ConfigureAwait(false);
         foreach (var queue in distinct)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(queue.Name);
             if (queue.QueueType is not { } queueType)
                 throw new StreamBusConfigurationException($"Internal error: stream dead-letter destination '{queue.Name}' reached the queue transport; it must never declare an AMQP queue.");
-            await using var channel = await connection.CreateChannelAsync(new CreateChannelOptions(false, false, null, null), ct).ConfigureAwait(false);
+            await using var channel = await connection.CreateControlChannelAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                await channel.QueueDeclareAsync(
-                    queue: queue.Name,
-                    durable: true,
-                    exclusive: false,
-                    autoDelete: false,
-                    arguments: QueueArguments(queueType),
-                    passive: false,
-                    noWait: false,
-                    cancellationToken: ct).ConfigureAwait(false);
+                await channel.DeclareAsync(queue.Name, QueueArguments(queueType), cancellationToken).ConfigureAwait(false);
             }
             catch (OperationInterruptedException ex) when (ex.ShutdownReason is { ReplyCode: 406 })
             {
-                throw new StreamConfigurationConflictException(queue.Name,
+                throw new StreamBusStreamConfigurationConflictException(queue.Name,
                     $"queue '{queue.Name}' ({queueType}, durable)",
                     "an existing queue with conflicting type or arguments");
             }
         }
     }
 
-    public async Task PublishAsync(DeadLetterOptions queue, ErrorEnvelope envelope, CancellationToken ct = default)
+    public async Task PublishAsync(DeadLetterOptions queue, ErrorEnvelope envelope, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(queue);
         ArgumentNullException.ThrowIfNull(envelope);
         ArgumentException.ThrowIfNullOrWhiteSpace(queue.Name);
-        var connection = await GetConnectionAsync(ct).ConfigureAwait(false);
+        var confirmTimeout = queue.QueueOptions.ConfirmTimeout;
+        if (confirmTimeout <= TimeSpan.Zero)
+            throw new StreamBusConfigurationException(
+                $"Error queue '{queue.Name}' has a non-positive ConfirmTimeout; configure a positive ErrorQueueOptions.ConfirmTimeout.");
+
+        var connection = await GetConnectionAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var confirmOptions = new CreateChannelOptions(true, true, null, null);
-            await using var channel = await connection.CreateChannelAsync(confirmOptions, ct).ConfigureAwait(false);
-            await PublishConfirmedAsync(channel, queue.Name, envelope, ct).ConfigureAwait(false);
+            try
+            {
+                await _publishGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (ObjectDisposedException ex)
+            {
+                throw new StreamBusTransientException("Error queue transport is stopping.", ex);
+            }
+
+            try
+            {
+                var channel = await GetPublishChannelAsync(connection, cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    await channel.PublishAsync(queue.Name, envelope, confirmTimeout, cancellationToken).ConfigureAwait(false);
+                }
+                catch (StreamBusTimeoutException)
+                {
+                    // The confirm outcome is unknown; a late ack must not be
+                    // mistaken for the next publish on this channel.
+                    await ResetPublishChannelAsync().ConfigureAwait(false);
+                    throw;
+                }
+                catch (OperationCanceledException)
+                {
+                    // Caller cancelled mid-send: the confirmation outcome is
+                    // unknown, so this channel must not be reused either.
+                    await ResetPublishChannelAsync().ConfigureAwait(false);
+                    throw;
+                }
+                catch (ObjectDisposedException)
+                {
+                    await ResetPublishChannelAsync().ConfigureAwait(false);
+                    throw;
+                }
+                catch (AlreadyClosedException)
+                {
+                    await ResetPublishChannelAsync().ConfigureAwait(false);
+                    throw;
+                }
+            }
+            finally
+            {
+                try { _publishGate.Release(); }
+                catch (ObjectDisposedException) { }
+            }
         }
         catch (BrokerUnreachableException)
         {
-            InvalidateConnection();
+            await InvalidateConnectionAsync().ConfigureAwait(false);
             throw;
         }
         catch (AlreadyClosedException)
         {
-            InvalidateConnection();
+            await InvalidateConnectionAsync().ConfigureAwait(false);
             throw;
         }
+        catch (ObjectDisposedException ex)
+        {
+            await InvalidateConnectionAsync().ConfigureAwait(false);
+            throw new StreamBusTransientException("Error queue transport is stopping.", ex);
+        }
     }
 
-    private static async Task PublishConfirmedAsync(IChannel channel, string queue, ErrorEnvelope envelope, CancellationToken ct)
+    private Task<IErrorQueuePublishChannel> GetPublishChannelAsync(
+        IErrorQueueConnection connection,
+        CancellationToken cancellationToken)
     {
-        var confirmed = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        void Complete(Exception? error)
-        {
-            if (error is null) confirmed.TrySetResult(true);
-            else confirmed.TrySetException(error);
-        }
-        AsyncEventHandler<BasicAckEventArgs> onAck = (_, _) => { Complete(null); return Task.CompletedTask; };
-        AsyncEventHandler<BasicNackEventArgs> onNack = (_, e) => { Complete(new StreamBusPublishException($"Error queue '{queue}' negatively confirmed the handoff (delivery tag {e.DeliveryTag}).")); return Task.CompletedTask; };
-        AsyncEventHandler<BasicReturnEventArgs> onReturn = (_, e) => { Complete(new StreamBusPublishException($"Error queue '{queue}' returned the handoff as unroutable (reply {e.ReplyCode} {e.ReplyText}).")); return Task.CompletedTask; };
-        AsyncEventHandler<ShutdownEventArgs> onShutdown = (_, e) => { Complete(new StreamBusTimeoutException($"Publish to error queue '{queue}' ended with an unknown confirm outcome (channel closed: {e.ReplyText}).")); return Task.CompletedTask; };
-        channel.BasicAcksAsync += onAck;
-        channel.BasicNacksAsync += onNack;
-        channel.BasicReturnAsync += onReturn;
-        channel.ChannelShutdownAsync += onShutdown;
-        try
-        {
-            var properties = new BasicProperties
-            {
-                Persistent = true,
-                DeliveryMode = DeliveryModes.Persistent,
-                MessageId = envelope.MessageId,
-                CorrelationId = envelope.CorrelationId,
-                Headers = envelope.ToHeaders(),
-            };
-            await channel.BasicPublishAsync(
-                exchange: string.Empty,
-                routingKey: queue,
-                mandatory: true,
-                basicProperties: properties,
-                body: envelope.Body,
-                cancellationToken: ct).ConfigureAwait(false);
-            using var timeout = new CancellationTokenSource(ConfirmTimeout);
-            using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, timeout.Token);
-            try
-            {
-                await confirmed.Task.WaitAsync(linked.Token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
-            {
-                throw new StreamBusTimeoutException($"Publish to error queue '{queue}' was not confirmed within {ConfirmTimeout} (outcome unknown).");
-            }
-        }
-        finally
-        {
-            channel.BasicAcksAsync -= onAck;
-            channel.BasicNacksAsync -= onNack;
-            channel.BasicReturnAsync -= onReturn;
-            channel.ChannelShutdownAsync -= onShutdown;
-        }
+        var state = Volatile.Read(ref _publishState);
+        if (state is { Channel: { IsOpen: true } } matched && ReferenceEquals(matched.Connection, connection))
+            return Task.FromResult(matched.Channel);
+        return CreatePublishChannelAsync(connection, cancellationToken);
     }
 
-    public async Task<int> DrainAsync(string errorQueue, Func<ErrorEnvelope, CancellationToken, Task> republish, CancellationToken ct = default)
+    private async Task<IErrorQueuePublishChannel> CreatePublishChannelAsync(
+        IErrorQueueConnection connection,
+        CancellationToken cancellationToken)
+    {
+        await ResetPublishChannelAsync().ConfigureAwait(false);
+        var created = await connection.CreatePublishChannelAsync(cancellationToken).ConfigureAwait(false);
+        Volatile.Write(ref _publishState, new PublishChannelState(created, connection));
+        return created;
+    }
+
+    private async Task ResetPublishChannelAsync()
+    {
+        var state = Interlocked.Exchange(ref _publishState, null);
+        if (state is null) return;
+        try { await state.Channel.DisposeAsync().ConfigureAwait(false); }
+        catch { }
+    }
+
+    public async Task<int> DrainAsync(string errorQueue, Func<ErrorEnvelope, CancellationToken, Task> republish, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(errorQueue);
         ArgumentNullException.ThrowIfNull(republish);
-        var connection = await GetConnectionAsync(ct).ConfigureAwait(false);
-        await using var channel = await connection.CreateChannelAsync(new CreateChannelOptions(false, false, null, null), ct).ConfigureAwait(false);
+        var connection = await GetConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await using var channel = await connection.CreateControlChannelAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            await channel.QueueDeclarePassiveAsync(errorQueue, ct).ConfigureAwait(false);
+            await channel.DeclarePassiveAsync(errorQueue, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationInterruptedException ex) when (ex.ShutdownReason is { ReplyCode: 404 })
         {
@@ -208,30 +444,26 @@ public sealed class ErrorQueueTransport : IAsyncDisposable
         var lastTicks = DateTimeOffset.UtcNow.UtcTicks;
         while (true)
         {
-            ct.ThrowIfCancellationRequested();
-            var delivery = await channel.BasicGetAsync(errorQueue, autoAck: false, cancellationToken: ct).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            var delivery = await channel.GetAsync(errorQueue, cancellationToken).ConfigureAwait(false);
             if (delivery is null)
             {
                 var since = DateTimeOffset.UtcNow - new DateTimeOffset(Interlocked.Read(ref lastTicks), TimeSpan.Zero);
                 if (since >= DrainIdle) break;
-                await Task.Delay(DrainPoll, ct).ConfigureAwait(false);
+                await Task.Delay(DrainPoll, cancellationToken).ConfigureAwait(false);
                 continue;
             }
             Interlocked.Exchange(ref lastTicks, DateTimeOffset.UtcNow.UtcTicks);
-            var body = delivery.Body.ToArray();
-            var headers = delivery.BasicProperties?.Headers is { } raw
-                ? new Dictionary<string, object?>(raw, StringComparer.Ordinal)
-                : new Dictionary<string, object?>(StringComparer.Ordinal);
-            if (!ErrorEnvelope.TryParseHeaders(errorQueue, body, headers, out var envelope) || envelope is null)
+            if (!ErrorEnvelope.TryParseHeaders(errorQueue, delivery.Body.ToArray(), delivery.Headers, out var envelope) || envelope is null)
             {
                 _logger.LogWarning("Requeue skipping malformed message on error queue '{Queue}' (delivery tag {Tag}).",
                     errorQueue, delivery.DeliveryTag);
-                await channel.BasicAckAsync(delivery.DeliveryTag, multiple: false, cancellationToken: ct).ConfigureAwait(false);
+                await channel.AckAsync(delivery.DeliveryTag, cancellationToken).ConfigureAwait(false);
                 skipped++;
                 continue;
             }
-            await republish(envelope, ct).ConfigureAwait(false);
-            await channel.BasicAckAsync(delivery.DeliveryTag, multiple: false, cancellationToken: ct).ConfigureAwait(false);
+            await republish(envelope, cancellationToken).ConfigureAwait(false);
+            await channel.AckAsync(delivery.DeliveryTag, cancellationToken).ConfigureAwait(false);
             requeued++;
         }
         if (skipped > 0)
@@ -239,21 +471,36 @@ public sealed class ErrorQueueTransport : IAsyncDisposable
         return requeued;
     }
 
-    private async Task<IConnection> GetConnectionAsync(CancellationToken ct)
+    private async Task<IErrorQueueConnection> GetConnectionAsync(CancellationToken cancellationToken)
     {
+        if (Volatile.Read(ref _disposed) == 1)
+            throw new StreamBusTransientException("Error queue transport is stopping.");
+
         var current = Volatile.Read(ref _connection);
         if (current is not null && current.IsOpen) return current;
-        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (ObjectDisposedException ex)
+        {
+            throw new StreamBusTransientException("Error queue transport is stopping.", ex);
+        }
+
         try
         {
             current = Volatile.Read(ref _connection);
             if (current is not null && current.IsOpen) return current;
             if (_fatal)
                 throw new StreamBusFatalException("AMQP error-queue connection is in Fatal state; see the earlier authentication failure.", _fatalError);
-            IConnection created;
+            IErrorQueueConnection created;
             try
             {
-                created = await _connector.ConnectAsync(_options, ct).ConfigureAwait(false);
+                created = await _connect(_options, cancellationToken).ConfigureAwait(false);
+            }
+            catch (ObjectDisposedException ex)
+            {
+                throw new StreamBusTransientException("Error queue transport is stopping.", ex);
             }
             catch (StreamBusFatalException ex)
             {
@@ -261,31 +508,82 @@ public sealed class ErrorQueueTransport : IAsyncDisposable
                 _fatalError = ex;
                 throw;
             }
+            if (Volatile.Read(ref _disposed) == 1)
+            {
+                try { await created.DisposeAsync().ConfigureAwait(false); } catch { }
+                throw new StreamBusTransientException("Error queue transport is stopping.");
+            }
             Volatile.Write(ref _connection, created);
             return created;
         }
         finally
         {
-            _gate.Release();
+            try { _gate.Release(); }
+            catch (ObjectDisposedException) { }
         }
     }
 
-    private void InvalidateConnection()
+    private async Task InvalidateConnectionAsync()
     {
+        // Take the publish gate so the reset cannot interleave with an
+        // in-flight publish's channel swap. If the gate is already disposed,
+        // DisposeAsync has already cleared the cached pair — nothing to reset.
+        if (await TryEnterPublishGateAsync().ConfigureAwait(false))
+        {
+            try { await ResetPublishChannelAsync().ConfigureAwait(false); }
+            finally { ExitPublishGate(); }
+        }
         var current = Interlocked.Exchange(ref _connection, null);
         if (current is null) return;
-        try { current.Dispose(); }
+        try { await current.DisposeAsync().ConfigureAwait(false); }
         catch { }
+    }
+
+    private async Task<bool> TryEnterPublishGateAsync()
+    {
+        try
+        {
+            await _publishGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+            return true;
+        }
+        catch (ObjectDisposedException)
+        {
+            return false;
+        }
+    }
+
+    private void ExitPublishGate()
+    {
+        try { _publishGate.Release(); }
+        catch (ObjectDisposedException) { }
     }
 
     public async ValueTask DisposeAsync()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) == 1) return;
+        // Serialize with any in-flight publish so the cached channel/connection
+        // pair can never be swapped or disposed mid-publish. Publishes are
+        // bounded (confirm budget and caller token), so this wait terminates.
+        if (await TryEnterPublishGateAsync().ConfigureAwait(false))
+        {
+            try
+            {
+                await ResetPublishChannelAsync().ConfigureAwait(false);
+            }
+            finally
+            {
+                ExitPublishGate();
+            }
+        }
         var current = Interlocked.Exchange(ref _connection, null);
-        if (current is null) return;
-        try { await current.CloseAsync(200, "disposing", TimeSpan.FromSeconds(5), abort: false, cancellationToken: CancellationToken.None).ConfigureAwait(false); }
-        catch { }
-        try { current.Dispose(); }
-        catch { }
+        if (current is not null)
+        {
+            try { await current.CloseAsync(CancellationToken.None).ConfigureAwait(false); }
+            catch { }
+            try { await current.DisposeAsync().ConfigureAwait(false); }
+            catch { }
+        }
         _gate.Dispose();
+        _publishGate.Dispose();
     }
 }

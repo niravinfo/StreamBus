@@ -25,14 +25,17 @@ internal sealed class StreamBusMetrics
     private StreamBusMetrics()
     {
         // Consumer-held unprocessed backlog (delivered but not yet stored), computed
-        // live — not the broker-total backlog (no usable end-offset source on this broker).
-        _ = _meter.CreateObservableUpDownCounter("streambus_partition_lag",
+        // live — not the broker-total backlog (no usable end-offset source on this
+        // broker). Named "backlog" rather than "lag" because lag has an
+        // industry-standard meaning (broker end offset − consumer offset) this
+        // metric does not have.
+        _ = _meter.CreateObservableUpDownCounter("streambus_partition_backlog",
             () => ObservePartitions(s => Math.Max(0, s.LastDelivered - s.LastStored)),
             description: "Consumer-held unprocessed backlog max(0, delivered - stored), not broker-total backlog.");
         _ = _meter.CreateObservableUpDownCounter("streambus_partition_inflight",
             () => ObservePartitions(s => s.Inflight));
         _ = _meter.CreateObservableUpDownCounter("streambus_partition_retry_blocked",
-            () => ObservePartitions(s => s.RetryBlocked, includeFailureMode: true),
+            () => ObservePartitions(s => s.RetryBlocked),
             unit: null, description: null);
         _ = _meter.CreateObservableUpDownCounter<int>("streambus_connection_state",
             () => _connections.Select(kv => new Measurement<int>((int)kv.Value(),
@@ -40,11 +43,18 @@ internal sealed class StreamBusMetrics
         StoreRejected = _meter.CreateCounter<long>("streambus_offset_store_rejected_total");
         Regressed = _meter.CreateCounter<long>("streambus_offset_regressed_total");
         Fallback = _meter.CreateCounter<long>("streambus_offset_fallback_total");
+        _pipelineDuration = _meter.CreateHistogram<double>("streambus_pipeline_duration", unit: "s",
+            description: "End-to-end duration of a publish or consume filter pipeline, including the terminal handler.");
     }
 
     public Counter<long> StoreRejected { get; }
     public Counter<long> Regressed { get; }
     public Counter<long> Fallback { get; }
+
+    private readonly Histogram<double> _pipelineDuration;
+
+    public void RecordPipelineDuration(string kind, double seconds)
+        => _pipelineDuration.Record(seconds, new KeyValuePair<string, object?>("kind", kind));
 
     public IDisposable TrackPartition(string vhost, string bus, string stream, int partition, string reference, PartitionState state)
     {
@@ -67,8 +77,7 @@ internal sealed class StreamBusMetrics
     public void RecordFallback(string vhost, string bus, string stream, int partition, string reference, string branch)
         => Fallback.Add(1, BuildTags(vhost, bus, stream, partition, reference, ("branch", branch)));
 
-    private IEnumerable<Measurement<long>> ObservePartitions(
-        Func<PartitionState, long> select, bool includeFailureMode = false)
+    private IEnumerable<Measurement<long>> ObservePartitions(Func<PartitionState, long> select)
     {
         foreach (var kv in _partitions)
         {
@@ -80,10 +89,6 @@ internal sealed class StreamBusMetrics
                 { "partition", kv.Key.Partition },
                 { "reference", kv.Key.Reference },
             };
-            if (includeFailureMode)
-            {
-                tags.Add("failure_mode", "strict");
-            }
             yield return new Measurement<long>(select(kv.Value), tags);
         }
     }

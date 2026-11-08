@@ -1,0 +1,118 @@
+using System.Collections.Concurrent;
+
+namespace StreamBus;
+
+internal sealed class PublishPipelineCache
+{
+    private readonly IReadOnlyList<PublishFilterRegistration> _registrations;
+    private readonly IServiceProvider? _rootProvider;
+    private readonly Dictionary<PublishFilterRegistration, IStreamPublishFilter> _universal = new();
+    private readonly ConcurrentDictionary<Type, object> _typedInstances = new();
+    private readonly ConcurrentDictionary<Type, PublishPipeline> _pipelines = new();
+
+    public PublishPipelineCache(
+        Type busType,
+        IReadOnlyList<PublishFilterRegistration> registrations,
+        IServiceProvider? rootProvider)
+    {
+        ArgumentNullException.ThrowIfNull(busType);
+        ArgumentNullException.ThrowIfNull(registrations);
+
+        _registrations = registrations;
+        _rootProvider = rootProvider;
+
+        if (registrations.Count == 0)
+            return;
+
+        if (rootProvider is null)
+        {
+            throw new StreamBusConfigurationException(
+                $"Publish filters are configured for {busType.FullName}, but no root service provider is available.");
+        }
+
+        var seen = new HashSet<Type>();
+        foreach (var registration in registrations)
+        {
+            if (registration.IsTyped)
+                continue;
+
+            if (registration.Instance is null)
+            {
+                FilterRegistrationSupport.EnsureSingletonLifetime(
+                    rootProvider,
+                    registration.FilterType,
+                    "Publish");
+            }
+
+            var filter = registration.CreateUniversal(rootProvider);
+            var filterType = FilterIdentity.TypeOf(filter);
+            if (!seen.Add(filterType))
+            {
+                throw new StreamBusConfigurationException(
+                    $"Publish filter '{filterType}' is already registered on this bus; duplicate registration would run it twice.");
+            }
+
+            _universal.Add(registration, filter);
+        }
+    }
+
+    public PublishPipeline GetOrCreate(Type messageType)
+    {
+        ArgumentNullException.ThrowIfNull(messageType);
+        return _pipelines.GetOrAdd(messageType, Build);
+    }
+
+    private PublishPipeline Build(Type messageType)
+    {
+        var filters = new List<IStreamPublishFilter>(_registrations.Count);
+
+        // Registration-time ConflictsWith only sees declared FilterTypes; factory
+        // registrations carry none, and a typed registration's resolved class can
+        // collide with a factory-produced universal instance (universal duplicates
+        // are caught eagerly in the constructor, typed ones can only be checked
+        // once per message type — open-generic registrations have no enumerable
+        // message-type set). Hence this resolved-identity check at first publish.
+        var seen = new HashSet<Type>();
+
+        foreach (var registration in _registrations)
+        {
+            IStreamPublishFilter filter;
+            if (!registration.IsTyped)
+            {
+                filter = _universal[registration];
+            }
+            else
+            {
+                var closedFilterType = registration.ClosedFilterType(messageType);
+                if (closedFilterType is null)
+                    continue;
+
+                var instance = _typedInstances.GetOrAdd(
+                    closedFilterType,
+                    type =>
+                    {
+                        FilterRegistrationSupport.EnsureSingletonLifetime(
+                            _rootProvider!,
+                            type,
+                            "Publish");
+                        return registration.ResolveTyped(type, _rootProvider!);
+                    });
+
+                // Build runs once per message type (_pipelines is the cache), so
+                // the adapter needs no second cache keyed by (filter, message).
+                filter = registration.WrapTyped(messageType, instance);
+            }
+
+            var filterType = FilterIdentity.TypeOf(filter);
+            if (!seen.Add(filterType))
+            {
+                throw new StreamBusConfigurationException(
+                    $"Publish filter '{filterType}' is already registered on this bus; duplicate registration would run it twice.");
+            }
+
+            filters.Add(filter);
+        }
+
+        return new PublishPipeline(filters);
+    }
+}

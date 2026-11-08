@@ -10,12 +10,13 @@ services.AddStreamBus((context, cfg) =>
 {
     cfg.Host("localhost", "/", h => h.Credentials("app", "s3cret"));
 
-    cfg.UseMessageRetry(r => r.Intervals(
+    cfg.UseRetry(r => r.Intervals(
         TimeSpan.FromMilliseconds(200),
         TimeSpan.FromSeconds(2),
         TimeSpan.FromSeconds(10)));
 
     cfg.Publish<OrderEvent>("orders");
+    cfg.Publish<PaymentFailed>("payments-dlq"); // target used by the payments callback
 
     cfg.ReceiveEndpoint("orders", e =>
     {
@@ -25,14 +26,14 @@ services.AddStreamBus((context, cfg) =>
     cfg.ReceiveEndpoint("audit", e =>
     {
         e.Consumer<AuditConsumer>("audit-log");
-        e.UseMessageRetry(r => r.Immediate(5));
+        e.UseRetry(r => r.Immediate(5));
         e.DeadLetterToStream("audit-errors");
     });
 
     cfg.ReceiveEndpoint("payments", e =>
     {
         e.Consumer<PaymentsConsumer>("payments-ops");
-        e.UseMessageRetry(r => r.Intervals(TimeSpan.FromMilliseconds(200)));
+        e.UseRetry(r => r.Intervals(TimeSpan.FromMilliseconds(200)));
         e.OnExhausted(async (ctx, ct) =>
         {
             var bus = ctx.GetService<IStreamBus>();
@@ -43,32 +44,37 @@ services.AddStreamBus((context, cfg) =>
     cfg.ReceiveEndpoint("metrics", e =>
     {
         e.Consumer<MetricsConsumer>("metrics-tail");
-        e.UseMessageRetry(r => r.None());
+        e.UseRetry(r => r.None());
     });
 });
 ```
 
 Schedules: `Immediate(n)`, `Interval(n, delay)`, `Intervals(params)`,
-`Exponential(count, base, max, multiplier)`, `None()`. `UseRetry` takes
-a raw `RetryPolicy` as an escape hatch on both levels.
+`Exponential(count, base, max, multiplier)`, `None()`. `UseRetry` accepts
+either the fluent schedule callback or a raw `RetryPolicy` (the escape
+hatch for schedules the fluent configurator cannot express) on both levels.
+
+`MaxAttempts` counts total attempts including the first (`None()` is one
+attempt, `Immediate(5)` is six). Leaving it unset sets no attempt limit:
+the endpoint retries until the handler succeeds and its partition waits.
 
 ## Exhaustion rules
 
 | Retry | Exhaustion | Effective mode |
 |---|---|---|
-| bounded schedule | `DeadLetterToStream` / `DeadLetterToQueue` | handoff to the declared destination, then advance |
-| bounded schedule | `OnExhausted` | the callback owns the outcome (a declared destination is shadowed with a startup warning) |
-| bounded schedule | neither | handoff to the derived default: classic queue `{stream}_error` (durable, full headers) |
-| unbounded (default) | neither | `Strict`: retry forever |
-| unbounded | destination or callback | configuration error at startup (a handoff needs a bound) |
+| attempt limit set (`MaxAttempts`) | `DeadLetterToStream` / `DeadLetterToQueue` | handoff to the declared destination, then advance |
+| attempt limit set (`MaxAttempts`) | `OnExhausted` | the callback owns the outcome (a declared destination is shadowed with a startup warning) |
+| attempt limit set (`MaxAttempts`) | neither | handoff to the derived destination: classic queue `{stream}_error` (durable, full headers) |
+| no attempt limit (`MaxAttempts` unset, default) | neither | `Strict`: retry forever; the partition waits |
+| no attempt limit | destination or callback | configuration error at startup (a hand-off needs an attempt limit) |
 | `None()` | explicit/callback/nothing | immediate handoff or callback on first failure |
 
 Dead-letter destinations are kind-split, and a second call on the same
 endpoint throws at registration (the destination choice is a one-time,
 exactly-once decision — `OnExhausted` knobs stay last-call-wins):
 
-- `DeadLetterToStream(name, spec?)`: an error **stream** with v1
-  envelope semantics, advance-once, replayable with
+- `DeadLetterToStream(name, spec?)`: an error **stream** with
+  error-envelope semantics, advance-once, replayable with
   `ReplayErrorStreamAsync`. The destination stream is declared with the
   destination's `StreamOptions` at startup.
 - `DeadLetterToQueue(name, type)`: a durable AMQP queue
@@ -76,10 +82,47 @@ exactly-once decision — `OnExhausted` knobs stay last-call-wins):
   broker-confirmed, full `streambus.error.*` headers, requeue with
   `RequeueErrorsAsync`. The transport declares it, never topology.
 
+## Hand-off confirmation timeouts
+
+Both error destinations bound the hand-off publish instead of letting a
+lost confirmation wedge the partition:
+
+- Stream hand-off: `e.ErrorHandoffTimeout(TimeSpan.FromSeconds(10))`.
+  The default is 10 seconds; values below 1 second are raised to 1
+  second. A lost confirmation surfaces as a timeout with an unknown
+  outcome and the envelope stays replayable.
+- Queue hand-off:
+  `e.DeadLetterToQueue("orders-errors", DeadLetterQueueType.ClassicQueue,
+  q => q.ConfirmTimeout(TimeSpan.FromSeconds(10)))`. The default is 10
+  seconds. A timeout means the broker may or may not have accepted the
+  message; requeue/replay only when the destination can tolerate a
+  duplicate.
+
+A hand-off that fails transiently (not-ready, timeout, broker unreachable,
+or a destination stream that does not exist yet) is retried without
+advancing: the message is never skipped. A *fatal* failure — a latched
+connection/transport state (`StreamBusFatalException`), a fatal
+protocol/SSL/auth error, or a configuration error — cannot recover by
+retrying, so it surfaces immediately: the partition is marked failed and
+recycled (redelivery, never a skip) instead of retrying forever at the
+backoff delay.
+
 `OnExhausted` runs with the full `ExhaustedContext` (stream, partition,
-offset, body, metadata, attempts, exception, services). Returning
-advances past the message; throwing recycles the attach (redeliver,
-never skip). Use `ctx.GetService<T>()` for buses and other services.
+offset, body, message id, correlation id, sent time, headers, attempts,
+exception, services). Returning advances past the message; throwing
+recycles the attach (redeliver, never skip). Use `ctx.GetService<T>()` for
+buses and other services. A missing registration throws the standard
+`InvalidOperationException` from `GetRequiredService<T>()` — the bus
+already started, so this is a DI wiring problem, not invalid bus
+configuration.
+
+The raw `ConsumeOptions` path exposes the same callback as
+`OnExhausted(Func<ExhaustedContext, CancellationToken, Task>)`, so there is
+one exhaustion shape across both APIs. On that path `OnExhausted` and
+`ErrorStream` are mutually exclusive: the callback owns the outcome, so
+configuring both fails with `StreamBusConfigurationException` instead of
+silently shadowing the destination. Endpoints resolve the same conflict by
+shadowing the declared destination with a startup warning.
 
 ## Requeue
 
@@ -88,15 +131,18 @@ int requeued = await bus.RequeueErrorsAsync("orders", "orders-errors", ct);
 ```
 
 `BasicGet`-loops the queue and republishes bodies to the source stream as
-fresh messages (tail append, at-least-once), acknowledging only after the
-stream confirm. Malformed entries are acknowledged with a warning and
-skipped. Stream destinations replay with `ReplayErrorStreamAsync`
-instead.
+new offsets (tail append, at-least-once), acknowledging only after the
+stream confirm. The envelope's `MessageId`, `CorrelationId`, and `SentTime`
+are carried over; `content-type` and consume-added headers are not
+restored, so a requeued message may carry a body without the original
+property metadata. Malformed entries are acknowledged with a warning and
+skipped. Stream destinations replay with `ReplayErrorStreamAsync` instead
+and preserve the same identity fields.
 
 ## Full example
 
-Bounded retry hands the poison message to a classic error queue; the
-operator drains it back after deploying the fix:
+A retry schedule with an attempt limit hands the poison message to a
+classic error queue; the operator drains it back after deploying the fix:
 
 ```csharp
 services.AddStreamBus((context, cfg) =>
@@ -106,7 +152,7 @@ services.AddStreamBus((context, cfg) =>
     cfg.ReceiveEndpoint("orders", e =>
     {
         e.Consumer<OrderConsumer>("order-processors");
-        e.UseMessageRetry(r => r.None());
+        e.UseRetry(r => r.None());
         e.DeadLetterToQueue("orders-errors", DeadLetterQueueType.ClassicQueue);
     });
 });
@@ -118,3 +164,23 @@ services.AddStreamBusHosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(
 // After the fix is deployed, redeliver everything:
 int requeued = await bus.RequeueErrorsAsync("orders", "orders-errors", ct);
 ```
+
+## Exception table
+
+Every StreamBus exception derives from `StreamBusException`, so a host can
+catch the whole library surface with one type. Retryability remains
+type-specific:
+
+| Exception | Meaning | Retry? |
+|---|---|---|
+| `StreamBusException` | Abstract base for every StreamBus exception. | Catch-all only. |
+| `StreamBusConfigurationException` | Invalid or contradictory configuration. | No - fix the configuration. |
+| `StreamBusStreamConfigurationConflictException` | Existing broker topology disagrees with the declaration. | No - align the declaration or recreate the stream. |
+| `StreamBusStartupBlockedException` | A typed consumer could not attach during blocking startup. | No - fix the consumer or dependency first. |
+| `StreamBusFatalException` | The bus connection is fatal. | No - reconnect/operator action. |
+| `StreamBusNotReadyException` | The bus is not ready for the operation yet. | Yes - transient. |
+| `StreamBusStreamNotFoundException` | A referenced publish, consume, or replay stream is missing. | No at runtime; a blocking startup attach may retry while declarations converge. |
+| `StreamBusTimeoutException` | A budget expired; the outcome may be unknown. | Only when the operation is safe/idempotent. |
+| `StreamBusPublishTransientException` | A publish failed transiently and the producer was discarded. | Yes - retry. |
+| `StreamBusPublishException` | A publish was rejected, returned, or otherwise failed without a transient classification. | Do not blindly retry. |
+| `StreamBusDeserializationException` | The payload could not be deserialized as the consumer's message type. | No - treat as poison and route to the error destination. |

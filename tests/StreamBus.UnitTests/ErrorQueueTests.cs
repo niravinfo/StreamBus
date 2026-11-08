@@ -17,10 +17,9 @@ public sealed class ErrorQueueTests
         ExceptionStack = "at Boom()",
         Attempts = 3,
         FailedAt = new DateTimeOffset(2026, 10, 15, 12, 0, 0, TimeSpan.Zero),
-        MessageId = "m-1",
-        CorrelationId = "c-1",
+        MessageId = Guid.Parse("0f8fad5b-d9cb-469f-a165-70867728950e"),
+        CorrelationId = Guid.Parse("6b1f5c1a-0d9e-4b6f-9a4e-1f2d3c4b5a69"),
         RoutingValue = "o-1",
-        ErrorRoutingValue = "orders",
     };
 
     private sealed class NeverConnectFactory : IErrorQueueConnectionFactory
@@ -63,7 +62,6 @@ public sealed class ErrorQueueTests
         Assert.Equal(envelope.MessageId, parsed.MessageId);
         Assert.Equal(envelope.CorrelationId, parsed.CorrelationId);
         Assert.Equal(envelope.RoutingValue, parsed.RoutingValue);
-        Assert.Equal(envelope.ErrorRoutingValue, parsed.ErrorRoutingValue);
         Assert.Equal(envelope.Body, parsed.Body);
     }
 
@@ -108,7 +106,7 @@ public sealed class ErrorQueueTests
 
     private sealed class WidgetConsumer : IConsumer<WidgetEvent>
     {
-        public Task Consume(ConsumeContext<WidgetEvent> context, CancellationToken ct) => Task.CompletedTask;
+        public Task Consume(ConsumeContext<WidgetEvent> context) => Task.CompletedTask;
     }
 
     private static TypedConsumerRegistration Registration(string stream, DeadLetterOptions? deadLetter, bool callback)
@@ -121,10 +119,10 @@ public sealed class ErrorQueueTests
             Options = new ConsumeOptions
             {
                 Reference = "grp",
-                Retry = new RetryPolicy { FailureMode = FailureMode.SkipAfterDeadline, MaxAttempts = 2 },
+                Retry = new RetryPolicy { MaxAttempts = 2 },
                 ErrorStream = deadLetter is { IsStream: true } ? new ErrorStreamOptions { Stream = deadLetter.Name } : null,
                 DeadLetter = deadLetter is { IsStream: false } ? deadLetter : null,
-                ExhaustionCallback = callback ? (_, _) => Task.CompletedTask : null,
+                OnExhausted = callback ? (_, _) => Task.CompletedTask : null,
             },
         };
 

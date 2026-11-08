@@ -1,0 +1,100 @@
+using System.Diagnostics.Metrics;
+
+namespace StreamBus.UnitTests;
+
+// MeterListener observes process-wide instruments, so these tests must not
+// overlap with any other test that can run a pipeline.
+[CollectionDefinition(nameof(PipelineMetricsCollection), DisableParallelization = true)]
+public sealed class PipelineMetricsCollection;
+
+[Collection(nameof(PipelineMetricsCollection))]
+public sealed class PipelineMetricsTests : IDisposable
+{
+    private readonly MeterListener _listener = new();
+    private readonly List<(string Instrument, string? Unit, double Value, KeyValuePair<string, object?>[] Tags)> _measurements = new();
+
+    public PipelineMetricsTests()
+    {
+        _listener.InstrumentPublished = (instrument, listener) =>
+        {
+            if (instrument.Meter.Name == "StreamBus")
+                listener.EnableMeasurementEvents(instrument);
+        };
+        _listener.SetMeasurementEventCallback<double>(Record);
+        _listener.Start();
+    }
+
+    private void Record<T>(Instrument instrument, T measurement, ReadOnlySpan<KeyValuePair<string, object?>> tags, object? state)
+        => _measurements.Add((instrument.Name, instrument.Unit, Convert.ToDouble(measurement, System.Globalization.CultureInfo.InvariantCulture), tags.ToArray()));
+
+    public void Dispose() => _listener.Dispose();
+
+    [Fact]
+    public async Task Publish_pipeline_duration_is_recorded_in_seconds_with_the_publish_kind()
+    {
+        var pipeline = new PublishPipeline(new IStreamPublishFilter[] { new NoopPublishFilter() });
+        var context = new PublishContext
+        {
+            Stream = "orders",
+            RoutingKey = null,
+            Payload = new object(),
+            MessageId = Guid.NewGuid(),
+            SentTime = DateTime.UtcNow,
+            Headers = new StreamSendHeaders(null, SystemTextJsonStreamSerializer.Default),
+            Services = EmptyProvider.Instance,
+            CancellationToken = TestContext.Current.CancellationToken,
+        };
+
+        await pipeline.RunAsync(context, () => Task.CompletedTask);
+
+        var measurement = Assert.Single(_measurements, m =>
+            m.Instrument == "streambus_pipeline_duration"
+            && m.Tags.Any(t => t.Key == "kind" && (string?)t.Value == "publish"));
+        Assert.Equal("s", measurement.Unit);
+        Assert.InRange(measurement.Value, 0, 60);
+    }
+
+    [Fact]
+    public async Task Consume_pipeline_duration_is_recorded_in_seconds_with_the_consume_kind()
+    {
+        var pipeline = new ConsumePipeline(new IStreamConsumeFilter[] { new NoopConsumeFilter() });
+        var context = new ConsumeContext
+        {
+            Stream = "orders",
+            Partition = 0,
+            Offset = 0,
+            RoutingValue = null,
+            Body = ReadOnlyMemory<byte>.Empty,
+            Headers = new StreamHeaders(new Dictionary<string, object?>(), SystemTextJsonStreamSerializer.Default),
+            SendHeaders = new StreamSendHeaders(null, SystemTextJsonStreamSerializer.Default),
+            Services = EmptyProvider.Instance,
+            CancellationToken = TestContext.Current.CancellationToken,
+        };
+
+        await pipeline.RunAsync(context, () => Task.CompletedTask);
+
+        var measurement = Assert.Single(_measurements, m =>
+            m.Instrument == "streambus_pipeline_duration"
+            && m.Tags.Any(t => t.Key == "kind" && (string?)t.Value == "consume"));
+        Assert.Equal("s", measurement.Unit);
+        Assert.InRange(measurement.Value, 0, 60);
+    }
+
+    private sealed class NoopPublishFilter : IStreamPublishFilter
+    {
+        public Task OnPublish(PublishContext context, PublishNext next)
+            => next();
+    }
+
+    private sealed class NoopConsumeFilter : IStreamConsumeFilter
+    {
+        public Task OnConsume(ConsumeContext context, ConsumeNext next)
+            => next();
+    }
+
+    private sealed class EmptyProvider : IServiceProvider
+    {
+        public static readonly EmptyProvider Instance = new();
+        public object? GetService(Type serviceType) => null;
+    }
+}

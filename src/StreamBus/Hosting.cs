@@ -1,4 +1,4 @@
-using System.Reflection;
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.ExceptionServices;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
@@ -10,13 +10,36 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace StreamBus;
 
-public sealed class StreamBusConfigStore
+/// <summary>
+/// Credential-free projection of one bus registration for health/status and
+/// diagnostics. The live <see cref="StreamBusOptions"/> stays internal to the
+/// store so a password can never leak through a public read accessor.
+/// </summary>
+public sealed record StreamBusRegistrationView
+{
+    /// <summary>Virtual host for the registration.</summary>
+    public required string Vhost { get; init; }
+
+    /// <summary>RabbitMQ host name.</summary>
+    public required string Host { get; init; }
+
+    /// <summary>Stream protocol port.</summary>
+    public required int StreamPort { get; init; }
+
+    /// <summary>AMQP protocol port.</summary>
+    public required int AmqpPort { get; init; }
+
+    /// <summary>Configured connection heartbeat in seconds.</summary>
+    public required double HeartbeatSeconds { get; init; }
+}
+
+internal sealed class StreamBusConfigStore
 {
     private readonly HashSet<Type> _busTypes = new();
     private readonly Dictionary<string, StreamBusOptions> _byVhost = new();
     private readonly List<(Type BusType, StreamBusOptions Options)> _registrations = new();
 
-    public void Add(Type busType, StreamBusOptions options)
+    internal void Add(Type busType, StreamBusOptions options)
     {
         ArgumentNullException.ThrowIfNull(busType);
         ArgumentNullException.ThrowIfNull(options);
@@ -38,16 +61,30 @@ public sealed class StreamBusConfigStore
             && a.Heartbeat == b.Heartbeat
             && a.Connection == b.Connection;
 
-    public StreamBusOptions ForVhost(string vhost)
+    internal StreamBusOptions ForVhost(string vhost)
     {
         if (_byVhost.TryGetValue(vhost, out var options))
             return options;
         throw new StreamBusConfigurationException($"No StreamBus registration for vhost '{vhost}'.");
     }
 
-    public IReadOnlyList<(Type BusType, StreamBusOptions Options)> Registrations => _registrations;
+    /// <summary>Credential-free views of every bus registration, for health/status and diagnostics.</summary>
+    public IReadOnlyList<StreamBusRegistrationView> Registrations
+        => _registrations
+            .Select(r => new StreamBusRegistrationView
+            {
+                Vhost = r.Options.Vhost,
+                Host = r.Options.Host,
+                StreamPort = r.Options.StreamPort,
+                AmqpPort = r.Options.AmqpPort,
+                HeartbeatSeconds = r.Options.Heartbeat.TotalSeconds,
+            })
+            .ToList();
+
+    internal IReadOnlyList<(Type BusType, StreamBusOptions Options)> Entries => _registrations;
 }
 
+/// <summary>Extension methods that register StreamBus services (buses, hosted service, and health checks) on an <see cref="IServiceCollection"/>.</summary>
 public static class ServiceCollectionExtensions
 {
     internal static IServiceCollection AddShared(IServiceCollection services, Type busType, StreamBusOptions options)
@@ -55,11 +92,12 @@ public static class ServiceCollectionExtensions
         var store = GetOrCreateStore(services);
         store.Add(busType, options);
         var publishStore = GetOrCreatePublishStore(services);
+        var consumeFilterStore = GetOrCreateConsumeFilterStore(services);
         var router = new StreamPublishRouter(publishStore);
         var endpointStore = GetOrCreateEndpointStore(services);
         IReadOnlyList<DeclaredStream> DeclarationsFor(Type marker)
         {
-            var markerVhost = store.Registrations.Where(r => r.BusType == marker).Select(r => r.Options.Vhost).FirstOrDefault();
+            var markerVhost = store.Entries.Where(r => r.BusType == marker).Select(r => r.Options.Vhost).FirstOrDefault();
             if (markerVhost is null) return Array.Empty<DeclaredStream>();
             return DeclareSetBuilder.Build(
                 endpointStore.Endpoints.Where(e => e.BusMarker == marker).Select(e => e.Descriptor),
@@ -73,18 +111,13 @@ public static class ServiceCollectionExtensions
                 opts => new StreamBusConnectionSupervisor(opts, sp.GetRequiredService<IStreamSystemConnector>()),
                 sp.GetService<ILoggerFactory>(),
                 router,
-                marker => store.Registrations.Where(r => r.BusType == marker).Select(r => r.Options.Serializer).FirstOrDefault() ?? SystemTextJsonStreamSerializer.Default,
+                marker => store.Entries.Where(r => r.BusType == marker).Select(r => r.Options.Serializer).FirstOrDefault() ?? SystemTextJsonStreamSerializer.Default,
                 sp.GetService<IServiceScopeFactory>(),
-                DeclarationsFor));
-        services.TryAddSingleton<IHostedService>(sp => new StreamBusHostedService(
-            sp.GetRequiredService<StreamBusConfigStore>(),
-            sp.GetRequiredService<IStreamBusRegistry>(),
-            sp.GetService<ILogger<StreamBusHostedService>>(),
-            sp.GetService<IServiceScopeFactory>(),
-            sp.GetService<StreamBusConsumerStore>(),
-            sp.GetService<StreamBusEndpointStore>(),
-            sp.GetService<StreamBusPublishStore>(),
-            sp.GetService<StreamBusHostingStore>()));
+                DeclarationsFor,
+                publishStore,
+                sp,
+                consumeFilterStore));
+        services.TryAddSingleton<IHostedService>(sp => StreamBusHostedService.Create(sp));
         services.TryAddSingleton<StreamBusHealthCheck>();
         services.TryAddSingleton<IHealthCheck>(sp => sp.GetRequiredService<StreamBusHealthCheck>());
         if (!services.Any(d => d.ServiceType == typeof(HealthCheckRegistrationMarker)))
@@ -139,6 +172,26 @@ public static class ServiceCollectionExtensions
         return created;
     }
 
+    internal static StreamBusConsumeFilterStore GetOrCreateConsumeFilterStore(IServiceCollection services)
+    {
+        var existing = services.FirstOrDefault(d =>
+            d.ServiceType == typeof(StreamBusConsumeFilterStore) && d.ImplementationInstance is StreamBusConsumeFilterStore);
+        if (existing?.ImplementationInstance is StreamBusConsumeFilterStore store) return store;
+        var created = new StreamBusConsumeFilterStore();
+        services.AddSingleton<StreamBusConsumeFilterStore>(created);
+        return created;
+    }
+
+    /// <summary>
+    /// Configures startup blocking for StreamBus: whether host startup waits for
+    /// connections, topology, and typed consumers, and how long. Call at most
+    /// once per service (a second call throws
+    /// <see cref="StreamBusConfigurationException"/>); without it, startup does
+    /// not block and background failures are logged critically.
+    /// </summary>
+    /// <param name="services">The service collection.</param>
+    /// <param name="configure">Builder callback for the hosting options.</param>
+    /// <returns>The same collection, for chaining.</returns>
     public static IServiceCollection AddStreamBusHosting(this IServiceCollection services, Action<StreamBusHostingOptionsBuilder> configure)
     {
         ArgumentNullException.ThrowIfNull(services);
@@ -152,98 +205,89 @@ public static class ServiceCollectionExtensions
     }
 }
 
-public sealed class StreamBusConnectionOptionsBuilder
-{
-    private int _producers = 1;
-    private int _consumers = 1;
-    public StreamBusConnectionOptionsBuilder ProducersPerConnection(int n) { _producers = n; return this; }
-    public StreamBusConnectionOptionsBuilder ConsumersPerConnection(int n) { _consumers = n; return this; }
-    public StreamBusConnectionOptions Build() => new() { ProducersPerConnection = _producers, ConsumersPerConnection = _consumers };
-}
-
+/// <summary>Startup behavior applied host-wide to every registered bus.</summary>
 public sealed record StreamBusHostingOptions
 {
-    public bool BlockStartupUntilReady { get; init; } = false;
+    /// <summary><see langword="true"/> when startup blocks until connections are ready and (configurable) consumers attach; enabled by <c>BlockStartupUntilReady</c>/<c>BlockUntilConsumersAttached</c>.</summary>
+    public bool BlockStartupUntilReady { get; init; }
+
+    /// <summary>When blocking, also block until every typed consumer is attached (or fail when one fails); default <see langword="true"/>.</summary>
+    public bool BlockUntilConsumersAttached { get; init; } = true;
+
+    /// <summary>Overall startup budget; when it expires before readiness/attach completes, startup throws <see cref="StreamBusTimeoutException"/>. Null waits indefinitely.</summary>
     public TimeSpan? StartupTimeout { get; init; }
 }
 
-public sealed class StreamBusHostingStore
+/// <summary>DI-carried holder for the single <see cref="StreamBusHostingOptions"/> configured by <c>AddStreamBusHosting</c>.</summary>
+internal sealed class StreamBusHostingStore
 {
-    public StreamBusHostingStore(StreamBusHostingOptions options)
+    /// <summary>Stores the built options; a null options value throws.</summary>
+    internal StreamBusHostingStore(StreamBusHostingOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
         Options = options;
     }
 
+    /// <summary>The hosting options.</summary>
     public StreamBusHostingOptions Options { get; }
 }
 
+/// <summary>Fluent builder consumed by <c>AddStreamBusHosting</c>; every knob defaults to non-blocking where noted.</summary>
 public sealed class StreamBusHostingOptionsBuilder
 {
     private bool _block;
+    private bool _blockConsumers = true;
     private TimeSpan? _timeout;
+
+    /// <summary>Blocks startup until connections are ready, bounded by <paramref name="timeout"/> (null waits indefinitely; a non-positive value throws).</summary>
+    /// <param name="timeout">Optional startup budget.</param>
+    /// <returns>This builder, for chaining.</returns>
     public StreamBusHostingOptionsBuilder BlockStartupUntilReady(TimeSpan? timeout = null)
     {
         if (timeout is { } t && t <= TimeSpan.Zero)
             throw new StreamBusConfigurationException("StartupTimeout must be positive when set.");
         _block = true; _timeout = timeout; return this;
     }
-    public StreamBusHostingOptions Build() => new() { BlockStartupUntilReady = _block, StartupTimeout = _timeout };
-}
-
-public sealed class ConsumeOptionsBuilder
-{
-    private bool _super;
-    private string? _reference;
-    private bool _sac = true;
-    private ConsumeOrdering _ordering = ConsumeOrdering.Strict;
-    private ConsumeOffset _offset = ConsumeOffset.ResumeOrFirst;
-    private OffsetStoreOptions _store = new();
-    private RetryPolicy _retry = new();
-    private ErrorStreamOptions? _error;
-    private Func<ErrorHandoff, Task>? _hook;
-    private ReadinessPolicy _readiness = ReadinessPolicy.FailFastPolicy;
-
-    public ConsumeOptionsBuilder SuperStream(bool enabled = true) { _super = enabled; return this; }
-    public ConsumeOptionsBuilder Reference(string? reference) { _reference = reference; return this; }
-    public ConsumeOptionsBuilder SingleActiveConsumer(bool enabled = true) { _sac = enabled; return this; }
-    public ConsumeOptionsBuilder Ordering(ConsumeOrdering ordering) { _ordering = ordering; return this; }
-    public ConsumeOptionsBuilder Offset(ConsumeOffset offset) { _offset = offset; return this; }
-    public ConsumeOptionsBuilder OffsetStore(OffsetStoreOptions options) { _store = options ?? throw new ArgumentNullException(nameof(options)); return this; }
-    public ConsumeOptionsBuilder Retry(RetryPolicy policy) { _retry = policy ?? throw new ArgumentNullException(nameof(policy)); return this; }
-    public ConsumeOptionsBuilder ErrorStream(ErrorStreamOptions? options) { _error = options; return this; }
-    public ConsumeOptionsBuilder OnRetryExhausted(Func<ErrorHandoff, Task>? hook) { _hook = hook; return this; }
-    public ConsumeOptionsBuilder Readiness(ReadinessPolicy policy) { _readiness = policy ?? throw new ArgumentNullException(nameof(policy)); return this; }
-
-    public ConsumeOptions Build() => new()
+    /// <summary>Also blocks startup until every typed consumer is attached; implying ready-blocking when enabled.</summary>
+    /// <param name="enabled">Whether to block on consumer attach (default <see langword="true"/>).</param>
+    /// <returns>This builder, for chaining.</returns>
+    public StreamBusHostingOptionsBuilder BlockUntilConsumersAttached(bool enabled = true)
     {
-        IsSuperStream = _super,
-        Reference = _reference,
-        SingleActiveConsumer = _sac,
-        Ordering = _ordering,
-        Offset = _offset,
-        OffsetStore = _store,
-        Retry = _retry,
-        ErrorStream = _error,
-        OnRetryExhausted = _hook,
-        ReadinessPolicy = _readiness,
+        _blockConsumers = enabled;
+        if (enabled) _block = true;
+        return this;
+    }
+
+    /// <summary>Freezes the configured values into the hosting options.</summary>
+    /// <returns>The immutable hosting options.</returns>
+    public StreamBusHostingOptions Build() => new()
+    {
+        BlockStartupUntilReady = _block,
+        BlockUntilConsumersAttached = _blockConsumers,
+        StartupTimeout = _timeout,
     };
 }
 
-public sealed record TypedConsumerRegistration
+/// <summary>One typed (endpoint-configured) consumer to start when the host starts.</summary>
+internal sealed record TypedConsumerRegistration
 {
+    /// <summary>Bus marker the endpoint belongs to.</summary>
     public required Type BusMarker { get; init; }
+    /// <summary>Message type the consumer handles.</summary>
     public required Type MessageType { get; init; }
+    /// <summary>Consumer type implementing <c>IConsumer&lt;T&gt;</c>.</summary>
     public required Type ConsumerType { get; init; }
+    /// <summary>Stream (or super stream) the endpoint consumes.</summary>
     public required string Stream { get; init; }
+    /// <summary>Consume options for the endpoint (reference, retry, error destination...).</summary>
     public required ConsumeOptions Options { get; init; }
 }
 
-public sealed class StreamBusConsumerStore
+internal sealed class StreamBusConsumerStore
 {
     private readonly List<TypedConsumerRegistration> _registrations = new();
 
-    public void Add(Type busMarker, Type messageType, Type consumerType, string stream, ConsumeOptions options)
+    internal void Add(Type busMarker, Type messageType, Type consumerType, string stream, ConsumeOptions options)
     {
         ArgumentNullException.ThrowIfNull(busMarker);
         ArgumentNullException.ThrowIfNull(messageType);
@@ -256,132 +300,161 @@ public sealed class StreamBusConsumerStore
         _registrations.Add(new TypedConsumerRegistration { BusMarker = busMarker, MessageType = messageType, ConsumerType = consumerType, Stream = stream, Options = options });
     }
 
+    /// <summary>All typed consumer registrations, in registration order.</summary>
     public IReadOnlyList<TypedConsumerRegistration> Registrations => _registrations;
+}
+
+internal interface ITypedConsumerInvoker
+{
+    Func<ConsumeContext, Task> Create();
 }
 
 internal static class TypedConsumerHandler
 {
-    public static Func<ConsumeContext, Task> Create(Type messageType, Type consumerType, IServiceScopeFactory scopes, IStreamSerializer serializer)
+    [RequiresUnreferencedCode(RuntimeGeneric.TrimMessage)]
+    [RequiresDynamicCode(RuntimeGeneric.AotMessage)]
+    public static Func<ConsumeContext, Task> Create(Type messageType, Type consumerType)
     {
         ArgumentNullException.ThrowIfNull(messageType);
         ArgumentNullException.ThrowIfNull(consumerType);
-        ArgumentNullException.ThrowIfNull(scopes);
-        ArgumentNullException.ThrowIfNull(serializer);
-        var open = typeof(TypedConsumerHandler).GetMethod(nameof(CreateTyped), BindingFlags.NonPublic | BindingFlags.Static)
-            ?? throw new StreamBusConfigurationException("Typed consumer invoker is missing (internal error).");
-        MethodInfo closed;
+
+        Type consumerInterface;
         try
         {
-            closed = open.MakeGenericMethod(messageType, consumerType);
+            consumerInterface = typeof(IConsumer<>).MakeGenericType(messageType);
         }
         catch (ArgumentException)
         {
-            throw new StreamBusConfigurationException($"Consumer {consumerType.FullName} cannot consume {messageType.FullName} (must implement IConsumer<{messageType.Name}>).");
+            throw new StreamBusConfigurationException(
+                $"Consumer {consumerType.FullName} cannot consume {messageType.FullName} (must implement IConsumer<{messageType.Name}>).");
         }
-        return (Func<ConsumeContext, Task>)closed.Invoke(null, new object[] { scopes, serializer })!;
-    }
 
-    private static Func<ConsumeContext, Task> CreateTyped<T, TConsumer>(IServiceScopeFactory scopes, IStreamSerializer serializer)
-        where TConsumer : class, IConsumer<T>
-        => async raw =>
+        if (!consumerInterface.IsAssignableFrom(consumerType))
         {
-            T message;
-            try
+            throw new StreamBusConfigurationException(
+                $"Consumer {consumerType.FullName} cannot consume {messageType.FullName} (must implement IConsumer<{messageType.Name}>).");
+        }
+
+        var invoker = RuntimeGeneric.Create<ITypedConsumerInvoker>(
+            typeof(TypedConsumerInvoker<,>),
+            messageType,
+            consumerType);
+        return invoker.Create();
+    }
+}
+
+internal sealed class TypedConsumerInvoker<T, TConsumer> : ITypedConsumerInvoker
+    where TConsumer : class, IConsumer<T>
+{
+    public Func<ConsumeContext, Task> Create()
+        => async context =>
+        {
+            if (context is not ConsumeContext<T> typed)
             {
-                message = serializer.Deserialize<T>(raw.Body);
+                throw new StreamBusConfigurationException(
+                    $"Typed consumer {typeof(TConsumer).FullName} for {typeof(T).FullName} received a {context.GetType().FullName} context without a deserialized message (internal error).");
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                throw new StreamBusDeserializationException(raw.Stream, raw.Partition, raw.Offset, typeof(T), ex);
-            }
-            if (ReferenceEquals(message, null))
-                throw new StreamBusDeserializationException(raw.Stream, raw.Partition, raw.Offset, typeof(T), null);
-            using var scope = scopes.CreateScope();
-            var consumer = scope.ServiceProvider.GetRequiredService<TConsumer>();
-            await consumer.Consume(new ConsumeContext<T>
-            {
-                Message = message,
-                Stream = raw.Stream,
-                Partition = raw.Partition,
-                Offset = raw.Offset,
-                RoutingValue = raw.RoutingValue,
-                Body = raw.Body,
-                Metadata = raw.Metadata,
-                CancellationToken = raw.CancellationToken,
-            }, raw.CancellationToken).ConfigureAwait(false);
+
+            var consumer = context.Services.GetRequiredService<TConsumer>();
+            await consumer.Consume(typed).ConfigureAwait(false);
         };
 }
 
-public sealed class StreamBusHostedService : IHostedService
+internal sealed class StreamBusHostedService : IHostedService
 {
     private readonly StreamBusConfigStore _store;
     private readonly IStreamBusRegistry _registry;
-    private readonly List<StreamBusConnectionSupervisor> _started = new();
+    private readonly List<(string Vhost, StreamBusConnectionSupervisor Supervisor)> _started = new();
     private readonly object _gate = new();
     private readonly ILogger<StreamBusHostedService> _logger;
-    private readonly IServiceScopeFactory? _scopes;
-    private readonly StreamBusConsumerStore? _consumers;
-    private readonly StreamBusEndpointStore? _endpoints;
-    private readonly StreamBusPublishStore? _publishes;
+    private readonly IServiceScopeFactory _scopes;
+    private readonly StreamBusConsumerStore _consumers;
+    private readonly StreamBusEndpointStore _endpoints;
+    private readonly StreamBusPublishStore _publishes;
     private readonly StreamBusHostingOptions _hosting;
     private CancellationTokenSource? _startupCts;
 
-    public StreamBusHostedService(StreamBusConfigStore store, IStreamBusRegistry registry, ILogger<StreamBusHostedService>? logger = null, IServiceScopeFactory? scopeFactory = null, StreamBusConsumerStore? consumerStore = null, StreamBusEndpointStore? endpointStore = null, StreamBusPublishStore? publishStore = null, StreamBusHostingStore? hostingStore = null)
+    internal StreamBusHostedService(
+        StreamBusConfigStore store,
+        IStreamBusRegistry registry,
+        ILogger<StreamBusHostedService> logger,
+        IServiceScopeFactory scopeFactory,
+        StreamBusConsumerStore consumerStore,
+        StreamBusEndpointStore endpointStore,
+        StreamBusPublishStore publishStore,
+        StreamBusHostingStore hostingStore)
     {
+        ArgumentNullException.ThrowIfNull(store);
+        ArgumentNullException.ThrowIfNull(registry);
+        ArgumentNullException.ThrowIfNull(logger);
+        ArgumentNullException.ThrowIfNull(scopeFactory);
+        ArgumentNullException.ThrowIfNull(consumerStore);
+        ArgumentNullException.ThrowIfNull(endpointStore);
+        ArgumentNullException.ThrowIfNull(publishStore);
+        ArgumentNullException.ThrowIfNull(hostingStore);
         _store = store;
         _registry = registry;
-        _logger = logger ?? NullLogger<StreamBusHostedService>.Instance;
+        _logger = logger;
         _scopes = scopeFactory;
         _consumers = consumerStore;
         _endpoints = endpointStore;
         _publishes = publishStore;
-        _hosting = hostingStore?.Options ?? new StreamBusHostingOptions();
+        _hosting = hostingStore.Options;
     }
 
-    public async Task StartAsync(CancellationToken ct)
+    internal static StreamBusHostedService Create(IServiceProvider services)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        return new StreamBusHostedService(
+            services.GetRequiredService<StreamBusConfigStore>(),
+            services.GetRequiredService<IStreamBusRegistry>(),
+            services.GetService<ILogger<StreamBusHostedService>>() ?? NullLogger<StreamBusHostedService>.Instance,
+            services.GetRequiredService<IServiceScopeFactory>(),
+            services.GetRequiredService<StreamBusConsumerStore>(),
+            services.GetRequiredService<StreamBusEndpointStore>(),
+            services.GetRequiredService<StreamBusPublishStore>(),
+            services.GetService<StreamBusHostingStore>() ?? new StreamBusHostingStore(new StreamBusHostingOptions()));
+    }
+
+    /// <summary>Starts every registered supervisor, declares derived topology and error queues, and starts typed consumers; blocking per hosting options.</summary>
+    public async Task StartAsync(CancellationToken cancellationToken)
     {
         var starters = new List<(TypedConsumerRegistration Reg, string Vhost, IStreamSerializer Serializer)>();
-        if (_consumers is not null)
+        foreach (var reg in _consumers.Registrations)
         {
-            if (_scopes is null && _consumers.Registrations.Count > 0)
-                throw new StreamBusConfigurationException("Typed consumers are registered but no IServiceScopeFactory is available (internal error).");
-            foreach (var reg in _consumers.Registrations)
-            {
-                var match = _store.Registrations.FirstOrDefault(r => r.BusType == reg.BusMarker);
-                if (match.BusType is null)
-                    throw new StreamBusConfigurationException($"Typed consumer {reg.ConsumerType.FullName} on stream '{reg.Stream}' references marker {reg.BusMarker.FullName} with no AddStreamBus registration. Register the bus (Add-call order does not matter).");
-                starters.Add((reg, match.Options.Vhost, match.Options.Serializer ?? SystemTextJsonStreamSerializer.Default));
-            }
+            var match = _store.Entries.FirstOrDefault(r => r.BusType == reg.BusMarker);
+            if (match.BusType is null)
+                throw new StreamBusConfigurationException($"Typed consumer {reg.ConsumerType.FullName} on stream '{reg.Stream}' references marker {reg.BusMarker.FullName} with no AddStreamBus registration. Register the bus (Add-call order does not matter).");
+            starters.Add((reg, match.Options.Vhost, match.Options.Serializer ?? SystemTextJsonStreamSerializer.Default));
         }
         var supervisors = new List<(string Vhost, TimeSpan? Timeout, StreamBusConnectionSupervisor Supervisor)>();
-        foreach (var (busType, options) in _store.Registrations)
+        foreach (var (busType, options) in _store.Entries)
             _registry.GetOrCreateEntry(busType, options.Vhost);
-        foreach (var vhost in _store.Registrations.Select(r => r.Options.Vhost).Distinct())
+        foreach (var vhost in _store.Entries.Select(r => r.Options.Vhost).Distinct())
         {
             var supervisor = _registry.SupervisorFor(vhost);
-            await supervisor.StartAsync(ct).ConfigureAwait(false);
-            lock (_gate) _started.Add(supervisor);
             supervisors.Add((vhost, _hosting.StartupTimeout, supervisor));
+            StartSupervisor(vhost, supervisor, cancellationToken);
         }
         CancellationTokenSource startupCts;
         lock (_gate)
         {
             _startupCts?.Dispose();
-            _startupCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            _startupCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             startupCts = _startupCts;
         }
         var blocking = _hosting.BlockStartupUntilReady;
         var declareTasks = new List<Task>();
         var consumerTasks = new List<Task>();
-        foreach (var (busType, busOptions) in _store.Registrations)
+        foreach (var (busType, busOptions) in _store.Entries)
         {
-            var endpoints = _endpoints?.Endpoints
+            var endpoints = _endpoints.Endpoints
                 .Where(e => e.BusMarker == busType)
                 .Select(e => e.Descriptor)
-                .ToList() ?? new List<ReceiveEndpointDescriptor>();
-            var publishes = _publishes?.Registrations
+                .ToList();
+            var publishes = _publishes.Registrations
                 .Where(r => r.BusMarker == busType)
-                .ToList() ?? new List<PublishRegistration>();
+                .ToList();
             if (endpoints.Count == 0 && publishes.Count == 0) continue;
             var task = DeclareDerivedUntilReadyAsync(busType, busOptions.Vhost, endpoints, publishes, startupCts.Token);
             if (!blocking)
@@ -401,15 +474,16 @@ public sealed class StreamBusHostedService : IHostedService
                 declareTasks.Add(task);
             }
         }
-        var queuesByVhost = starters
-            .Where(s => s.Reg.Options.DeadLetter is not null && s.Reg.Options.ExhaustionCallback is null)
-            .GroupBy(s => s.Vhost, StringComparer.Ordinal)
-            .ToDictionary(
-                g => g.Key,
-                g => g.Select(s => s.Reg.Options.DeadLetter!).Distinct().ToList(),
-                StringComparer.Ordinal);
-        foreach (var (vhost, queues) in queuesByVhost)
+
+        foreach (var group in starters
+            .Where(s => s.Reg.Options.DeadLetter is not null && s.Reg.Options.OnExhausted is null)
+            .GroupBy(s => s.Vhost, StringComparer.Ordinal))
         {
+            // Single owner for the cohort filter: this is the same helper the
+            // drain/declare path pins in ErrorQueueTests, so the two can't drift.
+            var queues = ErrorQueueTransport.CollectQueueDeclarations(group.Select(s => s.Reg));
+            if (queues.Count == 0) continue;
+            var vhost = group.Key;
             var task = DeclareQueuesUntilReadyAsync(vhost, queues, startupCts.Token);
             if (!blocking)
             {
@@ -449,11 +523,12 @@ public sealed class StreamBusHostedService : IHostedService
             }
         }
         if (!_hosting.BlockStartupUntilReady) return;
-        var timeouts = new List<TimeSpan>();
-        if (_hosting is { BlockStartupUntilReady: true, StartupTimeout: not null })
-            timeouts.Add(_hosting.StartupTimeout!.Value);
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        if (timeouts.Count > 0) cts.CancelAfter(timeouts.Max());
+        var startupTimeout = _hosting is { BlockStartupUntilReady: true, StartupTimeout: { } value }
+            ? value
+            : (TimeSpan?)null;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        if (startupTimeout is { } budget)
+            cts.CancelAfter(budget);
         foreach (var (vhost, timeout, supervisor) in supervisors)
         {
             try
@@ -462,9 +537,14 @@ public sealed class StreamBusHostedService : IHostedService
                 if (readiness == BusReadiness.Fatal)
                     throw new StreamBusFatalException("A StreamBus connection reported Fatal during startup.");
             }
-            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                var effective = timeout ?? (timeouts.Count > 0 ? timeouts.Max() : (TimeSpan?)null);
+                // Host is stopping: cancelling the STARTUP wait is NOT a "Timed out" event.
+                throw;
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                var effective = timeout ?? startupTimeout;
                 throw new StreamBusTimeoutException($"Timed out waiting for StreamBus vhost '{vhost}' to become ready within {effective}.");
             }
         }
@@ -476,7 +556,7 @@ public sealed class StreamBusHostedService : IHostedService
                 _ = task.ContinueWith(
                     t =>
                     {
-                        if (t.Exception?.InnerExceptions.Any(e => e is StreamConfigurationConflictException or StreamBusConfigurationException) == true)
+                        if (t.Exception?.InnerExceptions.Any(e => e is StreamBusStreamConfigurationConflictException or StreamBusConfigurationException) == true)
                         {
                             try { startupCts.Cancel(); }
                             catch (ObjectDisposedException) { }
@@ -490,13 +570,18 @@ public sealed class StreamBusHostedService : IHostedService
             {
                 await Task.WhenAll(startupTasks).WaitAsync(cts.Token).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                // Host is stopping: this is a shutdown, not a startup budget expiry.
+                throw;
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
                 try { startupCts.Cancel(); }
                 catch (ObjectDisposedException) { }
                 var conflict = startupTasks
                     .SelectMany(t => t.Exception?.InnerExceptions.AsEnumerable() ?? Enumerable.Empty<Exception>())
-                    .OfType<StreamConfigurationConflictException>()
+                    .OfType<StreamBusStreamConfigurationConflictException>()
                     .FirstOrDefault();
                 if (conflict is not null) ExceptionDispatchInfo.Capture(conflict).Throw();
                 var config = startupTasks
@@ -505,6 +590,31 @@ public sealed class StreamBusHostedService : IHostedService
                     .FirstOrDefault();
                 if (config is not null) ExceptionDispatchInfo.Capture(config).Throw();
                 throw new StreamBusTimeoutException($"Timed out declaring topology and starting typed consumers within the startup timeout.");
+            }
+        }
+        if (_hosting.BlockUntilConsumersAttached)
+        {
+            var consumerVhosts = starters.Select(s => s.Vhost).Distinct().ToList();
+            while (true)
+            {
+                var rows = consumerVhosts
+                    .SelectMany(v => _registry.HealthFor(v).Snapshot().Registrations)
+                    .Where(r => r.Kind == "consumer")
+                    .ToList();
+                var failed = rows.FirstOrDefault(r => r.State is BusRegistrationState.FailedRetrying or BusRegistrationState.Stopped);
+                if (failed is not null)
+                    throw new StreamBusStartupBlockedException(
+                        $"Typed consumer '{failed.Registration}' on vhost '{failed.Vhost}' is {failed.State}: {failed.Reason ?? "no reason recorded"}.");
+                if (rows.Count == 0 || rows.All(r => r.State == BusRegistrationState.Attached))
+                    break;
+                try
+                {
+                    await Task.Delay(TimeSpan.FromMilliseconds(25), cts.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                {
+                    throw new StreamBusTimeoutException("Timed out waiting for typed consumers to attach during startup.");
+                }
             }
         }
     }
@@ -517,20 +627,26 @@ public sealed class StreamBusHostedService : IHostedService
         string vhost,
         List<ReceiveEndpointDescriptor> endpoints,
         List<PublishRegistration> publishes,
-        CancellationToken ct)
+        CancellationToken cancellationToken)
     {
         var busName = busType.FullName ?? busType.Name;
         var declareSet = DeclareSetBuilder.Build(endpoints, publishes, busName);
         var topology = _registry.TopologyFor(vhost);
-        var attempt = 0;
-        while (true)
+        var health = _registry.HealthFor(vhost);
+        foreach (var entry in declareSet)
+            health.UpsertRegistration(vhost, $"declare:{entry.Name}", "declare", BusRegistrationState.Attaching);
+        void MarkDeclareFailed(Exception ex)
         {
-            ct.ThrowIfCancellationRequested();
-            try
+            foreach (var entry in declareSet)
+                health.UpsertRegistration(vhost, $"declare:{entry.Name}", "declare", BusRegistrationState.FailedRetrying, ex.Message);
+        }
+        await StreamRuntimeLoop.RetryUntilAsync(
+            async attemptCt =>
             {
+                attemptCt.ThrowIfCancellationRequested();
                 foreach (var entry in declareSet)
                 {
-                    if (!entry.IsSuper && entry.Source is "publish" or "dead-letter")
+                    if (!entry.IsSuper && entry.Source is DeclaredStreamSource.Publish or DeclaredStreamSource.DeadLetter)
                     {
                         await topology.EnsureStreamAsync(new StreamDeclaration
                         {
@@ -539,15 +655,15 @@ public sealed class StreamBusHostedService : IHostedService
                             MaxLengthBytes = entry.MaxLengthBytes,
                             MaxSegmentSizeBytes = entry.MaxSegmentSizeBytes,
                             LeaderLocator = entry.LeaderLocator ?? StreamLeaderLocator.LeastLeaders,
-                        }, ct).ConfigureAwait(false);
+                        }, attemptCt).ConfigureAwait(false);
                         continue;
                     }
-                    var probe = await topology.ProbeStreamAsync(entry.Name, ct).ConfigureAwait(false);
-                    var who = entry.Source == "endpoint" ? $"endpoint '{entry.Name}'" : $"publish registration for '{entry.Name}'";
+                    var probe = await topology.ProbeStreamAsync(entry.Name, attemptCt).ConfigureAwait(false);
+                    var who = entry.Source == DeclaredStreamSource.Endpoint ? $"endpoint '{entry.Name}'" : $"publish registration for '{entry.Name}'";
                     if (entry.IsSuper)
                     {
                         if (probe.PlainExists)
-                            throw new StreamConfigurationConflictException(entry.Name,
+                            throw new StreamBusStreamConfigurationConflictException(entry.Name,
                                 $"{who} expects a super stream",
                                 "a plain stream");
                         if (entry.Partitions is null)
@@ -564,13 +680,13 @@ public sealed class StreamBusHostedService : IHostedService
                             MaxLengthBytes = entry.MaxLengthBytes,
                             MaxSegmentSizeBytes = entry.MaxSegmentSizeBytes,
                             LeaderLocator = entry.LeaderLocator ?? StreamLeaderLocator.LeastLeaders,
-                        }, ct).ConfigureAwait(false);
+                        }, attemptCt).ConfigureAwait(false);
                     }
                     else
                     {
                         if (probe.PlainExists) continue;
                         if (probe.SuperExists)
-                            throw new StreamConfigurationConflictException(entry.Name,
+                            throw new StreamBusStreamConfigurationConflictException(entry.Name,
                                 $"{who} expects a plain stream",
                                 "a super stream");
                         await topology.EnsureStreamAsync(new StreamDeclaration
@@ -580,108 +696,115 @@ public sealed class StreamBusHostedService : IHostedService
                             MaxLengthBytes = entry.MaxLengthBytes,
                             MaxSegmentSizeBytes = entry.MaxSegmentSizeBytes,
                             LeaderLocator = entry.LeaderLocator ?? StreamLeaderLocator.LeastLeaders,
-                        }, ct).ConfigureAwait(false);
+                        }, attemptCt).ConfigureAwait(false);
                     }
                 }
-                return;
-            }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                foreach (var entry in declareSet)
+                    health.RemoveRegistration(vhost, $"declare:{entry.Name}");
+                return true;
+            },
+            ex =>
             {
-                throw;
-            }
-            catch (StreamConfigurationConflictException)
-            {
-                throw;
-            }
-            catch (StreamBusConfigurationException)
-            {
-                throw;
-            }
-            catch (StreamBusFatalException)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                attempt++;
-                _logger.LogWarning(ex, "Derived topology for vhost '{Vhost}' failed (attempt {Attempt}); retrying.", vhost, attempt);
-                await Task.Delay(StreamBusDelays.ExponentialCapped(attempt, TimeSpan.FromMilliseconds(200), TimeSpan.FromSeconds(30), 2.0, TimeSpan.FromSeconds(1)), ct).ConfigureAwait(false);
-            }
-        }
+                if (ex is StreamBusStreamConfigurationConflictException or StreamBusConfigurationException or StreamBusFatalException)
+                {
+                    MarkDeclareFailed(ex);
+                    return StreamBusRetryKind.Fatal;
+                }
+                return StreamBusRetryKind.Transient;
+            },
+            TimeSpan.FromMilliseconds(200),
+            TimeSpan.FromSeconds(30),
+            int.MaxValue,
+            _logger,
+            $"Derived topology for vhost '{vhost}'",
+            cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task DeclareQueuesUntilReadyAsync(string vhost, List<DeadLetterOptions> queues, CancellationToken ct)
+    private async Task DeclareQueuesUntilReadyAsync(string vhost, IReadOnlyList<DeadLetterOptions> queues, CancellationToken cancellationToken)
     {
-        if (_registry is not StreamBusRegistry concrete)
-            throw new StreamBusConfigurationException("Error-queue declaration requires the built-in registry (internal error).");
-        var attempt = 0;
-        while (true)
+        var health = _registry.HealthFor(vhost);
+        foreach (var queue in queues)
+            health.UpsertRegistration(vhost, $"declare:{queue.Name}", "declare", BusRegistrationState.Attaching);
+        void MarkDeclareFailed(Exception ex)
         {
-            ct.ThrowIfCancellationRequested();
-            try
-            {
-                await concrete.ErrorQueuesFor(vhost).DeclareAsync(queues, ct).ConfigureAwait(false);
-                return;
-            }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (StreamConfigurationConflictException)
-            {
-                throw;
-            }
-            catch (StreamBusFatalException)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                attempt++;
-                _logger.LogWarning(ex, "Error-queue declaration for vhost '{Vhost}' failed (attempt {Attempt}); retrying.", vhost, attempt);
-                await Task.Delay(StreamBusDelays.ExponentialCapped(attempt, TimeSpan.FromMilliseconds(200), TimeSpan.FromSeconds(30), 2.0, TimeSpan.FromSeconds(1)), ct).ConfigureAwait(false);
-            }
+            foreach (var queue in queues)
+                health.UpsertRegistration(vhost, $"declare:{queue.Name}", "declare", BusRegistrationState.FailedRetrying, ex.Message);
         }
+        await StreamRuntimeLoop.RetryUntilAsync(
+            async attemptCt =>
+            {
+                attemptCt.ThrowIfCancellationRequested();
+                await _registry.ErrorQueuesFor(vhost).DeclareAsync(queues, attemptCt).ConfigureAwait(false);
+                foreach (var queue in queues)
+                    health.RemoveRegistration(vhost, $"declare:{queue.Name}");
+                return true;
+            },
+            ex =>
+            {
+                if (ex is StreamBusStreamConfigurationConflictException or StreamBusFatalException)
+                {
+                    MarkDeclareFailed(ex);
+                    return StreamBusRetryKind.Fatal;
+                }
+                return StreamBusRetryKind.Transient;
+            },
+            TimeSpan.FromMilliseconds(200),
+            TimeSpan.FromSeconds(30),
+            int.MaxValue,
+            _logger,
+            $"Error-queue declaration for vhost '{vhost}'",
+            cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task StartConsumerUntilReadyAsync(TypedConsumerRegistration reg, string vhost, IStreamSerializer serializer, CancellationToken ct)
+    private async Task StartConsumerUntilReadyAsync(TypedConsumerRegistration reg, string vhost, IStreamSerializer serializer, CancellationToken cancellationToken)
     {
         var entry = _registry.GetOrCreateEntry(reg.BusMarker, vhost);
         var reference = ConsumerReferenceValidation.Require(reg.Options.Reference, reg.Stream);
         var options = reg.Options with { Reference = reference };
-        if (options.ExhaustionCallback is not null && options.ShadowedDeadLetter is { } shadowed)
+        if (options.OnExhausted is not null && options.ShadowedDeadLetter is { } shadowed)
             _logger.LogWarning(
                 "ReceiveEndpoint '{Stream}' sets both OnExhausted and a dead-letter destination '{Destination}'; the callback owns exhaustion and the destination is shadowed.",
                 reg.Stream, shadowed.Name);
-        var handler = TypedConsumerHandler.Create(reg.MessageType, reg.ConsumerType, _scopes!, serializer);
-        var attempt = 0;
-        while (true)
-        {
-            ct.ThrowIfCancellationRequested();
-            try
+        var handler = TypedConsumerHandler.Create(reg.MessageType, reg.ConsumerType);
+        var consumers = _registry is StreamBusRegistry concrete ? concrete.ConsumersFor(vhost) : null;
+        await StreamRuntimeLoop.RetryUntilAsync(
+            async attemptCt =>
             {
-                await entry.Bus.ConsumeAsync(reg.Stream, options, handler, ct).ConfigureAwait(false);
-                return;
-            }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception ex) when (IsStartupTransient(ex))
-            {
-                attempt++;
-                _logger.LogWarning(ex, "Typed consumer {Consumer} on stream '{Stream}' not started (attempt {Attempt}); retrying.", reg.ConsumerType.FullName, reg.Stream, attempt);
-                await Task.Delay(StreamBusDelays.ExponentialCapped(attempt, TimeSpan.FromMilliseconds(200), TimeSpan.FromSeconds(30), 2.0, TimeSpan.FromSeconds(1)), ct).ConfigureAwait(false);
-            }
-        }
+                attemptCt.ThrowIfCancellationRequested();
+                if (consumers is not null)
+                    await consumers.ConsumeDeclaredEndpointAsync(reg.BusMarker, reg.Stream, options, handler, attemptCt, serializer).ConfigureAwait(false);
+                else
+                    await entry.Bus.ConsumeAsync(reg.Stream, options, handler, attemptCt).ConfigureAwait(false);
+                return true;
+            },
+            ex => IsStartupTransient(ex) ? StreamBusRetryKind.Transient : StreamBusRetryKind.Fatal,
+            TimeSpan.FromMilliseconds(200),
+            TimeSpan.FromSeconds(30),
+            int.MaxValue,
+            _logger,
+            $"Typed consumer {reg.ConsumerType.FullName} on stream '{reg.Stream}'",
+            cancellationToken).ConfigureAwait(false);
     }
 
-    public async Task StopAsync(CancellationToken ct)
+    // Starting a supervisor never fails: StartAsync is fire-and-forget and
+    // RunLoopAsync owns every failure by design (transient -> backoff and
+    // retry, fatal -> State = Fatal), so readiness is surfaced through
+    // State / WaitUntilReadyAsync instead of exceptions. Record the
+    // supervisor immediately so StopAsync disposes every supervisor it
+    // started, whatever connection state they end up in.
+    private void StartSupervisor(string vhost, StreamBusConnectionSupervisor supervisor, CancellationToken cancellationToken)
+    {
+        supervisor.StartAsync(cancellationToken);
+        lock (_gate) _started.Add((vhost, supervisor));
+    }
+
+    /// <summary>Disposes active consumers, cancels startup, then disposes every supervisor and the error-queue transports.</summary>
+    public async Task StopAsync(CancellationToken cancellationToken)
     {
         foreach (var consumer in _registry.ActiveConsumers)
         {
             try { await consumer.DisposeAsync().ConfigureAwait(false); }
-            catch (Exception) { /* shutdown best-effort; supervisor disposal below still runs */ }
+            catch (Exception ex) { _logger.LogWarning(ex, "Consumer dispose did not complete cleanly during StopAsync."); }
         }
         CancellationTokenSource? startupCts;
         lock (_gate)
@@ -694,38 +817,86 @@ public sealed class StreamBusHostedService : IHostedService
             try { startupCts.Cancel(); }
             finally { startupCts.Dispose(); }
         }
-        List<StreamBusConnectionSupervisor> copy;
+        List<(string Vhost, StreamBusConnectionSupervisor Supervisor)> copy;
         lock (_gate)
         {
-            copy = new List<StreamBusConnectionSupervisor>(_started);
+            copy = new List<(string, StreamBusConnectionSupervisor)>(_started);
             _started.Clear();
         }
-        foreach (var supervisor in copy)
-            await supervisor.DisposeAsync().ConfigureAwait(false);
+        foreach (var (vhost, supervisor) in copy)
+        {
+            try { await supervisor.DisposeAsync().ConfigureAwait(false); }
+            catch (Exception ex) { _logger.LogWarning(ex, "Supervisor dispose did not complete cleanly during StopAsync for vhost '{Vhost}'.", vhost); }
+            finally { _registry.RemoveSupervisor(vhost); }
+        }
+        // Error-queue transports own live AMQP connections; dispose them last,
+        // after supervisors, so in-flight dead-letter hand-offs finish first.
+        await _registry.DisposeAsync().ConfigureAwait(false);
     }
 }
 
+/// <summary>
+/// Registers as the <c>streambus</c> health check: healthy only when every
+/// registration is attached and every connection ready; degraded while
+/// starting/retrying (also when no buses are registered); unhealthy on fatal
+/// connections, exhausted declarations, or all typed consumers failed. Data
+/// rows are <c>{vhost}|{busType}</c> (connection state) and
+/// <c>{vhost}|{registration}</c> (one per consumer/declaration).
+/// </summary>
 public sealed class StreamBusHealthCheck : IHealthCheck
 {
     private readonly IStreamBusRegistry _registry;
+
+    /// <summary>Creates the check over the shared bus registry.</summary>
     public StreamBusHealthCheck(IStreamBusRegistry registry) => _registry = registry;
 
-    public Task<HealthCheckResult> CheckHealthAsync(HealthCheckContext context, CancellationToken ct = default)
+    /// <summary>Aggregates every bus connection state and health snapshot into one result.</summary>
+    /// <param name="context">The health-check context.</param>
+    /// <param name="cancellationToken">Ignored; the result is computed from live snapshots.</param>
+    public Task<HealthCheckResult> CheckHealthAsync(HealthCheckContext context, CancellationToken cancellationToken = default)
     {
-        var rows = _registry.DescribeStates().ToList();
-        var data = rows.ToDictionary(
-            r => $"{r.Vhost}|{r.BusType}",
-            r => (object)r.State.ToString());
-        if (rows.Count == 0)
-            return Task.FromResult(HealthCheckResult.Degraded("no buses registered.", data: data));
-        var worst = rows.Any(r => r.State == BusConnectionState.Fatal) ? BusConnectionState.Fatal
-            : rows.Any(r => r.State != BusConnectionState.Ready) ? BusConnectionState.TransientFailure
-            : BusConnectionState.Ready;
+        var states = _registry.DescribeStates().ToList();
+        var aggregators = _registry.HealthAggregators.ToList();
+        if (aggregators.Count == 0)
+        {
+            var emptyData = new Dictionary<string, object>();
+            foreach (var state in states)
+                emptyData[$"bus:{state.Vhost}|{state.BusType}"] = state.State.ToString();
+            return Task.FromResult(HealthCheckResult.Degraded("no buses registered.", data: emptyData));
+        }
+
+        var snapshots = aggregators
+            .Select(a => (Snapshot: a.Snapshot(), Status: a.Compute()))
+            .ToList();
+        var rows = snapshots.SelectMany(s => s.Snapshot.Registrations).ToList();
+        // Bus markers and registration names are separate key namespaces; the
+        // prefixes keep a free-form registration name that collides with a bus
+        // type name from silently overwriting (or being confused with) a bus
+        // state row.
+        var data = new Dictionary<string, object>();
+        foreach (var state in states)
+            data[$"bus:{state.Vhost}|{state.BusType}"] = state.State.ToString();
+        foreach (var row in rows)
+            data[$"reg:{row.Vhost}|{row.Registration}"] = $"{row.Kind}:{row.State}{(row.Reason is null ? "" : $" ({row.Reason})")}";
+
+        var details = rows
+            .Where(r => r.State != BusRegistrationState.Attached)
+            .Select(r => $"{r.Vhost}|{r.Registration}={r.State}{(r.Reason is null ? "" : $": {r.Reason}")} since {r.Since:O}")
+            .ToList();
+        var suffix = details.Count == 0 ? "" : " " + string.Join("; ", details);
+
+        var worst = snapshots.Any(s => s.Status == StreamBusHealthAggregator.HealthStatus.Unhealthy)
+            ? StreamBusHealthAggregator.HealthStatus.Unhealthy
+            : snapshots.Any(s => s.Status == StreamBusHealthAggregator.HealthStatus.Degraded)
+                ? StreamBusHealthAggregator.HealthStatus.Degraded
+                : StreamBusHealthAggregator.HealthStatus.Healthy;
         return Task.FromResult(worst switch
         {
-            BusConnectionState.Ready => HealthCheckResult.Healthy("All StreamBus connections ready.", data),
-            BusConnectionState.Fatal => HealthCheckResult.Unhealthy("At least one StreamBus connection is fatal.", data: data),
-            _ => HealthCheckResult.Degraded("StreamBus is starting or retrying.", data: data),
+            StreamBusHealthAggregator.HealthStatus.Healthy =>
+                HealthCheckResult.Healthy("All StreamBus registrations attached and connections ready.", data),
+            StreamBusHealthAggregator.HealthStatus.Unhealthy =>
+                HealthCheckResult.Unhealthy("StreamBus is unhealthy (fatal connection, exhausted declaration, or all typed consumers failed)." + suffix, data: data),
+            _ => HealthCheckResult.Degraded("StreamBus is starting or retrying." + suffix, data: data),
         });
     }
 }

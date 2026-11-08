@@ -7,11 +7,13 @@ namespace StreamBus.IntegrationTests;
 
 public sealed class AcceptanceIntegrationTests : IAsyncDisposable
 {
+    public AcceptanceIntegrationTests() => IntegrationLane.RequireBroker();
+
     private static string User() => Environment.GetEnvironmentVariable("STREAMBUS_USER") ?? "app";
     private static string Password() => Environment.GetEnvironmentVariable("STREAMBUS_PASSWORD") ?? "password";
     private readonly List<string> _streams = new();
 
-    private async Task<StreamSystem> ConnectAdminAsync()
+    private static async Task<StreamSystem> ConnectAdminAsync()
         => await StreamSystem.Create(new StreamSystemConfig
         {
             UserName = User(),
@@ -105,34 +107,29 @@ public sealed class AcceptanceIntegrationTests : IAsyncDisposable
     }
 
     [Fact]
-    public async Task OnRetryExhausted_observes_but_never_changes_outcome()
+    public async Task OnExhausted_owns_exhaustion_and_advances_past_poison()
     {
-        // FR-4.5 hook half: the hook observes the handoff (all fields) and even a
-        // throwing hook cannot change the outcome (advance-once + error publish).
+        // The raw ConsumeOptions path exposes exactly one exhaustion callback -
+        // the same OnExhausted shape as the endpoint API. It owns the outcome:
+        // returning advances past the message, with no separate error-stream
+        // hand-off and no second observe-only hook.
         var ct = TestContext.Current.CancellationToken;
         var stream = Unique("acc-src");
-        var error = Unique("acc-src.error");
         _streams.Add(stream);
-        _streams.Add(error);
         var admin = await ConnectAdminAsync();
         await using var _ = admin;
         await admin.CreateStream(new StreamSpec(stream));
-        await admin.CreateStream(new StreamSpec(error) { MaxAge = TimeSpan.FromDays(7) });
-        var handoffs = new List<ErrorHandoff>();
-        var hookCalls = 0;
+        var exhausted = new List<ExhaustedContext>();
         var completed = new List<ulong>();
         await using var inst = await BusInstance.StartAsync();
         await using var consumer = await inst.Bus.ConsumeAsync(stream,
             new ConsumeOptions
             {
                 Reference = Unique("grp-acc"),
-                Retry = new RetryPolicy { FailureMode = FailureMode.SkipAfterDeadline, MaxAttempts = 2, BaseDelay = TimeSpan.FromMilliseconds(10), MaxJitter = TimeSpan.Zero },
-                ErrorStream = new ErrorStreamOptions { Stream = error },
-                OnRetryExhausted = h =>
+                Retry = new RetryPolicy { MaxAttempts = 2, BaseDelay = TimeSpan.FromMilliseconds(10), MaxJitter = TimeSpan.Zero },
+                OnExhausted = (ctx, _) =>
                 {
-                    Interlocked.Increment(ref hookCalls);
-                    if (h.SourceOffset == 1) throw new InvalidOperationException("hook boom");
-                    lock (handoffs) handoffs.Add(h);
+                    lock (exhausted) exhausted.Add(ctx);
                     return Task.CompletedTask;
                 },
             },
@@ -151,28 +148,22 @@ public sealed class AcceptanceIntegrationTests : IAsyncDisposable
             await pub.Bus.PublishRawAsync(stream, Body("good:2"), new PublishOptions(), ct);
         }
         finally { await pub.DisposeAsync(); }
-        var errors = new List<byte[]>();
-        await using var reader = await inst.Bus.ConsumeAsync(error,
-            new ConsumeOptions { Offset = ConsumeOffset.AlwaysFirst, Reference = Unique("read") },
-            ctx => { lock (errors) errors.Add(ctx.Body.ToArray()); return Task.CompletedTask; }, ct);
-        await WaitForAsync(() => { lock (errors) return errors.Count >= 2; }, TimeSpan.FromSeconds(60), "both handoffs");
-        await WaitForAsync(() => Volatile.Read(ref hookCalls) >= 2, TimeSpan.FromSeconds(30), "both hook runs");
-        await WaitForAsync(() => { lock (completed) return completed.Count >= 1; }, TimeSpan.FromSeconds(30), "good processed past both handoffs");
-        ErrorHandoff handoff;
-        lock (handoffs) handoff = Assert.Single(handoffs);
-        Assert.Equal(error, handoff.ErrorStream);
-        Assert.Equal(stream, handoff.SourceStream);
-        Assert.Equal(0, handoff.SourcePartition);
-        Assert.Equal(0UL, handoff.SourceOffset);
-        Assert.Equal(2, handoff.Attempts);
-        Assert.IsType<InvalidOperationException>(handoff.Exception);
-        Assert.Contains("poison 0", handoff.Exception.Message);
-        Assert.True(DateTimeOffset.UtcNow - handoff.FailedAt < TimeSpan.FromMinutes(1));
-        Assert.True(handoff.FailedAt <= DateTimeOffset.UtcNow);
-        var bodies = new List<string>();
-        lock (errors) bodies.AddRange(errors.Select(Encoding.UTF8.GetString));
-        Assert.Contains("poison-a", bodies);
-        Assert.Contains("poison-b", bodies);
+        await WaitForAsync(() => { lock (completed) return completed.Count >= 1; }, TimeSpan.FromSeconds(60), "good processed past both exhausted messages");
+        List<ExhaustedContext> seen;
+        lock (exhausted) seen = exhausted.OrderBy(e => e.Offset).ToList();
+        Assert.Equal(new[] { 0UL, 1UL }, seen.Select(e => e.Offset).ToArray());
+        foreach (var context in seen)
+        {
+            Assert.Equal(stream, context.Stream);
+            Assert.Equal(0, context.Partition);
+            Assert.Equal(2, context.Attempts);
+            Assert.IsType<InvalidOperationException>(context.Exception);
+            Assert.Contains($"poison {context.Offset}", context.Exception.Message);
+            Assert.True(DateTimeOffset.UtcNow - context.FailedAt < TimeSpan.FromMinutes(1));
+            Assert.True(context.FailedAt <= DateTimeOffset.UtcNow);
+            Assert.NotNull(context.Services);
+            Assert.NotNull(context.Headers);
+        }
         lock (completed) Assert.Equal(new[] { 2UL }, completed);
     }
 }

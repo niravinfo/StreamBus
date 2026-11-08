@@ -9,12 +9,14 @@ namespace StreamBus.IntegrationTests;
 
 public sealed class TopologyIntegrationTests : IAsyncDisposable
 {
+    public TopologyIntegrationTests() => IntegrationLane.RequireBroker();
+
     private static string User() => Environment.GetEnvironmentVariable("STREAMBUS_USER") ?? "app";
     private static string Password() => Environment.GetEnvironmentVariable("STREAMBUS_PASSWORD") ?? "password";
     private readonly List<string> _streams = new();
     private readonly List<string> _superStreams = new();
 
-    private async Task<StreamSystem> ConnectAdminAsync()
+    private static async Task<StreamSystem> ConnectAdminAsync()
         => await StreamSystem.Create(new StreamSystemConfig
         {
             UserName = User(),
@@ -110,7 +112,7 @@ public sealed class TopologyIntegrationTests : IAsyncDisposable
         _superStreams.Add(super);
         await using var inst = await BusInstance.StartAsync();
         await inst.Bus.Topology.EnsureSuperStreamAsync(new SuperStreamDeclaration { Name = super, Partitions = 3 }, ct);
-        var ex = await Assert.ThrowsAsync<StreamConfigurationConflictException>(() =>
+        var ex = await Assert.ThrowsAsync<StreamBusStreamConfigurationConflictException>(() =>
             inst.Bus.Topology.EnsureSuperStreamAsync(new SuperStreamDeclaration { Name = super, Partitions = 5 }, ct));
         Assert.Contains("5", ex.Message);
         Assert.Contains("3", ex.Message);
@@ -128,11 +130,11 @@ public sealed class TopologyIntegrationTests : IAsyncDisposable
         _superStreams.Add(super);
         await using var inst = await BusInstance.StartAsync();
         await inst.Bus.Topology.EnsureStreamAsync(new StreamDeclaration { Name = plain }, ct);
-        var ex = await Assert.ThrowsAsync<StreamConfigurationConflictException>(() =>
+        var ex = await Assert.ThrowsAsync<StreamBusStreamConfigurationConflictException>(() =>
             inst.Bus.Topology.EnsureSuperStreamAsync(new SuperStreamDeclaration { Name = plain, Partitions = 2 }, ct));
         Assert.Contains("plain stream", ex.Actual);
         await inst.Bus.Topology.EnsureSuperStreamAsync(new SuperStreamDeclaration { Name = super, Partitions = 2 }, ct);
-        var ex2 = await Assert.ThrowsAsync<StreamConfigurationConflictException>(() =>
+        var ex2 = await Assert.ThrowsAsync<StreamBusStreamConfigurationConflictException>(() =>
             inst.Bus.Topology.EnsureStreamAsync(new StreamDeclaration { Name = super }, ct));
         Assert.Contains("2", ex2.Actual);
     }
@@ -252,7 +254,7 @@ public sealed class TopologyIntegrationTests : IAsyncDisposable
         services.AddStreamBusHosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(30)));
         await using var sp = services.BuildServiceProvider();
         var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
-        var ex = await Assert.ThrowsAsync<StreamConfigurationConflictException>(() => hosted.StartAsync(ct));
+        var ex = await Assert.ThrowsAsync<StreamBusStreamConfigurationConflictException>(() => hosted.StartAsync(ct));
         Assert.Contains("5", ex.Message);
         Assert.Contains("3", ex.Message);
         await hosted.StopAsync(ct);

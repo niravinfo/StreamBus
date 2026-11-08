@@ -5,14 +5,18 @@ using RabbitMQ.Stream.Client;
 
 namespace StreamBus.IntegrationTests;
 
+public sealed record PropertyHeaderPayload(int Id);
+
 public sealed class ConsumerIntegrationTests : IAsyncDisposable
 {
+    public ConsumerIntegrationTests() => IntegrationLane.RequireBroker();
+
     private static string User() => Environment.GetEnvironmentVariable("STREAMBUS_USER") ?? "app";
     private static string Password() => Environment.GetEnvironmentVariable("STREAMBUS_PASSWORD") ?? "password";
     private readonly List<string> _streams = new();
     private readonly List<string> _superStreams = new();
 
-    private async Task<StreamSystem> ConnectAdminAsync()
+    private static async Task<StreamSystem> ConnectAdminAsync()
         => await StreamSystem.Create(new StreamSystemConfig
         {
             UserName = User(),
@@ -64,7 +68,7 @@ public sealed class ConsumerIntegrationTests : IAsyncDisposable
     private static (string Key, int Seq) Parse(ReadOnlyMemory<byte> body)
     {
         var parts = System.Text.Encoding.UTF8.GetString(body.Span).Split(':');
-        return (parts[0], int.Parse(parts[1]));
+        return (parts[0], int.Parse(parts[1], System.Globalization.CultureInfo.InvariantCulture));
     }
 
     private static int Count<T>(List<T> list) { lock (list) return list.Count; }
@@ -440,5 +444,98 @@ public sealed class ConsumerIntegrationTests : IAsyncDisposable
             lock (observed) return observed.Any(m => m.Value == 0);
         }, TimeSpan.FromSeconds(30), "inflight back to 0");
         await c.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task Properties_survive_to_consume_side_on_plain_and_super_streams()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var stream = Unique("props-plain");
+        var super = Unique("props-super");
+        var admin = await ConnectAdminAsync();
+        await using var _ = admin;
+        await admin.CreateStream(new StreamSpec(stream));
+        await admin.CreateSuperStream(new PartitionsSuperStreamSpec(super, 2));
+        _streams.Add(stream);
+        _superStreams.Add(super);
+
+        var messageId = Guid.Parse("0f8fad5b-d9cb-469f-a165-70867728950e");
+        var correlationId = Guid.Parse("6b1f5c1a-0d9e-4b6f-9a4e-1f2d3c4b5a69");
+        var noTimeId = Guid.Parse("1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d");
+        var sentTime = new DateTime(2026, 10, 31, 9, 12, 3, 284, DateTimeKind.Utc);
+        var properties = new StreamMessageProperties
+        {
+            MessageId = messageId,
+            CorrelationId = correlationId,
+            SentTime = sentTime,
+            Headers = new Dictionary<string, object?>
+            {
+                ["tenant"] = "acme",
+                ["attempt"] = 3,
+                ["sequence"] = 9_000_000_000L,
+                ["flag"] = true,
+                ["payload"] = "{\"Id\":7}",
+            },
+        };
+
+        var pub = await BusInstance.StartAsync("props-pub");
+        try
+        {
+            await pub.Bus.PublishRawAsync(stream, Body("plain"), new PublishOptions { Properties = properties }, ct);
+            await pub.Bus.PublishRawAsync(super, Body("super"),
+                new PublishOptions { IsSuperStream = true, RoutingKey = "key-a", Properties = properties }, ct);
+            await pub.Bus.PublishRawAsync(stream, Body("no-time"),
+                new PublishOptions { Properties = new StreamMessageProperties { MessageId = noTimeId } }, ct);
+        }
+        finally { await pub.DisposeAsync(); }
+
+        var seen = new List<(string Kind, ConsumeContext Context)>();
+        var consumer = await BusInstance.StartAsync("props-con");
+        try
+        {
+            await using var plain = await consumer.Bus.ConsumeAsync(
+                stream,
+                new ConsumeOptions { Reference = "props-plain-grp", Offset = ConsumeOffset.AlwaysFirst },
+                ctx =>
+                {
+                    lock (seen) seen.Add(("plain", ctx));
+                    return Task.CompletedTask;
+                },
+                ct);
+            await using var superSub = await consumer.Bus.ConsumeAsync(
+                super,
+                new ConsumeOptions { IsSuperStream = true, Reference = "props-super-grp", Offset = ConsumeOffset.AlwaysFirst },
+                ctx =>
+                {
+                    lock (seen) seen.Add(("super", ctx));
+                    return Task.CompletedTask;
+                },
+                ct);
+            await WaitForAsync(() => Count(seen) >= 3, TimeSpan.FromSeconds(30), "plain, super, and no-time property messages");
+        }
+        finally { await consumer.DisposeAsync(); }
+
+        Assert.Contains(seen, x => x.Kind == "plain");
+        Assert.Contains(seen, x => x.Kind == "super");
+        Assert.Contains(seen, x => x.Context.MessageId == noTimeId);
+        foreach (var (_, context) in seen)
+        {
+            if (context.MessageId == noTimeId)
+            {
+                Assert.Null(context.SentTime);
+                continue;
+            }
+
+            Assert.Equal(messageId, context.MessageId);
+            Assert.Equal(correlationId, context.CorrelationId);
+            Assert.Equal(sentTime, context.SentTime);
+            Assert.Equal("acme", context.Headers.GetString("tenant"));
+            Assert.Equal(3, context.Headers.GetInt("attempt"));
+            Assert.Equal(9_000_000_000L, context.Headers.GetLong("sequence"));
+            Assert.True(context.Headers.GetBool("flag"));
+            var payload = context.Headers.GetJson<PropertyHeaderPayload>("payload");
+            Assert.NotNull(payload);
+            Assert.Equal(7, payload.Id);
+        }
     }
 }

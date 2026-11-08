@@ -22,7 +22,7 @@ public sealed class ConsumerMetricsTests : IDisposable
 
     private void Record<T>(Instrument instrument, T measurement, ReadOnlySpan<KeyValuePair<string, object?>> tags, object? state)
     {
-        lock (_measurements) _measurements.Add((instrument.Name, Convert.ToDouble(measurement), tags.ToArray()));
+        lock (_measurements) _measurements.Add((instrument.Name, Convert.ToDouble(measurement, System.Globalization.CultureInfo.InvariantCulture), tags.ToArray()));
     }
 
     public void Dispose() => _listener.Dispose();
@@ -38,13 +38,14 @@ public sealed class ConsumerMetricsTests : IDisposable
     }
 
     [Fact]
-    public void Lag_observes_delivered_minus_stored()
+    public void Backlog_observes_delivered_minus_stored()
     {
         var state = new PartitionState { LastDelivered = 9, LastStored = 4 };
-        using (StreamBusMetrics.Shared.TrackPartition("vh", "b", "lag-s", 2, "r", state))
+        using (StreamBusMetrics.Shared.TrackPartition("vh", "b", "backlog-s", 2, "r", state))
         {
             _listener.RecordObservableInstruments();
-            Assert.Contains(_measurements, m => m.Instrument == "streambus_partition_lag" && m.Value == 5);
+            Assert.Contains(_measurements, m => m.Instrument == "streambus_partition_backlog" && m.Value == 5);
+            Assert.DoesNotContain(_measurements, m => m.Instrument == "streambus_partition_lag");
         }
     }
 

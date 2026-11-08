@@ -54,13 +54,133 @@ cfg.ReceiveEndpoint("orders-super", e =>
 
 ```csharp
 await bus.PublishAsync("orders-manual", new OrderEvent("o-1", 1), ct);
-await bus.PublishSuperAsync("manual-super", new OrderEvent("o-1", 1), "o-1", ct);
+await bus.PublishSuperAsync("orders-super", new OrderEvent("o-1", 1), "o-1", ct);
 await bus.PublishRawAsync("orders", rawBytes, new PublishOptions(), ct);
 ```
 
 Explicit-stream targets keep the method-implied kind (plain vs super). An
 undeclared target surfaces `StreamBusStreamNotFoundException` — the call
 site never auto-creates. `PublishRawAsync` sends pre-serialized bytes.
+
+## Pipelines
+
+Cross-cutting publish logic is an ordered, additive filter pipeline.
+Filters run first-registered-first-in / last-out and can enrich the legal
+headers (`string`, `bool`, `int`, `long`, `null`) without touching the
+payload or routing:
+
+```csharp
+services.AddSingleton(new TenantScope()); // ambient state used by the filter
+cfg.UsePublishFilter<TenantFilter>();      // bus-wide, applied to every publish
+cfg.UsePublishFilter<CorrelationIdFilter>();
+
+public sealed class TenantFilter(TenantScope ambient) : IStreamPublishFilter
+{
+    public Task OnPublish(PublishContext context, PublishNext next)
+    {
+        context.Headers.Set("x-tenant", ambient.Tenant);
+        return next();
+    }
+}
+```
+
+Filters are singletons per bus and must be thread-safe; each publish gets
+its own DI scope through `context.Services`. `UsePublishFilter<TFilter>()`
+registers the filter type as a singleton; registering the same filter type
+yourself with a scoped or transient lifetime is rejected when the bus is
+built, because the filter is resolved once and cached. A filter must call
+`next` exactly once - zero or double continuations throw
+`StreamBusFilterContractException` (a second call is rejected before the
+duplicate send). Filter header mutations take precedence over call-level
+`PublishOptions.Properties` headers. Exceptions thrown by a filter (including
+an `OperationCanceledException` from a token you own) propagate unwrapped —
+they are not classified as transient, so do not blindly retry them.
+`PublishRawAsync` bypasses the pipeline. Complete
+samples: `examples/StreamBus.Examples.Producer/TenantFilter.cs` and
+`CorrelationIdFilter.cs`.
+
+### Typed publish filters
+
+`IStreamPublishFilter` is universal — it runs for every publish.
+`IStreamPublishFilter<T>` attaches only to the declared pipe type `T`, so
+message-specific enrichment needs no runtime-type guard in a shared
+filter:
+
+```csharp
+public sealed class OrderPublishFilter : IStreamPublishFilter<OrderEvent>
+{
+    public Task OnPublish(PublishContext<OrderEvent> context, PublishNext next)
+    {
+        context.Headers.Set("x-order-id", context.Message.OrderId);
+        return next();
+    }
+}
+
+public sealed class TenantFilter<T> : IStreamPublishFilter<T> // open generic
+{
+    public Task OnPublish(PublishContext<T> context, PublishNext next)
+    {
+        context.Headers.Set("x-message-type", typeof(T).Name);
+        return next();
+    }
+}
+
+cfg.UsePublishFilter<OrderPublishFilter>();    // attaches to OrderEvent publishes only
+cfg.UsePublishFilter(typeof(TenantFilter<>));  // closes once per message type
+```
+
+`UsePublishFilter<TFilter, TMessage>()` pins the declared pipe type at the
+call site and builds the typed adapter directly:
+
+```csharp
+cfg.UsePublishFilter<OrderPublishFilter, OrderEvent>();
+```
+
+Use it to construct the typed adapter at the call site and avoid closing a
+generic type at runtime. The single-type-parameter overload discovers the
+filter's typed interfaces at configuration time and closes the adapter at
+runtime, so it is annotated `[RequiresUnreferencedCode]` /
+`[RequiresDynamicCode]`. Open-generic registration through a `Type`
+(`typeof(TenantFilter<>)`) also closes at runtime. Universal filters registered
+as an instance or a factory need no runtime closing either.
+
+Avoiding runtime closure removes one trim/AOT hazard, but StreamBus does not
+support trimming or NativeAOT end to end today: the default
+`SystemTextJsonStreamSerializer` is reflection-based and type-based
+configuration uses runtime DI construction. Treat the annotations as a map of
+the dynamic paths, not as a trimming-support guarantee.
+
+A filter that implements several typed interfaces can be pinned once per
+message type; each registration runs only for its own type.
+
+A typed context adds `context.Message` as `T` to the shared universal context,
+which exposes the same payload as `context.Payload`. Every other member is the
+same object that universal filters receive. `next` is parameterless because
+there is no separate wrapper context to pass forward.
+Filters attach by declared type; there is no runtime-type dispatch.
+A concrete typed filter whose `T` does not match the pipe type is skipped
+silently. An open generic that cannot close for the pipe type (constraint
+violation or a missing typed interface) is a configuration error when that
+type's pipeline is built — at bus creation for registered publish types, at
+the first explicit publish otherwise.
+Explicit-stream publishes (`PublishAsync(stream, message, ct)`) use the
+declared `T` the same way. `PublishRawAsync` still bypasses the pipeline.
+Complete sample: `examples/StreamBus.Examples.Producer/OrderPublishFilter.cs`.
+
+### Identity
+
+`PublishContext.MessageId` and `PublishContext.SentTime` are always
+populated before the pipeline runs: `MessageId` is generated when
+`PublishOptions.Properties.MessageId` is absent, and `SentTime` defaults to
+`DateTime.UtcNow` truncated to milliseconds. Supplied values are
+preserved. Header values and restrictions on
+`PublishOptions.Properties.Headers` are documented on the
+`StreamMessageProperties` API reference. `CorrelationId` is never generated —
+it stays null unless the
+caller supplies `PublishOptions.Properties.CorrelationId`. The four
+framework keys (`streambus.message-id`, `streambus.correlation-id`,
+`streambus.sent-time`, `streambus.routing-key`) are rejected in
+`PublishOptions.Properties.Headers` and in `context.Headers.Set`.
 
 ## Serializer
 
@@ -75,7 +195,7 @@ services.AddStreamBus((context, cfg) =>
 {
     cfg.Host("localhost", "/", h => h.Credentials("app", "s3cret"));
     cfg.PublishSuper<OrderEvent>("orders-super", s => s.Partitions(3));
-    cfg.Publish<OrderEvent>("orders-manual");
+    cfg.Publish<AuditEvent>("orders-manual"); // declares the explicit target
 });
 
 public sealed class CheckoutWorker(IStreamBus bus) : BackgroundService
@@ -87,7 +207,8 @@ public sealed class CheckoutWorker(IStreamBus bus) : BackgroundService
         // Routed publish: the key selects the partition.
         await bus.PublishSuperAsync(new OrderEvent("o-1", 1), "o-1", ct);
 
-        // Explicit-stream override to a second registered stream.
+        // Explicit-stream override to a second registered stream; the target
+        // does not need an OrderEvent publish registration.
         await bus.PublishAsync("orders-manual", new OrderEvent("o-2", 1), ct);
 
         // Raw bytes escape hatch (pre-serialized payload).
