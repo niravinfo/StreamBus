@@ -48,27 +48,41 @@ internal sealed class StreamManagementApi : IDisposable
             "Basic",
             Convert.ToBase64String(Encoding.UTF8.GetBytes($"{handle.Username}:{handle.Password}")));
 
-        while (true)
+        // The management plugin may still be warming up after the broker starts;
+        // poll until it answers, but fail fast as a fixture error instead of
+        // hanging until the CI job timeout if the port never comes up.
+        using var pollCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        pollCts.CancelAfter(TimeSpan.FromSeconds(60));
+        try
         {
-            try
+            while (true)
             {
-                using var response = await http.GetAsync("api/whoami", ct);
-                if (response.IsSuccessStatusCode)
-                    return new StreamManagementApi(http, handle.Username);
-                if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+                try
                 {
-                    http.Dispose();
-                    throw new InvalidOperationException(
-                        $"RabbitMQ management API rejected user '{handle.Username}' with HTTP {(int)response.StatusCode}.");
+                    using var response = await http.GetAsync("api/whoami", pollCts.Token);
+                    if (response.IsSuccessStatusCode)
+                        return new StreamManagementApi(http, handle.Username);
+                    if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+                    {
+                        http.Dispose();
+                        throw new InvalidOperationException(
+                            $"RabbitMQ management API rejected user '{handle.Username}' with HTTP {(int)response.StatusCode}.");
+                    }
                 }
-            }
-            catch (Exception ex) when ((ex is HttpRequestException or TaskCanceledException)
-                && !ct.IsCancellationRequested)
-            {
-                // The management API may still be warming up; keep polling.
-            }
+                catch (Exception ex) when ((ex is HttpRequestException or TaskCanceledException)
+                    && !pollCts.Token.IsCancellationRequested)
+                {
+                    // The management API may still be warming up; keep polling.
+                }
 
-            await Task.Delay(500, ct);
+                await Task.Delay(500, pollCts.Token);
+            }
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            http.Dispose();
+            throw new InvalidOperationException(
+                $"RabbitMQ management API did not answer within 60s on {handle.Host}:{handle.ManagementPort}.", new TimeoutException());
         }
     }
 

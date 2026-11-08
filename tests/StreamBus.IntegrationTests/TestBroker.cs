@@ -22,18 +22,42 @@ internal static class TestBroker
 {
     private static Task<BrokerHandle>? _start;
 
+    /// <summary>
+    /// Starts (or joins the in-flight start of) the shared broker and returns its
+    /// connection details.
+    /// </summary>
+    /// <remarks>
+    /// The <paramref name="ct"/> token only cancels awaiting an already in-flight
+    /// start; the initial start itself is not cancellable. A failed start is not
+    /// cached, so the next caller retries from scratch.
+    /// </remarks>
     public static Task<BrokerHandle> StartAsync(CancellationToken ct = default)
     {
         var task = _start;
         if (task is not null)
         {
-            return task;
+            return task.WaitAsync(ct);
         }
 
         lock (typeof(TestBroker))
         {
             _start ??= StartCoreAsync();
-            return _start;
+            var start = _start;
+            // Clear the cached task when it faults so the next caller retries;
+            // callers already awaiting see the same failure, just not forever.
+            _ = start.ContinueWith(OnStartFaulted, TaskScheduler.Default);
+            return start.WaitAsync(ct);
+        }
+    }
+
+    private static void OnStartFaulted(Task<BrokerHandle> task)
+    {
+        if (!task.IsFaulted)
+            return;
+        lock (typeof(TestBroker))
+        {
+            if (ReferenceEquals(_start, task))
+                _start = null;
         }
     }
 
@@ -132,7 +156,18 @@ internal static class TestBroker
             }
             catch (Exception)
             {
-                await Task.Delay(500, timeout.Token);
+                // Delay outside the catch so the timeout token's cancellation
+                // escapes the generic handler and surfaces as the TimeoutException
+                // below instead of bubbling up as OperationCanceledException.
+                try
+                {
+                    await Task.Delay(500, timeout.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    throw new TimeoutException(
+                        $"RabbitMQ stream listener did not accept connections within 60s on {handle.Host}:{handle.StreamPort}.");
+                }
             }
         }
     }
