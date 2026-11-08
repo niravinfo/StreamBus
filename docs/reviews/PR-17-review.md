@@ -2449,6 +2449,19 @@ if (_hosting is { BlockStartupUntilReady: true, StartupTimeout: { } startupTimeo
     cts.CancelAfter(startupTimeout);
 ```
 
+- **Verification & resolution (2026-11-08):** Confirmed genuine. At verification time
+  (`Hosting.cs:526-546`, line numbers shifted from the original 470-474) the list had at
+  most one element and was reduced with `.Max()` twice — once for `CancelAfter` and once
+  in the per-vhost OCE message (`timeouts.Count > 0 ? timeouts.Max() : null`). The list
+  also sat on a path guarded by `if (!_hosting.BlockStartupUntilReady) return;` two lines
+  above, so the redundant `BlockStartupUntilReady: true` arm of the pattern was dead.
+  The fix follows the reviewer's shape with one extension: the second `.Max()` use
+  (the `Timed out` message) is preserved, so both sites now read from a nullable
+  `startupTimeout` local; the `BlockStartupUntilReady: true` arm was dropped and only
+  `StartupTimeout: { } value` is matched. `dotnet build` clean; UnitTests 474/474. No
+  behavior change (same cancel-after value same message), so no new tests or CHANGELOG
+  entry.
+
 ---
 
 **[INF-17] `LogSendHeaderCollisions` allocates the envelope header dictionary before the log-enabled check**

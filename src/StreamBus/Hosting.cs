@@ -523,11 +523,12 @@ internal sealed class StreamBusHostedService : IHostedService
             }
         }
         if (!_hosting.BlockStartupUntilReady) return;
-        var timeouts = new List<TimeSpan>();
-        if (_hosting is { BlockStartupUntilReady: true, StartupTimeout: not null })
-            timeouts.Add(_hosting.StartupTimeout!.Value);
+        var startupTimeout = _hosting is { BlockStartupUntilReady: true, StartupTimeout: { } value }
+            ? value
+            : (TimeSpan?)null;
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        if (timeouts.Count > 0) cts.CancelAfter(timeouts.Max());
+        if (startupTimeout is { } budget)
+            cts.CancelAfter(budget);
         foreach (var (vhost, timeout, supervisor) in supervisors)
         {
             try
@@ -543,7 +544,7 @@ internal sealed class StreamBusHostedService : IHostedService
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
-                var effective = timeout ?? (timeouts.Count > 0 ? timeouts.Max() : (TimeSpan?)null);
+                var effective = timeout ?? startupTimeout;
                 throw new StreamBusTimeoutException($"Timed out waiting for StreamBus vhost '{vhost}' to become ready within {effective}.");
             }
         }
