@@ -563,7 +563,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
             //    work — and worse, it would hand the handler of attempt N+1 an
             //    instance mutated by a failed attempt N).
             //  - Filters and the handler decide on the materialized message,
-            //    so it must exist before they run (FLT-9).
+            //    so it must exist before they run.
             //  - A deserialization failure is deterministic: the same bytes
             //    cannot succeed on a later attempt, so it never burns the retry
             //    budget — it hands off immediately (attempts = 1) or, with no
@@ -700,7 +700,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
     // (so their exceptions use the existing retry/exhaustion machinery), while
     // the per-message DI scope is created once in DispatchAsync and shared with
     // the typed consumer. The typed context is materialized by DispatchAsync
-    // before this method runs (see the FLT-9 contract comment there).
+    // before this method runs (see the contract comment there).
     private async Task InvokeHandlerPipelineAsync(ConsumeContext consumeContext)
     {
         if (_pipeline.Count == 0)

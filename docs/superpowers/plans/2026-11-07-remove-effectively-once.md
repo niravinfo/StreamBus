@@ -17,7 +17,6 @@
 - `streambus.replay` dead-letter machinery stays intact end to end: `IStreamPlainProducerHandle.PublishReplayAsync`, replay naming, and the internal `ConfirmationTracker.PublishWithIdAsync` are **in scope to keep**.
 - CHANGELOG records every removed public type/member under `### Breaking` in release 0.2.0.
 - Historical docs (`docs/superpowers/plans/*`, `docs/adr/*`, `docs/2026-10-*` acceptance/design records) are history and are NOT rewritten; user-facing guides (`docs/guide/*`, `docs/llms.txt`, README if it mentions EO) are updated.
-- Review items FLT-3, FLT-5, and the EO parts of CON-13 become **moot** and get a note in `docs/reviews/PR-17-review.md` headers when this lands (single line each, marked REFUTED-BY-REMOVAL with the reasoning "feature removed by product decision").
 
 ## Review Focus
 
@@ -115,7 +114,7 @@ TDD: this task is deletion-driven; the pinning tests are Tasks 1 and the moved d
 - Modify: `src\StreamBus\Exceptions.cs` doc comment for `StreamBusFilterContractException` — now publish-side only.
 - Modify: `src\StreamBus\Bus.cs` interface XML docs — remove the EO/publishResult remarks (~26–48).
 - Modify tests: `PipelineSemanticsTests.cs` (~128) and `TypedConsumeFilterTests.cs` (~721) — delete `requiresContinuation: true` usages and the EO-contract tests built on them (e.g. zero-`next`-throws tests); ensure a plain-consume double-`next`-throws and zero-`next`-skips test remains green (they exist elsewhere in the file).
-- Note: `StreamBusFilterContractException` stays public (used by `PublishPipeline`, per FLT-2); only the consume-side throws collapse to `StreamBusTransientException`.
+- Note: `StreamBusFilterContractException` stays public (used by `PublishPipeline`); only the consume-side throws collapse to `StreamBusTransientException`.
 
 **Interfaces:**
 - Consumes: `ConsumePipeline(filters)` single-arg ctor from Task 3.
@@ -148,7 +147,6 @@ TDD: this task is deletion-driven; the pinning tests are Tasks 1 and the moved d
 - Modify: `docs\llms.txt` — remove EO statements; state plainly: "StreamBus is at-least-once; deduplication is the application's responsibility."
 - Modify: `CHANGELOG.md` 0.2.0 `### Breaking` — one entry listing every removed public symbol: `ConsumeEffectivelyOnceAsync`, `EffectivelyOnceOptions`, `PublishResultAsync`, `PublishResultOptions`, `IStreamSuperProducerHandle.PublishWithIdAsync`/`PublishResultAsync`, `IStreamPlainProducerHandle.PublishResultAsync`, `StreamBusFilterContractException` consume-side use. One-sentence rationale: "Effectively-once semantics (publishing-id dedup read-process-write) are removed; at-least-once + user-side idempotency is the model."
 - Modify: `README.md` only if it names EO.
-- Modify: `docs\reviews\PR-17-review.md` — add a header note (like the INF-4 precedent): "FLT-3, FLT-5, and the EO portions of CON-13 are MOOT (2026-11-07): the effectively-once pipeline was removed by product decision (see docs/superpowers/plans/2026-11-07-remove-effectively-once.md); the code the findings describe no longer exists."
 
 **Interfaces:** none.
 

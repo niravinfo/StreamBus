@@ -9,7 +9,7 @@ namespace StreamBus.UnitTests;
 /// the concrete <see cref="RawConsumer"/> subclass (StoreOffset/Close). A client
 /// version that returns a different concrete type must surface an actionable
 /// <see cref="StreamBusConfigurationException"/>, not an opaque InvalidCastException
-/// from inside the attach loop (review finding INF-13).
+/// from inside the attach loop.
 /// </summary>
 public sealed class RawConsumerCastTests
 {

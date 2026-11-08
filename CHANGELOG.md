@@ -298,7 +298,7 @@
 - Replay and requeue identity: error-envelope replay and queue requeue carry
   the original `MessageId`, `CorrelationId`, `SentTime`, the original user
   headers, and the original `content-type` forward instead of minting fresh
-  values or dropping them at parse time (PUB-4); `SentTime` is normalized to
+  values or dropping them at parse time; `SentTime` is normalized to
   UTC on read.
 - Effectively-once retries reuse one message identity: a logical result
   publish keeps the same `MessageId` and `SentTime` across every retry attempt.
@@ -311,21 +311,21 @@
   startup cost.
 - Non-effectively-once dispatch now owns the inflight counter and
   retry-blocked flag in a single `try/finally` instead of five hand-placed
-  decrement sites (CON-3). The `streambus_partition_inflight` gauge stays 1
+  decrement sites. The `streambus_partition_inflight` gauge stays 1
   while a retry-exhaustion hand-off is still in progress and returns to 0 on
   every exit path, including a shutdown racing the hand-off.
-- Consumer health rows are attributable when several buses share a vhost
-  (CON-11). Registration names now include the bus type
+- Consumer health rows are attributable when several buses share a vhost.
+  Registration names now include the bus type
   (`endpoint:{bus}:{stream}`, `raw:{bus}:{stream}`,
   `effectively-once:{bus}:{sourceStream}`) instead of only the stream name, so two buses consuming the same stream no
   longer overwrite one health row and the check can no longer report
   `Attached` for a bus that is actually retrying.
-- Queued dispatches observe shutdown (CON-13): a delivery that acquires the
+- Queued dispatches observe shutdown: a delivery that acquires the
   serialized dispatch gate after `DisposeAsync` began now exits before touching
   the attach or invoking the handler. The gate does not cancel waiters and the
   current-generation attach is not drained at dispose time, so the disposed
   flag is checked immediately after the gate is acquired.
-- Error hand-off no longer retries fatal failures forever (INF-2). A
+- Error hand-off no longer retries fatal failures forever. A
   `StreamBusFatalException`, a configuration error, or a fatal transport error
   (protocol/SSL/auth) now surfaces immediately so the dispatch safety net marks
   the partition failed and recycles it, instead of spinning at the backoff delay
@@ -335,21 +335,21 @@
   fatal transport errors as `StreamBusPublishTransientException`, matching the
   normal publish path.
 - The error-queue transport's cached publish channel and its connection are now
-  one atomic pair swapped with a single write (INF-6), and `DisposeAsync` /
+  one atomic pair swapped with a single write, and `DisposeAsync` /
   connection invalidation take the publish gate before resetting the pair, so
   disposal can no longer reset or dispose a channel while a publish holds the
   gate; the mismatched-pair torn read the two-field layout allowed is no longer
   representable.
 - Consume and publish filters that call `next()` without awaiting it are
   rejected with `StreamBusFilterContractException` instead of being silently
-  accepted (CON-10). A fire-and-forget continuation previously escaped the
+  accepted. A fire-and-forget continuation previously escaped the
   pipeline: the offset could advance (consume) or the send could complete
   reporting (publish) while the detached continuation was still running, with
   its faults unobserved. The `ConsumeNext`/`PublishNext` contracts now state
   that the returned task must be awaited before returning (zero-call consume
   filtering is unchanged).
 - A consumer whose pipeline has consume filters but no `IServiceScopeFactory`
-  throws `StreamBusConfigurationException` at construction (CON-12), matching
+  throws `StreamBusConfigurationException` at construction, matching
   the publish path. Previously every filter silently resolved all services to
   `null` on such a consumer, so a missing DI setup looked like missing services.
   Filterless, untyped endpoints are unaffected: their `ConsumeContext.Services`

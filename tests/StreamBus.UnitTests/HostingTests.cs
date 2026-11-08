@@ -382,7 +382,7 @@ public sealed class HostingTests
         }
     }
 
-    // INF-7 refutation pin: "BlockUntilConsumersAttached treats rows.Count == 0 as
+    // Refutation pin: "BlockUntilConsumersAttached treats rows.Count == 0 as
     // success — startup can pass with zero consumers" is unreachable. The attach-wait
     // loop only runs when BlockStartupUntilReady is true (StartAsync returns early
     // otherwise), and the same StartAsync first awaits Task.WhenAll over the very

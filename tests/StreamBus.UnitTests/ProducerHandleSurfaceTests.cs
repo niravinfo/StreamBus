@@ -2,7 +2,7 @@ using System.Reflection;
 
 namespace StreamBus.UnitTests;
 
-// PUB-5: IStreamSuperProducerHandle historically inherited
+// IStreamSuperProducerHandle historically inherited
 // IStreamPlainProducerHandle, bringing SendEnvelopeAsync onto the super
 // surface. That method never stamps a routing key, so every call crashed
 // with KeyNotFoundException from the client's Routing callback mid-send.

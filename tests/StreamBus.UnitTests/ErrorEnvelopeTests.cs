@@ -104,7 +104,7 @@ public sealed class ErrorEnvelopeTests
     [Fact]
     public void Replay_options_preserve_user_headers_and_content_type()
     {
-        // PUB-4: a requeued/replayed message must keep the headers and content
+        // A requeued/replayed message must keep the headers and content
         // type it carried when it failed, not just its identity fields.
         var sample = Sample() with
         {

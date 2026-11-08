@@ -1,6 +1,6 @@
 namespace StreamBus.UnitTests;
 
-// CON-2: OffsetStorer is mutated on the dispatch thread and read by the timer
+// OffsetStorer is mutated on the dispatch thread and read by the timer
 // thread. The timer must observe a consistent snapshot (single success offset and
 // its stored-ness) rather than three unsynchronized field reads that can tear or
 // interleave with a concurrent dispatch-path mutation.

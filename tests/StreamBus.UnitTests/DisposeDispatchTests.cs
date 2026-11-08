@@ -3,7 +3,7 @@ using RabbitMQ.Stream.Client;
 
 namespace StreamBus.UnitTests;
 
-// CON-13: _dispatchGate serializes dispatches but does not cancel queued waiters.
+// _dispatchGate serializes dispatches but does not cancel queued waiters.
 // A dispatch that was queued before DisposeAsync started can acquire the gate
 // after teardown began (the attach is not necessarily drained — it belongs to
 // the current generation), so it must observe the disposed state and exit

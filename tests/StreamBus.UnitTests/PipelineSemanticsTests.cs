@@ -206,7 +206,7 @@ public sealed class PipelineSemanticsTests
         // configuration-time duplicate guards cannot see them; the
         // resolved-identity check in BuildPipeline must reject the pair when
         // the consumer attaches (the consume pipeline is built at attach, not
-        // at bus construction — see the FLT-4 resolution).
+        // at bus construction).
         await using var harness = await Harness.CreateAsync();
         harness.Filters.AddFilter(typeof(DefaultBus), ConsumeFilterRegistration.ForFactory(_ => new ConsumePipelineConfigFilter()));
         harness.Filters.AddFilter(typeof(DefaultBus), ConsumeFilterRegistration.ForFactory(_ => new ConsumePipelineConfigFilter()));

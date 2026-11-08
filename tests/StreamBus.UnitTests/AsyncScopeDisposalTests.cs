@@ -3,7 +3,7 @@ using RabbitMQ.Stream.Client;
 
 namespace StreamBus.UnitTests;
 
-// CON-14: per-delivery scopes (dispatch path and the OnExhausted handoff)
+// Per-delivery scopes (dispatch path and the OnExhausted handoff)
 // must dispose scoped services through IAsyncDisposable (CreateAsyncScope),
 // never synchronously — a scoped DbContext-style service would otherwise be
 // sync-disposed on the dispatch thread.

@@ -2,7 +2,7 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace StreamBus.UnitTests;
 
-// CON-12: consume filters require a service scope to run in (the publish path
+// Consume filters require a service scope to run in (the publish path
 // already rejects filters without an IServiceScopeFactory, Bus.cs). A consumer
 // with filters and no scope factory previously handed every filter a provider
 // that silently resolved every service to null — so a missing DI setup looked

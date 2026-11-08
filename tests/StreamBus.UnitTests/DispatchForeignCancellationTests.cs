@@ -2,7 +2,7 @@ using RabbitMQ.Stream.Client;
 
 namespace StreamBus.UnitTests;
 
-// CON-1: a handler that throws OperationCanceledException from its own token (per-delivery
+// A handler that throws OperationCanceledException from its own token (per-delivery
 // CTS, DB timeout wrapped as OCE) must be treated as a real handler failure with a visible
 // attach recycle — not retried inside the dispatch gate forever.
 public sealed class DispatchForeignCancellationTests
@@ -82,7 +82,7 @@ public sealed class DispatchForeignCancellationTests
             Reference = "grp",
             SingleActiveConsumer = false,
             Offset = ConsumeOffset.AlwaysFirst,
-            // Unbounded retry (the dangerous default CON-1 calls out): with the bug, the
+            // Unbounded retry (the dangerous default): with the bug, the
             // foreign-token OCE is retried forever and the attach is never recycled.
             Retry = new RetryPolicy { BaseDelay = TimeSpan.FromMilliseconds(10) },
         };

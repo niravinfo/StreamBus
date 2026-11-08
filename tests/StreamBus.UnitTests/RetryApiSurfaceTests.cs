@@ -3,7 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
 namespace StreamBus.UnitTests;
 
 /// <summary>
-/// Pins the FLT-6 surface unification: retry is configured through one verb,
+/// Pins the retry-surface unification: retry is configured through one verb,
 /// <c>UseRetry</c>, with a fluent overload and a raw-policy overload, at both
 /// bus and endpoint scope; the duplicated <c>UseRetry</c> verb is gone.
 /// </summary>
