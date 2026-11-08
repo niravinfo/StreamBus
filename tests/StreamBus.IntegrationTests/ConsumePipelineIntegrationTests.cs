@@ -94,25 +94,30 @@ public sealed class ConsumePipelineIntegrationTests : IAsyncDisposable
         finally { await admin.DisposeAsync(); }
     }
 
-    private static async Task WaitForAsync(Func<bool> done, TimeSpan timeout, string what)
+    private static async Task WaitForAsync(Func<bool> done, TimeSpan timeout, string what, Func<string>? describeLast = null)
     {
         var deadline = DateTime.UtcNow + timeout;
         while (!done())
         {
-            if (DateTime.UtcNow >= deadline) Assert.Fail($"Timed out waiting for {what}.");
+            if (DateTime.UtcNow >= deadline) Assert.Fail(TimeoutMessage(what, describeLast));
             await Task.Delay(100, TestContext.Current.CancellationToken);
         }
     }
 
-    private static async Task WaitForAsync(Func<Task<bool>> done, TimeSpan timeout, string what)
+    private static async Task WaitForAsync(Func<Task<bool>> done, TimeSpan timeout, string what, Func<string>? describeLast = null)
     {
         var deadline = DateTime.UtcNow + timeout;
         while (!await done())
         {
-            if (DateTime.UtcNow >= deadline) Assert.Fail($"Timed out waiting for {what}.");
+            if (DateTime.UtcNow >= deadline) Assert.Fail(TimeoutMessage(what, describeLast));
             await Task.Delay(100, TestContext.Current.CancellationToken);
         }
     }
+
+    private static string TimeoutMessage(string what, Func<string>? describeLast)
+        => describeLast is null
+            ? $"Timed out waiting for {what}."
+            : $"Timed out waiting for {what}. Last observed: {describeLast()}.";
 
     private sealed class BusInstance : IAsyncDisposable
     {
@@ -283,10 +288,12 @@ public sealed class ConsumePipelineIntegrationTests : IAsyncDisposable
             for (var i = 0; i < 3; i++)
                 await bus.Bus.PublishRawAsync(stream, Body($"filtered-{i}"), new PublishOptions(), ct);
 
+            ulong? lastOffset = null;
             await WaitForAsync(
-                async () => await bus.Bus.GetConsumerOffsetAsync(stream, "filter-grp", 0, ct) == 2,
+                async () => (lastOffset = await bus.Bus.GetConsumerOffsetAsync(stream, "filter-grp", 0, ct)) == 2,
                 TimeSpan.FromSeconds(30),
-                "all three filtered offsets to be stored");
+                "all three filtered offsets to be stored",
+                () => lastOffset is null ? "no stored offset" : $"stored offset {lastOffset}");
         }
         finally
         {
