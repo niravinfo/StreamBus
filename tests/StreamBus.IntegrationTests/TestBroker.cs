@@ -10,11 +10,13 @@ namespace StreamBus.IntegrationTests;
 /// out its connection details.
 /// </summary>
 /// <remarks>
-/// The stream plugin cannot be enabled via <c>WithCommand</c>: that replaces the
+/// The stream plugins cannot be enabled via <c>WithCommand</c>: that replaces the
 /// image's <c>rabbitmq-server</c> CMD and the container exits. Instead the server
-/// starts, then <c>rabbitmq-plugins enable rabbitmq_stream</c> runs via container
-/// exec and a readiness poll gates the returned handle. Cleanup is left to
-/// <c>WithCleanUp(true)</c> (Ryuk reaps the container when the test process exits).
+/// starts, then <c>rabbitmq-plugins enable rabbitmq_stream rabbitmq_stream_management</c>
+/// runs via container exec and a readiness poll gates the returned handle. The
+/// management plugin exposes the <c>api/stream/*</c> endpoints the chaos tests use.
+/// Cleanup is left to <c>WithCleanUp(true)</c> (Ryuk reaps the container when the
+/// test process exits).
 /// </remarks>
 internal static class TestBroker
 {
@@ -75,11 +77,15 @@ internal static class TestBroker
 
         await container.StartAsync();
 
+        // rabbitmq_stream_management is a separate plugin from rabbitmq_stream:
+        // without it the api/stream/* management endpoints answer HTTP 400/404,
+        // which the chaos tests use to find and kill stream connections.
         await container.ExecAsync(new[]
         {
             "rabbitmq-plugins",
             "enable",
             "rabbitmq_stream",
+            "rabbitmq_stream_management",
         });
 
         var handle = new BrokerHandle(
