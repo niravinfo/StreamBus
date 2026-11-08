@@ -55,6 +55,12 @@ internal sealed class StreamManagementApi : IDisposable
                 using var response = await http.GetAsync("api/whoami", ct);
                 if (response.IsSuccessStatusCode)
                     return new StreamManagementApi(http, handle.Username);
+                if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+                {
+                    http.Dispose();
+                    throw new InvalidOperationException(
+                        $"RabbitMQ management API rejected user '{handle.Username}' with HTTP {(int)response.StatusCode}.");
+                }
             }
             catch (Exception ex) when ((ex is HttpRequestException or TaskCanceledException)
                 && !ct.IsCancellationRequested)
