@@ -38,6 +38,13 @@
   available on the super handle (declared directly) alongside
   `PublishWithIdAsync` and `PublishResultAsync`.
 
+- `StreamBusCredentialValidator` is removed. It was a public wrapper over a
+  partial validation entry point with no callers, contradicting
+  `StreamBusOptions.Validate`'s documented role as the single validation
+  boundary (configurators, the supervisor, and the connector all use it).
+  It shipped only in the pre-adoption beta; nothing in the library depends
+  on it. Configure `StreamBusOptions` and let the bus validate.
+
 - Consume filters now receive one shared `ConsumeContext` per delivery
   (`StreamConsumeFilterContext*` → `ConsumeContext`, typed filters and the
   consumer use `ConsumeContext<T>`); publish filters receive one shared
