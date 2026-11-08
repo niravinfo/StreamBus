@@ -76,6 +76,14 @@ public sealed class ConsumePipelineIntegrationTests : IAsyncDisposable
 
     private static string Unique(string prefix) => $"{prefix}-{Guid.NewGuid():N}";
 
+    // GitHub Action runners are 2-vCPU and the broker runs under Testcontainers,
+    // so consume/store progress can legitimately take far longer there than on a
+    // dev machine. Scale the in-test wait budget up when running under CI.
+    private static readonly TimeSpan WaitTimeout =
+        Environment.GetEnvironmentVariable("GITHUB_ACTIONS") == "true"
+            ? TimeSpan.FromSeconds(120)
+            : TimeSpan.FromSeconds(30);
+
     private static ReadOnlyMemory<byte> Body(string s) => System.Text.Encoding.UTF8.GetBytes(s);
 
     private static async Task CreateStreamAsync(StreamSystem admin, string stream)
@@ -94,25 +102,30 @@ public sealed class ConsumePipelineIntegrationTests : IAsyncDisposable
         finally { await admin.DisposeAsync(); }
     }
 
-    private static async Task WaitForAsync(Func<bool> done, TimeSpan timeout, string what)
+    private static async Task WaitForAsync(Func<bool> done, TimeSpan timeout, string what, Func<string>? describeLast = null)
     {
         var deadline = DateTime.UtcNow + timeout;
         while (!done())
         {
-            if (DateTime.UtcNow >= deadline) Assert.Fail($"Timed out waiting for {what}.");
+            if (DateTime.UtcNow >= deadline) Assert.Fail(TimeoutMessage(what, describeLast));
             await Task.Delay(100, TestContext.Current.CancellationToken);
         }
     }
 
-    private static async Task WaitForAsync(Func<Task<bool>> done, TimeSpan timeout, string what)
+    private static async Task WaitForAsync(Func<Task<bool>> done, TimeSpan timeout, string what, Func<string>? describeLast = null)
     {
         var deadline = DateTime.UtcNow + timeout;
         while (!await done())
         {
-            if (DateTime.UtcNow >= deadline) Assert.Fail($"Timed out waiting for {what}.");
+            if (DateTime.UtcNow >= deadline) Assert.Fail(TimeoutMessage(what, describeLast));
             await Task.Delay(100, TestContext.Current.CancellationToken);
         }
     }
+
+    private static string TimeoutMessage(string what, Func<string>? describeLast)
+        => describeLast is null
+            ? $"Timed out waiting for {what}."
+            : $"Timed out waiting for {what}. Last observed: {describeLast()}.";
 
     private sealed class BusInstance : IAsyncDisposable
     {
@@ -283,10 +296,12 @@ public sealed class ConsumePipelineIntegrationTests : IAsyncDisposable
             for (var i = 0; i < 3; i++)
                 await bus.Bus.PublishRawAsync(stream, Body($"filtered-{i}"), new PublishOptions(), ct);
 
+            ulong? lastOffset = null;
             await WaitForAsync(
-                async () => await bus.Bus.GetConsumerOffsetAsync(stream, "filter-grp", 0, ct) == 2,
-                TimeSpan.FromSeconds(30),
-                "all three filtered offsets to be stored");
+                async () => (lastOffset = await bus.Bus.GetConsumerOffsetAsync(stream, "filter-grp", 0, ct)) == 2,
+                WaitTimeout,
+                "all three filtered offsets to be stored",
+                () => lastOffset is null ? "no stored offset" : $"stored offset {lastOffset}");
         }
         finally
         {
@@ -309,7 +324,7 @@ public sealed class ConsumePipelineIntegrationTests : IAsyncDisposable
             lock (delivered) Assert.Empty(delivered);
 
             await bus.Bus.PublishRawAsync(stream, Body("after-filter"), new PublishOptions(), ct);
-            await WaitForAsync(() => { lock (delivered) return delivered.Count == 1; }, TimeSpan.FromSeconds(30), "the post-resume message");
+            await WaitForAsync(() => { lock (delivered) return delivered.Count == 1; }, WaitTimeout, "the post-resume message");
             lock (delivered) Assert.Equal(new[] { "after-filter" }, delivered);
         }
         finally
