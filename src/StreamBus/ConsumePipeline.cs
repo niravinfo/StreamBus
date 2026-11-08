@@ -275,15 +275,19 @@ internal sealed class ConsumePipeline
 
         var filter = _filters[index];
         var filterName = FilterIdentity.TypeOf(filter).Name;
+
+        // next must be awaited exactly once within the filter's returned task
+        // (documented on ConsumeNext); the pipeline enforces that below, so the
+        // call count never needs cross-thread visibility.
         var nextCalls = 0;
         Task? nextTask = null;
         Task Next()
         {
-            var call = Interlocked.Increment(ref nextCalls);
-            if (call > 1)
+            nextCalls++;
+            if (nextCalls > 1)
             {
                 throw new StreamBusTransientException(
-                    $"Consume filter '{filterName}' invoked next {call} times; a message must be handled at most once.");
+                    $"Consume filter '{filterName}' invoked next {nextCalls} times; a message must be handled at most once.");
             }
 
             nextTask = InvokeAsync(index + 1, context, terminal);
@@ -292,14 +296,14 @@ internal sealed class ConsumePipeline
 
         await filter.OnConsume(context, Next).ConfigureAwait(false);
 
-        var calls = Volatile.Read(ref nextCalls);
+        var calls = nextCalls;
         if (calls == 0)
         {
             // A consume filter may skip a delivery by returning without calling
             // next: the handler is not invoked and the offset advances.
             return;
         }
-        if (Volatile.Read(ref nextTask) is not { IsCompleted: true })
+        if (nextTask is not { IsCompleted: true })
         {
             // The filter called next but returned before awaiting it: the
             // continuation (including the handler) is still running while the

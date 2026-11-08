@@ -161,15 +161,19 @@ internal sealed class PublishPipeline
         var filter = _filters[index];
         var filterType = FilterIdentity.TypeOf(filter);
         var filterName = filterType.FullName ?? filterType.Name;
+
+        // next must be awaited exactly once within the filter's returned task
+        // (documented on PublishNext); the pipeline enforces that below, so the
+        // call count never needs cross-thread visibility.
         var nextCalls = 0;
         Task? nextTask = null;
         Task Next()
         {
-            var call = Interlocked.Increment(ref nextCalls);
-            if (call > 1)
+            nextCalls++;
+            if (nextCalls > 1)
             {
                 throw new StreamBusFilterContractException(
-                    $"Publish filter {filterName} invoked next {call} times; exactly one continuation is allowed.");
+                    $"Publish filter {filterName} invoked next {nextCalls} times; exactly one continuation is allowed.");
             }
 
             // Stream, routing key, payload, identity and services are resolved
@@ -180,7 +184,7 @@ internal sealed class PublishPipeline
 
         await filter.OnPublish(context, Next).ConfigureAwait(false);
 
-        var calls = Volatile.Read(ref nextCalls);
+        var calls = nextCalls;
         if (calls == 0)
         {
             throw new StreamBusFilterContractException(
