@@ -9,19 +9,20 @@ public sealed class ErrorQueueIntegrationTests : IAsyncDisposable
 {
     public ErrorQueueIntegrationTests() => IntegrationLane.RequireBroker();
 
-    private static string User() => Environment.GetEnvironmentVariable("STREAMBUS_USER") ?? "app";
-    private static string Password() => Environment.GetEnvironmentVariable("STREAMBUS_PASSWORD") ?? "password";
     private readonly List<string> _streams = new();
     private readonly List<string> _errorQueues = new();
 
     private static async Task<StreamSystem> ConnectAdminAsync()
-        => await StreamSystem.Create(new StreamSystemConfig
+    {
+        var handle = await TestBroker.StartAsync(TestContext.Current.CancellationToken);
+        return await StreamSystem.Create(new StreamSystemConfig
         {
-            UserName = User(),
-            Password = Password(),
+            UserName = handle.Username,
+            Password = handle.Password,
             VirtualHost = "/",
-            Endpoints = new List<System.Net.EndPoint> { new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, 5552) },
+            Endpoints = new List<System.Net.EndPoint> { new System.Net.IPEndPoint(System.Net.IPAddress.Parse(handle.Host), handle.StreamPort) },
         });
+    }
 
     private static string Unique(string prefix) => $"{prefix}-{Guid.NewGuid():N}";
 
@@ -37,12 +38,13 @@ public sealed class ErrorQueueIntegrationTests : IAsyncDisposable
         {
             try
             {
+                var handle = await TestBroker.StartAsync(TestContext.Current.CancellationToken);
                 var factory = new ConnectionFactory
                 {
-                    HostName = "localhost",
-                    Port = 5672,
-                    UserName = User(),
-                    Password = Password(),
+                    HostName = handle.Host,
+                    Port = handle.AmqpPort,
+                    UserName = handle.Username,
+                    Password = handle.Password,
                     VirtualHost = "/",
                 };
                 using var connection = await factory.CreateConnectionAsync(TestContext.Current.CancellationToken);
@@ -68,11 +70,12 @@ public sealed class ErrorQueueIntegrationTests : IAsyncDisposable
         public IStreamBus Bus { get; private set; } = null!;
         public static async Task<BusInstance> StartAsync(Action<ServiceCollection>? configure = null, string vhost = "/", Action<IStreamBusConfigurator>? busConfigure = null, TimeSpan? blockTimeout = null)
         {
+            var handle = await TestBroker.StartAsync(TestContext.Current.CancellationToken);
             var services = new ServiceCollection();
             services.AddLogging();
             services.AddStreamBus((_, cfg) =>
             {
-                cfg.Host("localhost", vhost, h => h.Credentials(User(), Password()));
+                cfg.Host(handle.Host, vhost, h => { h.Credentials(handle.Username, handle.Password); h.StreamPort(handle.StreamPort); h.AmqpPort(handle.AmqpPort); });
                 busConfigure?.Invoke(cfg);
             });
             if (blockTimeout is { } timeout)
@@ -107,12 +110,13 @@ public sealed class ErrorQueueIntegrationTests : IAsyncDisposable
     private static async Task<(byte[] Body, Dictionary<string, object?> Headers)> PeekQueueAsync(string queue)
     {
         var ct = TestContext.Current.CancellationToken;
+        var handle = await TestBroker.StartAsync(TestContext.Current.CancellationToken);
         var factory = new ConnectionFactory
         {
-            HostName = "localhost",
-            Port = 5672,
-            UserName = User(),
-            Password = Password(),
+            HostName = handle.Host,
+            Port = handle.AmqpPort,
+            UserName = handle.Username,
+            Password = handle.Password,
             VirtualHost = "/",
         };
         using var connection = await factory.CreateConnectionAsync(ct);
