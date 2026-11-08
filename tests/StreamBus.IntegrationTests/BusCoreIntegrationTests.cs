@@ -47,7 +47,9 @@ public sealed class BusCoreIntegrationTests
             var check = sp.GetServices<IHealthCheck>().OfType<StreamBusHealthCheck>().Single();
             var result = await check.CheckHealthAsync(new HealthCheckContext(), CancellationToken.None);
             Assert.Equal(HealthStatus.Healthy, result.Status);
-            Assert.Contains(result.Data.Keys, k => k.StartsWith("/|", StringComparison.Ordinal));
+            // Health data rows use namespaced prefixes (bus:/reg:) so a
+            // free-form registration name cannot collide with a bus row.
+            Assert.Contains(result.Data.Keys, k => k.StartsWith("bus:/|", StringComparison.Ordinal));
         }
         finally
         {
