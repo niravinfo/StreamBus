@@ -99,6 +99,22 @@ public interface IStreamSystemConnector
     Task<IStreamSystemHandle> ConnectAsync(StreamBusOptions options, CancellationToken cancellationToken);
 }
 
+/// <summary>
+/// Fail-fast guard for the <see cref="StreamSystemHandle.CreateRawConsumerAsync"/> result: the
+/// client's <see cref="StreamSystem.CreateRawConsumer"/> contract returns <see cref="IConsumer"/>,
+/// but the partition loop requires the concrete <see cref="RawConsumer"/> subclass (StoreOffset/Close).
+/// A client version returning a different concrete type must surface an actionable error here
+/// instead of an opaque <see cref="InvalidCastException"/> from inside the attach loop.
+/// </summary>
+internal static class RawConsumerCast
+{
+    /// <summary>Returns the consumer when it is the required <see cref="RawConsumer"/> subclass.</summary>
+    public static RawConsumer Require(IConsumer consumer) => consumer as RawConsumer
+        ?? throw new StreamBusConfigurationException(
+            $"The stream client returned '{consumer?.GetType().FullName ?? "null"}' where a RawConsumer was required " +
+            "(client library version mismatch; update RabbitMQ.Stream.Client or StreamBus).");
+}
+
 internal sealed class StreamSystemHandle : IStreamSystemHandle
 {
     private readonly StreamSystem _system;
@@ -241,7 +257,7 @@ internal sealed class StreamSystemHandle : IStreamSystemHandle
         // StoreOffset/Close. The cast lives here (single place), not in the loop.
         var consumer = await _system.CreateRawConsumer(config, _factory.CreateLogger<RawConsumer>()).ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
-        return (RawConsumer)consumer;
+        return RawConsumerCast.Require(consumer);
     }
 
     /// <summary>Disposes the underlying system.</summary>

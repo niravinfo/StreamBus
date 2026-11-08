@@ -2305,10 +2305,30 @@ if (connection == BusConnectionState.Fatal || declareExhausted || allConsumersFa
 
 ---
 
-**[INF-13] `CreateRawConsumerAsync` blind cast to `RawConsumer`**
+**[INF-13] `CreateRawConsumerAsync` blind cast to `RawConsumer` — VALID, fixed (2026-11-08)**
 - **Severity:** MINOR
 - **File:** src\StreamBus\Connector.cs (lines 155–165)
 - **Problem:** The raw client implementation is returned with an unguarded `(RawConsumer)consumer`. If a future RabbitMQ.Stream.Client version returns a different concrete type, users get an opaque `InvalidCastException` from deep inside the partition attach loop, far from the cause.
+- **Verification & resolution (2026-11-08):** Confirmed genuine at MINOR. The client's
+  `StreamSystem.CreateRawConsumer` is contractually declared to return `IConsumer` (confirmed
+  in the shipped RabbitMQ.Stream.Client 1.12.1 XML docs), while the partition loop requires the
+  concrete `RawConsumer` subclass for `StoreOffset`/`Close` — so the cast is a real, unchecked
+  contract narrowing. It never fails with the current client (which constructs a `RawConsumer`
+  for plain-consumer configs), making this fail-fast hygiene rather than a live bug; MINOR is
+  correct. The client's `StreamSystem`/`RawConsumer` constructors are internal, so the cast
+  cannot be exercised end-to-end in a unit test; the guard was extracted to a testable internal
+  helper instead, keeping the cast in its single documented place:
+  1. `RawConsumerCast.Require(IConsumer)` (Connector.cs) implements the reviewer's type-pattern
+     guard, throwing `StreamBusConfigurationException` with the returned type's full name and
+     a client/version-mismatch hint. `StreamSystemHandle.CreateRawConsumerAsync` now routes
+     through it.
+  2. Tests (TDD — both watched RED first for exactly the expected reasons: the helper type did
+     not exist, then a null result NRE'd inside the message construction):
+     `RawConsumerCastTests.Non_RawConsumer_result_fails_fast_with_actionable_configuration_error`
+     and `Null_result_fails_fast_instead_of_throwing_NullReferenceException`. No changelog entry:
+     no public surface or behavior changed for any currently-possible input.
+     UnitTests 473/473 (471 prior + 2 new).
+- **Original review text retained below for traceability:**
 ```csharp
 var consumer = await _system.CreateRawConsumer(config, _factory.CreateLogger<RawConsumer>()).ConfigureAwait(false);
 ct.ThrowIfCancellationRequested();
