@@ -25,7 +25,6 @@ internal sealed record StreamConsumerInfo(
 internal sealed class StreamManagementApi : IDisposable
 {
     private const string VhostSegment = "%2F";
-    private static readonly string[] PrivilegedTags = ["administrator", "management"];
 
     private readonly HttpClient _http;
 
@@ -39,51 +38,52 @@ internal sealed class StreamManagementApi : IDisposable
 
     public static async Task<StreamManagementApi> ConnectAsync(CancellationToken ct)
     {
-        var baseUrl = Environment.GetEnvironmentVariable("STREAMBUS_MANAGEMENT_URL")
-            ?? "http://127.0.0.1:15672";
-        var failures = new List<string>();
-        foreach (var (user, password) in Candidates())
+        var handle = await TestBroker.StartAsync(ct);
+        var http = new HttpClient
         {
-            var http = new HttpClient
+            BaseAddress = new Uri($"http://{handle.Host}:{handle.ManagementPort}/"),
+            Timeout = TimeSpan.FromSeconds(10),
+        };
+        http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Basic",
+            Convert.ToBase64String(Encoding.UTF8.GetBytes($"{handle.Username}:{handle.Password}")));
+
+        // The management plugin may still be warming up after the broker starts;
+        // poll until it answers, but fail fast as a fixture error instead of
+        // hanging until the CI job timeout if the port never comes up.
+        using var pollCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        pollCts.CancelAfter(TimeSpan.FromSeconds(60));
+        try
+        {
+            while (true)
             {
-                BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/"),
-                Timeout = TimeSpan.FromSeconds(10),
-            };
-            http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
-                "Basic",
-                Convert.ToBase64String(Encoding.UTF8.GetBytes($"{user}:{password}")));
-            try
-            {
-                using var response = await http.GetAsync("api/whoami", ct);
-                if (!response.IsSuccessStatusCode)
+                try
                 {
-                    failures.Add($"{user}: HTTP {(int)response.StatusCode}");
-                    http.Dispose();
-                    continue;
+                    using var response = await http.GetAsync("api/whoami", pollCts.Token);
+                    if (response.IsSuccessStatusCode)
+                        return new StreamManagementApi(http, handle.Username);
+                    if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+                    {
+                        http.Dispose();
+                        throw new InvalidOperationException(
+                            $"RabbitMQ management API rejected user '{handle.Username}' with HTTP {(int)response.StatusCode}.");
+                    }
+                }
+                catch (Exception ex) when ((ex is HttpRequestException or TaskCanceledException)
+                    && !pollCts.Token.IsCancellationRequested)
+                {
+                    // The management API may still be warming up; keep polling.
                 }
 
-                var body = await response.Content.ReadAsStringAsync(ct);
-                using var document = JsonDocument.Parse(body);
-                var tags = ReadTags(document.RootElement);
-                if (tags.Any(tag => PrivilegedTags.Contains(tag, StringComparer.OrdinalIgnoreCase)))
-                    return new StreamManagementApi(http, user);
-
-                failures.Add($"{user}: tags [{string.Join(", ", tags)}] are not privileged");
-                http.Dispose();
-            }
-            catch (Exception ex) when ((ex is HttpRequestException or TaskCanceledException)
-                && !ct.IsCancellationRequested)
-            {
-                failures.Add($"{user}: {ex.GetType().Name}");
-                http.Dispose();
+                await Task.Delay(500, pollCts.Token);
             }
         }
-
-        var detail = $"Tried {string.Join("; ", failures)}. Set STREAMBUS_MANAGEMENT_USER/PASSWORD (or STREAMBUS_USER/PASSWORD) to a RabbitMQ administrator.";
-        if (IsCi())
-            throw new InvalidOperationException("The RabbitMQ management API is unavailable. " + detail);
-        Assert.Skip("RabbitMQ management API unavailable; chaos tests skipped. " + detail);
-        throw new InvalidOperationException("unreachable");
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            http.Dispose();
+            throw new InvalidOperationException(
+                $"RabbitMQ management API did not answer within 60s on {handle.Host}:{handle.ManagementPort}.", new TimeoutException());
+        }
     }
 
     public async Task<IReadOnlyList<StreamConnectionInfo>> GetStreamConnectionsAsync(CancellationToken ct)
@@ -173,45 +173,6 @@ internal sealed class StreamManagementApi : IDisposable
         if (document.RootElement.ValueKind != JsonValueKind.Array)
             throw new InvalidOperationException($"GET {relativeUrl} did not return a JSON array.");
         return document.RootElement.EnumerateArray().Select(item => item.Clone()).ToArray();
-    }
-
-    private static IEnumerable<(string User, string Password)> Candidates()
-    {
-        var seen = new HashSet<(string, string)>();
-        if (Add(Environment.GetEnvironmentVariable("STREAMBUS_MANAGEMENT_USER"),
-                Environment.GetEnvironmentVariable("STREAMBUS_MANAGEMENT_PASSWORD")))
-            yield return (Environment.GetEnvironmentVariable("STREAMBUS_MANAGEMENT_USER")!,
-                Environment.GetEnvironmentVariable("STREAMBUS_MANAGEMENT_PASSWORD")!);
-        if (Add(Environment.GetEnvironmentVariable("STREAMBUS_USER"),
-                Environment.GetEnvironmentVariable("STREAMBUS_PASSWORD")))
-            yield return (Environment.GetEnvironmentVariable("STREAMBUS_USER")!,
-                Environment.GetEnvironmentVariable("STREAMBUS_PASSWORD")!);
-        if (Add("app", "password"))
-            yield return ("app", "password");
-        if (Add("guest", "guest"))
-            yield return ("guest", "guest");
-
-        bool Add(string? user, string? password)
-        {
-            if (string.IsNullOrWhiteSpace(user) || string.IsNullOrWhiteSpace(password))
-                return false;
-            return seen.Add((user, password));
-        }
-    }
-
-    private static string[] ReadTags(JsonElement root)
-        => root.TryGetProperty("tags", out var tags) && tags.ValueKind == JsonValueKind.Array
-            ? tags.EnumerateArray()
-                .Where(tag => tag.ValueKind == JsonValueKind.String)
-                .Select(tag => tag.GetString() ?? "")
-                .ToArray()
-            : Array.Empty<string>();
-
-    private static bool IsCi()
-    {
-        var value = Environment.GetEnvironmentVariable("CI");
-        return string.Equals(value, "true", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(value, "1", StringComparison.Ordinal);
     }
 
     private static string GetString(JsonElement item, string property)

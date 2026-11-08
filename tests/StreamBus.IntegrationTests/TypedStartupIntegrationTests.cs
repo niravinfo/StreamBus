@@ -8,19 +8,20 @@ public sealed class TypedStartupIntegrationTests : IAsyncDisposable
 {
     public TypedStartupIntegrationTests() => IntegrationLane.RequireBroker();
 
-    private static string User() => Environment.GetEnvironmentVariable("STREAMBUS_USER") ?? "app";
-    private static string Password() => Environment.GetEnvironmentVariable("STREAMBUS_PASSWORD") ?? "password";
     private readonly List<string> _streams = new();
     private readonly List<string> _superStreams = new();
 
     private static async Task<StreamSystem> ConnectAdminAsync()
-        => await StreamSystem.Create(new StreamSystemConfig
+    {
+        var handle = await TestBroker.StartAsync(TestContext.Current.CancellationToken);
+        return await StreamSystem.Create(new StreamSystemConfig
         {
-            UserName = User(),
-            Password = Password(),
+            UserName = handle.Username,
+            Password = handle.Password,
             VirtualHost = "/",
-            Endpoints = new List<System.Net.EndPoint> { new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, 5552) },
+            Endpoints = new List<System.Net.EndPoint> { new System.Net.IPEndPoint(System.Net.IPAddress.Parse(handle.Host), handle.StreamPort) },
         });
+    }
 
     private static string Unique(string prefix) => $"{prefix}-{Guid.NewGuid():N}";
 
@@ -42,11 +43,12 @@ public sealed class TypedStartupIntegrationTests : IAsyncDisposable
         public IStreamBus Bus { get; private set; } = null!;
         public static async Task<BusInstance> StartAsync(Action<ServiceCollection>? configure = null, string vhost = "/", Action<IStreamBusConfigurator>? busConfigure = null)
         {
+            var handle = await TestBroker.StartAsync(TestContext.Current.CancellationToken);
             var services = new ServiceCollection();
             services.AddLogging();
             services.AddStreamBus((_, cfg) =>
             {
-                cfg.Host("localhost", vhost, h => h.Credentials(User(), Password()));
+                cfg.Host(handle.Host, vhost, h => { h.Credentials(handle.Username, handle.Password); h.StreamPort(handle.StreamPort); });
                 busConfigure?.Invoke(cfg);
             });
             configure?.Invoke(services);
@@ -108,6 +110,7 @@ public sealed class TypedStartupIntegrationTests : IAsyncDisposable
         // No explicit DeclareStream: the endpoint registration alone derives the
         // stream declaration at startup; everything converges after one Start.
         var ct = TestContext.Current.CancellationToken;
+        var handle = await TestBroker.StartAsync(TestContext.Current.CancellationToken);
         var stream = Unique("typed-orders");
         _streams.Add(stream);
         var got = new List<(string Who, int Seq)>();
@@ -116,7 +119,7 @@ public sealed class TypedStartupIntegrationTests : IAsyncDisposable
         services.AddSingleton(got);
         services.AddStreamBus((_, cfg) =>
         {
-            cfg.Host("localhost", "/", h => h.Credentials(User(), Password()));
+            cfg.Host(handle.Host, "/", h => { h.Credentials(handle.Username, handle.Password); h.StreamPort(handle.StreamPort); });
             cfg.ReceiveEndpoint(stream, e => e.Consumer<OrderConsumer>("startup-group"));
         });
         await using var sp = services.BuildServiceProvider();
@@ -142,14 +145,15 @@ public sealed class TypedStartupIntegrationTests : IAsyncDisposable
     }
 
     [Fact]
-    public void Unbounded_retry_with_destination_fails_at_registration()
+    public async Task Unbounded_retry_with_destination_fails_at_registration()
     {
+        var handle = await TestBroker.StartAsync(TestContext.Current.CancellationToken);
         var services = new ServiceCollection();
         services.AddLogging();
         var ex = Assert.Throws<StreamBusConfigurationException>(() =>
             services.AddStreamBus((_, cfg) =>
             {
-                cfg.Host("localhost", "/", h => h.Credentials(User(), Password()));
+                cfg.Host(handle.Host, "/", h => { h.Credentials(handle.Username, handle.Password); h.StreamPort(handle.StreamPort); });
                 cfg.ReceiveEndpoint("typed-invalid", e =>
                 {
                     e.Consumer<OrderConsumer>("invalid-group");
@@ -163,6 +167,7 @@ public sealed class TypedStartupIntegrationTests : IAsyncDisposable
     public async Task Unknown_marker_fails_startup_in_both_modes()
     {
         var ct = TestContext.Current.CancellationToken;
+        var handle = await TestBroker.StartAsync(TestContext.Current.CancellationToken);
         var stream = Unique("typed-ghost");
         _streams.Add(stream);
         var admin = await ConnectAdminAsync();
@@ -173,7 +178,7 @@ public sealed class TypedStartupIntegrationTests : IAsyncDisposable
             var services = new ServiceCollection();
             services.AddLogging();
             services.AddSingleton(new List<(string Who, int Seq)>());
-            services.AddStreamBus((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials(User(), Password())));
+            services.AddStreamBus((_, cfg) => cfg.Host(handle.Host, "/", h => { h.Credentials(handle.Username, handle.Password); h.StreamPort(handle.StreamPort); }));
             await using var sp = services.BuildServiceProvider();
             sp.GetRequiredService<StreamBusConsumerStore>().Add(typeof(GhostBus), typeof(OrderEvent), typeof(OrderConsumer), stream, new ConsumeOptions { Reference = "ghost-group" });
             var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
@@ -186,7 +191,7 @@ public sealed class TypedStartupIntegrationTests : IAsyncDisposable
             var services = new ServiceCollection();
             services.AddLogging();
             services.AddSingleton(new List<(string Who, int Seq)>());
-            services.AddStreamBus((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials(User(), Password())));
+            services.AddStreamBus((_, cfg) => cfg.Host(handle.Host, "/", h => { h.Credentials(handle.Username, handle.Password); h.StreamPort(handle.StreamPort); }));
             services.AddStreamBusHosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(30)));
             await using var sp = services.BuildServiceProvider();
             sp.GetRequiredService<StreamBusConsumerStore>().Add(typeof(GhostBus), typeof(OrderEvent), typeof(OrderConsumer), stream, new ConsumeOptions { Reference = "ghost-group" });

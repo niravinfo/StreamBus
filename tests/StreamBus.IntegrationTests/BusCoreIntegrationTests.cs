@@ -8,15 +8,13 @@ public sealed class BusCoreIntegrationTests
 {
     public BusCoreIntegrationTests() => IntegrationLane.RequireBroker();
 
-    private static string User() => Environment.GetEnvironmentVariable("STREAMBUS_USER") ?? "app";
-    private static string Password() => Environment.GetEnvironmentVariable("STREAMBUS_PASSWORD") ?? "password";
-
     [Fact]
     public async Task Single_vhost_bus_becomes_ready()
     {
+        var handle = await TestBroker.StartAsync(TestContext.Current.CancellationToken);
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddStreamBus((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials(User(), Password())));
+        services.AddStreamBus((_, cfg) => cfg.Host(handle.Host, "/", h => { h.Credentials(handle.Username, handle.Password); h.StreamPort(handle.StreamPort); }));
         await using var sp = services.BuildServiceProvider();
         var bus = sp.GetRequiredService<IStreamBus>();
         var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
@@ -35,9 +33,10 @@ public sealed class BusCoreIntegrationTests
     [Fact]
     public async Task Health_reports_per_vhost_bus_type_state()
     {
+        var handle = await TestBroker.StartAsync(TestContext.Current.CancellationToken);
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddStreamBus((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials(User(), Password())));
+        services.AddStreamBus((_, cfg) => cfg.Host(handle.Host, "/", h => { h.Credentials(handle.Username, handle.Password); h.StreamPort(handle.StreamPort); }));
         await using var sp = services.BuildServiceProvider();
         var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
         await hosted.StartAsync(CancellationToken.None);
@@ -48,7 +47,9 @@ public sealed class BusCoreIntegrationTests
             var check = sp.GetServices<IHealthCheck>().OfType<StreamBusHealthCheck>().Single();
             var result = await check.CheckHealthAsync(new HealthCheckContext(), CancellationToken.None);
             Assert.Equal(HealthStatus.Healthy, result.Status);
-            Assert.Contains(result.Data.Keys, k => k.StartsWith("/|", StringComparison.Ordinal));
+            // Health data rows use namespaced prefixes (bus:/reg:) so a
+            // free-form registration name cannot collide with a bus row.
+            Assert.Contains(result.Data.Keys, k => k.StartsWith("bus:/|", StringComparison.Ordinal));
         }
         finally
         {
@@ -59,12 +60,13 @@ public sealed class BusCoreIntegrationTests
     [Fact]
     public async Task Unreachable_broker_never_surfaces_terminal_error_and_recovers()
     {
+        var handle = await TestBroker.StartAsync(TestContext.Current.CancellationToken);
         var options = new StreamBusOptions
         {
             Vhost = "/",
-            UserName = User(),
-            Password = Password(),
-            Host = "localhost",
+            UserName = handle.Username,
+            Password = handle.Password,
+            Host = handle.Host,
             StreamPort = 59999,
         };
         await using var supervisor = new StreamBusConnectionSupervisor(options, new StreamSystemConnector());

@@ -11,19 +11,20 @@ public sealed class TopologyIntegrationTests : IAsyncDisposable
 {
     public TopologyIntegrationTests() => IntegrationLane.RequireBroker();
 
-    private static string User() => Environment.GetEnvironmentVariable("STREAMBUS_USER") ?? "app";
-    private static string Password() => Environment.GetEnvironmentVariable("STREAMBUS_PASSWORD") ?? "password";
     private readonly List<string> _streams = new();
     private readonly List<string> _superStreams = new();
 
     private static async Task<StreamSystem> ConnectAdminAsync()
-        => await StreamSystem.Create(new StreamSystemConfig
+    {
+        var handle = await TestBroker.StartAsync(TestContext.Current.CancellationToken);
+        return await StreamSystem.Create(new StreamSystemConfig
         {
-            UserName = User(),
-            Password = Password(),
+            UserName = handle.Username,
+            Password = handle.Password,
             VirtualHost = "/",
-            Endpoints = new List<System.Net.EndPoint> { new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, 5552) },
+            Endpoints = new List<System.Net.EndPoint> { new System.Net.IPEndPoint(System.Net.IPAddress.Parse(handle.Host), handle.StreamPort) },
         });
+    }
 
     private static string Unique(string prefix) => $"{prefix}-{Guid.NewGuid():N}";
 
@@ -45,9 +46,10 @@ public sealed class TopologyIntegrationTests : IAsyncDisposable
         public IStreamBus Bus { get; private set; } = null!;
         public static async Task<BusInstance> StartAsync(string vhost = "/", Action<IStreamRegistrationContext, IStreamBusConfigurator>? configure = null)
         {
+            var handle = await TestBroker.StartAsync(TestContext.Current.CancellationToken);
             var services = new ServiceCollection();
             services.AddLogging();
-            services.AddStreamBus((ctx, cfg) => { cfg.Host("localhost", vhost, h => h.Credentials(User(), Password())); configure?.Invoke(ctx, cfg); });
+            services.AddStreamBus((ctx, cfg) => { cfg.Host(handle.Host, vhost, h => { h.Credentials(handle.Username, handle.Password); h.StreamPort(handle.StreamPort); }); configure?.Invoke(ctx, cfg); });
             var sp = services.BuildServiceProvider();
             var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
             await hosted.StartAsync(TestContext.Current.CancellationToken);
@@ -206,6 +208,7 @@ public sealed class TopologyIntegrationTests : IAsyncDisposable
     public async Task Blocking_startup_declares_before_return()
     {
         var ct = TestContext.Current.CancellationToken;
+        var handle = await TestBroker.StartAsync(TestContext.Current.CancellationToken);
         var plain = Unique("topo-plain");
         var super = Unique("topo-super");
         _streams.Add(plain);
@@ -214,7 +217,7 @@ public sealed class TopologyIntegrationTests : IAsyncDisposable
         services.AddLogging();
         services.AddStreamBus((_, cfg) =>
         {
-            cfg.Host("localhost", "/", h => h.Credentials(User(), Password()));
+            cfg.Host(handle.Host, "/", h => { h.Credentials(handle.Username, handle.Password); h.StreamPort(handle.StreamPort); });
             cfg.Publish<TopologyPlainEvent>(plain);
             cfg.PublishSuper<TopologySuperEvent>(super, s => s.Partitions(2));
         });
@@ -239,6 +242,7 @@ public sealed class TopologyIntegrationTests : IAsyncDisposable
     public async Task Blocking_startup_with_conflict_fails_loudly()
     {
         var ct = TestContext.Current.CancellationToken;
+        var handle = await TestBroker.StartAsync(TestContext.Current.CancellationToken);
         var super = Unique("topo-super");
         _superStreams.Add(super);
         var admin = await ConnectAdminAsync();
@@ -248,7 +252,7 @@ public sealed class TopologyIntegrationTests : IAsyncDisposable
         services.AddLogging();
         services.AddStreamBus((_, cfg) =>
         {
-            cfg.Host("localhost", "/", h => h.Credentials(User(), Password()));
+            cfg.Host(handle.Host, "/", h => { h.Credentials(handle.Username, handle.Password); h.StreamPort(handle.StreamPort); });
             cfg.PublishSuper<TopologySuperEvent>(super, s => s.Partitions(5));
         });
         services.AddStreamBusHosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(30)));
@@ -282,10 +286,11 @@ public sealed class TopologyIntegrationTests : IAsyncDisposable
     {
         try
         {
+            var handle = await TestBroker.StartAsync(TestContext.Current.CancellationToken);
             using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
             http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic",
-                Convert.ToBase64String(Encoding.UTF8.GetBytes($"{User()}:{Password()}")));
-            using var resp = await http.GetAsync("http://127.0.0.1:15672/api/overview", TestContext.Current.CancellationToken);
+                Convert.ToBase64String(Encoding.UTF8.GetBytes($"{handle.Username}:{handle.Password}")));
+            using var resp = await http.GetAsync($"http://{handle.Host}:{handle.ManagementPort}/api/overview", TestContext.Current.CancellationToken);
             return resp.IsSuccessStatusCode;
         }
         catch
@@ -308,6 +313,7 @@ public sealed class TopologyIntegrationTests : IAsyncDisposable
             Assert.Skip("management API not usable with stream credentials (unreachable or unauthorized); FR-7.4 operator path not exercised here.");
         }
         var ct = TestContext.Current.CancellationToken;
+        var handle = await TestBroker.StartAsync(TestContext.Current.CancellationToken);
         var stream = Unique("topo-pol");
         _streams.Add(stream);
         await using var inst = await BusInstance.StartAsync();
@@ -315,9 +321,9 @@ public sealed class TopologyIntegrationTests : IAsyncDisposable
         var policy = Unique("pol");
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
         http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic",
-            Convert.ToBase64String(Encoding.UTF8.GetBytes($"{User()}:{Password()}")));
+            Convert.ToBase64String(Encoding.UTF8.GetBytes($"{handle.Username}:{handle.Password}")));
         var put = await http.PutAsync(
-            $"http://127.0.0.1:15672/api/policies/%2F/{policy}",
+            $"http://{handle.Host}:{handle.ManagementPort}/api/policies/%2F/{policy}",
             // Stream retention is a duration string ("1h"); an integer value is
             // rejected by the broker's policy validation (HTTP 400/500).
             new StringContent(
@@ -330,7 +336,7 @@ public sealed class TopologyIntegrationTests : IAsyncDisposable
             // (its effective_policy_definition stays empty), so the policy resource is
             // the observable: the broker validates stream retention keys when the policy
             // is set, so a 2xx on the PUT means the definition is valid for streams.
-            using var get = await http.GetAsync($"http://127.0.0.1:15672/api/policies/%2F/{policy}", ct);
+            using var get = await http.GetAsync($"http://{handle.Host}:{handle.ManagementPort}/api/policies/%2F/{policy}", ct);
             Assert.True(get.IsSuccessStatusCode, $"GET policy failed: {(int)get.StatusCode}");
             var payload = await get.Content.ReadAsStringAsync(ct);
             Assert.Contains("\"max-age\":\"1h\"", payload);
@@ -338,7 +344,7 @@ public sealed class TopologyIntegrationTests : IAsyncDisposable
         }
         finally
         {
-            await http.DeleteAsync($"http://127.0.0.1:15672/api/policies/%2F/{policy}", ct);
+            await http.DeleteAsync($"http://{handle.Host}:{handle.ManagementPort}/api/policies/%2F/{policy}", ct);
         }
     }
 

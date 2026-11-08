@@ -23,6 +23,8 @@ option is a configurator method call in code, validated once at registration.
   operations).
 - Empty credentials are rejected. `guest`/`guest` is accepted for a local
   broker; remote deployments need a dedicated non-`guest` user.
+- For contributors: the integration tests need only Docker — they start
+  their own RabbitMQ (pinned 4.2 image) via Testcontainers.
 
 ## Install
 

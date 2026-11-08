@@ -11,19 +11,20 @@ public sealed class PublishIntegrationTests : IAsyncDisposable
 {
     public PublishIntegrationTests() => IntegrationLane.RequireBroker();
 
-    private static string User() => Environment.GetEnvironmentVariable("STREAMBUS_USER") ?? "app";
-    private static string Password() => Environment.GetEnvironmentVariable("STREAMBUS_PASSWORD") ?? "password";
     private readonly List<string> _streams = new();
     private readonly List<string> _superStreams = new();
 
     private static async Task<StreamSystem> ConnectAdminAsync()
-        => await StreamSystem.Create(new StreamSystemConfig
+    {
+        var handle = await TestBroker.StartAsync(TestContext.Current.CancellationToken);
+        return await StreamSystem.Create(new StreamSystemConfig
         {
-            UserName = User(),
-            Password = Password(),
+            UserName = handle.Username,
+            Password = handle.Password,
             VirtualHost = "/",
-            Endpoints = new List<System.Net.EndPoint> { new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, 5552) },
+            Endpoints = new List<System.Net.EndPoint> { new System.Net.IPEndPoint(System.Net.IPAddress.Parse(handle.Host), handle.StreamPort) },
         }).ConfigureAwait(false);
+    }
 
     private static string Unique(string prefix) => $"{prefix}-{Guid.NewGuid():N}";
 
@@ -45,12 +46,13 @@ public sealed class PublishIntegrationTests : IAsyncDisposable
     public async Task Plain_round_trip_delivers_ordered_offsets()
     {
         var stream = Unique("pub-plain");
+        var handle = await TestBroker.StartAsync(TestContext.Current.CancellationToken);
         await using var admin = await ConnectAdminAsync();
         await admin.CreateStream(new StreamSpec(stream));
         _streams.Add(stream);
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddStreamBus((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials(User(), Password())));
+        services.AddStreamBus((_, cfg) => cfg.Host(handle.Host, "/", h => { h.Credentials(handle.Username, handle.Password); h.StreamPort(handle.StreamPort); }));
         await using var sp = services.BuildServiceProvider();
         var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
         await hosted.StartAsync(CancellationToken.None);
@@ -88,9 +90,10 @@ public sealed class PublishIntegrationTests : IAsyncDisposable
     public async Task Missing_stream_fails_and_stays_absent()
     {
         var stream = Unique("pub-missing");
+        var handle = await TestBroker.StartAsync(TestContext.Current.CancellationToken);
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddStreamBus((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials(User(), Password())));
+        services.AddStreamBus((_, cfg) => cfg.Host(handle.Host, "/", h => { h.Credentials(handle.Username, handle.Password); h.StreamPort(handle.StreamPort); }));
         await using var sp = services.BuildServiceProvider();
         var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
         await hosted.StartAsync(CancellationToken.None);
@@ -111,12 +114,13 @@ public sealed class PublishIntegrationTests : IAsyncDisposable
     public async Task Super_stream_keys_land_on_stable_partitions()
     {
         var super = Unique("pub-super");
+        var handle = await TestBroker.StartAsync(TestContext.Current.CancellationToken);
         await using var admin = await ConnectAdminAsync();
         await admin.CreateSuperStream(new PartitionsSuperStreamSpec(super, 3));
         _superStreams.Add(super);
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddStreamBus((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials(User(), Password())));
+        services.AddStreamBus((_, cfg) => cfg.Host(handle.Host, "/", h => { h.Credentials(handle.Username, handle.Password); h.StreamPort(handle.StreamPort); }));
         await using var sp = services.BuildServiceProvider();
         var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
         await hosted.StartAsync(CancellationToken.None);

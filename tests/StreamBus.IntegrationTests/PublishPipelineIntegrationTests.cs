@@ -19,18 +19,19 @@ public sealed class PublishPipelineIntegrationTests : IAsyncDisposable
 {
     public PublishPipelineIntegrationTests() => IntegrationLane.RequireBroker();
 
-    private static string User() => Environment.GetEnvironmentVariable("STREAMBUS_USER") ?? "app";
-    private static string Password() => Environment.GetEnvironmentVariable("STREAMBUS_PASSWORD") ?? "password";
     private readonly List<string> _streams = new();
 
     private static async Task<StreamSystem> ConnectAdminAsync()
-        => await StreamSystem.Create(new StreamSystemConfig
+    {
+        var handle = await TestBroker.StartAsync(TestContext.Current.CancellationToken);
+        return await StreamSystem.Create(new StreamSystemConfig
         {
-            UserName = User(),
-            Password = Password(),
+            UserName = handle.Username,
+            Password = handle.Password,
             VirtualHost = "/",
-            Endpoints = new List<System.Net.EndPoint> { new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, 5552) },
+            Endpoints = new List<System.Net.EndPoint> { new System.Net.IPEndPoint(System.Net.IPAddress.Parse(handle.Host), handle.StreamPort) },
         });
+    }
 
     private static string Unique(string prefix) => $"{prefix}-{Guid.NewGuid():N}";
 
@@ -52,6 +53,7 @@ public sealed class PublishPipelineIntegrationTests : IAsyncDisposable
     {
         var ct = TestContext.Current.CancellationToken;
         var stream = Unique("pipe");
+        var handle = await TestBroker.StartAsync(TestContext.Current.CancellationToken);
         await using var admin = await ConnectAdminAsync();
         await admin.CreateStream(new StreamSpec(stream));
         _streams.Add(stream);
@@ -60,7 +62,7 @@ public sealed class PublishPipelineIntegrationTests : IAsyncDisposable
         services.AddLogging();
         services.AddStreamBus((_, cfg) =>
         {
-            cfg.Host("localhost", "/", h => h.Credentials(User(), Password()));
+            cfg.Host(handle.Host, "/", h => { h.Credentials(handle.Username, handle.Password); h.StreamPort(handle.StreamPort); });
             cfg.Publish<PipelineOrder>(stream);
             cfg.UsePublishFilter<PipelineTenantFilter>();
         });
