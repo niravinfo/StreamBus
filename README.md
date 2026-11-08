@@ -129,4 +129,3 @@ Every capability points to its guide section:
 - `docs/guide/topology.md` - declarations, runtime topology, derivation, adopt rule.
 - `docs/guide/observability.md` - health data, metrics, log events.
 - `docs/llms.txt` - ground truths for automated consumers.
-- `CHANGELOG.md` - 0.2.0 breaking changes and fixes.
