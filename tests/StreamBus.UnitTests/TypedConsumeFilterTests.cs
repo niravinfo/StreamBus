@@ -538,7 +538,7 @@ public sealed class TypedConsumeFilterTests
     }
 
     [Fact]
-    public async Task Typed_deserialization_failure_retries_and_never_runs_filters_or_handler()
+    public async Task Typed_deserialization_failure_hands_off_immediately_without_retrying()
     {
         var probe = new TypedOrderProbe();
         var filters = new StreamBusConsumeFilterStore();
@@ -566,11 +566,56 @@ public sealed class TypedConsumeFilterTests
         Assert.Empty(probe.FilterMessages);
         Assert.Equal(0, handlerCalls);
         var envelope = Assert.Single(harness.System.Envelopes);
-        Assert.Equal("2", envelope.Properties["streambus.error.attempts"]?.ToString());
+        // Deserialization is deterministic: the same bytes cannot succeed on a
+        // later attempt, so the delivery hands off on the first attempt.
+        Assert.Equal("1", envelope.Properties["streambus.error.attempts"]?.ToString());
         Assert.Contains(
             "Could not deserialize",
             envelope.Properties["streambus.error.exception-message"]?.ToString(),
             StringComparison.Ordinal);
+        Assert.Equal(new ulong[] { 0 }, harness.Factory.Current.StoredOffsets);
+    }
+
+    [Fact]
+    public async Task Message_is_deserialized_once_across_retry_attempts()
+    {
+        var serializer = new CountingSerializer();
+        var probe = new TypedOrderProbe();
+        await using var harness = await PipelineSemanticsTests.Harness.CreateAsync(configureServices: services =>
+        {
+            services.AddSingleton(probe);
+        });
+
+        var handlerCalls = 0;
+        ConsumeContext<TypedOrderMessage>? firstAttempt = null;
+        ConsumeContext<TypedOrderMessage>? secondAttempt = null;
+        harness.Consumer = await harness.Registry.ConsumeAsync(
+            typeof(DefaultBus),
+            "orders",
+            TypedOptions(typeof(TypedOrderMessage)),
+            context =>
+            {
+                var typed = (ConsumeContext<TypedOrderMessage>)context;
+                var call = Interlocked.Increment(ref handlerCalls);
+                if (call == 1)
+                {
+                    firstAttempt = typed;
+                    throw new InvalidOperationException("transient handler failure");
+                }
+                secondAttempt = typed;
+                return Task.CompletedTask;
+            },
+            TestContext.Current.CancellationToken,
+            serializer: serializer);
+
+        await harness.DeliverAsync(0, SystemTextJsonStreamSerializer.Default.Serialize(new TypedOrderMessage("one")));
+
+        Assert.Equal(2, Volatile.Read(ref handlerCalls));
+        // The bytes never change across attempts: deserialize exactly once and
+        // share the same instance with every attempt's filters and handler.
+        Assert.Equal(1, Volatile.Read(ref serializer.Deserializes));
+        Assert.True(ReferenceEquals(firstAttempt, secondAttempt),
+            "retry attempts must observe the same deserialized message instance");
         Assert.Equal(new ulong[] { 0 }, harness.Factory.Current.StoredOffsets);
     }
 
@@ -783,5 +828,21 @@ public sealed class TypedConsumeFilterTests
         public static readonly EmptyProvider Instance = new();
 
         public object? GetService(Type serviceType) => null;
+    }
+
+    private sealed class CountingSerializer : IStreamSerializer
+    {
+        private readonly SystemTextJsonStreamSerializer _inner = SystemTextJsonStreamSerializer.Default;
+        public int Deserializes;
+
+        public string ContentType => _inner.ContentType;
+
+        public byte[] Serialize<T>(T message) => _inner.Serialize(message);
+
+        public T Deserialize<T>(ReadOnlyMemory<byte> body)
+        {
+            Interlocked.Increment(ref Deserializes);
+            return _inner.Deserialize<T>(body);
+        }
     }
 }
