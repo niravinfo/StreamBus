@@ -103,7 +103,7 @@ public interface IStreamBusConfigurator
     /// </summary>
     /// <param name="configure">Retry configuration callback.</param>
     /// <exception cref="StreamBusConfigurationException">The callback sets no schedule.</exception>
-    void UseMessageRetry(Action<IRetryConfigurator> configure);
+    void UseRetry(Action<IRetryConfigurator> configure);
 
     /// <summary>
     /// Sets the bus-wide retry schedule from a raw policy, an escape hatch for
@@ -228,7 +228,7 @@ public interface IReceiveEndpointConfigurator
     /// </summary>
     /// <param name="configure">Retry configuration callback.</param>
     /// <exception cref="StreamBusConfigurationException">The callback sets no schedule.</exception>
-    void UseMessageRetry(Action<IRetryConfigurator> configure);
+    void UseRetry(Action<IRetryConfigurator> configure);
 
     /// <summary>
     /// Sets this endpoint's retry schedule from a raw policy, overriding the
@@ -527,7 +527,7 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
         _endpoints.Add(endpoint.Build());
     }
 
-    public void UseMessageRetry(Action<IRetryConfigurator> configure)
+    public void UseRetry(Action<IRetryConfigurator> configure)
     {
         ArgumentNullException.ThrowIfNull(configure);
         var retry = new RetryConfigurator();
@@ -753,7 +753,7 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
             ArgumentNullException.ThrowIfNull(handler);
             _onExhausted = handler;
         }
-        public void UseMessageRetry(Action<IRetryConfigurator> configure)
+        public void UseRetry(Action<IRetryConfigurator> configure)
         {
             ArgumentNullException.ThrowIfNull(configure);
             var retry = new RetryConfigurator();

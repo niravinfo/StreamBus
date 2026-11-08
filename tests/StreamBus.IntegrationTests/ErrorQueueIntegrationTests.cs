@@ -153,7 +153,7 @@ public sealed class ErrorQueueIntegrationTests : IAsyncDisposable
                 cfg.ReceiveEndpoint(stream, e =>
                 {
                     e.Consumer<FailingConsumer>("eq-group");
-                    e.UseMessageRetry(r => r.None());
+                    e.UseRetry(r => r.None());
                     if (explicitQueue)
                         e.DeadLetterToQueue(errorQueue, DeadLetterQueueType.ClassicQueue);
                 });

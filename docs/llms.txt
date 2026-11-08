@@ -42,8 +42,8 @@
   `bus.Topology.EnsureStreamAsync` / `EnsureSuperStreamAsync`.
   Single-partition reads are plain consumes of `{super}-{N}` with no
   declaration.
-- Retry: `cfg.UseMessageRetry(...)` global default, per-endpoint
-  override, `UseRetry` escape hatches. Schedules: Immediate, Interval,
+- Retry: `cfg.UseRetry(...)` global default and per-endpoint
+  override, with a raw `RetryPolicy` overload as the escape hatch. Schedules: Immediate, Interval,
   Intervals, Exponential, None. The default has no attempt limit
   (`Strict`, retries forever); combining a hand-off destination or
   callback with no attempt limit is a configuration error.

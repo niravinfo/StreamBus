@@ -292,7 +292,7 @@ public sealed class ErrorQueueTransportTests
             cfg.ReceiveEndpoint("orders", e =>
             {
                 e.Consumer<OrderConsumer>("grp");
-                e.UseMessageRetry(r => r.None());
+                e.UseRetry(r => r.None());
                 e.DeadLetterToQueue("orders-error", DeadLetterQueueType.ClassicQueue,
                     q => q.ConfirmTimeout(TimeSpan.FromMilliseconds(250)));
             });
@@ -309,7 +309,7 @@ public sealed class ErrorQueueTransportTests
                 cfg.ReceiveEndpoint("orders", e =>
                 {
                     e.Consumer<OrderConsumer>("grp");
-                    e.UseMessageRetry(r => r.None());
+                    e.UseRetry(r => r.None());
                     e.DeadLetterToQueue("orders-error", DeadLetterQueueType.ClassicQueue,
                         q => q.ConfirmTimeout(TimeSpan.Zero));
                 });
