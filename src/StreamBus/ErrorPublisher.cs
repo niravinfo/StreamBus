@@ -45,7 +45,9 @@ internal sealed class ErrorPublisher
 
     private void LogSendHeaderCollisions(ErrorEnvelope envelope)
     {
-        if (envelope.SendHeaders is null)
+        // EnvelopeApplicationProperties allocates the 14-entry metadata
+        // dictionary; skip it entirely when no Warning sink is attached.
+        if (envelope.SendHeaders is null || !_logger.IsEnabled(LogLevel.Warning))
             return;
         var envelopeKeys = envelope.EnvelopeApplicationProperties();
         foreach (var key in envelope.SendHeaders.Keys)
