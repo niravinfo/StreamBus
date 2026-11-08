@@ -441,7 +441,7 @@ public sealed class PipelineSemanticsTests
     }
 
     [Fact]
-    public async Task Typed_message_that_fails_to_deserialize_is_retried_and_exhausted()
+    public async Task Typed_message_that_fails_to_deserialize_hands_off_immediately()
     {
         await using var harness = await Harness.CreateAsync(configureServices: services =>
             services.AddTransient<DeserializationProbeConsumer>());
@@ -457,7 +457,9 @@ public sealed class PipelineSemanticsTests
         await harness.DeliverAsync(12, "this-is-not-json");
 
         var envelope = Assert.Single(harness.System.Envelopes);
-        Assert.Equal("2", envelope.Properties["streambus.error.attempts"]?.ToString());
+        // Deserialization is deterministic; the delivery does not burn the
+        // retry budget on attempts that cannot succeed, so attempts = 1.
+        Assert.Equal("1", envelope.Properties["streambus.error.attempts"]?.ToString());
         Assert.Contains(
             nameof(StreamBusDeserializationException),
             envelope.Properties["streambus.error.exception-type"]?.ToString(),

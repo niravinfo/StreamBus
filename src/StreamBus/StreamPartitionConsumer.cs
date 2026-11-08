@@ -556,8 +556,49 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                 return;
             }
 
-            Interlocked.Increment(ref _state.Inflight);
+            // Typed materialization happens once per delivery, before any
+            // attempt and before the pipeline runs:
+            //  - The bytes never change, so every retry attempt reuses the one
+            //    deserialized instance (deserializing again would be redundant
+            //    work — and worse, it would hand the handler of attempt N+1 an
+            //    instance mutated by a failed attempt N).
+            //  - Filters and the handler decide on the materialized message,
+            //    so it must exist before they run (FLT-9).
+            //  - A deserialization failure is deterministic: the same bytes
+            //    cannot succeed on a later attempt, so it never burns the retry
+            //    budget — it hands off immediately (attempts = 1) or, with no
+            //    hand-off configured, fails the attach visibly (recycle,
+            //    redeliver, never skip).
+            if (_options.MessageType is { } messageType)
+            {
+                try
+                {
+                    var typed = TypedMessageDeserializer.Deserialize(_serializer, messageType, consumeContext);
+                    consumeContext = TypedConsumeContext.Create(messageType, consumeContext, typed);
+                }
+                catch (StreamBusDeserializationException ex)
+                {
+                    StreamBusActivity.RecordException(activity, ex);
+                    if (_options.OnExhausted is not null
+                        || _options.DeadLetter is not null
+                        || _options.ErrorStream is not null)
+                    {
+                        await ExhaustAsync(
+                            consumer, offset, consumeContext, 1, ex, attach, sendHeaders.Snapshot())
+                            .ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        _logger.LogWarning(ex,
+                            "Deserialization failed for stream {Stream} partition {Partition} offset {Offset}; no hand-off is configured, recycling the attach (redeliver, never skip).",
+                            _stream, _partitionIndex, offset);
+                        FailAttach(attach, offset, ex, "Typed message deserialization failed");
+                    }
+                    return;
+                }
+            }
 
+            Interlocked.Increment(ref _state.Inflight);
             // A single finally owns the inflight decrement + retry_blocked reset for
             // every exit path below.
             try
@@ -658,15 +699,10 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
     // The pipeline wraps the whole outer delegate. Filters run per retry attempt
     // (so their exceptions use the existing retry/exhaustion machinery), while
     // the per-message DI scope is created once in DispatchAsync and shared with
-    // the typed consumer.
+    // the typed consumer. The typed context is materialized by DispatchAsync
+    // before this method runs (see the FLT-9 contract comment there).
     private async Task InvokeHandlerPipelineAsync(ConsumeContext consumeContext)
     {
-        if (_options.MessageType is { } messageType)
-        {
-            var message = TypedMessageDeserializer.Deserialize(_serializer, messageType, consumeContext);
-            consumeContext = TypedConsumeContext.Create(messageType, consumeContext, message);
-        }
-
         if (_pipeline.Count == 0)
         {
             await _handler(consumeContext).ConfigureAwait(false);

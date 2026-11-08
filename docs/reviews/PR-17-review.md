@@ -2644,9 +2644,9 @@ Task Next()
 
 ---
 
-**[FLT-9] Typed endpoints deserialize eagerly even when a filter short-circuits**
-- **Severity:** MINOR
-- **File:** src\StreamBus\StreamPartitionConsumer.cs (lines 620–632)
+**[FLT-9] Typed endpoints deserialize eagerly even when a filter short-circuits — REFUTED as a fix; eager deserialization is the deliberate contract (won't fix, 2026-11-08)**
+- **Severity:** ~~MINOR~~ → none (won't fix; behavior contractual and intentional)
+- **File:** src\StreamBus\StreamPartitionConsumer.cs (lines 662–668)
 - **Problem:** On a typed endpoint the message is deserialized *before* the pipeline runs, so every delivery — including ones a universal filter drops via zero-`next`, and every retry attempt — pays full deserialization even when neither a typed filter nor the handler touches `Message`. Pinned by tests ("Typed_zero_next_still_deserializes_but_skips_handler"), so it's contractual, not accidental.
 ```csharp
 private async Task InvokeHandlerPipelineAsync(ConsumeContext consumeContext)
@@ -2659,7 +2659,46 @@ private async Task InvokeHandlerPipelineAsync(ConsumeContext consumeContext)
     ...
 }
 ```
-- **Solution:** Make `ConsumeContext<T>.Message` lazy: construct the typed context with a deserialize-once `Lazy<T>` built from `Body`, so the payload decodes only on first read. Deserialization failures surface at first materialization — still inside the pipeline, so existing retry/exhaustion classification applies unchanged.
+- **Solution (proposed, rejected):** Make `ConsumeContext<T>.Message` lazy: construct the typed context with a deserialize-once `Lazy<T>` built from `Body`, so the payload decodes only on first read. Deserialization failures surface at first materialization — still inside the pipeline, so existing retry/exhaustion classification applies unchanged.
+
+- **Verification & resolution (2026-11-08):** Factually genuine, but the proposed lazy fix is a
+  contract regression and was rejected. Closed as won't fix.
+  1. **Facts confirmed.** `InvokeHandlerPipelineAsync` (`StreamPartitionConsumer.cs:662–668`)
+     deserializes before the pipeline runs and is re-invoked per retry attempt, and the
+     behavior is pinned by *three* tests, not one: `Typed_zero_next_still_deserializes_but_skips_handler`,
+     `Universal_only_zero_next_still_deserializes_on_a_typed_endpoint`, and
+     `Typed_deserialization_failure_retries_and_never_runs_filters_or_handler`.
+  2. **Rejected — filters need the message to make their decision.** A filter's choice to skip
+     (zero-`next`) or pass along a delivery is *based on the deserialized message*: a universal
+     filter on a typed endpoint, a typed filter typed on `T`, and the handler all receive
+     `ConsumeContext<T>` and must be able to read `Message`. Deferring materialization means
+     the deciding filter would act without the very object it is deciding about — the
+     "lazy" win exists only for a filter that drops the delivery without looking at it, which
+     is a decision made blind.
+  2b. **Verified invariant (no double deserialization):** the message is deserialized exactly
+     once per attempt and the *same instance* is shared by everything downstream.
+     `TypedMessageDeserializer.Deserialize` has exactly one production call site
+     (`StreamPartitionConsumer.InvokeHandlerPipelineAsync` line 673); the resulting object is
+     wrapped into a single `ConsumeContext<T>` that is passed to both the pipeline filters and
+     the handler, and `TypedConsumerInvoker<T, TConsumer>` (`Hosting.cs:346–360`) receives that
+     same context — it casts and calls `consumer.Consume(typed)` without deserializing again,
+     and throws an internal error if a typed context arrives without a message. Filters and
+     the final consumer class observe one shared `Message` object, never two.
+  3. **Rejected — eager deserialization is the poison guard.** Today a payload that cannot
+     deserialize is dead-lettered before any user filter runs, *regardless* of what the
+     filters would decide; under the lazy fix, a short-circuiting filter would advance the
+     offset without ever materializing `Message`, silently skipping a poison delivery —
+     exactly the never-skip hazard the library rules out everywhere else (at-least-once,
+     INF-2's "handoff never advances" ruling). The lazy change would also invert the two
+     pinned zero-next/poison tests and break the "deserialization failure never reaches
+     filters" invariant (the failure would surface inside whichever filter/handler reads
+     `Message` first), and would require reshaping the public `ConsumeContext<T>.Message`
+     (`required init` → lazily-backed).
+  4. **Resolution:** No code change to the deserialization ordering; a contract comment was
+     added at `InvokeHandlerPipelineAsync` stating that typed deserialization deliberately
+     precedes the pipeline (filters and handlers decide on materialized messages; poison
+     deliveries dead-letter before any filter can skip them). The pinned tests remain the
+     contract owners.
 
 ---
 
