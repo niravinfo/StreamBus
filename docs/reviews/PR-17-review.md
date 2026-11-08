@@ -2485,6 +2485,20 @@ private void LogSendHeaderCollisions(ErrorEnvelope envelope)
 }
 ```
 
+- **Verification & resolution (2026-11-08):** Confirmed genuine. `ErrorPublisher.LogSendHeaderCollisions`
+  runs on every error-stream and error-queue handoff (both call it before their publish), and its first
+  action after the null check was `envelope.EnvelopeApplicationProperties()` — a fresh 14-entry
+  dictionary with `ToString` conversions of source/partition/offset/attempts/timestamps — before the
+  loop that only logs through `_logger.LogWarning`. With no Warning sink attached (`NullLogger`, or
+  any sink configured below Warning) the allocation and string conversions were pure waste on the
+  dispatch error path. Applied the reviewer's fix exactly: the guard is now
+  `if (envelope.SendHeaders is null || !_logger.IsEnabled(LogLevel.Warning)) return;` with a comment
+  noting why the check precedes the allocation. The warning path remains pinned by
+  `PipelineSemanticsTests.Output_header_collision_logs_a_warning_naming_the_key`, whose
+  `CapturingLogger` enables Warning. `dotnet build` clean; UnitTests 474/474. No behavior change
+  (when a Warning sink exists the allocation still happens, once, and the messages are identical),
+  so no new tests or CHANGELOG entry.
+
 ---
 
 **[FLT-6] Duplicated retry knobs: `UseMessageRetry` vs `UseRetry`**
