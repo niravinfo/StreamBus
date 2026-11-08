@@ -127,6 +127,51 @@ public sealed class ConsumePipelineIntegrationTests : IAsyncDisposable
             ? $"Timed out waiting for {what}."
             : $"Timed out waiting for {what}. Last observed: {describeLast()}.";
 
+    /// <summary>
+    /// Raw-reads the stream from offset 0 with an untracked consumer (no reference,
+    /// no filters) and returns the offset of the last message it can see.
+    /// </summary>
+    /// <remarks>
+    /// RabbitMQ interleaves offset-tracking records into the stream: every
+    /// broker-side offset store for any tracked reference is materialized as a
+    /// record that consumes a stream offset but is not readable. Message offsets
+    /// are therefore NOT contiguous while consumers track offsets, so a test
+    /// must discover the real last-message offset instead of assuming
+    /// "N messages ⇒ last offset N-1".
+    /// </remarks>
+    private static async Task<ulong> LastPlayableMessageOffsetAsync(string stream, int minimumMessages)
+    {
+        var admin = await ConnectAdminAsync();
+        try
+        {
+            var offsets = new List<ulong>();
+            var receivedAny = new TaskCompletionSource();
+            var consumer = await admin.CreateRawConsumer(new RawConsumerConfig(stream)
+            {
+                OffsetSpec = new OffsetTypeFirst(),
+                MessageHandler = (_, context, message) =>
+                {
+                    lock (offsets)
+                    {
+                        offsets.Add(context.Offset);
+                        if (offsets.Count >= minimumMessages) receivedAny.TrySetResult();
+                    }
+                    return Task.CompletedTask;
+                },
+            });
+            await receivedAny.Task.WaitAsync(TimeSpan.FromSeconds(30));
+            // Give a later chunk a beat to arrive (chunks are delivered progressively).
+            await Task.Delay(500, TestContext.Current.CancellationToken);
+            await consumer.Close();
+            lock (offsets)
+                return offsets.Max();
+        }
+        finally
+        {
+            await admin.DisposeAsync();
+        }
+    }
+
     private sealed class BusInstance : IAsyncDisposable
     {
         public required ServiceProvider Provider { get; init; }
@@ -296,12 +341,18 @@ public sealed class ConsumePipelineIntegrationTests : IAsyncDisposable
             for (var i = 0; i < 3; i++)
                 await bus.Bus.PublishRawAsync(stream, Body($"filtered-{i}"), new PublishOptions(), ct);
 
-            ulong? lastOffset = null;
+            // RabbitMQ interleaves each broker-side offset store (ours included)
+            // as a non-readable record that consumes a stream offset, so the
+            // three messages may sit at 0,1,2 or at 0,1,3... depending on where
+            // the tracking records landed. The invariant under test is: the last
+            // FILTERED message's offset gets stored; redelivery stops after it.
+            var lastMessageOffset = await LastPlayableMessageOffsetAsync(stream, minimumMessages: 3);
+            ulong? stored = null;
             await WaitForAsync(
-                async () => (lastOffset = await bus.Bus.GetConsumerOffsetAsync(stream, "filter-grp", 0, ct)) == 2,
+                async () => (stored = await bus.Bus.GetConsumerOffsetAsync(stream, "filter-grp", 0, ct)) == lastMessageOffset,
                 WaitTimeout,
-                "all three filtered offsets to be stored",
-                () => lastOffset is null ? "no stored offset" : $"stored offset {lastOffset}");
+                $"the last filtered offset ({lastMessageOffset}) to be stored",
+                () => stored is null ? "no stored offset" : $"stored offset {stored} (expected {lastMessageOffset})");
         }
         finally
         {
