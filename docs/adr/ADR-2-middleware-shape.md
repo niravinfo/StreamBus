@@ -6,77 +6,38 @@
 
 ## Context
 
-v2 adds message properties and user-composable publish and consume
-middleware. The API should feel familiar to users of message-bus middleware
-without weakening StreamBus's compile-time routing guarantees. RabbitMQ
-Streams is append-only, so the publish path cannot support the same
-short-circuit-and-replace semantics that a queue-oriented bus can.
+v2 adds user-composable publish and consume middleware. The API should feel
+familiar without weakening StreamBus's compile-time routing guarantees.
+RabbitMQ Streams is append-only, so the publish path cannot support
+short-circuit-and-replace semantics.
 
 ## Decision
 
-**Publish is decoration-only.** Filters run after the stream and routing key
-are resolved and before serialization. They may observe the publish and mutate
-headers through the header writer, but they cannot replace the body, stream,
-or routing key. The pipeline runs on the typed facade only
-(`PublishAsync`/`PublishSuperAsync`). Raw publishes, effectively-once result
-publishes, error-envelope hand-off, requeue, and replay republishes are the
-documented pipeline-free escape hatches.
+- **Publish is decoration-only.** Filters run after the stream and routing key
+  are resolved and before serialization. They may observe the publish and
+  mutate headers, but cannot replace the body, stream, or routing key. Raw
+  publishes and error-envelope hand-off, requeue, and replay republishes are
+  documented pipeline-free escape hatches.
+- **Consume decorates the outer delegate.** The pipeline wraps deserialization,
+  typed-consumer resolution, and handler invocation, and shares one
+  per-message DI scope with the typed consumer.
+- **Filters are ordered, additive, and guarded.** Bus-wide filters run before
+  endpoint filters; unwinding is in reverse. A consume filter calls `next()`
+  zero times (skip the delivery: handler does not run, offset advances) or
+  once; more than once is a contract violation that recycles the attach. A
+  publish filter must call `next()` exactly once.
+- **One context per publish/delivery.** Universal and typed filters share a
+  single context; the continuation is parameterless. Typed contexts derive
+  from the universal context and expose the message as `Message`.
 
-**Consume decorates the outer delegate with an explicit skip.** The pipeline
-wraps deserialization, typed-consumer resolution, and handler invocation, and
-shares one per-message DI scope with the typed consumer. A filter may set
-`SkipHandler` to mark the message processed without invoking the handler or
-publishing an error. Skip is capability-gated: a filter declares `CanSkip`,
-effectively-once pipelines reject any skip-capable filter at configuration
-time, and typed endpoints require `AllowPipelineSkip()`. Raw consumers accept
-skip unconditionally.
-
-**Both pipelines are ordered, additive, and guarded.** Filters execute in
-registration order; bus-wide filters run before endpoint filters, and the
-after-section unwinds in reverse. Zero `next` calls without skip and multiple
-`next` calls are contract violations, classified through the existing
-retry/exhaustion machinery on consume and as configuration errors on publish.
-
-## Alternatives considered
-
-- **Full MassTransit-style `IPipe`.** Invites publish short-circuiting and
-  delegated verification against compile-time routing guarantees that StreamBus
-  deliberately keeps.
-- **Observe-only consume middleware.** Cannot express a legitimate drop
-  policy, so a common tenant-filter use case would need a handler workaround.
-- **Publish veto/suppression.** Rejected because an append-only stream publish
-  that "succeeds" without writing is indistinguishable from data loss.
+Alternatives rejected: full MassTransit-style `IPipe` (invites publish
+short-circuiting), observe-only consume middleware (cannot express a drop
+policy), and publish veto/suppression (a stream publish that "succeeds"
+without writing is indistinguishable from data loss).
 
 ## Consequences
 
 - Users get familiar filter ergonomics without a second routing model.
 - Publish filters cannot implement outbox suppression or body replacement; a
   future need reopens this ADR rather than extending the filter contract.
-- Consume skip is explicit and auditable, and cannot silently discard
-  effectively-once work.
-
-## Evidence
-
-- `PublishPipelineTests` (order/unwind, zero/double `next`, duplicate types,
-  header precedence, super routing non-substitution, raw bypass)
-- `PipelineSemanticsTests` (three-filter order, bus-then-endpoint order,
-  payload flow, skip allow/deny, EO rejection, shared per-message scope)
-- `ConsumePipelineIntegrationTests` and `PublishPipelineIntegrationTests`
-  (headers end to end, tenant filter, exhaustion envelope)
-
-## Amendment (2026-10-28)
-
-The skip mechanism described above was replaced by ordinary pipeline
-semantics. Universal and typed filters now share one context per publish or
-delivery, and the continuation is parameterless `PublishDelegate()` /
-`ConsumeDelegate()`. Typed contexts derive from the universal context and
-expose their message as `Message`; `context.Inner` and the wrapper context
-are gone.
-
-A normal consume filter calls `next()` zero or one time. Zero means the
-filter handled or filtered the delivery: the handler does not run and the
-offset advances. More than one call remains a contract violation. An
-effectively-once consume filter must call `next()` exactly once; zero calls
-is a runtime contract error rather than a configuration-time capability
-check. `CanSkip`, `SkipHandler`, and `AllowPipelineSkip` were removed.
-Publish filters still call `next()` exactly once.
+- A skip is explicit and auditable — the handler measurably does not run.
