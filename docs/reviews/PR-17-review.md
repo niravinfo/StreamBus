@@ -2343,10 +2343,42 @@ return consumer as RawConsumer
 
 ---
 
-**[INF-14] `AmqpErrorQueueConnection.DisposeAsync` falls back to synchronous `Dispose()`**
+**[INF-14] `AmqpErrorQueueConnection.DisposeAsync` falls back to synchronous `Dispose()` — VALID, fixed (2026-11-08)**
 - **Severity:** MINOR
 - **File:** src\StreamBus\ErrorQueueTransport.cs (lines 103–107)
 - **Problem:** The class is part of an `IAsyncDisposable` seam whose purpose is clean async lifecycle, but disposal delegates to the synchronous `IConnection.Dispose()`, bypassing the graceful close the client v7 offers.
+- **Verification & resolution (2026-11-08):** Confirmed genuine at MINOR, with one claim corrected.
+  1. `IConnection` in RabbitMQ.Client 7.2.2 (the version this branch pins) inherits
+     `IAsyncDisposable`, and the client's documented shutdown sequence is exactly
+     `await conn.CloseAsync(); await conn.DisposeAsync();` — the client is async-first,
+     so delegating an async-seam disposal to the sync `IDisposable.Dispose()` is the
+     wrong endpoint. The sibling wrappers in the same file
+     (`AmqpPublishChannel`, `AmqpControlChannel`) already delegate to
+     `IChannel.DisposeAsync()`, so this was the one inconsistent spot.
+  2. The reviewer's "bypassing the graceful close" rationale is overstated for this
+     codebase: `ErrorQueueTransport.DisposeAsync` (the only production caller) performs
+     the graceful `CloseAsync(200, "disposing", 5s)` itself *before* calling
+     `IErrorQueueConnection.DisposeAsync` (`ErrorQueueTransport.cs:581–587`), so the
+     broker-visible close behavior does not change. The fix is lifecycle-path
+     correctness and consistency, not a live shutdown bug — MINOR is correct.
+  3. **Applied fix** (`AmqpErrorQueueConnection.DisposeAsync`): now
+     `await _connection.DisposeAsync().ConfigureAwait(false)`, per the reviewer's
+     suggestion. One-line change, no public surface, no changelog entry (matches the
+     INF-13 precedent).
+  4. Test (TDD — watched RED first, failing exactly at the expected assert: sync
+     `DisposeCalls = 1`, `DisposeAsyncCalls = 0`):
+     `AmqpErrorQueueConnectionTests.DisposeAsync_disposes_the_underlying_connection_asynchronously`
+     uses a by-hand `IConnection` fake (the first in the suite — existing
+     `IErrorQueueConnection` fakes cover only the internal seam) that records which
+     disposal path ran, and pins that the wrapper calls `DisposeAsync`, never
+     `Dispose`. UnitTests 474/474 (473 prior + 1 new); the brokered integration suite
+     could not run in this environment (no RabbitMQ broker is listening).
+```csharp
+// ErrorQueueTransport.cs:103-104 (post-fix)
+public async ValueTask DisposeAsync()
+    => await _connection.DisposeAsync().ConfigureAwait(false);
+```
+- **Original review text retained below for traceability:**
 ```csharp
 public ValueTask DisposeAsync()
 {

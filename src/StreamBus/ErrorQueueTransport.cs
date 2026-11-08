@@ -100,11 +100,8 @@ internal sealed class AmqpErrorQueueConnection : IErrorQueueConnection
         => await _connection.CloseAsync(200, "disposing", TimeSpan.FromSeconds(5), abort: false, cancellationToken: cancellationToken)
             .ConfigureAwait(false);
 
-    public ValueTask DisposeAsync()
-    {
-        _connection.Dispose();
-        return ValueTask.CompletedTask;
-    }
+    public async ValueTask DisposeAsync()
+        => await _connection.DisposeAsync().ConfigureAwait(false);
 }
 
 internal sealed class AmqpPublishChannel : IErrorQueuePublishChannel
