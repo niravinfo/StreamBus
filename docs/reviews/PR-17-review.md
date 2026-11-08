@@ -2501,8 +2501,8 @@ private void LogSendHeaderCollisions(ErrorEnvelope envelope)
 
 ---
 
-**[FLT-6] Duplicated retry knobs: `UseMessageRetry` vs `UseRetry`**
-- **Severity:** MINOR
+**[FLT-6] Duplicated retry knobs: `UseMessageRetry` vs `UseRetry` — VALID, fixed (2026-11-08)**
+- **Severity:** MINOR → resolved
 - **File:** src\StreamBus\Configuration\StreamBusConfigurator.cs (lines 243–255 and 451–462)
 - **Problem:** The same policy is configured through two differently-named members duplicated at both bus scope and endpoint scope. Users can't tell which is canonical, IntelliSense shows four near-identical retry members, and docs must always explain the pair.
 ```csharp
@@ -2521,6 +2521,40 @@ public void UseRetry(RetryPolicy policy)
 }
 ```
 - **Solution:** Keep one verb with two overloads; mark `UseMessageRetry` `[Obsolete("Use UseRetry")]` for one release then remove.
+
+- **Verification & resolution (2026-11-08):** Confirmed genuine on the duplication claim, with one
+  correction to the framing: the two members were not literal duplicates — one took a fluent
+  `IRetryConfigurator` callback, the other a pre-built `RetryPolicy` ("escape hatch for schedules
+  the fluent configurator cannot express," per its own doc). The defect was naming drift, not
+  redundancy: the fluent member had carried MassTransit's `UseMessageRetry` verb (see the v2 API
+  plan, which specified exactly that name), while the escape hatch used a different verb for the
+  same concept, at both bus and endpoint scope — four near-identical members across two interfaces
+  with no way to tell which is canonical. Usage was heavily skewed (~20 `UseMessageRetry` call
+  sites vs 3 `UseRetry`), and `docs/guide/errors.md` had to explain the pair.
+  1. The reviewer's `[Obsolete]` middle path was rejected: 0.2.0 is an in-progress breaking
+     release that already carries wholesale pre-release renames (`ct` → `cancellationToken` in
+     DOC-2, `PublishDelegate`/`ConsumeDelegate` → `PublishNext`/`ConsumeNext` in DOC-2/DOC-4),
+     each recorded directly under `### Breaking` with no obsoletion shim. A one-release alias
+     would add transitional surface to a package with no released consumers to migrate.
+  2. **Applied fix** (`StreamBusConfigurator.cs`): both interfaces and implementations now expose
+     `UseRetry(Action<IRetryConfigurator>)` alongside the existing `UseRetry(RetryPolicy)`;
+     `UseMessageRetry` is deleted at both bus and endpoint scope. Argument shapes and schedule
+     semantics are unchanged, so call sites only rename the member. The two configuration
+     exception messages in `RetryConfiguration.cs` now name `UseRetry` (no test pins either
+     message — verified by grep — so no test updates were needed there).
+  3. Call sites updated: unit tests (`RetryConfigurationTests`, `ErrorQueueTransportTests`),
+     integration tests (`ErrorQueueIntegrationTests` — the three existing raw-`UseRetry`
+     integration call sites were already valid), `README.md`, `docs/guide/errors.md` (including
+     rewriting the "takes a raw RetryPolicy" sentence that existed only to explain the pair),
+     and `docs/llms.txt` (the retry bullet no longer names two verbs).
+  4. Tests (TDD — watched RED first with CS1660, the fluent lambda unable to bind to any
+     `UseRetry` overload): new `RetryApiSurfaceTests` pins by reflection that both configurator
+     interfaces expose the two `UseRetry` overloads (fluent + raw), that no member named
+     `UseMessageRetry` remains on either surface, and by behavior that the fluent overload sets
+     the bus-wide schedule with the endpoint override winning, and that the raw overload still
+     sets the schedule from a policy. UnitTests 478/478 (474 prior + 4 new); the brokered
+     integration suite builds clean but could not run in this environment (no RabbitMQ broker
+     is listening).
 
 ---
 

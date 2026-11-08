@@ -41,7 +41,7 @@ public sealed class RetryConfigurationTests
         var options = EndpointOptions(e =>
         {
             e.Consumer<OrderConsumer>("grp");
-            e.UseMessageRetry(r => r.Intervals(TimeSpan.FromMilliseconds(200), TimeSpan.FromSeconds(2)));
+            e.UseRetry(r => r.Intervals(TimeSpan.FromMilliseconds(200), TimeSpan.FromSeconds(2)));
             e.DeadLetterToStream("audit-errors");
         });
         Assert.Equal(3, options.Retry.MaxAttempts);
@@ -56,7 +56,7 @@ public sealed class RetryConfigurationTests
         var options = EndpointOptions(e =>
         {
             e.Consumer<OrderConsumer>("grp");
-            e.UseMessageRetry(r => r.Immediate(5));
+            e.UseRetry(r => r.Immediate(5));
             e.OnExhausted((_, _) => Task.CompletedTask);
         });
         Assert.Equal(6, options.Retry.MaxAttempts);
@@ -71,7 +71,7 @@ public sealed class RetryConfigurationTests
         var options = EndpointOptions(e =>
         {
             e.Consumer<OrderConsumer>("grp");
-            e.UseMessageRetry(r => r.Interval(3, TimeSpan.FromMilliseconds(100)));
+            e.UseRetry(r => r.Interval(3, TimeSpan.FromMilliseconds(100)));
         });
         Assert.Equal(4, options.Retry.MaxAttempts);
         Assert.Null(options.ErrorStream);
@@ -130,7 +130,7 @@ public sealed class RetryConfigurationTests
         var options = EndpointOptions(e =>
         {
             e.Consumer<OrderConsumer>("grp");
-            e.UseMessageRetry(r => r.None());
+            e.UseRetry(r => r.None());
         });
         Assert.Equal(1, options.Retry.MaxAttempts);
         Assert.Equal("orders_error", options.DeadLetter?.Name);
@@ -142,7 +142,7 @@ public sealed class RetryConfigurationTests
         var options = EndpointOptions(e =>
         {
             e.Consumer<OrderConsumer>("grp");
-            e.UseMessageRetry(r => r.Immediate(1));
+            e.UseRetry(r => r.Immediate(1));
             e.DeadLetterToStream("audit-errors");
             e.OnExhausted((_, _) => Task.CompletedTask);
         });
@@ -158,9 +158,9 @@ public sealed class RetryConfigurationTests
             e =>
             {
                 e.Consumer<OrderConsumer>("grp");
-                e.UseMessageRetry(r => r.Immediate(0));
+                e.UseRetry(r => r.Immediate(0));
             },
-            cfg => cfg.UseMessageRetry(r => r.Intervals(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(2))));
+            cfg => cfg.UseRetry(r => r.Intervals(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(2))));
         Assert.Equal(1, options.Retry.MaxAttempts);
     }
 
@@ -169,7 +169,7 @@ public sealed class RetryConfigurationTests
     {
         var options = EndpointOptions(
             e => e.Consumer<OrderConsumer>("grp"),
-            cfg => cfg.UseMessageRetry(r => r.Intervals(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(10))));
+            cfg => cfg.UseRetry(r => r.Intervals(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(10))));
         Assert.Equal(4, options.Retry.MaxAttempts);
     }
 

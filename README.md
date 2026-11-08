@@ -56,7 +56,7 @@ builder.Services.AddStreamBus((_, cfg) =>
     cfg.ReceiveEndpoint("orders", e =>
     {
         e.Consumer<OrderConsumer>("billing");
-        e.UseMessageRetry(r => r.Immediate(3));
+        e.UseRetry(r => r.Immediate(3));
     });
 });
 

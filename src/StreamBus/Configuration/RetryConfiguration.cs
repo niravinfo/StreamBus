@@ -243,7 +243,7 @@ internal sealed class RetryConfigurator : IRetryConfigurator
     }
 
     RetryPolicy IRetryConfigurator.BuildPolicy()
-        => _pending ?? throw new StreamBusConfigurationException("UseMessageRetry requires a schedule: Immediate, Interval, Intervals, Exponential, or None.");
+        => _pending ?? throw new StreamBusConfigurationException("UseRetry requires a schedule: Immediate, Interval, Intervals, Exponential, or None.");
 }
 
 internal enum ExhaustionKind
@@ -278,7 +278,7 @@ internal static class RetryDerivation
         if (!bounded)
         {
             if (destination is not null || hasCallback)
-                throw new StreamBusConfigurationException($"Bus {busName}: endpoint '{stream}' sets a dead-letter destination or OnExhausted callback with a retry schedule that has no attempt limit. A hand-off needs an attempt limit: configure UseMessageRetry with Immediate, Interval, Intervals, Exponential, or None.");
+                throw new StreamBusConfigurationException($"Bus {busName}: endpoint '{stream}' sets a dead-letter destination or OnExhausted callback with a retry schedule that has no attempt limit. A hand-off needs an attempt limit: configure UseRetry with Immediate, Interval, Intervals, Exponential, or None.");
             return new DerivedExhaustion(effective, ExhaustionKind.StrictForever, null, null, false);
         }
         if (hasCallback)

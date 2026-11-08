@@ -10,7 +10,7 @@ services.AddStreamBus((context, cfg) =>
 {
     cfg.Host("localhost", "/", h => h.Credentials("app", "s3cret"));
 
-    cfg.UseMessageRetry(r => r.Intervals(
+    cfg.UseRetry(r => r.Intervals(
         TimeSpan.FromMilliseconds(200),
         TimeSpan.FromSeconds(2),
         TimeSpan.FromSeconds(10)));
@@ -26,14 +26,14 @@ services.AddStreamBus((context, cfg) =>
     cfg.ReceiveEndpoint("audit", e =>
     {
         e.Consumer<AuditConsumer>("audit-log");
-        e.UseMessageRetry(r => r.Immediate(5));
+        e.UseRetry(r => r.Immediate(5));
         e.DeadLetterToStream("audit-errors");
     });
 
     cfg.ReceiveEndpoint("payments", e =>
     {
         e.Consumer<PaymentsConsumer>("payments-ops");
-        e.UseMessageRetry(r => r.Intervals(TimeSpan.FromMilliseconds(200)));
+        e.UseRetry(r => r.Intervals(TimeSpan.FromMilliseconds(200)));
         e.OnExhausted(async (ctx, ct) =>
         {
             var bus = ctx.GetService<IStreamBus>();
@@ -44,14 +44,15 @@ services.AddStreamBus((context, cfg) =>
     cfg.ReceiveEndpoint("metrics", e =>
     {
         e.Consumer<MetricsConsumer>("metrics-tail");
-        e.UseMessageRetry(r => r.None());
+        e.UseRetry(r => r.None());
     });
 });
 ```
 
 Schedules: `Immediate(n)`, `Interval(n, delay)`, `Intervals(params)`,
-`Exponential(count, base, max, multiplier)`, `None()`. `UseRetry` takes
-a raw `RetryPolicy` as an escape hatch on both levels.
+`Exponential(count, base, max, multiplier)`, `None()`. `UseRetry` accepts
+either the fluent schedule callback or a raw `RetryPolicy` (the escape
+hatch for schedules the fluent configurator cannot express) on both levels.
 
 `MaxAttempts` counts total attempts including the first (`None()` is one
 attempt, `Immediate(5)` is six). Leaving it unset sets no attempt limit:
@@ -151,7 +152,7 @@ services.AddStreamBus((context, cfg) =>
     cfg.ReceiveEndpoint("orders", e =>
     {
         e.Consumer<OrderConsumer>("order-processors");
-        e.UseMessageRetry(r => r.None());
+        e.UseRetry(r => r.None());
         e.DeadLetterToQueue("orders-errors", DeadLetterQueueType.ClassicQueue);
     });
 });

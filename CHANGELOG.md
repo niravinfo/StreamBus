@@ -4,6 +4,17 @@
 
 ### Breaking
 
+- The retry configuration surface is unified under one verb:
+  `IStreamBusConfigurator.UseMessageRetry(Action<IRetryConfigurator>)` and
+  `IReceiveEndpointConfigurator.UseMessageRetry(Action<IRetryConfigurator>)`
+  are removed; their fluent `IRetryConfigurator` callback moved to `UseRetry`
+  overloads next to the existing raw `RetryPolicy` escape hatch
+  (`UseRetry(Action<IRetryConfigurator>)` / `UseRetry(RetryPolicy)`, at both
+  bus and endpoint scope). The two verbs configured the same schedule with
+  different names; the configuration exception messages now also name `UseRetry`.
+  Call sites only need to rename the member: the argument shapes and schedule
+  semantics are unchanged.
+
 - The metric `streambus_partition_lag` is renamed to
   `streambus_partition_backlog`. It has only ever measured the
   consumer-held unprocessed backlog (`max(0, delivered - stored)`), not
