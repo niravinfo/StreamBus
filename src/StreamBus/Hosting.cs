@@ -858,9 +858,9 @@ public sealed class StreamBusHealthCheck : IHealthCheck
         var aggregators = _registry.HealthAggregators.ToList();
         if (aggregators.Count == 0)
         {
-            var emptyData = states.ToDictionary(
-                r => $"{r.Vhost}|{r.BusType}",
-                r => (object)r.State.ToString());
+            var emptyData = new Dictionary<string, object>();
+            foreach (var state in states)
+                emptyData[$"bus:{state.Vhost}|{state.BusType}"] = state.State.ToString();
             return Task.FromResult(HealthCheckResult.Degraded("no buses registered.", data: emptyData));
         }
 
@@ -868,11 +868,15 @@ public sealed class StreamBusHealthCheck : IHealthCheck
             .Select(a => (Snapshot: a.Snapshot(), Status: a.Compute()))
             .ToList();
         var rows = snapshots.SelectMany(s => s.Snapshot.Registrations).ToList();
-        var data = states.ToDictionary(
-            r => $"{r.Vhost}|{r.BusType}",
-            r => (object)r.State.ToString());
+        // Bus markers and registration names are separate key namespaces; the
+        // prefixes keep a free-form registration name that collides with a bus
+        // type name from silently overwriting (or being confused with) a bus
+        // state row.
+        var data = new Dictionary<string, object>();
+        foreach (var state in states)
+            data[$"bus:{state.Vhost}|{state.BusType}"] = state.State.ToString();
         foreach (var row in rows)
-            data[$"{row.Vhost}|{row.Registration}"] = $"{row.Kind}:{row.State}{(row.Reason is null ? "" : $" ({row.Reason})")}";
+            data[$"reg:{row.Vhost}|{row.Registration}"] = $"{row.Kind}:{row.State}{(row.Reason is null ? "" : $" ({row.Reason})")}";
 
         var details = rows
             .Where(r => r.State != BusRegistrationState.Attached)

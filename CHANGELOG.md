@@ -4,6 +4,13 @@
 
 ### Breaking
 
+- `StreamBusHealthCheck` data keys are now namespaced to prevent collisions:
+  bus connection rows are prefixed `bus:{vhost}|{busType}` and registration
+  rows `reg:{vhost}|{registration}` (previously both used the bare
+  `{vhost}|{name}` format, so a registration named like a bus type silently
+  overwrote the bus state row, and duplicate bus-type full names threw). Code
+  reading `HealthCheckResult.Data` keys must use the new prefixes.
+
 - The effectively-once (read-process-write) pipeline is removed entirely, along
   with every result-publish surface: `ConsumeEffectivelyOnceAsync`,
   `EffectivelyOnceOptions`, `PublishResultAsync`, `PublishResultOptions`,
