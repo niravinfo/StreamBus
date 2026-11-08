@@ -2286,6 +2286,23 @@ if (connection == BusConnectionState.Fatal || declareExhausted || allConsumersFa
 ```
 - **Solution:** Rename the local to `anyDeclareFailed`; longer term split the enum into `Failed` (terminal) vs `Retrying` so `Compute()` maps them without `All()` heuristics.
 
+- **Verification & resolution (2026-11-08):** Confirmed genuine, and the factual picture is sharper
+  than the review states: a declare only lands in `FailedRetrying` via `MarkDeclareFailed` on a
+  fatal-conflict classification (`Hosting.cs` declare loops), and the fatal classification
+  immediately rethrows out of `RetryUntilAsync` — so for declares the state is *terminal*, not
+  "retrying exhausted". The `declareExhausted` name was doubly wrong: declares retry with
+  `int.MaxValue` (`Hosting.cs:716/752/782`), so nothing ever exhausts. Consumers use the same value
+  for a genuinely retrying attach (`FailAttach` disposes the consumer "for redelivery";
+  `StreamPartitionConsumer.cs:1062-1084`), which is the two-meanings overload the reviewer flagged.
+  Applied fix: the local is renamed `anyDeclareFailed` in `HealthAggregator.Compute()`, with a
+  comment documenting the terminal-declare vs retrying-consumer semantics of the shared enum
+  state. The enum split into `Failed`/`Retrying` is recorded here as the longer-term follow-up
+  the reviewer suggested; it was not applied because the enum is internal-only, the semantic
+  distinction is now documented at the single place it is consumed, and a split would churn
+  every setter site (`StreamPartitionConsumer`, `Hosting`, `ConsumerRegistry`) with no behavior
+  change — not justified at MINOR severity. Rename is non-behavioral, so no new test; all 11
+  health-related tests and the full unit suite pass (UnitTests 471/471).
+
 ---
 
 **[INF-13] `CreateRawConsumerAsync` blind cast to `RawConsumer`**

@@ -52,12 +52,17 @@ internal sealed class StreamBusHealthAggregator
         var consumers = rows.Where(r => r.Kind == "consumer").ToList();
         var declares = rows.Where(r => r.Kind == "declare").ToList();
 
-        bool declareExhausted = declares.Any(d => d.State == BusRegistrationState.FailedRetrying);
+        // A declare only lands in FailedRetrying via a fatal-conflict classification that
+        // aborts its retry loop, so the state is terminal; declares never exhaust attempts
+        // (they retry with int.MaxValue until a fatal error stops them). Consumers use the
+        // same enum value for a genuinely retrying attach, which is why they read below as
+        // "retrying" while declares are an Unhealthy verdict.
+        bool anyDeclareFailed = declares.Any(d => d.State == BusRegistrationState.FailedRetrying);
         bool allConsumersFailed = consumers.Count > 0
             && consumers.All(c => c.State == BusRegistrationState.FailedRetrying);
         bool anyConsumerRetrying = consumers.Any(c => c.State == BusRegistrationState.FailedRetrying);
 
-        if (connection == BusConnectionState.Fatal || declareExhausted || allConsumersFailed)
+        if (connection == BusConnectionState.Fatal || anyDeclareFailed || allConsumersFailed)
             return HealthStatus.Unhealthy;
         if (anyConsumerRetrying || connection != BusConnectionState.Ready)
             return HealthStatus.Degraded;
