@@ -2622,6 +2622,26 @@ Task Next()
 ```
 - **Solution:** Once CON-10 pins the "next must complete within the filter's returned task" contract, concurrent invocation is impossible — simplify to plain integer arithmetic with the same post-return checks, mirrored in `PublishPipeline`.
 
+- **Verification & resolution (2026-11-08):** Confirmed genuine. The atomics only mattered for
+  a filter invoking `next()` cross-thread, a case the pipeline never guaranteed anything
+  for — and post-CON-10 the await-exactly-once contract explicitly excludes it: a
+  compliant filter's awaits transitively order the `nextCalls`/`nextTask` writes before
+  the pipeline's post-return reads, so plain reads are correct, and a contract-violating
+  filter's cross-thread call was never given a coherent guarantee by `Interlocked`/
+  `Volatile` anyway (a stale `nextTask` could be read as null just as easily as a stale
+  `nextCalls` as zero — the machinery paid for a guarantee it didn't deliver, exactly as
+  claimed). Applied in both pipelines: `Next()` now uses `nextCalls++` and plain reads
+  replace `Volatile.Read` in both post-return checks (`ConsumePipeline.InvokeAsync`,
+  `PublishPipeline.InvokeAsync`); the double-call exception message uses the count
+  directly; a comment at each counter states why cross-thread visibility isn't needed.
+  Purely internal — no public surface or observable behavior change, so no CHANGELOG
+  entry. The pre-existing contract tests pin the semantics unchanged (TDD by
+  existing coverage): `Fire_and_forget_next_is_rejected_as_a_filter_contract_violation`
+  and the double-invocation/zero-call pins in both `PipelineSemanticsTests` and
+  `PublishPipelineTests` all green, full unit suite 482/482 (identical to baseline),
+  build 0 warnings/0 errors. The brokered integration suite could not run in this
+  environment (no RabbitMQ broker is listening).
+
 ---
 
 **[FLT-9] Typed endpoints deserialize eagerly even when a filter short-circuits**
