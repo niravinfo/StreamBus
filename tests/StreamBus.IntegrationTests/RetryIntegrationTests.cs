@@ -513,7 +513,7 @@ public sealed class RetryIntegrationTests : IAsyncDisposable
         };
         listener.SetMeasurementEventCallback<long>((measurement, value, tags, _) =>
         {
-            if (measurement.Name is "streambus_partition_retry_blocked" or "streambus_partition_lag")
+            if (measurement.Name is "streambus_partition_retry_blocked" or "streambus_partition_backlog")
             {
                 string? part = null;
                 foreach (var tag in tags) if (tag.Key == "partition") part = tag.Value?.ToString();
@@ -550,7 +550,7 @@ public sealed class RetryIntegrationTests : IAsyncDisposable
                 lock (observed) return observed.Any(m => m.Name == "streambus_partition_retry_blocked" && m.Value == 1 && m.Partition == "0");
             }, TimeSpan.FromSeconds(30), "retry_blocked == 1");
             listener.RecordObservableInstruments();
-            lock (observed) Assert.Contains(observed, m => m.Name == "streambus_partition_lag" && m.Value > 0 && m.Partition == "0");
+            lock (observed) Assert.Contains(observed, m => m.Name == "streambus_partition_backlog" && m.Value > 0 && m.Partition == "0");
             release.TrySetResult();
             await WaitForAsync(() => Count(got) == 1, TimeSpan.FromSeconds(60), "post-release success");
             await WaitForAsync(() =>
