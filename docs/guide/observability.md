@@ -32,7 +32,7 @@ listener (for example OpenTelemetry):
 
 | Instrument | Kind | Tags |
 |---|---|---|
-| `streambus_partition_lag` | observable up-down counter | vhost, bus, stream, partition, reference |
+| `streambus_partition_backlog` | observable up-down counter | vhost, bus, stream, partition, reference |
 | `streambus_partition_inflight` | observable up-down counter | vhost, bus, stream, partition, reference |
 | `streambus_partition_retry_blocked` | observable up-down counter | vhost, bus, stream, partition, reference, failure_mode |
 | `streambus_connection_state` | observable up-down counter (int) | vhost, bus |
@@ -41,8 +41,10 @@ listener (for example OpenTelemetry):
 | `streambus_offset_fallback_total` | counter | vhost, bus, stream, partition, reference |
 | `streambus_pipeline_duration` | histogram (seconds) | kind = publish \| consume |
 
-The lag gauge compares the last delivered offset against the last stored
-offset per partition.
+The backlog gauge compares the last delivered offset against the last stored
+offset per partition. It measures the consumer-held unprocessed backlog, not
+broker-total lag: there is no usable broker end-offset source on this broker,
+so a growing stream that nobody consumes reports a backlog of 0.
 
 The pipeline duration covers the whole chain, including filters and the
 terminal handler. It is recorded only when a pipeline actually runs

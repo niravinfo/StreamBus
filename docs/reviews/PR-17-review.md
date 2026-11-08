@@ -2405,6 +2405,30 @@ _ = _meter.CreateObservableUpDownCounter("streambus_partition_lag",
 ```
 - **Solution:** Rename to `streambus_partition_backlog` (ship with the 0.2.0/0.3.0 breaking release that already rewrites the metrics surface).
 
+- **Verification & resolution (2026-11-08):** Confirmed genuine. The instrument
+  computes `max(0, LastDelivered - LastStored)` — consumer-local backlog, not
+  broker lag — which is also why the code and its description already carried
+  the "not broker-total backlog" disclaimer: a band-aid over a misleading name.
+  Broker-true lag is not even computable here (`LastOffset()` was measured as
+  unusable on this broker and the lag poller was deleted in Phase 5), so no
+  future fix could make the current number an honest "lag" — renaming is the
+  correct fix, and the in-progress 0.2.0 Breaking release is the right vehicle.
+  The metric is renamed to `streambus_partition_backlog`
+  (`StreamBusMetrics.cs`), with the comment extended to record why "lag" was
+  rejected. Renewal points updated: the pinning unit test
+  (`ConsumerMetricsTests.Backlog_observes_delivered_minus_stored`, TDD —
+  watched RED against the old name first, now also asserts the old instrument
+  is absent), the retry-visibility integration test
+  (`RetryIntegrationTests`, broker-gated, builds clean), the observability
+  guide's instrument table (plus a clarification that an unconsumed growing
+  stream reports backlog 0), `docs/llms.txt`, and a CHANGELOG `### Breaking`
+  entry instructing dashboards/alerts to update. The historical planning docs
+  (`2026-10-08-streambus-requirements.md` FR-9.1 catalog, design §13,
+  acceptance/phase plans) are intentionally left untouched — they record past
+  decisions, and the 0.2.0 release already rewrote the metrics surface they
+  catalogued. UnitTests 474/474; the brokered integration suite could not run
+  in this environment (no RabbitMQ broker is listening).
+
 ---
 
 **[INF-16] `timeouts` single-element list built only to call `Max()`**

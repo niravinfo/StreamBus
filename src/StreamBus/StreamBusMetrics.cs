@@ -25,8 +25,11 @@ internal sealed class StreamBusMetrics
     private StreamBusMetrics()
     {
         // Consumer-held unprocessed backlog (delivered but not yet stored), computed
-        // live — not the broker-total backlog (no usable end-offset source on this broker).
-        _ = _meter.CreateObservableUpDownCounter("streambus_partition_lag",
+        // live — not the broker-total backlog (no usable end-offset source on this
+        // broker). Named "backlog" rather than "lag" because lag has an
+        // industry-standard meaning (broker end offset − consumer offset) this
+        // metric does not have.
+        _ = _meter.CreateObservableUpDownCounter("streambus_partition_backlog",
             () => ObservePartitions(s => Math.Max(0, s.LastDelivered - s.LastStored)),
             description: "Consumer-held unprocessed backlog max(0, delivered - stored), not broker-total backlog.");
         _ = _meter.CreateObservableUpDownCounter("streambus_partition_inflight",

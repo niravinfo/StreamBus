@@ -103,7 +103,7 @@
 - Delivery semantics are at-least-once; broker-side publishing-id dedup is
   used only by `ReplayErrorStreamAsync` (idempotent replay of error-stream
   messages). Applications own deduplication and idempotency everywhere else.
-- Observability: meter `StreamBus` (`streambus_partition_lag/_inflight/_retry_blocked`,
+- Observability: meter `StreamBus` (`streambus_partition_backlog/_inflight/_retry_blocked`,
   `streambus_connection_state`, `streambus_offset_store_rejected_total`,
   `streambus_offset_regressed_total`, `streambus_offset_fallback_total`,
   `streambus_pipeline_duration` histogram).

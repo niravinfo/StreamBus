@@ -4,6 +4,14 @@
 
 ### Breaking
 
+- The metric `streambus_partition_lag` is renamed to
+  `streambus_partition_backlog`. It has only ever measured the
+  consumer-held unprocessed backlog (`max(0, delivered - stored)`), not
+  lag in the industry-standard sense (broker end offset − consumer
+  offset, which has no usable source on this broker), so the old name
+  invited misreading for capacity decisions. Dashboards and alerts
+  referencing the old instrument name must be updated.
+
 - `StreamBusHealthCheck` data keys are now namespaced to prevent collisions:
   bus connection rows are prefixed `bus:{vhost}|{busType}` and registration
   rows `reg:{vhost}|{registration}` (previously both used the bare
