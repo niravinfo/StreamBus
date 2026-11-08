@@ -2235,7 +2235,7 @@ public static class StreamBusCredentialValidator
 
 ---
 
-**[INF-11] Health-check data dictionary can throw on a key collision between bus-marker and registration names**
+**[INF-11] Health-check data dictionary can throw on a key collision between bus-marker and registration names — VALID with a corrected failure mode, fixed (2026-11-08)**
 - **Severity:** MINOR
 - **File:** src\StreamBus\Hosting.cs (lines 798–813)
 - **Problem:** `CheckHealthAsync` builds `data` from two key namespaces sharing the format `$"{x}|{y}"`, and the row loop uses an indexer add which throws `ArgumentException` on duplicate keys. A free-form registration name colliding with a bus marker makes the health check itself throw — surfacing as a failed check with a stack trace instead of real health data.
@@ -2247,6 +2247,30 @@ foreach (var row in rows)
     data[$"{row.Vhost}|{row.Registration}"] = $"...";
 ```
 - **Solution:** Prefix the two namespaces: `"bus:{r.Vhost}|{r.BusType}"` and `"reg:{row.Vhost}|{row.Registration}"`.
+
+- **Verification & resolution (2026-11-08):** The namespace collision is genuine, but the stated
+  failure mode was corrected during TDD verification. The dictionary *indexer set* used by the
+  row loop (`data[key] = value`) does **not** throw `ArgumentException` on an existing key — it
+  overwrites silently — so a collision would not crash the health check; it would *hide* the bus
+  marker row under the registration row (silent health-data loss, the mirror-image defect). The
+  throw hazard does exist, but at the other site: `states.ToDictionary(...)` throws on
+  duplicate keys, reachable when two distinct bus-marker `Type` instances share a `FullName`
+  (same namespace+type name in different assemblies), since `Registry.DescribeStates` keys
+  entries by `Type` but serializes `FullName`. Applied fix (the suggested prefixes, extended):
+  bus rows are now written under `bus:{vhost}|{busType}` and registration rows under
+  `reg:{vhost}|{registration}`, in **both** the empty-registry branch and the aggregator branch;
+  the two `states.ToDictionary` calls were replaced by explicit loops with assignment so the
+  health check can no longer throw on any key shape (a duplicate bus `FullName` shows the last
+  writer instead of one row — acceptable for a diagnostic dictionary). Data keys are user-visible
+  through `HealthCheckResult.Data`, so the change is recorded under `### Breaking` in the
+  CHANGELOG. Tests (TDD — the collision test was written first and reproduced the bug: the bus
+  marker row was silently absent from `data` while the registration row overwrote its key):
+  `HealthAggregatorTests.Health_check_survives_registration_name_colliding_with_a_bus_marker`
+  pins that a registration named exactly `typeof(DefaultBus).FullName` on the same vhost leaves
+  both rows intact under their own prefixes, and
+  `HostingTests.Healthcheck_pipeline_reports_per_vhost_bus_type_data` was updated to pin the
+  `bus:`-prefixed keys through the full hosted pipeline. UnitTests 471/471; the brokered
+  integration suite could not run in this environment (no RabbitMQ broker is listening).
 
 ---
 

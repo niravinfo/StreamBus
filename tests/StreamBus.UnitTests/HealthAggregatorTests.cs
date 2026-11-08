@@ -189,6 +189,32 @@ public sealed class HealthAggregatorTests
     }
 
     [Fact]
+    public async Task Health_check_survives_registration_name_colliding_with_a_bus_marker()
+    {
+        var options = new StreamBusOptions { Vhost = "/", UserName = "app", Password = "secret" };
+        await using var supervisor = new StreamBusConnectionSupervisor(options, new HealthConnector(new HealthSystemHandle()));
+        var registry = new StreamBusRegistry(
+            _ => options,
+            _ => supervisor);
+
+        // A bus state row (bus marker) plus a registration row whose free-form
+        // name happens to equal the bus type's full name on the same vhost.
+        _ = registry.GetOrCreateBus("/");
+        var health = registry.HealthFor("/");
+        health.SetConnection(BusConnectionState.Ready);
+        health.UpsertRegistration("/", typeof(DefaultBus).FullName!, "consumer", BusRegistrationState.Attached);
+
+        var check = new StreamBusHealthCheck(registry);
+        var result = await check.CheckHealthAsync(new HealthCheckContext(), TestContext.Current.CancellationToken);
+
+        // Both rows survive under their own namespaces; the check does not throw.
+        Assert.Equal(HealthStatus.Healthy, result.Status);
+        Assert.True(result.Data.ContainsKey($"bus:/|{typeof(DefaultBus).FullName}"), "bus marker row missing");
+        Assert.True(result.Data.ContainsKey($"reg:/|{typeof(DefaultBus).FullName}"), "registration row missing");
+        Assert.Equal("consumer:Attached", result.Data[$"reg:/|{typeof(DefaultBus).FullName}"]);
+    }
+
+    [Fact]
     public void Suppression_after_stopped_is_healthy()
     {
         var aggregator = Ready();

@@ -589,8 +589,8 @@ public sealed class HostingTests
             var report = await health.CheckHealthAsync(TestContext.Current.CancellationToken);
             Assert.True(report.Entries.ContainsKey("streambus"));
             var entry = report.Entries["streambus"];
-            Assert.Contains(entry.Data.Keys, k => k.StartsWith("/|", StringComparison.Ordinal));
-            Assert.Contains(entry.Data.Keys, k => k.StartsWith("orders-vh|", StringComparison.Ordinal));
+            Assert.Contains(entry.Data.Keys, k => k.StartsWith("bus:/|", StringComparison.Ordinal));
+            Assert.Contains(entry.Data.Keys, k => k.StartsWith("bus:orders-vh|", StringComparison.Ordinal));
             Assert.Contains(entry.Data.Keys, k => k.Contains(nameof(DefaultBus), StringComparison.Ordinal));
             Assert.Contains(entry.Data.Keys, k => k.Contains("OrdersBus", StringComparison.Ordinal));
         }
