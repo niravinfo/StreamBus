@@ -327,6 +327,39 @@ public sealed class PublishPipelineTests
     }
 
     [Fact]
+    public async Task Duplicate_factory_publish_filter_registration_is_rejected_at_bus_creation()
+    {
+        // Factory registrations carry no FilterType, so registration-time
+        // duplicate guards cannot see them; the resolved-identity check in
+        // PublishPipelineCache must reject the pair at bus creation.
+        var ex = await Assert.ThrowsAsync<StreamBusConfigurationException>(() =>
+            TestBus.StartAsync(cfg =>
+            {
+                cfg.Publish<PipelineOrder>("orders");
+                cfg.UsePublishFilter(_ => new TenantPublishFilter());
+                cfg.UsePublishFilter(_ => new TenantPublishFilter());
+            }, TestContext.Current.CancellationToken));
+
+        Assert.Contains(nameof(TenantPublishFilter), ex.Message, StringComparison.Ordinal);
+        Assert.Contains("already registered on this bus", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Factory_and_instance_publish_filter_of_the_same_type_are_both_rejected_at_bus_creation()
+    {
+        var ex = await Assert.ThrowsAsync<StreamBusConfigurationException>(() =>
+            TestBus.StartAsync(cfg =>
+            {
+                cfg.Publish<PipelineOrder>("orders");
+                cfg.UsePublishFilter(_ => new TenantPublishFilter());
+                cfg.UsePublishFilter(new TenantPublishFilter());
+            }, TestContext.Current.CancellationToken));
+
+        Assert.Contains(nameof(TenantPublishFilter), ex.Message, StringComparison.Ordinal);
+        Assert.Contains("already registered on this bus", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Header_writer_merges_call_level_properties_and_filter_set_wins()
     {
         var callLevel = new StreamMessageProperties

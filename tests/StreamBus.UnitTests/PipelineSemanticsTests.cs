@@ -199,6 +199,43 @@ public sealed class PipelineSemanticsTests
         Assert.Contains("already registered on this endpoint", ex.Message, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task Duplicate_factory_consume_filter_registration_is_rejected_when_the_consumer_attaches()
+    {
+        // Factory registrations carry no FilterType, so registration-time and
+        // configuration-time duplicate guards cannot see them; the
+        // resolved-identity check in BuildPipeline must reject the pair when
+        // the consumer attaches (the consume pipeline is built at attach, not
+        // at bus construction — see the FLT-4 resolution).
+        await using var harness = await Harness.CreateAsync();
+        harness.Filters.AddFilter(typeof(DefaultBus), ConsumeFilterRegistration.ForFactory(_ => new ConsumePipelineConfigFilter()));
+        harness.Filters.AddFilter(typeof(DefaultBus), ConsumeFilterRegistration.ForFactory(_ => new ConsumePipelineConfigFilter()));
+
+        var ex = await Assert.ThrowsAsync<StreamBusConfigurationException>(() =>
+            harness.Registry.ConsumeAsync(
+                typeof(DefaultBus), "orders", DispatchOptions(), _ => Task.CompletedTask,
+                TestContext.Current.CancellationToken));
+
+        Assert.Contains(nameof(ConsumePipelineConfigFilter), ex.Message, StringComparison.Ordinal);
+        Assert.Contains("already registered on this bus", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Factory_and_instance_consume_filter_of_the_same_type_are_both_rejected_when_the_consumer_attaches()
+    {
+        await using var harness = await Harness.CreateAsync();
+        harness.Filters.AddFilter(typeof(DefaultBus), ConsumeFilterRegistration.ForFactory(_ => new ConsumePipelineConfigFilter()));
+        harness.Filters.AddFilter(typeof(DefaultBus), ConsumeFilterRegistration.ForInstance(new ConsumePipelineConfigFilter()));
+
+        var ex = await Assert.ThrowsAsync<StreamBusConfigurationException>(() =>
+            harness.Registry.ConsumeAsync(
+                typeof(DefaultBus), "orders", DispatchOptions(), _ => Task.CompletedTask,
+                TestContext.Current.CancellationToken));
+
+        Assert.Contains(nameof(ConsumePipelineConfigFilter), ex.Message, StringComparison.Ordinal);
+        Assert.Contains("already registered on this bus", ex.Message, StringComparison.Ordinal);
+    }
+
     // ---------------------------------------------------------------------
     // Composition and dispatch (registry + consumer attach)
     // ---------------------------------------------------------------------

@@ -2571,6 +2571,40 @@ if (type is not null && _consumeFilters.Any(existing => existing.FilterType == t
 ```
 - **Solution:** At seal/bus-build time, resolve factory and instance registrations once and dedupe by `FilterIdentity.TypeOf(resolvedFilter)` with one canonical error message; the ad-hoc `seen` checks in `Build`/`BuildPipeline` then become redundant.
 
+- **Verification & resolution (2026-11-08):** Already fixed by the resolved-identity
+  dedup introduced with the FLT-2/FLT-4 singleton-lifetime work; no production change
+  needed. The finding's factual premise was genuine at review time but the current code
+  no longer has the defect:
+  1. **Fixed on the publish side (eager):** `PublishPipelineCache`'s constructor resolves
+     every universal registration (factory, instance, and type) and dedupes by
+     `FilterIdentity.TypeOf(resolvedFilter)` with one canonical message —
+     "Publish filter '{X}' is already registered on this bus; duplicate registration
+     would run it twice" — at bus creation.
+  2. **Fixed on the consume side (at attach):** `ConsumerRegistry.BuildPipeline`'s
+     `AddFilters` dedupes by resolved identity per scope with the analogous scoped
+     message. Rejection surfaces at consumer *attach*, not bus creation — this timing is
+     deliberate and pinned by the FLT-4 resolution ("the consume pipeline is built when
+     the consumer attaches, not at bus construction"), so the reviewer's literal
+     "at seal time" placement was not applied on the consume side; moving it to bus
+     creation would move FLT-4's lifetime validation too and break the attach-time
+     timing that FLT-4 deliberately pinned.
+  3. **Instance registrations no longer escape at all:** `ForInstance` now records
+     `FilterType = instance.GetType()`, so duplicate instance registrations are caught
+     at registration time by `ConflictsWith`.
+  4. **The ad-hoc `seen` checks deliberately stay:** open-generic typed registrations
+     have no enumerable message-type set, so eager validation is infeasible for them
+     (see the PUB-12 refutation, which documents exactly why the build-time
+     resolved-identity check is the only guard that can see factory-vs-typed
+     collisions and why it cannot be removed).
+  5. **Gap found and closed:** no test pinned the duplicate-factory scenario the
+     finding describes. Added four (all pinning the existing behavior, then
+     mutation-verified: deleting the `BuildPipeline` dedup makes the consume pair fail
+     for exactly the expected reason):
+     `Duplicate_factory_publish_filter_registration_is_rejected_at_bus_creation` and
+     `Factory_and_instance_publish_filter_of_the_same_type_are_both_rejected_at_bus_creation`
+     (`PublishPipelineTests`), plus the two attach-time consume counterparts
+     (`PipelineSemanticsTests`). UnitTests 482/482 (478 prior + 4 new).
+
 ---
 
 **[FLT-8] `Interlocked`/`Volatile` on `nextCalls` pays for a guarantee the code doesn't deliver**
