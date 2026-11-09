@@ -17,12 +17,20 @@ cfg.ReceiveEndpoint("orders", e =>
 - The group is used verbatim. Empty groups and groups over the broker's
   255-byte limit are configuration errors.
 - Two services sharing one consumer class must supply different groups.
-  The same group across instances scales out through a shared cursor.
+- A super stream with one group distributes its partitions across instances
+  (`SingleActiveConsumer` applies per partition), so adding instances adds
+  parallel partition readers.
+- A plain stream with the default `SingleActiveConsumer = true` has one active
+  consumer per group; other instances stand by for failover and do not add
+  throughput. Use a super stream when you need horizontal scale.
+- Different groups are independent cursors: each receives every message.
+- Delivery is at-least-once. Consumers must tolerate duplicates and own their
+  idempotency.
 
 ### Cross-process caveat
 
 Same reference, `SingleActiveConsumer = false`, two processes: both receive
-deliveries (at-least-once doubles, never skips). Stores interleave; a stale
+deliveries (at-least-once duplicates, never skips). Stores interleave; a stale
 process may regress the broker-side offset - never run two writers on one
 reference outside SAC.
 

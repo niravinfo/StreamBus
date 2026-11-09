@@ -87,7 +87,10 @@ Every capability points to its guide section:
 - Declarations: streams/super-streams + retention/placement knobs (`docs/guide/topology.md`)
 - Startup: blocking/non-blocking, readiness waits, health checks (`docs/guide/hosting.md`)
 - Typed publish: route table, keyed super publish, overrides, raw bytes (`docs/guide/publish.md`)
-- Endpoints: required groups, scale-out, SAC/offset/store knobs (`docs/guide/consume.md`)
+- Publishing from many instances: producers are anonymous, so any number of
+  identical instances publish safely; the library never enables broker
+  published-message deduplication (`docs/guide/publish.md`)
+- Endpoints: required groups, super-stream partition scale-out, SAC/offset/store knobs (`docs/guide/consume.md`)
 - Raw consume + manual offset get/set (`docs/guide/consume.md`)
 - Retry: global + per-endpoint schedules, escape hatch (`docs/guide/errors.md`)
 - Exhaustion: stream / classic+quorum queue (bounded schedule, no destination or callback: `{stream}_error`) / owning callback (`docs/guide/errors.md`)
@@ -110,8 +113,11 @@ Every capability points to its guide section:
 - **Typed publish** (`docs/guide/publish.md`): `Publish<T>` for plain streams,
   `PublishSuper<T>` for super streams; the routing key travels with the
   `PublishSuperAsync` call (forgetting it is a compile error).
-- **Endpoints** (`docs/guide/consume.md`): the consumer group is required and
-  verbatim - same group scales out, different groups are independent.
+- **Endpoints** (`docs/guide/consume.md`): the consumer group is required and verbatim.
+  On a super stream, one group distributes partitions across instances; on a
+  plain stream, SAC keeps one active consumer with standby failover. Different
+  groups are independent cursors, and delivery is at-least-once, so consumers
+  must tolerate duplicates.
 - **Multi-bus** (`docs/guide/multi-bus.md`): marker types disambiguate buses;
   a shared consumer class needs a different group per bus.
 - **Retry and errors** (`docs/guide/errors.md`): global schedule, per-endpoint

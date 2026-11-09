@@ -99,9 +99,7 @@ public sealed class TopologyTests
         public override Task<string[]> QueryPartitionAsync(string superStream, CancellationToken ct)
             => Task.FromResult(Partitions(superStream));
         public override Task<IStreamPlainProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct) => throw new NotImplementedException("Topology tests declare only.");
-        public override Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct) => throw new NotImplementedException("Topology tests declare only.");
         public override Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct) => throw new NotImplementedException("Topology tests declare only.");
-        public override Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct) => throw new NotImplementedException("Topology tests declare only.");
         public override Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct) => throw new NotImplementedException("Topology tests never attach.");
     }
 

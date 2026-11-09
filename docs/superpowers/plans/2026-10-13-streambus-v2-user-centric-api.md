@@ -242,15 +242,6 @@ await bus.PublishRawAsync("orders", rawBytes, new PublishOptions(), ct); // raw 
 await using var sub = await bus.ConsumeAsync("audit", new ConsumeOptions { Reference = "ops" }, handler, ct); // raw consume, unchanged
 ```
 
-## A.8 Effectively-once (unchanged runtime, unambiguous bus by construction)
-
-```csharp
-await using var pipe = await bus.ConsumeEffectivelyOnceAsync("orders", "invoices",
-    new EffectivelyOnceOptions(), async (ctx, ct) => resultBytes, ct);
-```
-
-No API change; only the bus it runs on is now unambiguous by construction.
-
 ## Deferred (explicitly not v2)
 
 - v3 candidate: stream filtering (producer `FilterValue` tagging + endpoint `FilterBy(values, postFilter)` atomic pair; server bloom + mandatory client exactness; one group per filter set).
@@ -317,7 +308,7 @@ git commit -m "Add typed publish with registration-time stream routing"
 - Consumes: `ConsumeOptionsBuilder`-equivalent knobs, `StreamBusConsumerStore.Add`, Task 1 configurator.
 - Produces: `IStreamBusConfigurator.ReceiveEndpoint(string stream, Action<IReceiveEndpointConfigurator> configure)`, `IReceiveEndpointConfigurator.Consumer<TConsumer>(string consumerGroup) where TConsumer : class` — the group is required (no overload without it; the client mandates `Reference`, and required identity kills the shared-type collision trap), exactly one call per endpoint (second throws). No endpoint-level derivation and no `.Reference()` spelling: identity has exactly one source. Raw `ConsumeAsync` also requires `Reference` (null/empty → `StreamBusConfigurationException` at attach); the `ReferenceDerivation` helper is deleted — the library never guesses a group name anywhere. Further knobs: `.SuperStream(bool)`, `.SingleActiveConsumer(bool)`, `.Offset(ConsumeOffset)`, `.OffsetStore(...)`, `.Readiness(...)`, `.OnRetryExhausted(...)`, `.SetMaxAge/...` declaration knobs, `.SetSuperStream(int partitions)`, `.UseMessageRetry(...)`, `.DeadLetterTo(...)` + `.OnExhausted(...)` (implemented by Task 4; this task stores the descriptors).
 
-- [ ] **Step 1: Implement.** `ReceiveEndpointDescriptor{Stream, MessageType?, ConsumerType, Reference, IsSuperStream, SuperPartitions?, knobs..., RetryDescriptor?, ErrorQueueDescriptor?}` with `Reference` required (empty rejected, >255 UTF-8 bytes rejected — broker limit); `Consumer<T>` captures `typeof(T)` and requires it implement `IConsumer<>` for some message type (resolve the message type from the implemented interface at Add-time; missing → config error). Delete `ReferenceDerivation.cs` and remove its callers: null/empty `Reference` fails at attach with `StreamBusConfigurationException` naming the stream. Internal managed-pipeline names (`ResultNaming` producer/consumer names for effectively-once) are unaffected — they identify system-owned pipelines, not user consumer groups. Message type + consumer + stream flow into the existing typed-consumer startup path unchanged (handler, scope-per-message, serializer).
+- [ ] **Step 1: Implement.** `ReceiveEndpointDescriptor{Stream, MessageType?, ConsumerType, Reference, IsSuperStream, SuperPartitions?, knobs..., RetryDescriptor?, ErrorQueueDescriptor?}` with `Reference` required (empty rejected, >255 UTF-8 bytes rejected — broker limit); `Consumer<T>` captures `typeof(T)` and requires it implement `IConsumer<>` for some message type (resolve the message type from the implemented interface at Add-time; missing → config error). Delete `ReferenceDerivation.cs` and remove its callers: null/empty `Reference` fails at attach with `StreamBusConfigurationException` naming the stream. Message type + consumer + stream flow into the existing typed-consumer startup path unchanged (handler, scope-per-message, serializer).
 - [ ] **Step 2: Verify.** `ReceiveEndpointTests`: group used verbatim; empty group rejected; >255-byte group rejected; two `Consumer` calls throw; same consumer type with different groups yields independent cursors; same group on one vhost resolves to one shared cursor (scale-out); raw `ConsumeAsync` without `Reference` throws; no `ReferenceDerivation` callers remain; non-`IConsumer` type throws. Rewrite affected unit/integration registrations to the endpoint form. Run unit suite.
 - [ ] **Step 3: Commit (with human approval)**
 
@@ -463,7 +454,7 @@ git commit -m "Bring test suite and acceptance matrix onto the v2 API"
 
 ## Self-review (run against the spec above)
 
-1. **Spec coverage:** A.1→Tasks 1+3+7+8; A.2→Task 1; A.3→Task 1 (markers); A.4→Tasks 2+3+6 (registration kind, partitions on endpoint); A.5→Task 4 (table rows each tested); A.6→Tasks 4+5 (callback/stream/queue paths); A.7→Task 2 (overloads); A.8→no change. Gaps: filtering is a v3 candidate, richer exhaustion dispositions are not planned, and direct error-queue consumers are out — all noted in Deferred so the omissions are explicit.
+1. **Spec coverage:** A.1→Tasks 1+3+7+8; A.2→Task 1; A.3→Task 1 (markers); A.4→Tasks 2+3+6 (registration kind, partitions on endpoint); A.5→Task 4 (table rows each tested); A.6→Tasks 4+5 (callback/stream/queue paths); A.7→Task 2 (overloads). Gaps: filtering is a v3 candidate, richer exhaustion dispositions are not planned, and direct error-queue consumers are out — all noted in Deferred so the omissions are explicit.
 2. **Placeholder scan:** every step names exact files, signatures, commands, expected outcomes; no TBD/TODO/similar-to.
 3. **Type consistency:** `PublishRegistration{MessageType,Stream,IsSuper}` (Task 2) feeds Tasks 2+6; endpoint descriptor fields (Task 3) feed Tasks 4+5+6; `DeadLetterType{Stream,ClassicQueue,QuorumQueue}` + `DeadLetterOptions` + `ExhaustedContext` (Task 4) feed Task 5's queue path; `RequeueErrorsAsync` (Task 5) covers queue destinations while `ReplayErrorStreamAsync` stays for streams, both referenced in Task 9's scope.
 4. **Review Focus:** five lines each pinned to an owning task's verification (ambiguity test T2, startup routing-enforcement tests T6, undeclared-override StreamNotFound T2, cross-service reference test T3, queue-headers + requeue at-least-once T5).

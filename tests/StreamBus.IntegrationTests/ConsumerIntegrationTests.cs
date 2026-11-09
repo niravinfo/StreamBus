@@ -93,7 +93,7 @@ public sealed class ConsumerIntegrationTests : IAsyncDisposable
     };
 
     [Fact]
-    public async Task Super_stream_splits_across_instances_exactly_once_ordered()
+    public async Task Super_stream_partitions_distribute_across_instances_without_duplicates()
     {
         var super = Unique("con-super");
         var admin = await ConnectAdminAsync();
@@ -139,6 +139,60 @@ public sealed class ConsumerIntegrationTests : IAsyncDisposable
         // Partition enumeration sanity (the registry depends on stable QueryPartition order).
         var partitions = await admin.QueryPartition(super);
         Assert.Equal(4, partitions.Length);
+    }
+
+    [Fact]
+    public async Task Multiple_publisher_instances_to_one_stream_lose_nothing()
+    {
+        // The real collision regression guard is ProducerConfigTests: every producer
+        // config has Reference == null. Two in-process instances share one process,
+        // so they cannot reproduce a cross-process producer-name collision. This test
+        // pins the anonymous multi-publisher contract end to end.
+        var ct = TestContext.Current.CancellationToken;
+        var stream = Unique("con-many-pub");
+        var admin = await ConnectAdminAsync();
+        await using var _ = admin;
+        await admin.CreateStream(new StreamSpec(stream));
+        _streams.Add(stream);
+
+        await using var first = await BusInstance.StartAsync("pub-a");
+        await using var second = await BusInstance.StartAsync("pub-b");
+
+        const int perPublisher = 20;
+        await Task.WhenAll(
+            PublishLoopAsync(first, stream, perPublisher, ct),
+            PublishLoopAsync(second, stream, perPublisher, ct));
+
+        var received = new List<(string Key, int Seq)>();
+        await using var consumer = await first.Bus.ConsumeAsync(
+            stream,
+            new ConsumeOptions { Offset = ConsumeOffset.AlwaysFirst, Reference = Unique("many-read") },
+            ctx =>
+            {
+                var parsed = Parse(ctx.Body);
+                lock (received) received.Add(parsed);
+                return Task.CompletedTask;
+            },
+            ct);
+
+        await WaitForAsync(() => Count(received) >= 2 * perPublisher, TimeSpan.FromSeconds(30), "all published messages");
+        await Task.Delay(500, ct);
+
+        lock (received)
+        {
+            Assert.Equal(2 * perPublisher, received.Count);
+            Assert.Equal(2 * perPublisher, received.Distinct().Count());
+        }
+
+        static async Task PublishLoopAsync(BusInstance instance, string stream, int count, CancellationToken ct)
+        {
+            for (var i = 0; i < count; i++)
+                await instance.Bus.PublishRawAsync(
+                    stream,
+                    Body($"{instance.Name}:{i}"),
+                    new PublishOptions(),
+                    ct);
+        }
     }
 
     [Fact]

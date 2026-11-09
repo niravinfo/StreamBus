@@ -19,6 +19,14 @@ The stream and the bus serializer come from the registration. Registering
 one message type on two streams of one bus fails fast instead of picking
 a random destination.
 
+## Publishing from many instances
+
+StreamBus never assigns a producer name. RabbitMQ Streams only deduplicates
+published messages for a named producer, so with no name the broker filters
+nothing: any number of identical application instances can share this
+configuration and publish to the same stream or super stream. Delivery stays
+at-least-once; consumers own duplicate handling and idempotency.
+
 ## Super streams
 
 ```csharp

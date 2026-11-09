@@ -70,8 +70,8 @@ the endpoint retries until the handler succeeds and its partition waits.
 | `None()` | explicit/callback/nothing | immediate handoff or callback on first failure |
 
 Dead-letter destinations are kind-split, and a second call on the same
-endpoint throws at registration (the destination choice is a one-time,
-exactly-once decision — `OnExhausted` knobs stay last-call-wins):
+endpoint throws at registration (the destination choice is a one-time
+decision — `OnExhausted` knobs stay last-call-wins):
 
 - `DeadLetterToStream(name, spec?)`: an error **stream** with
   error-envelope semantics, advance-once, and full envelope

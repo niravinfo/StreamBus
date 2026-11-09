@@ -4,7 +4,7 @@
 
 **Goal:** Delete every StreamBus API that reads an error stream/queue and republishes; the library's error contract becomes "dead-letter to stream or queue, nothing more."
 
-**Architecture:** Straight removal, no replacement. Kept: normal publish (auto-id), consume with retry/exhaustion, the full dead-letter write path (`DeadLetterToStream`/`DeadLetterToQueue`, `ErrorPublisher`, `ErrorEnvelope` wire formats and headers), `SendEnvelopeAsync`, the `ConfirmationTracker` core used by all confirmed sends. Removed: `ReplayErrorStreamAsync`, `RequeueErrorsAsync`, `ConsumerRegistry.ReplayAsync`, `ErrorQueueTransport.DrainAsync`, handle-level `PublishReplayAsync`, `ConfirmationTracker.PublishWithIdAsync`, `ReplayNaming`, `ErrorEnvelope.ToReplayOptions`, `StreamBusNaming.Replay*`. Order: stream replay first, queue requeue second, shared primitives last (their only in-src callers die in the first two), then docs.
+**Architecture:** Straight removal, no replacement. Kept: normal publish (auto-id), consume with retry/exhaustion, the full dead-letter write path (`DeadLetterToStream`/`DeadLetterToQueue`, `ErrorPublisher`, `ErrorEnvelope` wire formats and headers), `SendEnvelopeAsync`, the `ConfirmationTracker` core used by all confirmed sends. Removed: `ReplayErrorStreamAsync`, `RequeueErrorsAsync`, `ConsumerRegistry.ReplayAsync`, `ErrorQueueTransport.DrainAsync`, the handle-level replay publishing method, the tracker's id-supplied send, `ReplayNaming`, `ErrorEnvelope.ToReplayOptions`. Order: stream replay first, queue requeue second, shared primitives last (their only in-src callers die in the first two), then docs.
 
 **Tech Stack:** .NET (C#), xUnit, RabbitMQ.Stream.Client; solution in `StreamBus.sln`-style layout with `src/StreamBus`, `tests/StreamBus.UnitTests`, `tests/StreamBus.IntegrationTests`.
 
@@ -39,7 +39,7 @@
 
 **Interfaces:**
 - Consumes: nothing new.
-- Produces: `ConsumerRegistry` has no `ReplayAsync`; `IStreamBus`/`StreamBusCore` have no `ReplayErrorStreamAsync`. `ReplayNaming`, `ToReplayOptions`, `PublishReplayAsync` still exist at this point (requeue still uses them) — do **not** delete them here.
+- Produces: `ConsumerRegistry` has no `ReplayAsync`; `IStreamBus`/`StreamBusCore` have no `ReplayErrorStreamAsync`. `ReplayNaming`, `ToReplayOptions`, and the replay publishing method still exist at this point (requeue still uses them) — do **not** delete them here.
 
 - [ ] **Step 1: Delete the test that pins replay semantics**
 
@@ -86,24 +86,23 @@ Expected: grep returns only nothing (or Task-4-only doc matches under `docs`); b
 ### Task 3: Remove the idempotent-publish primitive and naming machinery
 
 **Files:**
-- Modify: `src/StreamBus/ProducerHandles.cs` (delete `PublishReplayAsync` from `IStreamPlainProducerHandle` line ~29, `IStreamSuperProducerHandle` line ~42, and both implementing methods ~lines 239+ and ~292+; delete `ConfirmationTracker.PublishWithIdAsync` ~lines 146–175; keep `ConfirmationTracker` class, `Confirm`, `CancelAll`, close semantics)
+- Modify: `src/StreamBus/ProducerHandles.cs` (delete the replay publishing member from `IStreamPlainProducerHandle` line ~29, `IStreamSuperProducerHandle` line ~42, and both implementing methods ~lines 239+ and ~292+; delete the tracker's id-supplied send ~lines 146–175; keep `ConfirmationTracker` class, `Confirm`, `CancelAll`, close semantics)
 - Modify: `src/StreamBus/ErrorEnvelope.cs` (delete `ToReplayOptions()` ~line 145 and `ReplayNaming` class ~lines 308–325)
-- Modify: `src/StreamBus/StreamBusNaming.cs` (delete `ReplayProducerName` ~line 29, `ReplayReference` ~line 44)
 - Delete files: `tests/StreamBus.UnitTests/ReplayNamingTests.cs`, `tests/StreamBus.UnitTests/ReplayReattachTests.cs`
 - Modify: `tests/StreamBus.UnitTests/ErrorEnvelopeTests.cs` (delete `Replay_options_preserve_message_identity`, `Replay_options_preserve_user_headers_and_content_type`, `Replay_naming_is_stable_bounded_and_id_is_the_offset`)
-- Modify: `tests/StreamBus.UnitTests/ConfirmationCloseTests.cs` (delete the `PublishReplayAsync` replay-case(s) ~lines 82–95 and the method's fake impls where the fakes exist only for replay; keep close-semantics cases)
-- Modify: `tests/StreamBus.UnitTests/ProducerHandleSurfaceTests.cs` (delete the two `PublishReplayAsync` surface assertions, lines ~34, ~50)
-- Modify: all test fakes/mocked handles — remove the `PublishReplayAsync` member from: `AcceptanceTests.cs:78`, `ActivityTests.cs:221`, `ConfirmationCloseTests.cs:40/63/82`, `PipelineSemanticsTests.cs:873`, `PublishPipelineTests.cs:1146`, `PublishTests.cs:38`, `PublishRoutingTests.cs:22`, `Fakes/ScriptedSystemHandle.cs:23`
+- Modify: `tests/StreamBus.UnitTests/ConfirmationCloseTests.cs` (delete the replay publishing method's replay-case(s) ~lines 82–95 and the member's fake impls where the fakes exist only for replay; keep close-semantics cases)
+- Modify: `tests/StreamBus.UnitTests/ProducerHandleSurfaceTests.cs` (delete the two replay publishing surface assertions, lines ~34, ~50)
+- Modify: all test fakes/mocked handles — remove the replay publishing member from: `AcceptanceTests.cs:78`, `ActivityTests.cs:221`, `ConfirmationCloseTests.cs:40/63/82`, `PipelineSemanticsTests.cs:873`, `PublishPipelineTests.cs:1146`, `PublishTests.cs:38`, `PublishRoutingTests.cs:22`, `Fakes/ScriptedSystemHandle.cs:23`
 
 **Interfaces:**
-- Consumes: Tasks 1–2 removed the last src callers of `PublishReplayAsync` and `ToReplayOptions`.
+- Consumes: Tasks 1–2 removed the last src callers of the replay publishing method and `ToReplayOptions`.
 - Produces: `IStreamPlainProducerHandle` = `SendAsync` + `SendEnvelopeAsync`; `IStreamSuperProducerHandle` = `SendAsync` (+ super-only sends). Nothing named `Replay*` remains in `src/`.
 
 - [ ] **Step 1: Delete replay-only test files and cases** — remove the two files and the named cases; in `ConfirmationCloseTests` keep every non-replay case.
 
-- [ ] **Step 2: Delete the production members** — interfaces, implementations, `PublishWithIdAsync`, `ToReplayOptions`, `ReplayNaming`, `StreamBusNaming.Replay*`.
+- [ ] **Step 2: Delete the production members** — interfaces, implementations, the tracker's id-supplied send, `ToReplayOptions`, the replay naming helpers.
 
-- [ ] **Step 3: Strip `PublishReplayAsync` from every test fake** (list above); build.
+- [ ] **Step 3: Strip the replay publishing member from every test fake** (list above); build.
 
 Run: `dotnet build`
 Expected: 0 errors — any remaining error names a file still referencing a deleted member; fix by deleting that member.
@@ -115,7 +114,7 @@ Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
-`git add -A && git commit -m "refactor!: remove PublishReplayAsync, ReplayNaming and replay-options machinery"`
+`git add -A && git commit -m "refactor!: remove the replay publishing path, ReplayNaming and replay-options machinery"`
 
 ### Task 4: Docs, version note, grep-to-zero verification
 
@@ -135,7 +134,7 @@ Expected: PASS.
 
 - [ ] **Step 2: Grep the identifier set to zero**
 
-Run: `grep -rn "ReplayErrorStream\|RequeueErrors\|PublishReplayAsync\|ReplayNaming\|ToReplayOptions\|DrainAsync\|ReplayReference\|ReplayProducerName\|PublishWithIdAsync" src tests docs README.md`
+Run: `grep -rn "ReplayErrorStream\|RequeueErrors\|ReplayNaming\|ToReplayOptions\|DrainAsync\|ReplayReference\|ReplayProducerName" src tests docs README.md`
 Expected: only `docs/superpowers/` (historical, untouched) and the two dated "Removed" annotations; zero hits under `src/`, `tests/`, `docs/guide/`, `README.md`, `docs/llms.txt`.
 
 - [ ] **Step 3: Full verification**

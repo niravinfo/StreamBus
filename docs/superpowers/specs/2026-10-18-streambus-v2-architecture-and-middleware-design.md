@@ -20,7 +20,7 @@ Three findings make v2 necessary rather than optional:
 ### Goals
 - G1 — Liveness closed loop: every failure mode that can idle the library is detected within seconds and surfaces through state, metrics, logs, and the health check.
 - G2 — The supervisor genuinely supervises; the health check tells the truth (connection + consumers + declarations).
-- G3 — One source of truth per concern: one bus core class, one retry-loop skeleton, one validation boundary, one naming utility.
+- G3 — One source of truth per concern: one bus core class, one retry-loop skeleton, one validation boundary.
 - G4 — Minimum safe public surface: no public mutable registration stores, no credential leakage, no orphaned builders/enums, no "internal error" escapes.
 - G5 — Publish/consume middleware with header carriers (tenant, user, correlation, telemetry context), MassTransit-familiar shape, stream-native semantics.
 - G6 — Explicit, code-first configuration: no ambient configuration binding; validation at one boundary.
@@ -36,7 +36,6 @@ Three findings make v2 necessary rather than optional:
 
 ### Anti-goals (failure states the design must make impossible or noisy)
 - Green-but-dead: healthy status while consumers idle-stall.
-- Silent dedup loss: producer name collisions that make the broker discard republishes invisibly.
 - Middleware that can reorder, bypass, or veto offset advance.
 - Header loss through the error envelope on exhaustion.
 - Public code paths that answer with "internal error".
@@ -58,10 +57,8 @@ Three findings make v2 necessary rather than optional:
 1. Strict per-partition handler ordering; at most one in-flight handler per partition.
 2. Offset advances only after: successful handler (cadence rules), or **confirmed** error-destination publish (never before), with the monotonic-window guard rejecting regression.
 3. Never skip before hand-off confirms; exhaustion is confirmed-then-commit.
-4. Effectively-once: publishing id = source offset; resume = target's last confirmed publishing id recomputed each attach; source never stores offsets; `QuerySequence == 0` ambiguity resolves to replay-from-first under producer-dedup.
-5. Unique process-wide producer names (broker dedup trap); replay/EO names stable per (source-partition → target).
-6. SAC promotion listener never throws (client fallback for a throwing listener = scroll forward = skipped backlog).
-7. `FirstAttach` semantics: `ConsumeAsync` returns only after the broker has confirmed the subscription.
+4. SAC promotion listener never throws (client fallback for a throwing listener = scroll forward = skipped backlog).
+5. `FirstAttach` semantics: `ConsumeAsync` returns only after the broker has confirmed the subscription.
 
 ## 5. Target architecture (end state)
 
@@ -109,8 +106,6 @@ Component responsibilities (delta only; everything else unchanged):
 
 - **HealthAggregator**: new internal type per bus; aggregates supervisor state, per-registration attach status (last attempt, attach age, failure reason), declaration status, retry-block gauges; consumed by `IHealthCheck` and `WaitUntilReadyAsync` consumers-readiness expansion.
 
-- **StreamBusNaming**: the single shared producer-name/hash utility (publish references, replay names, EO names, 255-byte rule pinned by test).
-
 ## 6. Phase A — Correctness & liveness (do first)
 
 Ordered; each item lands with its acceptance evidence.
@@ -118,18 +113,17 @@ Ordered; each item lands with its acceptance evidence.
 ### A1 — Consumer liveness signals (highest priority)
 - Wire `RawConsumerConfig.ConnectionClosedHandler` and `MetadataHandler` in the partition consumer's config assembly → route to `FailAttach(reason)` with a distinguishable reason so the attach loop treats it as transient, closes the consumer, and recreates per existing backoff.
 - Add an `IsClosed` check as a cheap guard in the attach loop's park/tick positions (belt-and-braces with callbacks; the callback path is primary).
-- No semantic change to offsets: a closed-connection attach fail must behave exactly like the existing dispatch-exception attach fail (redeliver from stored offset; dedup holds; never skip).
+- No semantic change to offsets: a closed-connection attach fail must behave exactly like the existing dispatch-exception attach fail (redeliver from stored offset; never skip).
 - **Acceptance (V2-A1)**: unit — a scripted consumer handle raises closed → attach fails → RecreateWithBackoff loop recreates; duplicate settlement stays idempotent (`TrySet` semantics). Integration — broker-side forced subscription close (management API or restart) while idle → partition reattaches ≤ monitor interval + backoff, resumes exactly from the stored offset, no gap/skip.
 
 ### A2 — Supervisor really supervises
 - `RunLoopAsync` after first `Ready` continues into a monitor loop: tick at `MonitorInterval` (default 5s, configurable); on `handle.IsClosed` → `TransientFailure` → reconnect with the existing `ComputeDelay` sequence; on success state events fire and readiness waiters wake.
-- `CurrentHandle` becomes a small atomic swap. Recovery ownership per ADR-1: attach loops (partition consumers, effectively-once resume providers) re-resolve the current handle from the supervisor on EVERY attach attempt — they must never cache a system handle across attempts; producer handles keep the existing failure-driven invalidation (no cache wipe on swap); EO resume queries additionally re-resolve per attach. A stale-captured handle is a defect: add an assertion-style guard in the attach loop.
+- `CurrentHandle` becomes a small atomic swap. Recovery ownership per ADR-1: attach loops (partition consumers) re-resolve the current handle from the supervisor on EVERY attach attempt — they must never cache a system handle across attempts; producer handles keep the existing failure-driven invalidation (no cache wipe on swap). A stale-captured handle is a defect: add an assertion-style guard in the attach loop.
 - **Acceptance (V2-A2)**: unit — fake handle flips `IsClosed` → state sequence `Ready → TransientFailure → Ready`, `CurrentHandle` swaps; no reconnect storm (backoff preserved). Integration — broker restart → each bus transitions through transient failure ≤ interval + backoff; health check turns degraded/unhealthy first, recovered within one interval after broker returns.
 
 ### A3 — Confirm-path hardening
 - Producer `ConnectionClosedHandler → ConfirmationTracker.CancelAll()`; awaiters receive `StreamBusTransientException("connection closed before confirm; outcome unknown")`; registry invalidates the handle (existing path).
 - `PublishEnvelopeAsync` (error hand-off publish) gets a bounded confirm wait (default 10s, configurable per endpoint as `ErrorHandoffTimeout`) — removal of the hang-in-dispatch-gate.
-- `PublishResultAsync` **keeps no confirm-timeout by design (FR-6.5 doctrine)**, but is now bounded in practice by connection-closed cancellation — document that.
 - **Acceptance (V2-A3)**: unit — close-callback mid-wait resolves all pending awaiters transiently; NAK unaffected; hand-off with a dead transport unwedges `DispatchAsync` (hang regression test); existing "outcome unknown" timeout tests remain green.
 
 ### A4 — Unwedging dispatch on hand-off hang
@@ -141,7 +135,7 @@ Satisfied by A3 (single-wait bounded). No additional watchdog device.
 - **Acceptance (V2-A5)**: unit — concurrent first-publish same key produces one producer (await both, diff references); invalidate-during-flight keeps the existing "healthy waiter not evicted" test green.
 
 ### A6 — Health tells the truth
-- `HealthAggregator` (internal per bus): connection state; per registration: `Attached | Attaching | Failed(retries) | Stopped` + last transition; declaration status per declare-set part; error-transport liveness. Aggregation is per vhost (the layer every registry coordinate space already shares), exposed per (vhost, busType) view to health/readiness. Consumer registrations carry the bus type so a vhost shared by several buses stays attributable: typed receive endpoints are `endpoint:{busType}:{stream}`, ad-hoc raw consumers created via `bus.ConsumeAsync` are `raw:{busType}:{stream}` (repeat calls on the same bus+stream disambiguate with a counter: `raw:{busType}:{stream}:2`), and effectively-once consumers are `effectively-once:{busType}:{sourceStream}`; they participate in degraded/unhealthy mapping identically to typed registrations.
+- `HealthAggregator` (internal per bus): connection state; per registration: `Attached | Attaching | Failed(retries) | Stopped` + last transition; declaration status per declare-set part; error-transport liveness. Aggregation is per vhost (the layer every registry coordinate space already shares), exposed per (vhost, busType) view to health/readiness. Consumer registrations carry the bus type so a vhost shared by several buses stays attributable: typed receive endpoints are `endpoint:{busType}:{stream}` and ad-hoc raw consumers created via `bus.ConsumeAsync` are `raw:{busType}:{stream}` (repeat calls on the same bus+stream disambiguate with a counter: `raw:{busType}:{stream}:2`); all of them participate in the degraded/unhealthy mapping identically to typed registrations.
 - `IHealthCheck` mapping: all attached + connection Ready → Healthy; any failed-and-retrying or declared-fail → Degraded; fatal connection or every attached-failed → Unhealthy (poison).
 - `AddStreamBusHosting` readiness blocking includes consumer attach in blocking mode (configurable flag, default: block until attached).
 - **Acceptance (V2-A6)**: unit — forced consumer attach failure → degraded body contains registration name and failure reason; integration — idle broker kill → unhealthy ≤ interval+2s; recovery → healthy ≤ interval+2s.
@@ -167,11 +161,8 @@ Satisfied by A3 (single-wait bounded). No additional watchdog device.
 ### B3 — Single validation boundary
 Records validate themselves (`Options.cs`, `StreamOptions.cs` `Validate()`); configurators delegate to build/Validate; the supervisor and connector stop re-implementing range checks; message text compatibility asserted by existing tests.
 
-### B4 — StreamBusNaming consolidation
-One producer-naming/hash utility replaces the three independent recipes; 255-byte limit pinned by unit (existing EffectivelyOnceTests format tests extended).
-
 ### B5 — Handle-interface split
-`IStreamProducerHandle` two-transport surface split into plain (`SendAsync`, `ReplayAsync`) and super (`PublishWithIdAsync`, `PublishResultAsync`, `QuerySequenceAsync`); no more silent-ignored arguments or throwing-unreachable methods; super-stream routing table becomes per-handle state (static `ConditionalWeakTable` removed; "No routing value was stamped" internal-error path disappears).
+`IStreamProducerHandle` two-transport surface split into plain (`SendAsync`, `ReplayAsync`) and super-stream send members; no more silent-ignored arguments or throwing-unreachable methods; super-stream routing table becomes per-handle state (static `ConditionalWeakTable` removed; "No routing value was stamped" internal-error path disappears).
 
 ### B6 — State hygiene
 Registration stores: `Add` internal, read projections public; `Registrations` → `StreamBusRegistrationView` without `Password` (host/ports/vhost only). `StreamBusHostedService` becomes internal with required (non-null) deps via an internal factory; the eight-param-with-nulls ctor disappears.
@@ -200,7 +191,7 @@ Per-publish declaration lookup (currently rebuilds a merge set) becomes a cached
 Per-vhost supervisors start via `Task.WhenAll` (conflict cancellation semantics preserved — tests exist).
 
 ### B14 — Replay naming & termination
-`ReplayNaming.ProducerName` scopes per source stream (current cross-source collision silently discards via broker dedup when targeting a mixed error stream); idle-termination documented as idempotent (re-running never loses messages, count is advisory).
+`ReplayNaming.ProducerName` scopes per source stream (a cross-source collision silently discards messages when targeting a mixed error stream); idle-termination documented as idempotent (re-running never loses messages, count is advisory).
 
 ### B15 — Raw path guardrails
 `ConsumeAsync` (raw) validates Strict+handoff-destination combos (reject with message naming the two options at play).
@@ -236,11 +227,11 @@ class StreamPublishFilterContext {
 }
 ```
 Registration: bus-level `cfg.UsePublishFilter(...)` (order of registration), endpoint(s)-level is not a concept (publish is per-message). No per-call filter list exists in v2; call-level enrichment uses the Properties carrier directly. Filters are DI-constructible and constructed ONCE per bus from the root provider (stateless/thread-safe contract; per-invocation state travels the context object). Each invocation exposes a per-publish `IServiceProvider` scope on the context for scoped dependencies.
-The publish pipeline runs on the typed facade only (`PublishAsync`/`PublishSuperAsync`). `PublishRawAsync`, effectively-once result publishes, error-envelope hand-off publishes, requeue, and replay republishes do NOT run publish filters — documented as the pipeline-free escape hatch. Order: bus filters (registration order) → Properties (call-level) wins on conflict (documented).
+The publish pipeline runs on the typed facade only (`PublishAsync`/`PublishSuperAsync`). `PublishRawAsync`, error-envelope hand-off publishes, requeue, and replay republishes do NOT run publish filters — documented as the pipeline-free escape hatch. Order: bus filters (registration order) → Properties (call-level) wins on conflict (documented).
 **Acceptance (V2-C2)**: unit — enrichment landed in client-publish properties; exception classification; super-stream routing key untouched by filters; integration — headers visible at the consumer.
 
 ### C3 — Consume pipeline
-Position: inside the dispatch block, wrapping the whole per-message OUTER delegate — deserialization, typed consumer resolution, and handler invocation. The pipeline's per-message DI scope is the same scope that resolves the typed consumer instance (a tenant filter and the consumer must see one shared tenant key). Consequences: skip also skips deserialization cost; deserialization exceptions flow through the pipeline as ordinary downstream exceptions and classify for retry/exhaustion exactly as they do today; for effectively-once pipelines the outer delegate is the compute step.
+Position: inside the dispatch block, wrapping the whole per-message OUTER delegate — deserialization, typed consumer resolution, and handler invocation. The pipeline's per-message DI scope is the same scope that resolves the typed consumer instance (a tenant filter and the consumer must see one shared tenant key). Consequences: skip also skips deserialization cost; deserialization exceptions flow through the pipeline as ordinary downstream exceptions and classify for retry/exhaustion exactly as they do today.
 ```
 interface IStreamConsumeFilter {
     Task OnConsume(StreamConsumeFilterContext context, ConsumeDelegate next, CancellationToken ct);
@@ -256,8 +247,8 @@ class StreamConsumeFilterContext {
 ```
 Semantics (pinned):
 - Filter exceptions classify exactly like handler exceptions: retry apply → exhaustion on budget exhaustion; the `OutputHeaders` at that moment land on the error envelope and publish as message properties at the destination.
-- **Skip**: `SkipHandler = true` marks the message processed-by-pipeline — handler does not run; offset advances under the same cadence rules; no destination/publish; in Effectively-Once mode, skip is **rejected at configuration time** (an EO pipeline whose filter skips would emit no result and never advance the target id-space — replayable forever). Raw ConsumeAsync supports skip; typed endpoint consumers allow it only when explicitly enabled (`e.AllowPipelineSkip()`), failing fast otherwise.
-- Capability mechanics: a filter declares skip capability via a `bool CanSkip { get; } = false` member on `IStreamConsumeFilter`. Effectively-once configurations reject any attached filter where `CanSkip == true` at configuration time (exception names the filter type). Typed endpoints additionally require `e.AllowPipelineSkip()` when any attached filter can skip; raw consume accepts skip unconditionally.
+- **Skip**: `SkipHandler = true` marks the message processed-by-pipeline — handler does not run; offset advances under the same cadence rules; no destination/publish. Raw ConsumeAsync supports skip; typed endpoint consumers allow it only when explicitly enabled (`e.AllowPipelineSkip()`), failing fast otherwise.
+- Capability mechanics: a filter declares skip capability via a `bool CanSkip { get; } = false` member on `IStreamConsumeFilter`. Typed endpoints additionally require `e.AllowPipelineSkip()` when any attached filter can skip; raw consume accepts skip unconditionally.
 - Ordering: filters run in registration order (bus then endpoint), both outside-in for before-section and inside-out for after-section (nested composition); exact ordering pinned by a sequence-recording unit test.
 - DI: filters constructed per attach (stable for the attach's life; scoped captures via `IServiceScopeFactory` for per-message needs).
 - **Acceptance (V2-C3)**: unit — before/after ordering, exception→retry, skip→advance-without-destination, OutputHeaders landed in envelope; integration — tenant filter E2E (extract header → scoped service keyed by tenant), exhaustion envelope carries tenant header, skip advances exactly once across dispose/cancel redelivery windows.
@@ -266,11 +257,6 @@ Semantics (pinned):
 - `CorrelationIdPublishFilter` (reuse incoming or generate; flows through consume `MessageMetadata.CorrelationId`); `TenantHeadersPublishFilter` + `TenantConsumeFilter` (payload slot for downstream scope) as reference samples in `examples/` (not part of the product assembly v1).
 - Native telemetry: `ActivitySource("StreamBus")` spans on publish (stream/size/status) and consume (stream/partition/offset, link on correlation). Always-on no-cost when nothing samples. Users extract tenant/user/telemetry values to *propagate* via filters, not via ambient implicit header magic.
 - **Acceptance (V2-C4)**: MeterListener/ActivityListener-based unit tests pin tag sets; observability guide updated.
-
-### C5 — Effectively-once integration
-- Filters wrap EO compute; `OutputHeaders` of success land on the result publish (properties on the result message).
-- Skip rejected (C3); naming/id-space unchanged; resume semantics untouched.
-- **Acceptance (V2-C5)**: EO integration test with a header-annotating pipeline: resume replays keep dedup; headers present in targets.
 
 ### C6 — Observability of pipelines
 - New instruments: `bus_pipeline_duration` histogram (kind=publish|consume), `bus_pipeline_reject`? — pin names before implementation (metric docs as the existing 7-instrument contract).
@@ -289,10 +275,10 @@ Semantics (pinned):
 |---|---|---|
 | M1 Liveness mechanics | A1, A3, A4 (close callbacks, bounded handoff, unwedged dispatch) | V2-G1: no silent stall under scripted client-close; hang regression tests green |
 | M2 Supervision & truth | A2, A5, A6, A7, A8 | V2-G2: broker-restart integration shows resume ≤ interval+backoff; health/degraded/unhealthy matrix |
-| M3 Surface consolidation | B1–B7, B9–B12, B14–B17 | V2-G3: LOC delta negative; all existing behavior tests green unchanged (except text-of-error messages asserted by tests)|
+| M3 Surface consolidation | B1–B3, B5–B7, B9–B12, B14–B17 | V2-G3: LOC delta negative; all existing behavior tests green unchanged (except text-of-error messages asserted by tests)|
 | M4 Config & docs honesty | B8, D3 (README/llms.txt/CHANGELOG/version) | V2-G4: README snippet compiles; llms facts = code facts |
 | M5 Properties + publish pipeline | C1, C2, C6(publish side) | V2-G5: headers E2E on all stream kinds |
-| M6 Consume pipeline + helpers + EO | C3, C4, C5, C6 | V2-G6: semantics matrix green incl. EO reject-skip and skip-exactly-once |
+| M6 Consume pipeline + helpers | C3, C4, C6 | V2-G6: semantics matrix green incl. skip-exactly-once |
 | M7 CI & chaos | D1, D2 | V2-G7: CI green on clean clone |
 
 Note: M1 before M3 deliberately — liveness first, then refactor on a correctly-behaving base; middleware (M5–6) rides the consolidated seams.
@@ -313,13 +299,13 @@ column names the task commit (short SHA) and the tests that pin the behavior.
 | Channel-per-message dead-letter burst | A8 | V2-A8 | Task 7 | `ErrorQueueTransportTests` burst + mid-burst-shutdown | `222cce8` |
 | Bus twins / drift debt | B1–B4 | V2-G3 | Task 8 | full suites green unchanged; LOC delta negative at the refactor range | `b0819dd` |
 | Two-transport handle / public stores / password leak | B5–B6 | V2-B5/B6 | Task 9 | compile probes + grep gates | `7b81569` |
-| Dead knobs, `@`-keys, replay dedup loss | B7+B9+B14 | V2-B7.1 | Task 10 | `ReplayNamingTests` + greps | `0a28cb8` |
+| Dead knobs, `@`-keys, replay name collisions | B7+B9+B14 | V2-B7.1 | Task 10 | `ReplayNamingTests` + greps | `0a28cb8` |
 | Exception hierarchy, per-publish declare rebuild, topology dupes, serial starts, raw Strict | B10–B15 | V2-B10.1 | Task 11 | suite + `grep` gates | `e5d0486` |
 | README does not compile / `llms.txt` lies | D3 | V2-G4 | Task 13 | DocsSnippets compile + llms grep gates | `44e070d` |
 | Configuration binding (proposed, **dropped** — explicit config only) | B8 (dropped) | — | Task 12 (removed) | `grep -rn "IConfiguration" src/StreamBus` = 0 hits | dropped; no commit |
 | No header carrier / no pipelines | C1–C3 | V2-C1..C3 | Tasks 14–16 | `HeaderCarrierTests`, `PublishPipelineTests`, `PipelineSemanticsTests` | `ae2ad17`, `aa24e3c`, `f543bb1` |
 | Pipeline registration is additive + ordered | C2/C3 | V2-C2.1/C3.1 | Tasks 15–16 | 3-filter ordering tests, duplicate-type rejection, zero/double-`next` guards, bus+endpoint scope ordering | `aa24e3c`, `f543bb1` |
-| EO + filter composition / telemetry silent | C4–C6 | V2-C4..C6 | Task 17 | Activity/Meter tests + EO integration | `d0d11a0` |
+| Filter composition / telemetry silent | C4–C6 | V2-C4..C6 | Task 17 | Activity/Meter tests + integration | `d0d11a0` |
 | Analyzers off / lint debt | B16 | V2-B16 | Task 13 | build gate: 0 diagnostics at latest-recommended | `44e070d` |
 | Cross-process reference caveat undocumented | B17 | V2-B17 | Task 13 | guide consume section text (quoted rule) | `44e070d` |
 | No CI / green requires memory | D1 | V2-G7 | Task 18 | `.github/workflows/build.yml` unit + brokered integration lane | `c2dc7e2` |

@@ -375,7 +375,7 @@ Everything else returns null. `ReadSentTime` returns null for a null `Properties
 
 - [ ] **Step 4: Wire the producer and publish entry points**
 
-In `ProducerHandles.cs`, every `StreamMessageProperties.ApplyTo(message, options.Properties)` becomes `ApplyTo(message, options.Properties, options.RoutingKey)` (three call sites: `StreamProducerHandle.SendAsync`, `StreamProducerHandle.PublishReplayAsync`, `SuperStreamProducerHandle.SendMessageAsync`).
+In `ProducerHandles.cs`, every `StreamMessageProperties.ApplyTo(message, options.Properties)` becomes `ApplyTo(message, options.Properties, options.RoutingKey)` (call sites include `StreamProducerHandle.SendAsync` and `SuperStreamProducerHandle.SendMessageAsync`; apply the same to any other confirmed send site, e.g. the replay publishing method).
 
 In `Bus.cs`:
 
@@ -418,9 +418,9 @@ git commit -m "feat: encode message ids, sent time, content type, and routing ke
 - Modify: `src/StreamBus/ProducerHandles.cs:18-35, 209-226, 272-295`
 - Modify: `src/StreamBus/ProducerRegistry.cs:66-90`
 - Modify: `src/StreamBus/ConsumerRegistry.cs:597`
-- Tests: `ActivityTests.cs`, `PipelineSemanticsTests.cs`, `PipelineMetricsTests.cs`, `TypedConsumeFilterTests.cs`, `TypedFilterContractTests.cs`, `TypedFilterRegistrationTests.cs`, `HostingTests.cs`, `TypedConsumerTests.cs`, `RetryConfigurationTests.cs`, `ErrorEnvelopeTests.cs`, `ErrorHandoffTests.cs`, `ErrorQueueTests.cs`, `ErrorQueueTransportTests.cs`, `AmqpPublishChannelTests.cs`, `ReplayAndEffectivelyOnceReattachTests.cs`, `PublishTests.cs` (stub signature), `ConsumerIntegrationTests.cs`, `ConsumePipelineIntegrationTests.cs`, `TypedFilterIntegrationTests.cs`, `RetryIntegrationTests.cs`, `EffectivelyOnceIntegrationTests.cs`, `TypedConsumerIntegrationTests.cs`, `TypedStartupIntegrationTests.cs`.
+- Tests: `ActivityTests.cs`, `PipelineSemanticsTests.cs`, `PipelineMetricsTests.cs`, `TypedConsumeFilterTests.cs`, `TypedFilterContractTests.cs`, `TypedFilterRegistrationTests.cs`, `HostingTests.cs`, `TypedConsumerTests.cs`, `RetryConfigurationTests.cs`, `ErrorEnvelopeTests.cs`, `ErrorHandoffTests.cs`, `ErrorQueueTests.cs`, `ErrorQueueTransportTests.cs`, `AmqpPublishChannelTests.cs`, `PublishTests.cs` (stub signature), `ConsumerIntegrationTests.cs`, `ConsumePipelineIntegrationTests.cs`, `TypedFilterIntegrationTests.cs`, `RetryIntegrationTests.cs`, `TypedConsumerIntegrationTests.cs`, `TypedStartupIntegrationTests.cs`.
 
-This task is one compile unit: the public rename breaks every reference until Steps 1-4 land, so there is no red/green step inside it. The behavioral proofs are the migrated assertions plus the two new tests added in Step 5.
+This task is one compile unit: the public rename breaks every reference until Steps 1-4 land, so there is no red/green step inside it. The behavioral proofs are the migrated assertions plus the new tests added in Step 5.
 
 **Interfaces:**
 - Consumes: `StreamHeaders` / `StreamSendHeaders` (Task 1), `StreamWire` and new `StreamMessageProperties` (Task 2).- Produces:
@@ -430,7 +430,7 @@ This task is one compile unit: the public rename breaks every reference until St
   - `public interface IStreamConsumeFilter { Task OnConsume(ConsumeContext context, ConsumeDelegate next); }`
   - `public interface IStreamConsumeFilter<T> { Task OnConsume(ConsumeContext<T> context, ConsumeDelegate next); }`
   - `internal static class TypedConsumeContext { public static ConsumeContext Create(Type messageType, ConsumeContext delivery, object message); }`
-  - `internal sealed class ConsumePipeline { ConsumePipeline(IReadOnlyList<IStreamConsumeFilter> filters, bool requiresContinuation = false); int Count { get; } Task RunAsync(ConsumeContext context, ConsumeDelegate terminal); }`
+  - `internal sealed class ConsumePipeline { ConsumePipeline(IReadOnlyList<IStreamConsumeFilter> filters); int Count { get; } Task RunAsync(ConsumeContext context, ConsumeDelegate terminal); }`
   - `ExhaustedContext` gains `Guid? MessageId`, `Guid? CorrelationId`, `DateTime? SentTime`, `required IStreamHeaders Headers`; `Metadata` is deleted.
   - `ErrorEnvelope` gains `Guid? MessageId/CorrelationId` (still `required`), `DateTime? SentTime` (optional), and renames `OutputHeaders` to `SendHeaders`.
   - `IStreamPlainProducerHandle.SendEnvelopeAsync(ReadOnlyMemory<byte> body, StreamMessageProperties properties, CancellationToken ct)`; `StreamProducerRegistry.PublishEnvelopeAsync(string stream, ReadOnlyMemory<byte> body, StreamMessageProperties properties, TimeSpan confirmTimeout, CancellationToken ct = default)`.
@@ -445,7 +445,7 @@ The payload bag is `private readonly Dictionary<Type, object?> _payloads = new()
 
 In `ConsumePipeline.cs` delete `StreamConsumeFilterContext`, `StreamConsumeFilterContext<T>`, `ContextFactories`, `CreateContext`, `CreateContextFactory`, `CreateTypedContext`, `_endpointMessageType`, and `RequiresTypedMessage`. `RunAsync` and `InvokeAsync` drop the `CancellationToken` parameter. Add `TypedConsumeContext` (reflection factory keyed by message type, `CreateDelegate(typeof(Func<ConsumeContext, object, ConsumeContext>))`, generic `CreateTyped<T>` returning `new ConsumeContext<T> { ...copied delivery members..., Message = (T)message }`).
 
-`ConsumerRegistry.BuildPipeline` keeps `messageType` for typed-filter selection but its `new ConsumePipeline(...)` call becomes `new ConsumePipeline(filters, requiresContinuation: effectivelyOnce)`. In `FilterAdapters.cs`, `TypedConsumeFilterAdapter<T>.OnConsume` casts `context as ConsumeContext<T>` and throws `StreamBusConfigurationException` when the cast fails.
+`ConsumerRegistry.BuildPipeline` keeps `messageType` for typed-filter selection but its `new ConsumePipeline(...)` call becomes `new ConsumePipeline(filters)`. In `FilterAdapters.cs`, `TypedConsumeFilterAdapter<T>.OnConsume` casts `context as ConsumeContext<T>` and throws `StreamBusConfigurationException` when the cast fails.
 
 - [ ] **Step 3: Rebuild the delivery path**
 
@@ -453,9 +453,8 @@ In `StreamPartitionConsumer`:
 
 - `BuildContext(ulong offset, Message message, CancellationToken ct, IServiceProvider services, StreamSendHeaders sendHeaders)` builds one `ConsumeContext`: `Headers = new StreamHeaders(appPropertiesCopy, _serializer)`, `SendHeaders = sendHeaders`, `Services = services`, `MessageId = StreamWire.ReadGuid(message.Properties?.MessageId)`, `CorrelationId = StreamWire.ReadGuid(message.Properties?.CorrelationId)`, `SentTime = StreamWire.ReadSentTime(message.Properties)`, `RoutingValue` from `appProperties[StreamHeaderKeys.RoutingKey]?.ToString()`. Delete `MapMetadata`.
 - Dispatch creates the scope when `_pipeline.Count > 0 || _options.MessageType is not null`, creates `var sendHeaders = new StreamSendHeaders(_serializer)` **before** `BuildContext` (so the context can carry it), and passes it in.
-- At the start of every attempt (normal and effectively-once): `sendHeaders.Reset(); consumeContext.ResetPayloads();`.
+- At the start of every attempt: `sendHeaders.Reset(); consumeContext.ResetPayloads();`.
 - `InvokeHandlerPipelineAsync(ConsumeContext consumeContext)`: when `_options.MessageType` is non-null, deserialize with `TypedMessageDeserializer`, then `consumeContext = TypedConsumeContext.Create(messageType, consumeContext, message)`; if `_pipeline.Count == 0` call `_handler(consumeContext)`; else `_pipeline.RunAsync(consumeContext, () => _handler(consumeContext))`.
-- `DispatchEffectivelyOnceAsync` takes the `StreamSendHeaders` explicitly (`DispatchEffectivelyOnceAsync(offset, consumeContext, sendHeaders, attach, activity)`), uses it for filter output headers, and snapshots it for the result publish.
 - `ExhaustAsync` passes `consumeContext.MessageId`, `consumeContext.CorrelationId`, `consumeContext.SentTime`, and an `ExhaustedContext` with `Headers = consumeContext.Headers`.
 - Envelopes set `MessageId`/`CorrelationId`/`SentTime` from the context and `SendHeaders = outputHeaders`.
 
@@ -611,8 +610,7 @@ git commit -m "refactor!: replace consume contexts, metadata, and envelope ids w
 - Modify: `src/StreamBus/Bus.cs` (ctor, `PublishThroughPipelineAsync`, `CreatePublishContext` deletion, `SendTypedAsync`, `PublishRawAsync`)
 - Modify: `src/StreamBus/FilterAdapters.cs:38-57`
 - Modify: `src/StreamBus/Registry.cs:191-206`
-- Modify: `src/StreamBus/ResultProducerRegistry.cs:78-91`
-- Tests: `PublishPipelineTests.cs`, `TypedFilterContractTests.cs`, `TypedFilterRegistrationTests.cs`, `PipelineMetricsTests.cs`, `ActivityTests.cs`, `PublishIntegrationTests.cs`, `PublishPipelineIntegrationTests.cs`, `TypedFilterIntegrationTests.cs`, `ResultPublisherTests.cs`, `EffectivelyOnceTests.cs`, `ReplayAndEffectivelyOnceReattachTests.cs`, `HostingTests.cs`.
+- Tests: `PublishPipelineTests.cs`, `TypedFilterContractTests.cs`, `TypedFilterRegistrationTests.cs`, `PipelineMetricsTests.cs`, `ActivityTests.cs`, `PublishIntegrationTests.cs`, `PublishPipelineIntegrationTests.cs`, `TypedFilterIntegrationTests.cs`, `HostingTests.cs`.
 
 This task is one compile unit for the same reason as Task 3; the red/green work is the new tests in Step 1, which are written before the types exist.
 
@@ -755,27 +753,7 @@ Delete `CreatePublishContext`, the `_busView` field, and the `busView` construct
 
 Scope note: `PublishRawAsync` does not run publish filters today (it calls `_producers.PublishAsync` directly) and this plan keeps that behaviour. The design's "`PublishContext` … raw `PublishRawAsync`" row means raw publishes get the same reserved-key validation and wire encoding, not a filter pipeline; do not invent a `PublishContext` for raw byte publishes.
 
-- [ ] **Step 5: Give effectively-once results identity**
-
-In `ResultProducerRegistry.ResultOptions`, always build properties:
-
-```csharp
-new PublishOptions
-{
-    IsSuperStream = targetSuper,
-    RoutingKey = targetSuper ? routingKey : null,
-    Properties = new StreamMessageProperties
-    {
-        MessageId = Guid.NewGuid(),
-        SentTime = StreamWire.NormalizeSentTime(DateTime.UtcNow),
-        Headers = outputHeaders ?? new Dictionary<string, object?>(),
-    },
-}
-```
-
-`outputHeaders` no longer changes whether properties are present.
-
-- [ ] **Step 6: Migrate the tests**
+- [ ] **Step 5: Migrate the tests**
 
 Apply the publish mapping:
 
@@ -791,17 +769,17 @@ Apply the publish mapping:
 
 Delete `PipelineMetricsTests`' `StreamBusRegistrationView` construction and the `Bus` assertion. In `TypedFilterContractTests`, delete the `RuntimeMessageType` assertion and the `MessageType` assertions. In `PublishPipelineTests`, `PublishContextProbe.Record` takes `PublishContext` and drops its `MessageType`/`RuntimeMessageType` properties, `SharedPublishContextProbe` takes the new types, and `Header_writer_merges_call_level_properties_and_call_level_wins` uses `StreamSendHeaders`.
 
-- [ ] **Step 7: Build and run the unit suite**
+- [ ] **Step 6: Build and run the unit suite**
 
 Run: `dotnet build StreamBus.slnx` then `dotnet test tests/StreamBus.UnitTests/StreamBus.UnitTests.csproj`
 Expected: 0 warnings; all unit tests pass.
 
-- [ ] **Step 8: Run the brokered integration suite**
+- [ ] **Step 7: Run the brokered integration suite**
 
 Run: `dotnet test tests/StreamBus.IntegrationTests/StreamBus.IntegrationTests.csproj`
 Expected: PASS when a broker is available.
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add src tests
@@ -856,53 +834,6 @@ public async Task Super_publish_exposes_its_routing_key_on_every_delivery()
 
 `Append` `RoutingEvent` as a `public sealed record RoutingEvent(string RoutingKey);` at file scope in the test file.
 
-Add the effectively-once half, which proves `streambus.routing-key` is written for results too and that the default `TargetRouting` (`ctx => ctx.RoutingValue`) now works:
-
-```csharp
-[Fact]
-public async Task Super_target_result_carries_the_source_routing_key()
-{
-    var source = Unique("routing-eo-src");
-    var target = Unique("routing-eo-tgt");
-    var admin = await ConnectAdminAsync();
-    await using var _ = admin;
-    await admin.CreateSuperStream(new PartitionsSuperStreamSpec(source, 2));
-    _superStreams.Add(source);
-    await admin.CreateSuperStream(new PartitionsSuperStreamSpec(target, 2));
-    _superStreams.Add(target);
-
-    await using var publisher = await BusInstance.StartAsync("routing-eo-pub");
-    await publisher.Bus.PublishSuperAsync(source, new RoutingEvent("key-a"), "key-a",
-        TestContext.Current.CancellationToken);
-
-    await using var eo = await BusInstance.StartAsync("routing-eo");
-    await using var step = await eo.Bus.ConsumeEffectivelyOnceAsync(
-        source, target,
-        new EffectivelyOnceOptions
-        {
-            SourceIsSuperStream = true,
-            TargetIsSuperStream = true,
-            Retry = new RetryPolicy { BaseDelay = TimeSpan.FromMilliseconds(10), MaxJitter = TimeSpan.Zero },
-        },
-        ctx => Task.FromResult(ctx.Body),
-        TestContext.Current.CancellationToken);
-
-    var seen = new List<ConsumeContext>();
-    await using var reader = await BusInstance.StartAsync("routing-eo-read");
-    await using var subscription = await reader.Bus.ConsumeAsync(
-        target,
-        new ConsumeOptions { IsSuperStream = true, Reference = "routing-eo-grp", Offset = ConsumeOffset.AlwaysFirst },
-        ctx => { lock (seen) seen.Add(ctx); return Task.CompletedTask; },
-        TestContext.Current.CancellationToken);
-
-    await WaitForAsync(() => Count(seen) == 1, TimeSpan.FromSeconds(30), "routed result");
-    var result = Assert.Single(seen);
-    Assert.Equal("key-a", result.RoutingValue);
-    Assert.Equal("key-a", result.Headers.GetString("streambus.routing-key"));
-    Assert.NotEqual(Guid.Empty, result.MessageId);
-}
-```
-
 - [ ] **Step 2: Run the tests to verify they fail (or are skipped without a broker)**
 
 Run: `dotnet test tests/StreamBus.IntegrationTests/StreamBus.IntegrationTests.csproj --filter FullyQualifiedName~SuperStreamRoutingIntegrationTests`
@@ -910,12 +841,12 @@ Expected before the write side is complete: FAIL with `RoutingValue` null. With 
 
 - [ ] **Step 3: Confirm the write path**
 
-Verify `SuperStreamProducerHandle.SendMessageAsync` calls `StreamMessageProperties.ApplyTo(message, options.Properties, options.RoutingKey)` before `_routing.Stamp(...)`, and that `PublishResultAsync` flows its `routingKey` into `PublishOptions.RoutingKey` (it does). No further production change is expected; this task exists to prove the half-finished path now works.
+Verify `SuperStreamProducerHandle.SendMessageAsync` calls `StreamMessageProperties.ApplyTo(message, options.Properties, options.RoutingKey)` before `_routing.Stamp(...)`, and that the super publish path flows its `routingKey` into `PublishOptions.RoutingKey` (it does). No further production change is expected; this task exists to prove the half-finished path now works.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `dotnet test tests/StreamBus.IntegrationTests/StreamBus.IntegrationTests.csproj --filter FullyQualifiedName~SuperStreamRoutingIntegrationTests`
-Expected: both tests PASS with a broker.
+Expected: the test PASSES with a broker.
 
 - [ ] **Step 5: Commit**
 
@@ -956,7 +887,7 @@ Replace the filter samples with `OnConsume(ConsumeContext context, ConsumeDelega
 | `CorrelationId` | `Guid?` | AMQP `correlation-id`; never invented |
 | `SentTime` | `DateTime?` | AMQP `creation-time`, UTC, millisecond precision |
 | `Headers` | `IStreamHeaders` | application properties as received, framework keys included |
-| `SendHeaders` | `IStreamSendHeaders` | headers carried on the error envelope or effectively-once result |
+| `SendHeaders` | `IStreamSendHeaders` | headers carried on the error envelope |
 | `Stream` / `Partition` / `Offset` / `RoutingValue` / `Body` / `Services` / `CancellationToken` | unchanged semantics |
 
 State that `stream`, partition, offset, ids, sent time, services, and the token are fixed for the delivery, and that headers (and `SendHeaders`) are the only mutable surface. Replace the `context.OutputHeaders` sentence with `context.SendHeaders`. Delete the paragraph that says a typed context exposes `context.Raw` — `ConsumeContext<T>` is now the context, not a wrapper; the typed consumer and every filter share it. `multi-bus.md:55` changes `Consume(ConsumeContext<OrderEvent> ctx, CancellationToken ct)` to `Consume(ConsumeContext<OrderEvent> ctx)`.
