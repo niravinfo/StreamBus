@@ -16,13 +16,21 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
+  deploy:
     runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.1
       - name: Setup pnpm
         uses: pnpm/action-setup@v6.1.1
+        with:
+          # pnpm/action-setup only auto-detects the version from a root-level
+          # package.json "packageManager" field; ours lives in docs/, so the
+          # version must be pinned here. Keep in sync with docs/package.json.
+          version: 12.16.1
       - name: Setup Node
         uses: actions/setup-node@v7.1.0
         with:
@@ -37,14 +45,6 @@ jobs:
         uses: actions/upload-pages-artifact@v5.0.0
         with:
           path: docs/dist
-
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v5.0.1
