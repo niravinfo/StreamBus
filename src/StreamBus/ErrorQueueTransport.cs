@@ -13,7 +13,7 @@ internal interface IErrorQueueConnectionFactory
 
 internal sealed class AmqpConnectionFactory : IErrorQueueConnectionFactory
 {
-    public async Task<IConnection> ConnectAsync(StreamBusOptions options, CancellationToken cancellationToken)
+    internal static ConnectionFactory BuildFactory(StreamBusOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
         var factory = new ConnectionFactory
@@ -26,6 +26,27 @@ internal sealed class AmqpConnectionFactory : IErrorQueueConnectionFactory
             ClientProvidedName = "streambus-error-queues",
             RequestedHeartbeat = options.Heartbeat,
         };
+        if (options.Tls is { Enabled: true } tls)
+        {
+            if (tls.ClientCertPath is { } certPath && !File.Exists(certPath))
+                throw new StreamBusConfigurationException($"TLS client certificate not found at '{certPath}'.");
+            factory.Ssl = new SslOption
+            {
+                Enabled = true,
+                ServerName = tls.ServerName ?? options.Host,
+                CertPath = tls.ClientCertPath ?? string.Empty,
+                CertPassphrase = tls.ClientCertPassword ?? string.Empty,
+                AcceptablePolicyErrors = tls.AcceptableCertificateErrors,
+                Version = tls.ProtocolVersion,
+            };
+        }
+        return factory;
+    }
+
+    public async Task<IConnection> ConnectAsync(StreamBusOptions options, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        var factory = BuildFactory(options);
         try
         {
             return await factory.CreateConnectionAsync(cancellationToken).ConfigureAwait(false);
