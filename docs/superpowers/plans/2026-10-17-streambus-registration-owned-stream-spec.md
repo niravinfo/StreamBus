@@ -205,14 +205,14 @@ public enum DeadLetterQueueType { ClassicQueue = 0, QuorumQueue = 1 }
   (unchanged). There is no stream-spec overload on the queue path, so
   the old "spec given with a queue type" validation error path no
   longer exists — the invalid state is unrepresentable.
-- **Exactly-once destination rule:** at most one dead-letter
+- **One-time destination rule:** at most one dead-letter
   destination per endpoint. A second dead-letter call — either method,
   same or different destination — throws at registration:
   "ReceiveEndpoint '{stream}': a dead-letter destination is already
   configured ({kind} '{name}'); at most one is allowed per endpoint.
   Remove the duplicate call." This mirrors the `Consumer<T>` duplicate
   guard (StreamBusConfigurator.cs:376-377): destination selection is
-  identity-tier (exactly-once), not a value knob (last-call-wins), and
+  identity-tier (one-time), not a value knob (last-call-wins), and
   it covers the accidental stream↔queue switch a silent overwrite
   would allow — exhausted messages would strand in the wrong place.
 - `DeadLetterType` (`Stream`/`ClassicQueue`/`QuorumQueue`,
@@ -313,8 +313,8 @@ New unit tests:
   "Registration-owned stream specs" (publish registration carries the
   spec); keep derived-topology and adopt-rule sections (S-references
   reworded).
-- `docs/guide/publish.md`, `docs/guide/effectively-once.md`,
-  `docs/guide/errors.md`, `docs/guide/consume.md` — replace
+- `docs/guide/publish.md`, `docs/guide/errors.md`,
+  `docs/guide/consume.md` — replace
   `Declare*` snippets with registration-spec snippets; every `Set*`
   reference becomes the renamed builder-style call, and dead-letter
   examples use `DeadLetterToStream`/`DeadLetterToQueue`.
@@ -366,7 +366,7 @@ changes are limited to error wording and the new S2 conflict check.
   `DeadLetterToQueue` with `DeadLetterQueueType`; queue destinations
   take no stream-spec overload, so invalid combinations don't compile
   and no extra validation error path is needed.
-- **Q5 — exactly-once dead-letter destination** (user-raised
+- **Q5 — one-time dead-letter destination** (user-raised
   2026-10-18): a second dead-letter call on an endpoint throws at
   registration, mirroring the `Consumer<T>` duplicate guard; the
   `OnExhausted` funnels-to-callback shadowing rule stays as-is.

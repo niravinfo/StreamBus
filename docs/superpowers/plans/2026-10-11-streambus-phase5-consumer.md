@@ -23,7 +23,7 @@
 
 ## Review Focus
 
-- SAC failover mid-stream loses nothing, duplicates nothing, and keeps per-key order: kill one of three same-reference instances mid-backlog, the rest absorb every message exactly once with each key's subsequence ordered (G-4, FR-2.3/2.6/3.1). Pinned by Task 6 failover test asserting totals + order + final stored offset.
+- SAC failover mid-stream loses nothing, duplicates nothing, and keeps per-key order: kill one of three same-reference instances mid-backlog, the rest absorb every message without loss or duplication with each key's subsequence ordered (G-4, FR-2.3/2.6/3.1). Pinned by Task 6 failover test asserting totals + order + final stored offset.
 - Death-and-recreate resumes from the broker-stored offset, never from local state: consume half, dispose, recreate same reference, only the remainder arrives (G-5a, FR-2.5/10.4). Pinned by Task 6 resume test (a localWater-based resume would redeliver and fail the total).
 - A stale or demoted instance's backward store is rejected locally, counted, and never sent (FR-2.7/10.7). Pinned by Task 5 guard unit test + fallback/rejected MeterListener tests.
 - Every no-stored-offset fallback warns (reference, partition, branch, resolved offset) and counts by branch — never silent (FR-10.12). Pinned by Task 5 logger-sink + counter tests and Task 6 fresh-stream runs.
@@ -58,9 +58,9 @@ Tests:
 - `tests/StreamBus.UnitTests/OffsetResolutionTests.cs` — resolution matrix + query-failure branches + guard + derivation + validation.
 - `tests/StreamBus.UnitTests/OffsetCadenceTests.cs` — `OffsetStorer` (Every N + redelivery window, MaxInterval timer, regression check).
 - `tests/StreamBus.UnitTests/ConsumerMetricsTests.cs` — MeterListener pins (fallback/rejected counters, inflight gauge via wiring, lag poller with stub end-offset).
-- `tests/StreamBus.IntegrationTests/ConsumerIntegrationTests.cs` — coverage/exactly-once/order (4 partitions × 3 instances), failover (G-4), broadcast, kill-resume (G-5a), offset branches, fail-then-succeed redelivery, Set/Get escapes.
+- `tests/StreamBus.IntegrationTests/ConsumerIntegrationTests.cs` — coverage/no-loss/order (4 partitions × 3 instances), failover (G-4), broadcast, kill-resume (G-5a), offset branches, fail-then-succeed redelivery, Set/Get escapes.
 
-Explicitly out of Phase 5 (deferred, not stubs): typed `IConsumer<T>` + `AddStreamBusConsumer` + serializer (Phase 9: FR-2.1/2.8); in-handler retry + `RetryPolicy`/`FailureMode`/`ErrorStream` (Phase 6: FR-4/FR-5, G-1, G-5b); topology `Ensure*` (Phase 8: FR-7, FR-3.3 enforcement); `PublishResultAsync` (Phase 7); hot-key auto-remedy (none exists — NFR-4, documented ceiling only).
+Explicitly out of Phase 5 (deferred, not stubs): typed `IConsumer<T>` + `AddStreamBusConsumer` + serializer (Phase 9: FR-2.1/2.8); in-handler retry + `RetryPolicy`/`FailureMode`/`ErrorStream` (Phase 6: FR-4/FR-5, G-1, G-5b); topology `Ensure*` (Phase 8: FR-7, FR-3.3 enforcement); hot-key auto-remedy (none exists — NFR-4, documented ceiling only).
 
 Recorded rulings (spec as authority; bind all tasks): delegate path only, handler shape `Func<ConsumeContext, Task>` with `ct` inside the context; `IStreamBus.ConsumeAsync`/`IStreamBus<TBus>.ConsumeAsync` return `Task<IStreamConsumer>` (`IStreamConsumer : IAsyncDisposable` with `Stream` + `Reference`); `ReadinessPolicy` lives inside `ConsumeOptions` (default fail-fast — additive extension of the sketch satisfying §3.1 text; resolves the flagged sketch/text inconsistency); `IsSuperStream` explicit per call (default false); delegate default `Reference` derives from (bus marker type, stream) — two delegate consumers on one stream share a group unless given distinct references (documented); `Get/SetConsumerOffsetAsync` take `(stream, reference, partition)` — a `stream`-less signature cannot address (reference, stream) offsets, so the sketch is extended with the leading `stream` parameter (documented deviation); operator calls use fail-fast readiness; handler failure in this phase means log + dispose + backoff + recreate from the stored offset (Phase 6 refines to in-handler retry); poison messages loop forever with backoff by design until Phase 6; promotion/create query failure degrades to the configured no-stored branch (First replays safely, Fail throws `StreamBusConfigurationException` naming reference+partition); fallback counter labels carry branch only (resolved offset goes to the log line — label cardinality safety); `retry_blocked` gauge ships with base labels + `failure_mode="strict"`, no attempt label (Phase 6 drives real values); lag is consumer-held `max(0, delivered - stored)` computed live in the observable (ExpE proved `LastOffset()` unusable — see Round 2); `RoutingValue` is `string?` from the `streambus.routing-key` application property when present, else null; `MessageMetadata` maps client properties with `ApplicationProperties` defaulting to empty; handler `await`s everything inside the callback so dispatch stays strictly sequential per partition; store path awaits with catch-log-continue on the hot path and fire-and-forget on the timer; `localWater` key is `{reference}@{partitionStream}`, never cleared, `Set` overwrites with audit log; components take optional `ILogger<T>?` defaulting to `NullLogger`; G-4/G-5a run single-process multi-system (broker-arbitrated SAC, deterministic); coverage test uses 4 partitions × 3 instances (property-equivalent to the 6×4 example at lower flake cost); FR-3.3/3.4 need no code (nothing mutates partitions; ceiling already documented in requirements §4).
 
@@ -1288,11 +1288,11 @@ public sealed class ConsumerIntegrationTests : IAsyncDisposable
 
 Payload convention: publish bodies `"{key}:{seq}"` UTF-8 via `IStreamBus.PublishAsync` (plain for plain tests; super with RoutingKey=key for super tests). Handlers parse with `Parse` and record under lock; record tuples always include `ctx.Partition` so per-partition end-state assertions are possible.
 
-Test (a) coverage + exactly-once + order, 4 partitions × 3 instances:
+Test (a) coverage + no-loss + order, 4 partitions × 3 instances:
 
 ```csharp
 [Fact]
-public async Task Super_stream_splits_across_instances_exactly_once_ordered()
+public async Task Super_stream_partitions_distribute_across_instances_without_duplicates()
 {
     var super = Unique("con-super");
     var admin = await ConnectAdminAsync();
@@ -1332,7 +1332,7 @@ public async Task Super_stream_splits_across_instances_exactly_once_ordered()
     }
     finally { foreach (var inst in instances) await inst.DisposeAsync(); }
     Assert.Equal(24, all.Count);
-    Assert.Equal(24, all.Select(x => (x.Key, x.Seq)).Distinct().Count()); // exactly once
+    Assert.Equal(24, all.Select(x => (x.Key, x.Seq)).Distinct().Count()); // no duplicates
     foreach (var key in keys)
         Assert.Equal(new[] { 1, 2, 3, 4 }, all.Where(x => x.Key == key).Select(x => x.Seq));
     // Partition enumeration sanity (the registry depends on stable QueryPartition
@@ -1713,15 +1713,14 @@ R2-A. Lag redesign (ExpE probe, 2026-10-12: `LastOffset()` returns 0 with 10 mes
 
 R2-B. (b)-tail rework (above): record broker `ctx.Offset` in tuples; assert stored == max-received per non-empty partition (null when empty).
 
-R2-C. Producer naming: the per-handle uniqueness counter MUST be process-wide `static` (sequential same-stream producers across systems must never collide); cap total name length at 255 UTF-8 bytes (hash-suffix fallback mirroring consumer references). Phase 7 will replace naming with stable per-(partition,target) names.
+R2-C. Producer naming: the per-handle uniqueness counter MUST be process-wide `static` (sequential same-stream producers across systems must never collide); cap total name length at 255 UTF-8 bytes (hash-suffix fallback mirroring consumer references).
 
 ---
 
-## Follow-ups for Phase 6 / Phase 7 (tracked, no code in this phase)
+## Follow-ups for Phase 6 (tracked, no code in this phase)
 
 - Promotion queries use `CancellationToken.None` with no timeout — add a timeout policy note when retry (Phase 6) lengthens promotion windows.
 - Poison messages loop forever with backoff by design — confirm log-volume acceptability when Phase 6's retry multiplies attempts.
-- Read-process-write (Phase 7) must not assume dense broker offsets: failover evidence shows stored 36–41 for 24 sends under churn — resume with max-delivered semantics, never count-based.
 - Broker-total backlog lag is unmeasurable here (`LastOffset` unusable, evidenced) — revisit only if the client/broker exposes a true end offset.
 - `retry_blocked` gauge is a static 0 with `failure_mode="strict"` until Phase 6 drives real values.
 

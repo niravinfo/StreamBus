@@ -12,8 +12,7 @@ and apply the approved clear-cut API cleanup.
 filters see the base context; typed filters see the same object through a derived
 typed context. No wrapper context and no `Inner`. The publish delegate is always
 called exactly once. The consume delegate is called zero or one time; zero means
-the filter handled/filtered the message. Effectively-once consume pipelines require
-exactly one call because a missing result would replay forever.
+the filter handled/filtered the message.
 
 **Tech stack:** .NET 10, xUnit, RabbitMQ.Stream.Client, Microsoft.Extensions.DependencyInjection.
 Tests use `InternalsVisibleTo` for unit/integration assemblies.
@@ -28,12 +27,10 @@ Tests use `InternalsVisibleTo` for unit/integration assemblies.
 - Publish filters call `next()` exactly once.
 - Normal/raw/typed consume filters call `next()` zero or one time. Zero means the
   handler is not invoked and the offset advances normally.
-- Effectively-once consume filters call `next()` exactly once. Zero is a contract
-  error and must not be retried in-handler.
 - Remove `CanSkip`, `SkipHandler`, `AllowPipelineSkip`, and all related validation,
   options, tests, and docs. Do not replace them with a new capability flag.
 - Cleanup scope is limited to the approved clear-cut items: dead error-routing
-  fields, `FailureMode`, `PublishResultOptions` retry knobs, credential exposure
+  fields, `FailureMode`, credential exposure
   through `ForVhost`, and implementation plumbing visibility. Do not unify
   `ConsumeContext<T>` or the two exhaustion callback shapes in this change.
 - Preserve the user's uncommitted changes in
@@ -42,7 +39,7 @@ Tests use `InternalsVisibleTo` for unit/integration assemblies.
   filter call syntax in the latter; keep the added open-generic tests' intent.
 - Do not commit while the user's existing worktree changes are present. Leave the
   complete diff for review.
-- Keep existing retry, exhaustion, effectively-once, header, and per-message DI
+- Keep existing retry, exhaustion, header, and per-message DI
   scope behavior unless this plan explicitly changes it.
 - Build command: `dotnet build StreamBus.slnx`
 - Unit command: `dotnet test tests/StreamBus.UnitTests/StreamBus.UnitTests.csproj`
@@ -57,11 +54,9 @@ These are the failure modes this plan must prove, not just assume:
    the handler and still advances the offset. (Task 2)
 2. A typed endpoint still deserializes before typed filters; universal-only
    endpoints keep the lazy path and avoid deserialization when filtered. (Task 2)
-3. An effectively-once filter that returns without `next()` throws a contract error
-   and is not caught by the EO in-handler retry loop. (Task 2)
-4. A publish filter that returns without `next()` is still a configuration/contract
+3. A publish filter that returns without `next()` is still a configuration/contract
    error; publish cannot be dropped. (Task 1)
-5. Universal and typed filters on the same delivery receive the same context
+4. Universal and typed filters on the same delivery receive the same context
    reference, headers, services, payload bag, and raw message. (Tasks 1 and 2)
 
 ---
@@ -207,11 +202,7 @@ All pass. Confirm `context.Inner` no longer appears in publish code/tests.
    - `Zero_next_delivery_is_filtered_and_not_published_to_error`:
      endpoint has an error stream; zero-next filter; no error publish; handler 0;
      stored offset.
-   - `Effectively_once_zero_next_is_a_filter_contract_error`:
-     `new ConsumePipeline(..., requiresContinuation: true)` with `ZeroNextFilter`;
-     assert `StreamBusFilterContractException` and terminal 0.
 3. Delete tests/helpers that only exist for the removed contract:
-   - `CanSkip_filter_on_an_effectively_once_pipeline_is_rejected`
    - `CanSkip_filter_on_a_typed_endpoint_without_AllowPipelineSkip_is_rejected`
    - `Zero_next_with_skip_and_allowSkip_bypasses_the_terminal`
    - `Zero_next_with_skip_but_allowSkip_false_is_transient`
@@ -228,9 +219,6 @@ All pass. Confirm `context.Inner` no longer appears in publish code/tests.
      `Universal_filter_sees_raw_context_and_declared_message_type`; assert
      `context.Raw`, `context.MessageType`, and `context.OutputHeaders` instead of
      the removed internal `TypedMessage` slot;
-   - replace `Typed_filter_zero_next_error_names_the_user_filter_not_the_adapter`
-     with `Effectively_once_typed_filter_zero_next_names_the_user_filter_not_the_adapter`
-     using `requiresContinuation: true` and a typed pipeline context;
    - update `PipelineContext()` to return `StreamConsumeFilterContext<TypedOrderMessage>`
      with `Raw` and `Message`;
    - add `Universal_and_typed_consume_filters_share_one_context_instance`: register
@@ -277,8 +265,7 @@ dotnet test tests/StreamBus.UnitTests/StreamBus.UnitTests.csproj --filter "Fully
      public ConsumePipeline(
          IReadOnlyList<IStreamConsumeFilter> filters,
          Type? endpointMessageType = null,
-         bool requiresTypedMessage = false,
-         bool requiresContinuation = false)
+         bool requiresTypedMessage = false)
      ```
      Validate that `requiresTypedMessage` has a non-null endpoint message type.
    - Add `CreateContext(ConsumeContext raw, IStreamHeaderWriter headers, IServiceProvider services)`:
@@ -292,11 +279,8 @@ dotnet test tests/StreamBus.UnitTests/StreamBus.UnitTests.csproj --filter "Fully
      no longer takes `allowSkip`.
    - `InvokeAsync` uses a parameterless local `Task Next()`.
    - After the filter returns:
-     - `calls == 0` and `requiresContinuation`: throw
-       `StreamBusFilterContractException` naming the user filter;
      - `calls == 0`: return normally (filtered);
-     - `calls > 1`: keep the existing transient error for normal pipelines; use
-       `StreamBusFilterContractException` when `requiresContinuation`.
+     - `calls > 1`: throw the existing transient error for normal pipelines.
    - Keep pipeline duration metrics.
 2. `Exceptions.cs`: add internal
    `StreamBusFilterContractException : StreamBusException` for filter contract
@@ -307,10 +291,9 @@ dotnet test tests/StreamBus.UnitTests/StreamBus.UnitTests.csproj --filter "Fully
 4. `ConsumerRegistry.cs`:
    - `BuildPipeline` loses `typedEndpoint` and `allowSkip` parameters and the
      `CanSkip` validation loop.
-   - Pass `options.MessageType`, `filters.Any(f => f is ITypedFilterAdapter)`, and
-     `effectivelyOnce` to `ConsumePipeline`.
+   - Pass `options.MessageType` and
+     `filters.Any(f => f is ITypedFilterAdapter)` to `ConsumePipeline`.
    - `ConsumeAsync` call site drops `AllowPipelineSkip`.
-   - EO call site passes `requiresContinuation: true`.
 5. `StreamPartitionConsumer.cs`:
    - remove `allowSkip` locals and parameters;
    - typed deserialization remains inside `InvokeHandlerPipelineAsync` and is still
@@ -318,9 +301,6 @@ dotnet test tests/StreamBus.UnitTests/StreamBus.UnitTests.csproj --filter "Fully
    - build the context via `_pipeline.CreateContext(...)`;
    - terminal delegate is `() => _handler(consumeContext)`;
    - pass `() => _handler(consumeContext)` for normal dispatch;
-   - EO terminal is `() => { pipelineResult = await _eo.ResultHandler(consumeContext); }`;
-   - in `DispatchEffectivelyOnceAsync`, catch and rethrow `StreamBusFilterContractException`
-     before the generic `catch (Exception ex)` retry path.
 6. `ConsumeOptions.cs`: remove internal `AllowPipelineSkip`.
 7. `Configuration/StreamBusConfigurator.cs`:
    - remove `AllowPipelineSkip` from `IReceiveEndpointConfigurator` and its
@@ -337,8 +317,7 @@ dotnet test tests/StreamBus.UnitTests/StreamBus.UnitTests.csproj --filter "Fully
 dotnet test tests/StreamBus.UnitTests/StreamBus.UnitTests.csproj --filter "FullyQualifiedName~PipelineSemanticsTests|FullyQualifiedName~TypedConsumeFilterTests|FullyQualifiedName~TypedFilterContractTests|FullyQualifiedName~TypedFilterRegistrationTests|FullyQualifiedName~PipelineMetricsTests"
 ```
 
-All pass. Then run the whole unit suite. Confirm the EO zero-next test throws the
-contract exception and does not publish a result.
+All pass. Then run the whole unit suite.
 
 ---
 
@@ -350,13 +329,9 @@ contract exception and does not publish a result.
 - Modify: `src/StreamBus/ConsumerRegistry.cs`
 - Modify: `src/StreamBus/StreamPartitionConsumer.cs`
 - Modify: `src/StreamBus/StreamBusMetrics.cs`
-- Modify: `src/StreamBus/EffectivelyOnce.cs`
 - Modify: `src/StreamBus/ErrorEnvelope.cs`
-- Modify: `src/StreamBus/ResultPublisher.cs`
 - Test: `tests/StreamBus.UnitTests/RetryPolicyTests.cs`
 - Test: `tests/StreamBus.UnitTests/RetryConfigurationTests.cs`
-- Test: `tests/StreamBus.UnitTests/EffectivelyOnceTests.cs`
-- Test: `tests/StreamBus.UnitTests/ResultPublisherTests.cs`
 - Test: `tests/StreamBus.UnitTests/ErrorEnvelopeTests.cs`
 - Test: `tests/StreamBus.UnitTests/PipelineSemanticsTests.cs`
 
@@ -370,46 +345,30 @@ contract exception and does not publish a result.
      - `Bounded_without_error_stream_or_dead_letter_throws`
      - `Bounded_with_max_attempts_and_error_stream_is_accepted`
      - keep non-positive `MaxAttempts`, delay, jitter, multiplier tests.
-2. `EffectivelyOnceTests.cs`:
-   - `Consume_rejects_bounded` uses `new RetryPolicy { MaxAttempts = 3 }`;
-   - `Consume_accepts_default_unbounded` uses `new RetryPolicy()`;
-   - remove `FailureMode` references and change messages if needed.
-3. `ResultPublisherTests.cs`:
-   - use `PublishResultOptions { Retry = new RetryPolicy { ... } }` where tuning was
-     tested;
-   - keep delay/cancellation behavior tests.
-4. `ErrorEnvelopeTests.cs` and `PipelineSemanticsTests.cs`:
+2. `ErrorEnvelopeTests.cs` and `PipelineSemanticsTests.cs`:
    - remove assertions for `ErrorRoutingValue` and the
      `streambus.error.error-routing-value` header.
-5. Add a test that `PublishResultOptions.Retry` drives the retry delay (or keep an
-   existing test proving the configured `RetryPolicy` is used).
-6. Run the targeted tests and confirm they fail:
+3. Run the targeted tests and confirm they fail:
 
 ```powershell
-dotnet test tests/StreamBus.UnitTests/StreamBus.UnitTests.csproj --filter "FullyQualifiedName~RetryPolicyTests|FullyQualifiedName~RetryConfigurationTests|FullyQualifiedName~EffectivelyOnceTests|FullyQualifiedName~ResultPublisherTests|FullyQualifiedName~ErrorEnvelopeTests|FullyQualifiedName~PipelineSemanticsTests"
+dotnet test tests/StreamBus.UnitTests/StreamBus.UnitTests.csproj --filter "FullyQualifiedName~RetryPolicyTests|FullyQualifiedName~RetryConfigurationTests|FullyQualifiedName~ErrorEnvelopeTests|FullyQualifiedName~PipelineSemanticsTests"
 ```
 
 **Implement**
 
 1. `RetryPolicy.cs`:
    - delete `FailureMode` enum and property;
-   - delete `ErrorStreamOptions.RoutingValue`;
-   - delete `PublishResultOptions.BaseDelay`, `Multiplier`, `MaxDelay`, `MaxJitter`;
-   - add `public RetryPolicy Retry { get; init; } = new();`.
+   - delete `ErrorStreamOptions.RoutingValue`.
 2. Validation:
    - unbounded = `MaxAttempts is null`; unbounded + error stream/dead letter is a
      configuration error;
    - bounded = `MaxAttempts is not null`; `MaxAttempts <= 0` is an error; bounded
-     without an error stream, dead letter, or endpoint callback is an error;
-   - effectively-once consume validation requires `MaxAttempts is null` and no
-     error stream/dead letter.
+     without an error stream, dead letter, or endpoint callback is an error.
 3. `RetryConfiguration.cs`:
    - remove all `FailureMode = ...` assignments;
    - `RetryDerivation` already uses `MaxAttempts` for boundedness; keep it.
 4. `ConsumerRegistry.cs`:
    - replace `FailureMode` checks with `MaxAttempts` checks;
-   - `PublishResultAsync` validates `options.Retry` as unbounded and resolves
-     delays through `RetryDelays.ResolveDelay`;
    - remove any now-unused retry-knob validation.
 5. `StreamPartitionConsumer.cs`:
    - `strict` becomes `_options.Retry.MaxAttempts is null`;
@@ -417,17 +376,12 @@ dotnet test tests/StreamBus.UnitTests/StreamBus.UnitTests.csproj --filter "Fully
    - remove `ErrorRoutingValue` from both error envelope constructions.
 6. `StreamBusMetrics.cs`: remove the `failure_mode` tag from
    `streambus_partition_retry_blocked`; keep the metric.
-7. `EffectivelyOnce.cs`: update `ValidateConsume` and `ValidatePublishResult` for
-   the new fields; keep the “EO must not skip” rule expressed as unbounded retry
-   plus exactly-one result.
-8. `ResultPublisher.cs`: use `PublishResultOptions.Retry` and
-   `RetryDelays.ResolveDelay`; preserve the existing clamping/fallback behavior.
-9. `ErrorEnvelope.cs`: remove `ErrorRoutingValue` and its serialized/parsing key.
+7. `ErrorEnvelope.cs`: remove `ErrorRoutingValue` and its serialized/parsing key.
 
 **Verify**
 
 ```powershell
-dotnet test tests/StreamBus.UnitTests/StreamBus.UnitTests.csproj --filter "FullyQualifiedName~RetryPolicyTests|FullyQualifiedName~RetryConfigurationTests|FullyQualifiedName~EffectivelyOnceTests|FullyQualifiedName~ResultPublisherTests|FullyQualifiedName~ErrorEnvelopeTests|FullyQualifiedName~PipelineSemanticsTests"
+dotnet test tests/StreamBus.UnitTests/StreamBus.UnitTests.csproj --filter "FullyQualifiedName~RetryPolicyTests|FullyQualifiedName~RetryConfigurationTests|FullyQualifiedName~ErrorEnvelopeTests|FullyQualifiedName~PipelineSemanticsTests"
 ```
 
 All pass.
@@ -510,7 +464,6 @@ not widen the type back unless the signature is a deliberate extension point.
 - Modify: `src/StreamBus/Hosting.cs` (registration view)
 - Modify: `docs/guide/publish.md`
 - Modify: `docs/guide/consume.md`
-- Modify: `docs/guide/effectively-once.md` if it references filtering
 - Modify: `docs/adr/ADR-2-middleware-shape.md` (amendment note)
 - Modify: `examples/StreamBus.Examples.Producer/*.cs`
 - Modify: `examples/StreamBus.Examples.Consumer/*.cs`
@@ -532,7 +485,6 @@ not widen the type back unless the signature is a deliberate extension point.
      - consume calls `next()` zero or one time;
      - zero means the filter handled/filtered the message and the handler is not
        invoked;
-     - effectively-once filters must call `next()` exactly once;
      - callers should `await next()`.
    - Document `Payload`, `Raw`, `Message`, `MessageType`, `RuntimeMessageType`,
      `OutputHeaders`, `Services`, `Bus`, and the payload bag.
@@ -549,9 +501,7 @@ not widen the type back unless the signature is a deliberate extension point.
      `context.Message` for typed filters, and one context.
    - `consume.md`: show `return next();`; zero-next filtering; no skip capability;
      typed filter context; eager deserialization for typed filters vs lazy for
-     universal-only pipelines; EO exactly-one rule.
-   - `effectively-once.md`: state that EO filters must call `next()` exactly once
-     and that zero is a runtime contract error.
+     universal-only pipelines.
 4. Examples:
    - producer/consumer filters use `next()`, `Payload`/`Raw`, no `Inner`, no skip.
 5. ADR-2:
@@ -599,13 +549,10 @@ Report the exact commands and results. Do not claim success without the output.
       skipped and offset advances.
 - [x] Typed endpoints still deserialize before typed filters; universal-only
       endpoints keep lazy deserialization.
-- [x] EO filters must call `next()` exactly once; zero throws
-      `StreamBusFilterContractException` and is not retried in-handler.
 - [x] `CanSkip`, `SkipHandler`, `AllowPipelineSkip` and all related tests/docs are
       gone.
 - [x] `ErrorRoutingValue`/`ErrorStreamOptions.RoutingValue` are gone.
 - [x] `FailureMode` is gone; retry strictness comes from `MaxAttempts`.
-- [x] `PublishResultOptions` uses one `RetryPolicy`, not four duplicate knobs.
 - [x] `StreamBusConfigStore.ForVhost` is internal; no public store exposes
       credentials.
 - [x] Implementation plumbing is internal; `InternalsVisibleTo` covers tests.

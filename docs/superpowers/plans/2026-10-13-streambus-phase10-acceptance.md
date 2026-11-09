@@ -59,9 +59,9 @@ Recorded rulings (controller audit findings; bind all tasks): FR-8.2 (one bus, t
 
 Read the requirements doc end to end (FR-1–FR-10 with IDs and acceptance criteria, NFR-1–NFR-7, §5 gates), then read every test file body (not just names — verify each test actually asserts the criterion):
 
-Unit: `ConnectionSupervisorTests`, `ConsumerMetricsTests`, `EffectivelyOnceTests`, `ErrorClassificationTests`, `ErrorEnvelopeTests`, `ErrorHandoffTests`, `HostingTests`, `OffsetCadenceTests`, `OffsetResolutionTests`, `PublishTests`, `RegistryTests`, `ResultPublisherTests`, `RetryPolicyTests`, `TopologyTests`, `TypedConsumerTests` (`tests/StreamBus.UnitTests/`).
+Unit: `ConnectionSupervisorTests`, `ConsumerMetricsTests`, `ErrorClassificationTests`, `ErrorEnvelopeTests`, `ErrorHandoffTests`, `HostingTests`, `OffsetCadenceTests`, `OffsetResolutionTests`, `PublishTests`, `RegistryTests`, `RetryPolicyTests`, `TopologyTests`, `TypedConsumerTests` (`tests/StreamBus.UnitTests/`).
 
-Integration: `BusCoreIntegrationTests`, `ConsumerIntegrationTests`, `EffectivelyOnceIntegrationTests`, `PublishIntegrationTests`, `RetryIntegrationTests`, `TopologyIntegrationTests`, `TypedConsumerIntegrationTests`, `TypedStartupIntegrationTests` (`tests/StreamBus.IntegrationTests/`).
+Integration: `BusCoreIntegrationTests`, `ConsumerIntegrationTests`, `PublishIntegrationTests`, `RetryIntegrationTests`, `TopologyIntegrationTests`, `TypedConsumerIntegrationTests`, `TypedStartupIntegrationTests` (`tests/StreamBus.IntegrationTests/`).
 
 Rules for the matrix: a row is ✅ only if a test asserts the acceptance criterion (a same-named test covering half the criterion is ⚠️ with a note, never ✅). Expected confirmations (verify, do not assume): FR-8.2 has NO pin (gap → Task 2); FR-4.5 hook invocation/observation has NO pin (gap → Task 2); FR-10.9 IS pinned (`Failover_preserves_offsets_and_order` asserts per-partition stored == max received); FR-5.1 IS pinned (envelope field asserts + round-trip unit tests); FR-4.3 attempt numbering IS pinned (one-based calculator test); everything else per the bodies.
 
@@ -94,7 +94,6 @@ One subsection per NFR-1–NFR-7. Each names its evidence type; Task 3 pastes co
 
 | ID | Gate | Evidence | Status |
 - G-1: retry under load + failover — evidence: `Retry_preserves_order_under_load_and_failover` green.
-- G-2: effectively-once end to end — evidence: `Full_cycle_super_to_super_with_flakes_and_kill_G2` green.
 - G-3: 3-node placement — status OPEN (no cluster; skip-guarded test ready).
 - G-4: SAC failover offsets + ordering — evidence: failover + super-split tests green.
 - G-5: reconnect-during-retry + stale monotonicity — evidence: Strict kill-window test + guard/regression tests green.
@@ -403,10 +402,6 @@ public sealed class AcceptanceTests : IDisposable
         }
         public Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, string? routingKey, IReadOnlyDictionary<string, object?> applicationProperties, string? messageId, string? correlationId, CancellationToken ct)
             => throw new NotImplementedException("Acceptance tests publish plain only.");
-        public Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, CancellationToken ct)
-            => throw new NotImplementedException("Acceptance tests publish plain only.");
-        public Task PublishResultAsync(ReadOnlyMemory<byte> body, ulong publishingId, string? routingKey, CancellationToken ct)
-            => throw new NotImplementedException("Acceptance tests publish plain only.");
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
@@ -416,12 +411,9 @@ public sealed class AcceptanceTests : IDisposable
         public ScriptSystemHandle(CountingHandle handle) => _handle = handle;
         public bool IsClosed => false;
         public Task<IStreamProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct) => Task.FromResult<IStreamProducerHandle>(_handle);
-        public Task<IStreamProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct) => throw new NotImplementedException("Acceptance tests use the unique-name path.");
         public Task<IStreamProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct) => throw new NotImplementedException("Acceptance tests publish plain only.");
-        public Task<IStreamProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct) => throw new NotImplementedException("Acceptance tests publish plain only.");
         public Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct) => throw new NotImplementedException("Acceptance tests never attach.");
         public Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken ct) => Task.FromResult<ulong?>(null);
-        public Task<ulong> QuerySequenceAsync(string reference, string stream, CancellationToken ct) => Task.FromResult(0UL);
         public Task StoreSystemOffsetAsync(string reference, string stream, ulong offset, CancellationToken ct) => Task.CompletedTask;
         public Task<bool> StreamExistsAsync(string stream, CancellationToken ct) => Task.FromResult(true);
         public Task<bool> SuperStreamExistsAsync(string superStream, CancellationToken ct) => Task.FromResult(false);
@@ -610,7 +602,7 @@ Append to `tests/StreamBus.UnitTests/AcceptanceTests.cs` (no broker; same fakes 
         var options = new StreamBusOptions { Vhost = "/", UserName = "app", Password = "secret" };
         await using var supervisor = new StreamBusConnectionSupervisor(options, new DelayedConnector(system, TimeSpan.FromMilliseconds(500)));
         await supervisor.StartAsync(TestContext.Current.CancellationToken);
-        var consumers = new StreamConsumerRegistry(supervisor, "/", new StreamProducerRegistry(supervisor, "/"), null, new ResultProducerRegistry(supervisor, "/"));
+        var consumers = new StreamConsumerRegistry(supervisor, "/", new StreamProducerRegistry(supervisor, "/"), null);
         var ct = TestContext.Current.CancellationToken;
         await Assert.ThrowsAsync<StreamBusNotReadyException>(() =>
             consumers.ConsumeAsync(typeof(DefaultBus), "s",
@@ -621,7 +613,7 @@ Append to `tests/StreamBus.UnitTests/AcceptanceTests.cs` (no broker; same fakes 
 
 - [ ] **Step 3: Finalize the verdict + gate table**
 
-Set every matrix row from Task 1 + Task 2 evidence (no row may stay ❌; ⚠️ rows keep their explicit reason). Fill the NFR sections with the Step 1 outputs. Set the gate table (G-1/G-2/G-4/G-5 PASS with test names; G-3 OPEN). Write the v1 verdict: v1 is done iff every FR row is ✅/accepted-⚠️ and G-1/G-2/G-4/G-5 are PASS — with G-3 open pending a cluster, stated verbatim. Two directed verdicts (controller rulings, apply exactly):
+Set every matrix row from Task 1 + Task 2 evidence (no row may stay ❌; ⚠️ rows keep their explicit reason). Fill the NFR sections with the Step 1 outputs. Set the gate table (G-1/G-4/G-5 PASS with test names; G-3 OPEN). Write the v1 verdict: v1 is done iff every FR row is ✅/accepted-⚠️ and G-1/G-4/G-5 are PASS — with G-3 open pending a cluster, stated verbatim. Two directed verdicts (controller rulings, apply exactly):
 - FR-3.2 → ✅ with this rationale (Ruling R8): the library's FR-3.2 surface is the routing passthrough (pinned: unit per-send equality + integration same-key stability); partition selection itself lives in the client and is not pinnable deterministically — hash distribution is a client property, not a library behavior.
 - FR-10.12 → ⚠️ with reason "health clause exceeds implementation" and this proposed reword (Ruling R7, user sign-off pending — NEVER edit `docs/2026-10-08-streambus-requirements.md` itself; the acceptance doc records the proposal): "Whenever the library falls back because the broker has no stored offset, it logs a warning naming the reference, the partition, the branch taken and the resolved offset, and publishes it to the metrics surface." Implementation surfaces fallback via warning logs + `streambus_offset_fallback_total` (metric pinned); health carries per-(vhost, bus) connection state only.
 

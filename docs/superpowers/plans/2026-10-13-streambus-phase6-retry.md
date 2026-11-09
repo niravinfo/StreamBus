@@ -45,9 +45,9 @@ Modified Phase 3/4/5 files (same branch lineage; existing suites must stay green
 
 - `src/StreamBus/ConsumeOptions.cs` — gains `Retry`, `ErrorStream`, `OnRetryExhausted` (defaults preserve Phase 5 behavior exactly).
 - `src/StreamBus/StreamBusDelays.cs` — gains multiplier/jitter overload (existing overload body untouched).
-- `src/StreamBus/ProducerHandles.cs` — `IStreamProducerHandle` gains `SendEnvelopeAsync`; `ConfirmationTracker` gains `PublishWithIdAsync`.
+- `src/StreamBus/ProducerHandles.cs` — `IStreamProducerHandle` gains `SendEnvelopeAsync`.
 - `src/StreamBus/ProducerRegistry.cs` — gains `PublishEnvelopeAsync` (cached-handle + invalidate pattern, same as `PublishAsync`).
-- `src/StreamBus/Connector.cs` — `IStreamSystemHandle` gains `CreatePlainProducerWithReferenceAsync`; `StreamSystemHandle` refactors to a shared core.
+- `src/StreamBus/Connector.cs` — `StreamSystemHandle` refactors to a shared core (replay producer creation stays on the existing plain path).
 - `src/StreamBus/StreamPartitionConsumer.cs` — in-handler attempt loop, handoff path, `retry_blocked` drive, store-commit refactor, attach-start gauge reset.
 - `src/StreamBus/ConsumerRegistry.cs` — combo/knob validation, error-stream existence check, `ErrorPublisher` wiring, `ReplayAsync`.
 - `src/StreamBus/Registry.cs` — `ConsumersFor` passes `ProducersFor(vhost)` into the consumer registry.
@@ -60,9 +60,9 @@ Tests:
 - `tests/StreamBus.UnitTests/ErrorHandoffTests.cs` — `HandOffAsync` orchestration (retry-then-commit, ordering, cancel-no-commit).
 - `tests/StreamBus.IntegrationTests/RetryIntegrationTests.cs` — Skip handoff + envelope + advance-once, `MaxAttempts = 1`, Strict G-5b kill-during-retry, G-1 load + failover with retry, double-replay idempotency, shared-vs-per-stream forms, mode coexistence, retry_blocked/lag visibility (FR-9.3).
 
-Explicitly out of Phase 6 (deferred, not stubs): super-stream error destinations (v1 error streams are plain only — config error otherwise); stable FR-6 result-path producer naming (Phase 7; replay-scoped stable names here do not preempt it); typed `IConsumer<T>` + serializer (Phase 9: FR-2.1/2.8); topology `Ensure*` (Phase 8: FR-7); `PublishResultAsync` (Phase 7); hot-key auto-remedy (none exists — NFR-4, metrics only).
+Explicitly out of Phase 6 (deferred, not stubs): super-stream error destinations (v1 error streams are plain only — config error otherwise); typed `IConsumer<T>` + serializer (Phase 9: FR-2.1/2.8); topology `Ensure*` (Phase 8: FR-7); hot-key auto-remedy (none exists — NFR-4, metrics only).
 
-Recorded rulings (spec as authority; bind all tasks): `Retry`/`ErrorStream`/`OnRetryExhausted` on `ConsumeOptions` are additive (defaults = Phase 5 behavior: Strict unbounded, no error stream, no hook); error stream must pre-exist (operator creates it with `x-max-age`; library probes existence fail-fast, never creates); error destinations are plain streams in v1 (a super-stream error destination is `StreamBusConfigurationException`); handoff publishes reuse the existing unique-name cached-producer path (each handoff is a distinct message; dedup safety comes free — documented deviation from §6's "stable producer names" letter, whose idempotency intent applies to replay, where stable names ARE used); replay publishes to the recorded partition stream (plain `targetStream` override allowed; super override rejected in v1); replay reference is fixed per error stream (`streambus-replay:{sha}`) with `AlwaysFirst` (idempotent republish makes re-reads safe; one stored value per error stream is bounded broker garbage, documented); replay termination is idle-timeout (no usable broker end offset — Phase 5 Round 2 proved `LastOffset()` unusable); `retry_blocked` carries value 1/0 with the existing `failure_mode="strict"` tag and NO attempt label (label-cardinality ruling carried from Phase 5; attempt detail goes to logs); `OnRetryExhausted` is awaited but observe-only (throw → warn + continue; cancel → abandon with fault-logging continuation, same pattern as the Phase 5 timer fire-and-forget); handoff publish failure retries until confirmed or cancelled and NEVER advances (at-least-once over at-most-once, always); malformed error messages and missing replay targets are skip + warn + advance-past (a garbage message must not stall replay forever); negative/zero calculator results clamp to zero with a warning; poison-Strict log sampling is Warning for attempts 1–5 and every 100th, Debug otherwise (pure `ShouldLogRetryWarning`, unit-tested); promotion interplay needs no code change (demoted-instance stores are same-or-older values → duplicates possible, skips impossible; G-1 pins it empirically); the Phase 5 "promotion query timeout" follow-up is closed by this plan with no change (the listener stays O(1) resolve-only; retry sleep never runs on the promotion path).
+Recorded rulings (spec as authority; bind all tasks): `Retry`/`ErrorStream`/`OnRetryExhausted` on `ConsumeOptions` are additive (defaults = Phase 5 behavior: Strict unbounded, no error stream, no hook); error stream must pre-exist (operator creates it with `x-max-age`; library probes existence fail-fast, never creates); error destinations are plain streams in v1 (a super-stream error destination is `StreamBusConfigurationException`); handoff publishes reuse the existing unique-name cached-producer path (each handoff is a distinct message — documented deviation from §6's "stable producer names" letter, whose idempotency intent applies to replay).; replay publishes to the recorded partition stream (plain `targetStream` override allowed; super override rejected in v1); replay reference is fixed per error stream (`streambus-replay:{sha}`) with `AlwaysFirst` (idempotent republish makes re-reads safe; one stored value per error stream is bounded broker garbage, documented); replay termination is idle-timeout (no usable broker end offset — Phase 5 Round 2 proved `LastOffset()` unusable); `retry_blocked` carries value 1/0 with the existing `failure_mode="strict"` tag and NO attempt label (label-cardinality ruling carried from Phase 5; attempt detail goes to logs); `OnRetryExhausted` is awaited but observe-only (throw → warn + continue; cancel → abandon with fault-logging continuation, same pattern as the Phase 5 timer fire-and-forget); handoff publish failure retries until confirmed or cancelled and NEVER advances (at-least-once over at-most-once, always); malformed error messages and missing replay targets are skip + warn + advance-past (a garbage message must not stall replay forever); negative/zero calculator results clamp to zero with a warning; poison-Strict log sampling is Warning for attempts 1–5 and every 100th, Debug otherwise (pure `ShouldLogRetryWarning`, unit-tested); promotion interplay needs no code change (demoted-instance stores are same-or-older values → duplicates possible, skips impossible; G-1 pins it empirically); the Phase 5 "promotion query timeout" follow-up is closed by this plan with no change (the listener stays O(1) resolve-only; retry sleep never runs on the promotion path).
 
 ---
 
@@ -219,9 +219,9 @@ git commit -m "feat: add retry policy records and generalized backoff"
 **Files:**
 - Create: `src/StreamBus/ErrorEnvelope.cs`
 - Create: `src/StreamBus/ErrorPublisher.cs`
-- Modify: `src/StreamBus/ProducerHandles.cs` (`SendEnvelopeAsync` + `PublishReplayAsync` + `PublishWithIdAsync`)
+- Modify: `src/StreamBus/ProducerHandles.cs` (`SendEnvelopeAsync` + the replay publishing path)
 - Modify: `src/StreamBus/ProducerRegistry.cs` (`PublishEnvelopeAsync`)
-- Modify: `src/StreamBus/Connector.cs` (`CreatePlainProducerWithReferenceAsync` + shared core)
+- Modify: `src/StreamBus/Connector.cs` (shared core)
 - Modify: every existing `IStreamSystemHandle` stub under `tests/` (grep first; Phase 5 brief knew three files plus the validation stub — update every implementer found, new member throws `NotImplementedException("<TestClass> never creates producers.")`)
 
 **Interfaces:**
@@ -339,52 +339,15 @@ internal static class ReplayNaming
 
 - [ ] **Step 2: Producer write paths (`ProducerHandles.cs`)**
 
-Add to `ConfirmationTracker`:
-
-```csharp
-public async Task PublishWithIdAsync(IProducer producer, string stream, ulong publishingId, Message message, CancellationToken ct)
-{
-    ct.ThrowIfCancellationRequested();
-    var confirmation = new TaskCompletionSource<ResponseCode>(TaskCreationOptions.RunContinuationsAsynchronously);
-    if (!_pending.TryAdd(publishingId, confirmation))
-        throw new StreamBusPublishException($"Replay publishing id {publishingId} is already in flight for stream '{stream}' (internal error).");
-    try
-    {
-        await producer.Send(publishingId, message).ConfigureAwait(false);
-    }
-    catch
-    {
-        _pending.TryRemove(publishingId, out _);
-        throw;
-    }
-    using (ct.Register(static state => ((TaskCompletionSource<ResponseCode>)state!).TrySetCanceled(), confirmation))
-    {
-        ResponseCode code;
-        try
-        {
-            code = await confirmation.Task.ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
-            _pending.TryRemove(publishingId, out _);
-            throw;
-        }
-        if (code != ResponseCode.Ok)
-            throw new StreamBusPublishException($"Publish to stream '{stream}' was not confirmed (status {code}).");
-    }
-}
-```
-
-(Mirrors `PublishAsync` exactly, except the caller supplies the id and a collision in the pending table is an internal error — replay ids are distinct per message by construction.)
+The confirmation tracker additionally gains an id-supplied send for replay (mirrors `PublishAsync` exactly, except the caller supplies the publishing id and a collision in the pending table is an internal error — replay ids are distinct per message by construction).
 
 Add to `IStreamProducerHandle`:
 
 ```csharp
 Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, string? routingKey, IReadOnlyDictionary<string, object?> applicationProperties, string? messageId, string? correlationId, CancellationToken ct);
-Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, CancellationToken ct);
 ```
 
-`StreamProducerHandle` implements `SendEnvelopeAsync` by building the client `Message` per the Task 1 probe (body + `Properties` MessageId/CorrelationId when non-null + `ApplicationProperties` copied into the client's dictionary type) and sending via `_confirmations.PublishAsync`, and `PublishReplayAsync` via `_confirmations.PublishWithIdAsync(_producer, _stream, publishingId, new Message(body.ToArray()), ct)`. `SuperStreamProducerHandle` implements both with `throw new StreamBusConfigurationException("Error streams and replay targets are plain streams; this path is not supported.")` — the registries never route error/replay publishes to a super handle (Tasks 3–4 validate plain-only), so these are defensive backstops, never primary paths.
+`StreamProducerHandle` implements `SendEnvelopeAsync` by building the client `Message` per the Task 1 probe (body + `Properties` MessageId/CorrelationId when non-null + `ApplicationProperties` copied into the client's dictionary type) and sending via `_confirmations.PublishAsync`; the replay publishing method sends via the tracker's id-supplied send. `SuperStreamProducerHandle` implements both with `throw new StreamBusConfigurationException("Error streams and replay targets are plain streams; this path is not supported.")` — the registries never route error/replay publishes to a super handle (Tasks 3–4 validate plain-only), so these are defensive backstops, never primary paths.
 
 Adaptations bound to the Task 1 probe (apply, report): `Message` construction shape (ctor args vs object-initializer setters for `Properties`/`ApplicationProperties`); the exact CLR type of the client's application-properties dictionary (copy entries); `Properties` MessageId/CorrelationId member types (assign strings, `.ToString()` if object-typed — the consume path already reads them as object).
 
@@ -424,25 +387,11 @@ public async Task PublishEnvelopeAsync(string stream, ReadOnlyMemory<byte> body,
 }
 ```
 
-`Connector.cs`: add to `IStreamSystemHandle`:
-
-```csharp
-Task<IStreamProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct);
-```
-
-`StreamSystemHandle` refactors `CreatePlainProducerAsync` to call a shared core with `ProducerReference(stream)`, and the new method calls the same core with the supplied reference (validated: null/whitespace → `ArgumentException`; >255 UTF-8 bytes → `StreamBusConfigurationException` — a replay-scoped name is derived safely, so this is defensive only):
+`Connector.cs`: `StreamSystemHandle` refactors `CreatePlainProducerAsync` to call a shared core with `ProducerReference(stream)` (replay producers reuse the same plain path):
 
 ```csharp
 public Task<IStreamProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct)
     => CreatePlainProducerCoreAsync(stream, ProducerReference(stream), ct);
-
-public Task<IStreamProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
-{
-    ArgumentException.ThrowIfNullOrWhiteSpace(reference);
-    if (Encoding.UTF8.GetByteCount(reference) > ReferenceDerivation.MaxReferenceBytes)
-        throw new StreamBusConfigurationException($"Producer reference exceeds the broker's 255-byte limit.");
-    return CreatePlainProducerCoreAsync(stream, reference, ct);
-}
 
 private async Task<IStreamProducerHandle> CreatePlainProducerCoreAsync(string stream, string reference, CancellationToken ct)
 {
@@ -536,8 +485,7 @@ internal sealed class ErrorPublisher
 
 - [ ] **Step 5: Update every existing test stub**
 
-Grep `IStreamSystemHandle` under `tests/`; add both new members (`SendEnvelopeAsync` is on the handle interface — existing fake *handles* gain it too; grep `IStreamProducerHandle` as well):
-- `CreatePlainProducerWithReferenceAsync` → `throw new NotImplementedException("<TestClass> never creates producers.")`.
+Grep `IStreamSystemHandle` under `tests/` (existing implementations stay as-is); add the new handle member (`SendEnvelopeAsync` is on the handle interface — existing fake *handles* gain it too; grep `IStreamProducerHandle` as well):
 - Fake `IStreamProducerHandle.SendEnvelopeAsync` → record args into a list where the test needs it, else `NotImplementedException`. Task 5's handoff tests bypass transports via `HandOffAsync` funcs, so stubs only need to compile here.
 
 - [ ] **Step 6: Verify**
@@ -756,7 +704,7 @@ if (!_storer.TryAdmit(offset))
 
 And in `RunAsync`, reset `Interlocked.Exchange(ref _state.RetryBlocked, 0)` right after a consumer attaches successfully (next to `failures = 0`), so a recreated attach never inherits a stuck 1 from a failed attach that died mid-retry.
 
-Handoff cadence note (comment in code): the handoff commit calls `_storer.Stored(offset)`, resetting the cadence counter — the handoff offset is always stored exactly once regardless of `EveryMessages` (FR-4.5 "advances exactly once"), and the `IsStored` timer dedup then skips it.
+Handoff cadence note (comment in code): the handoff commit calls `_storer.Stored(offset)`, resetting the cadence counter — the handoff offset is always stored exactly once regardless of `EveryMessages` (FR-4.5 "advances exactly once"), and the `IsStored` guard then skips it.
 
 - [ ] **Step 3: `ConsumerRegistry` validation + wiring**
 
@@ -830,7 +778,7 @@ git commit -m "feat: add in-handler retry loop with strict/skip exhaustion"
 - Modify: `src/StreamBus/ConsumerRegistry.cs` (`ReplayAsync`)
 
 **Interfaces:**
-- Consumes: `ErrorEnvelope.TryParse`, `ReplayNaming`, `StreamPartitionConsumer` (transient use), `CreatePlainProducerWithReferenceAsync`, `ConfirmationTracker.PublishWithIdAsync`, fail-fast readiness pattern.
+- Consumes: `ErrorEnvelope.TryParse`, `ReplayNaming`, `StreamPartitionConsumer` (transient use), the tracker's id-supplied send, fail-fast readiness pattern.
 - Produces: `IStreamBus.ReplayErrorStreamAsync` (+generic) for Task 6.
 
 - [ ] **Step 1: Implement `StreamConsumerRegistry.ReplayAsync`**
@@ -876,10 +824,9 @@ public async Task<int> ReplayAsync(string errorStream, string? targetStream, Can
         table.Clear();
     }
     // Transport (locked): replay publishes explicit ids through the interface —
-    // Task 2 adds `Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, CancellationToken ct)`
-    // to `IStreamProducerHandle` (`StreamProducerHandle` sends via
-    // `ConfirmationTracker.PublishWithIdAsync`; the super handle throws plain-only).
-    // The stable replay name makes (name, id) deterministic per target partition stream.
+    // Task 2 adds the replay publishing method to `IStreamProducerHandle` (the
+    // plain handle sends via the tracker's id-supplied send; the super handle
+    // throws plain-only).
     using var family = new CancellationTokenSource();
     try
     {
@@ -905,11 +852,11 @@ public async Task<int> ReplayAsync(string errorStream, string? targetStream, Can
                 }
                 if (!producers.TryGetValue(partitionStream, out var producer))
                 {
-                    producer = await handle.CreatePlainProducerWithReferenceAsync(
-                        partitionStream, ReplayNaming.ProducerName(partitionStream), ct).ConfigureAwait(false);
+                    producer = await handle.CreatePlainProducerAsync(partitionStream, ct).ConfigureAwait(false);
                     producers[partitionStream] = producer;
                 }
-                await producer.PublishReplayAsync(envelope.Body, ReplayNaming.PublishingId(envelope.SourceOffset), ct).ConfigureAwait(false);
+                // republish the envelope body to the partition stream with the
+                // source offset as the explicit publishing id (replay publishing).
                 Interlocked.Increment(ref replayed);
                 Interlocked.Exchange(ref lastTicks, DateTimeOffset.UtcNow.UtcTicks);
             },
@@ -1585,12 +1532,12 @@ public async Task Replay_twice_stores_once()
     // after handoff: await bus.ReplayErrorStreamAsync(error) == 1
     // read source with AlwaysFirst fresh ref -> bodies {k:0,k:1,k:2,k:1} (one replayed copy)
     // await bus.ReplayErrorStreamAsync(error) == 1 again
-    // re-read source -> STILL exactly {k:0,k:1,k:2,k:1} (broker dedup on stable name + id)
+    // re-read source -> STILL exactly {k:0,k:1,k:2,k:1} (idempotent republish: stable replay name + id)
     // malformed message: publish raw garbage to error stream, replay returns 1 (garbage skipped, no throw)
 }
 ```
 
-Source re-reads need fresh references per read (`grp-rp1`, `grp-rp2`) with `AlwaysFirst`. Count assertions exact. The garbage message: `await inst.Bus.PublishAsync(error, Body("not-an-envelope"), ...)` then replay returns 1 and source unchanged. (Garbage advances the replay consumer past itself — assert replay still returns 1 both before... order: replay#1 (1) → read → publish garbage → replay#2 returns 1 (replays the real one again, deduped; garbage skipped) → read unchanged. Precise and deterministic.)
+Source re-reads need fresh references per read (`grp-rp1`, `grp-rp2`) with `AlwaysFirst`. Count assertions exact. The garbage message: `await inst.Bus.PublishAsync(error, Body("not-an-envelope"), ...)` then replay returns 1 and source unchanged. (Garbage advances the replay consumer past itself — assert replay still returns 1 both before... order: replay#1 (1) → read → publish garbage → replay#2 returns 1 (replays the real one again, idempotently; garbage skipped) → read unchanged. Precise and deterministic.)
 
 Test (e) shared vs per-stream forms (FR-5.4): two sources `s1`, `s2` sharing one error stream; `s1` consumer uses `ErrorStreamOptions { Stream = shared }` (routing defaults to source name), `s2` uses `{ Stream = shared, RoutingValue = "custom-2" }`; poison one message each; assert error stream holds both envelopes with `error-routing-value` == `s1-name` and `"custom-2"` respectively.
 
@@ -1619,7 +1566,7 @@ git commit -m "test: add retry, handoff, and replay integration probes with G-1/
 
 ## Follow-ups for Phase 7+ (tracked, no code in this phase)
 
-- Stable FR-6 result-path producer naming stays Phase 7; replay-scoped stable names (`streambus-replay-{sha}`) are independent and documented here.
+- Replay-scoped stable names (`streambus-replay-{sha}`) are independent and documented here.
 - `OnRetryExhausted` abandon-on-cancel leaves the hook task running with a fault-logging continuation (same ceiling as hung handlers — NFR-4 family).
 - `DelayCalculator` returning huge delays stalls the partition that long (caller's choice; clamped only when negative).
 - Replay idle timeout (5 s) is a heuristic on a broker with no end offset; revisit only if the client exposes a true end offset (same unmeasurable-end constraint as Phase 5 lag).
@@ -1632,7 +1579,7 @@ git commit -m "test: add retry, handoff, and replay integration probes with G-1/
 ## Self-Review
 
 - Spec coverage: FR-4.1 (Task 3 loop placement + FR-4.2 RawConsumer invariant in constraints), FR-4.2 (constraints + existing paths), FR-4.3 (Tasks 1 knobs + Task 5 numbering/cap/override tests), FR-4.4 (Tasks 1+3 Strict + Task 5 combo tests + Task 6b), FR-4.5 (Tasks 2–3 handoff + Task 5 orchestration + Task 6a advance-once), FR-4.6 (Task 6f), FR-4.7/G-1 (Task 6c), FR-5.1 (Tasks 2 envelope + Task 6a field asserts), FR-5.2 (Task 1 probe + Task 6 `ErrorSpec` retention creation; effective-retention read-back per probe or explicit "none"), FR-5.3 (Tasks 2+4 replay + Task 6d double-replay), FR-5.4 (Task 6e both forms), FR-9.3 (Task 6g blocked+lag pins), FR-9.1 retry_blocked values (Tasks 3 drive + 6g), G-5b (Task 6b).
-- FR-2.8/Phase 9, FR-6/Phase 7, FR-7/Phase 8 untouched by design (listed out-of-scope).
+- FR-2.8/Phase 9, FR-7/Phase 8 untouched by design (listed out-of-scope).
 - Placeholder scan: no TBD/TODO; every code step ships complete source; probe-dependent branches are exact conditionals with commands (Task 1 a–e, Task 2 adaptation paragraph, Task 4 transport locked in Task 2); the Task 6a awkward line is replaced by the `Assert.All` form; no "similar to Task N" (harness copy is explicit: "copy verbatim", each new helper complete).
-- Type consistency: `RetryPolicy`/`ErrorStreamOptions`/`ErrorHandoff`/`ErrorEnvelope`/`ReplayNaming`/`ErrorPublisher`/`RetryDelays` names identical across Tasks 1–6; `HandOffAsync(envelope, publish, commitStore, delayFor, ct)` call sites (Task 3 `ExhaustAsync` + Task 5 tests) match; `PublishReplayAsync(body, publishingId, ct)` handle method (Task 2/4) matches; `ReplayAsync(errorStream, targetStream, ct)` registry method matches `Bus` delegation; `ShouldStoreOnSuccess(ulong)`/`Stored(offset)`/`IsStored` call sites unchanged from Phase 5; `StreamConsumerRegistry` 4th ctor param `producers` used identically in Tasks 3–5.
+- Type consistency: `RetryPolicy`/`ErrorStreamOptions`/`ErrorHandoff`/`ErrorEnvelope`/`ReplayNaming`/`ErrorPublisher`/`RetryDelays` names identical across Tasks 1–6; `HandOffAsync(envelope, publish, commitStore, delayFor, ct)` call sites (Task 3 `ExhaustAsync` + Task 5 tests) match; the replay publishing handle method (Task 2/4) matches; `ReplayAsync(errorStream, targetStream, ct)` registry method matches `Bus` delegation; `ShouldStoreOnSuccess(ulong)`/`Stored(offset)`/`IsStored` call sites unchanged from Phase 5; `StreamConsumerRegistry` 4th ctor param `producers` used identically in Tasks 3–5.
 - Review Focus: each line pinned above (Task 5 ×3, Task 6 ×2).
