@@ -31,6 +31,9 @@ public sealed record StreamBusRegistrationView
 
     /// <summary>Configured connection heartbeat in seconds.</summary>
     public required double HeartbeatSeconds { get; init; }
+
+    /// <summary>Whether TLS is enabled for this registration's connections.</summary>
+    public required bool TlsEnabled { get; init; }
 }
 
 internal sealed class StreamBusConfigStore
@@ -59,7 +62,18 @@ internal sealed class StreamBusConfigStore
             && a.StreamPort == b.StreamPort
             && a.AmqpPort == b.AmqpPort
             && a.Heartbeat == b.Heartbeat
-            && a.Connection == b.Connection;
+            && a.Connection == b.Connection
+            && SameTls(a.Tls, b.Tls);
+
+    // TLS identity: a disabled Tls record means TLS-off, exactly like null,
+    // so both compare as "off". Two enabled TLS settings must match fully
+    // (record equality: only field values matter).
+    private static bool SameTls(StreamBusTlsOptions? a, StreamBusTlsOptions? b)
+    {
+        var aOn = a is { Enabled: true };
+        var bOn = b is { Enabled: true };
+        return aOn == bOn && (!aOn || a == b);
+    }
 
     internal StreamBusOptions ForVhost(string vhost)
     {
@@ -78,6 +92,7 @@ internal sealed class StreamBusConfigStore
                 StreamPort = r.Options.StreamPort,
                 AmqpPort = r.Options.AmqpPort,
                 HeartbeatSeconds = r.Options.Heartbeat.TotalSeconds,
+                TlsEnabled = r.Options.Tls?.Enabled ?? false,
             })
             .ToList();
 
