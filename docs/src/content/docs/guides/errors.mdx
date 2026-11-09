@@ -1,0 +1,48 @@
+---
+title: Error Handling
+description: Retry schedules, exhausted messages, and the error queue.
+---
+
+## Retry
+
+Global retry is strict and unbounded by default. Endpoints can override the
+schedule:
+
+```csharp
+builder.Services.AddStreamBus((_, cfg) =>
+{
+    cfg.UseRetry(r => r.Intervals(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(5)));
+
+    cfg.ReceiveEndpoint("orders", e =>
+    {
+        e.Consumer<OrderConsumer>("billing");
+        e.UseRetry(r => r.Immediate(3));
+    });
+});
+```
+
+<aside>
+This is a demo page — the full errors guide (replay, requeue, exception
+table) will live here.
+</aside>
+
+## Exhaustion
+
+When retries run out, a message goes to a configured destination, an owning
+callback, or — when neither is set, and the schedule is bounded — the
+per-stream classic `{stream}_error` queue:
+
+```csharp
+cfg.ReceiveEndpoint("orders", e =>
+{
+    e.Consumer<OrderConsumer>("billing");
+    e.UseRetry(r => r.Immediate(3)); // bounded
+    // No destination or callback: exhausted messages land in orders_error.
+});
+```
+
+## Escaping the error queue
+
+The `orders_error` queue is a regular classic queue: requeue moves
+messages back for another attempt, and dead-letter continues the escape
+hatch chain when configured.

@@ -1,0 +1,5 @@
+# Build-script approvals. pnpm's supply-chain security blocks postinstall
+# scripts unless they are explicitly allowed here.
+allowBuilds:
+  esbuild: true
+  sharp: true

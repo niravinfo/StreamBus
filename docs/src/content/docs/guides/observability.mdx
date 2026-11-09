@@ -1,0 +1,42 @@
+---
+title: Observability
+description: Health checks, metrics, and structured log events.
+---
+
+StreamBus surfaces its state through the standard .NET extensibility
+points — no custom dashboard required.
+
+<aside>
+Demo page — the full observability guide (per-registration health data,
+metric names, log event catalog) will live here.
+</aside>
+
+## Health checks
+
+Every bus registration reports its own health data, so
+`AddHealthChecks` output shows broker connectivity and consumer
+readiness per bus:
+
+```csharp
+builder.Services.AddHealthChecks();
+```
+
+## Metrics
+
+Consumer throughput, retry counts, and offset lag are emitted via the
+standard `Meter`/`Counter` APIs, pick them up with OpenTelemetry:
+
+```csharp
+builder.Services.AddOpenTelemetry()
+    .WithMetrics(m => m.AddMeter("StreamBus"));
+```
+
+## Log events
+
+Structured log events with well-known names flow through `ILogger`,
+which makes filtering consumer activity trivial:
+
+```text
+info: StreamBus.Consumer[12]
+      Consume OrderPlaced OrderId=order-42 Offset=1024
+```
