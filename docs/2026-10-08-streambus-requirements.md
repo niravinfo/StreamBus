@@ -97,7 +97,7 @@ official client's namespace.
 |---|---|---|
 | FR-5.1 | A failed message (`SkipAfterDeadline` only) is published to an error stream preserving the original body and carrying original stream, partition, offset, exception type/message/stack, attempt count, timestamps, correlation/message id, and original routing value | All fields plus original body present on a captured error message |
 | FR-5.2 | The error stream MUST have effective `x-max-age` retention (queue argument or policy). Retention is part of the design, not an option | Effective retention present in the declared spec or applied policy |
-| FR-5.3 | Replay reads the error stream and republishes to the source, deriving the publishing id from `(partition, original offset)` | Replaying the same error message twice yields one stored message |
+| FR-5.3 | ~~Replay reads the error stream and republishes to the source, deriving the publishing id from `(partition, original offset)`~~ **Removed 2026-11-09 (breaking change): StreamBus's responsibility ends at the dead-letter hand-off; consuming/replaying error destinations is the application's job.** | ~~Replaying the same error message twice yields one stored message~~ |
 | FR-5.4 | One shared error stream with routing and per-stream error streams are both supported, via `ErrorStreamOptions { Stream, RoutingValue? }` (shared form supplies a routing value defaulting to the source stream name) | Both verified |
 
 ### FR-6 Effectively-once read-process-write (design §7)
