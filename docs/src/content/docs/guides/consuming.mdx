@@ -1,0 +1,61 @@
+---
+title: Consuming
+description: Endpoints, consumer groups, and offsets.
+---
+
+Endpoints consume from streams through `ReceiveEndpoint`. The consumer
+group is **required** and verbatim: the same group scales out, different
+groups consume independently.
+
+<aside>
+Demo page — the full consume guide (SAC, offsets, store knobs, raw
+consume, middleware) will live here.
+</aside>
+
+## Register an endpoint
+
+```csharp
+builder.Services.AddStreamBus((_, cfg) =>
+{
+    cfg.ReceiveEndpoint("orders", e =>
+    {
+        e.Consumer<OrderConsumer>("billing");
+    });
+});
+```
+
+## Scale out
+
+Run the same worker with the same group name and RabbitMQ streams
+distribute messages across instances automatically:
+
+```bash
+# Two instances, one logical consumer
+dotnet run & dotnet run
+```
+
+Each instance gets a share of the stream's messages — no extra
+configuration.
+
+## Independent consumers
+
+A second endpoint with a *different* group reads the same stream from
+its own offset, so billing and shipping each see every message:
+
+```csharp
+cfg.ReceiveEndpoint("orders", e =>
+{
+    e.Consumer<OrderConsumer>("billing");
+});
+
+cfg.ReceiveEndpoint("orders", e =>
+{
+    e.Consumer<OrderConsumer>("shipping");
+});
+```
+
+## Offsets
+
+Consumers track their position in the stream. Streams are append-only
+and retain messages per the stream's retention policy, so a group can
+replay from any offset when it needs to.

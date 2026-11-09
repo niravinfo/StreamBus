@@ -1,0 +1,68 @@
+---
+title: Configuration
+description: Hosts, credentials, buses, and explicit fluent configuration.
+---
+
+StreamBus is **explicit**. It does not read host configuration, bind JSON
+settings, or discover connection settings. Every option is a configurator
+method call in code, validated once at registration.
+
+<aside>
+Demo page — the full configuration guide (serialization options, pools,
+declarations, retention knobs) will live here.
+</aside>
+
+## Host
+
+`Host` is called exactly once per bus:
+
+```csharp
+builder.Services.AddStreamBus((_, cfg) =>
+{
+    cfg.Host("localhost", "/", h =>
+    {
+        h.Credentials("guest", "guest");
+        h.StreamPort(5552);
+        h.AmqpPort(5672);
+        h.Heartbeat(TimeSpan.FromSeconds(60));
+        h.MonitorInterval(TimeSpan.FromSeconds(5));
+    });
+});
+```
+
+## Multiple buses
+
+One `AddStreamBus` for the default bus, `AddStreamBus<TBus>` per extra
+bus, disambiguated by marker types:
+
+```csharp
+builder.Services.AddStreamBus((_, cfg) => { /* default bus */ });
+builder.Services.AddStreamBus<PaymentBus>((_, cfg) => { /* payments */ });
+```
+
+A shared consumer class consuming from both buses needs a different
+group per bus.
+
+## Bring your own settings
+
+Want environment variables or a vault? Read them yourself and pass the
+values in:
+
+```csharp
+var host = Environment.GetEnvironmentVariable("RABBIT_HOST") ?? "localhost";
+
+builder.Services.AddStreamBus((_, cfg) =>
+{
+    cfg.Host(host, "/", h => h.Credentials(user, pass));
+});
+```
+
+## Startup
+
+`AddStreamBusHosting` controls startup behavior at the service level —
+block until ready, or start in the background:
+
+```csharp
+builder.Services.AddStreamBusHosting(h =>
+    h.BlockStartupUntilReady(TimeSpan.FromSeconds(30)));
+```

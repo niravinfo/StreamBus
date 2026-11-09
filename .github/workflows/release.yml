@@ -33,6 +33,9 @@ jobs:
     name: Pack and publish to NuGet
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # Deployment protection: the Production environment required reviewer,
+    # so the workflow pauses for approval before publishing.
+    environment: Production
 
     # The integration suite starts its own pinned RabbitMQ broker via
     # Testcontainers, so no broker setup is needed here.
