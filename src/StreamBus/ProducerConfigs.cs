@@ -8,11 +8,10 @@ namespace StreamBus;
 /// </summary>
 internal static class ProducerConfigs
 {
-    public static RawProducerConfig Plain(string stream, string reference, ConfirmationTracker confirmations)
+    public static RawProducerConfig Plain(string stream, ConfirmationTracker confirmations)
         => new(stream)
         {
             MessagesBufferSize = 100,
-            Reference = reference,
             ConfirmHandler = confirmations.Complete,
             ConnectionClosedHandler = _ =>
             {
@@ -23,13 +22,11 @@ internal static class ProducerConfigs
 
     public static RawSuperStreamProducerConfig Super(
         string stream,
-        string reference,
         ConfirmationTracker confirmations,
         SuperStreamRouting routing)
         => new(stream)
         {
             MessagesBufferSize = 100,
-            Reference = reference,
             Routing = routing.Route,
             ConfirmHandler = confirmation => confirmations.Complete(confirmation.Item2),
             ConnectionClosedHandler = (_, _) =>

@@ -845,9 +845,6 @@ public sealed class PipelineSemanticsTests
         public override Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
             => throw new NotSupportedException("PipelineSemanticsTests publish error envelopes only.");
 
-        public override Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
-            => throw new NotSupportedException("PipelineSemanticsTests publish error envelopes only.");
-
         public override Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct)
             => throw new NotSupportedException("PipelineSemanticsTests inject their own consumer factory.");
 

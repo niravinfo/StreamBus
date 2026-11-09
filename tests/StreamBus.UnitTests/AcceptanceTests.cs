@@ -81,11 +81,7 @@ public sealed class AcceptanceTests : IDisposable
     private sealed class ScriptSystemHandle : ScriptedSystemHandle
     {
         public ScriptSystemHandle(CountingHandle handle) => PlainProducer = handle;
-        public override Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
-            => throw new NotImplementedException("Acceptance tests use the unique-name path.");
         public override Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
-            => throw new NotImplementedException("Acceptance tests publish plain only.");
-        public override Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
             => throw new NotImplementedException("Acceptance tests publish plain only.");
         public override Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct)
             => throw new NotImplementedException("Acceptance tests never attach.");

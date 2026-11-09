@@ -35,12 +35,6 @@ public sealed class PublishRoutingTests
             PartitionsResult = _ => Array.Empty<string>();
         }
 
-        public override Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
-            => throw new NotImplementedException("PublishRoutingTests never replays.");
-        public override Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
-            => throw new NotImplementedException("PublishRoutingTests never replays.");
-        public override Task<ulong> QuerySequenceAsync(string reference, string stream, CancellationToken ct)
-            => throw new NotImplementedException("PublishRoutingTests never queries sequences.");
         public override Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct)
             => throw new NotImplementedException("PublishRoutingTests never consumes.");
     }
@@ -210,14 +204,8 @@ public sealed class PublishRoutingTests
             StreamExistsResult = _ => false;
             PartitionsResult = _ => Array.Empty<string>();
         }
-        public override Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
-            => throw new NotImplementedException("NotFoundSystem never replays.");
         public override Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
             => throw new NotImplementedException("NotFoundSystem never creates super producers.");
-        public override Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
-            => throw new NotImplementedException("NotFoundSystem never replays.");
-        public override Task<ulong> QuerySequenceAsync(string reference, string stream, CancellationToken ct)
-            => throw new NotImplementedException("NotFoundSystem never queries sequences.");
         public override Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct)
             => throw new NotImplementedException("NotFoundSystem never consumes.");
     }

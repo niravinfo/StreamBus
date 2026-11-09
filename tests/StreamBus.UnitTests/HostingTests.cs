@@ -30,14 +30,8 @@ public sealed class HostingTests
         public List<string> CreatedSupers => CreatedSuperNames;
         public override Task<IStreamPlainProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct)
             => throw new NotImplementedException("HostingTests never publishes.");
-        public override Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
-            => throw new NotImplementedException("HostingTests never publishes.");
         public override Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
             => throw new NotImplementedException("HostingTests never publishes.");
-        public override Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
-            => throw new NotImplementedException("StubHandle never creates stable super producers.");
-        public override Task<ulong> QuerySequenceAsync(string reference, string stream, CancellationToken ct)
-            => throw new NotImplementedException("StubHandle never queries publishing sequences.");
         public override Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken ct)
             => throw new NotImplementedException("HostingTests never queries offsets.");
         public override Task StoreSystemOffsetAsync(string reference, string stream, ulong offset, CancellationToken ct)

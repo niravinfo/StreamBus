@@ -33,10 +33,10 @@ public sealed class NoopProducerHandle : IStreamPlainProducerHandle, IStreamSupe
 /// </summary>
 public class ScriptedSystemHandle : IStreamSystemHandle
 {
-    /// <summary>Stream names passed to CreatePlainProducerAsync (and its with-reference default).</summary>
+    /// <summary>Stream names passed to CreatePlainProducerAsync.</summary>
     public List<string> PlainStreams { get; } = new();
 
-    /// <summary>Stream names passed to CreateSuperStreamProducerAsync (and its with-reference default).</summary>
+    /// <summary>Stream names passed to CreateSuperStreamProducerAsync.</summary>
     public List<string> SuperStreams { get; } = new();
 
     /// <summary>Stream names created through CreateStreamAsync.</summary>
@@ -53,9 +53,6 @@ public class ScriptedSystemHandle : IStreamSystemHandle
 
     /// <summary>Offset queries received by TryQueryOffsetAsync (references are recorded even when null is returned).</summary>
     public List<(string Reference, string Stream)> OffsetQueries { get; } = new();
-
-    /// <summary>Sequence queries received by QuerySequenceAsync.</summary>
-    public List<(string Reference, string Stream)> SequenceQueries { get; } = new();
 
     /// <summary>Offset stores received by StoreSystemOffsetAsync.</summary>
     public List<(string Reference, string Stream, ulong Offset)> StoredOffsets { get; } = new();
@@ -80,9 +77,6 @@ public class ScriptedSystemHandle : IStreamSystemHandle
 
     /// <summary>Result of TryQueryOffsetAsync (default: none stored).</summary>
     public ulong? OffsetResult { get; set; }
-
-    /// <summary>Result of QuerySequenceAsync.</summary>
-    public ulong SequenceResult { get; set; }
 
     /// <summary>Result of StreamExistsAsync when <see cref="StreamExistsFunc"/> is unset.</summary>
     public Func<string, bool> StreamExistsResult { get; set; } = _ => true;
@@ -121,10 +115,6 @@ public class ScriptedSystemHandle : IStreamSystemHandle
             : Task.FromResult(PlainProducer);
     }
 
-    /// <summary>Delegates to <see cref="CreatePlainProducerAsync"/> (reference-identity scripts override this).</summary>
-    public virtual Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken cancellationToken)
-        => CreatePlainProducerAsync(stream, cancellationToken);
-
     /// <summary>Records the stream and returns <see cref="SuperProducer"/> (or the <see cref="OnCreateSuperProducer"/> script).</summary>
     public virtual Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken cancellationToken)
     {
@@ -132,17 +122,6 @@ public class ScriptedSystemHandle : IStreamSystemHandle
         return OnCreateSuperProducer is { } create
             ? create(stream, cancellationToken)
             : Task.FromResult(SuperProducer);
-    }
-
-    /// <summary>Delegates to <see cref="CreateSuperStreamProducerAsync"/> (reference-identity scripts override this).</summary>
-    public virtual Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken cancellationToken)
-        => CreateSuperStreamProducerAsync(stream, cancellationToken);
-
-    /// <summary>Records the query and returns <see cref="SequenceResult"/>.</summary>
-    public virtual Task<ulong> QuerySequenceAsync(string reference, string stream, CancellationToken cancellationToken)
-    {
-        lock (SequenceQueries) SequenceQueries.Add((reference, stream));
-        return Task.FromResult(SequenceResult);
     }
 
     /// <summary>Throws unless <see cref="OnCreateRawConsumer"/> scripts a consumer (tests inject a consumer factory instead).</summary>
@@ -219,20 +198,8 @@ public class StrictScriptedSystemHandle : ScriptedSystemHandle
         => throw new NotImplementedException("StrictScriptedSystemHandle.CreatePlainProducerAsync was not scripted.");
 
     /// <summary>Throws: not scripted.</summary>
-    public override Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken cancellationToken)
-        => throw new NotImplementedException("StrictScriptedSystemHandle.CreatePlainProducerWithReferenceAsync was not scripted.");
-
-    /// <summary>Throws: not scripted.</summary>
     public override Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken cancellationToken)
         => throw new NotImplementedException("StrictScriptedSystemHandle.CreateSuperStreamProducerAsync was not scripted.");
-
-    /// <summary>Throws: not scripted.</summary>
-    public override Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken cancellationToken)
-        => throw new NotImplementedException("StrictScriptedSystemHandle.CreateSuperStreamProducerWithReferenceAsync was not scripted.");
-
-    /// <summary>Throws: not scripted.</summary>
-    public override Task<ulong> QuerySequenceAsync(string reference, string stream, CancellationToken cancellationToken)
-        => throw new NotImplementedException("StrictScriptedSystemHandle.QuerySequenceAsync was not scripted.");
 
     /// <summary>Throws: not scripted.</summary>
     public override Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken cancellationToken)
@@ -271,8 +238,8 @@ public class StrictScriptedSystemHandle : ScriptedSystemHandle
 /// The common consume-side script shared by tests that inject their own consumer factory:
 /// offset queries return null (recorded in <see cref="ScriptedSystemHandle.OffsetQueries"/>),
 /// offset stores are silent no-ops, plain streams exist while super streams do not, partitions
-/// mirror the super-stream name, and stream creates are no-ops. Producer creation, raw-consumer
-/// creation, and sequence queries throw because those scripts never use them; each member stays
+/// mirror the super-stream name, and stream creates are no-ops. Producer and raw-consumer
+/// creation throw because those scripts never use them; each member stays
 /// virtual so a test fake can override the exact pieces it needs.
 /// </summary>
 public class NeverReadyConsumerSystem : StrictScriptedSystemHandle

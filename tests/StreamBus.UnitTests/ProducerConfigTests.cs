@@ -5,29 +5,25 @@ namespace StreamBus.UnitTests;
 public sealed class ProducerConfigTests
 {
     [Fact]
-    public void Plain_config_keeps_the_supplied_reference_and_handlers()
+    public void Plain_config_is_anonymous_and_wired()
     {
-        var confirmations = new ConfirmationTracker();
-
-        var config = ProducerConfigs.Plain("orders", "stable-ref", confirmations);
+        var config = ProducerConfigs.Plain("orders", new ConfirmationTracker());
 
         Assert.Equal("orders", config.Stream);
-        Assert.Equal("stable-ref", config.Reference);
+        Assert.Null(config.Reference);
         Assert.Equal(100, config.MessagesBufferSize);
         Assert.NotNull(config.ConfirmHandler);
         Assert.NotNull(config.ConnectionClosedHandler);
     }
 
     [Fact]
-    public void Super_config_keeps_the_supplied_reference_and_routing()
+    public void Super_config_is_anonymous_and_keeps_routing_wired()
     {
-        var confirmations = new ConfirmationTracker();
         var routing = new SuperStreamRouting();
-
-        var config = ProducerConfigs.Super("orders-super", "stable-ref", confirmations, routing);
+        var config = ProducerConfigs.Super("orders-super", new ConfirmationTracker(), routing);
 
         Assert.Equal("orders-super", config.SuperStream);
-        Assert.Equal("stable-ref", config.Reference);
+        Assert.Null(config.Reference);
         Assert.Equal(100, config.MessagesBufferSize);
         Assert.NotNull(config.ConfirmHandler);
         Assert.NotNull(config.ConnectionClosedHandler);
