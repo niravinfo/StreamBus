@@ -119,7 +119,7 @@ public interface IStreamSendHeaders : IStreamHeaders
 - `Headers` on a consume context is the read-only received collection.
 - `Headers` on a publish context is `IStreamSendHeaders`.
 - `SendHeaders` on a consume context is the writable collection carried on the
-  effectively-once result or the error envelope.
+  error envelope.
 
 Framework keys are visible in `Headers.All`; they are not hidden. Reserved keys
 cannot be written:
@@ -138,9 +138,8 @@ for `PublishOptions.Properties.Headers`, which bypasses filters.
 ### Super-stream routing
 
 The routing key is persisted as the `streambus.routing-key` application
-property on every publish where it is set, including effectively-once results
-published to a super target. The consume side already reads this key into
-`RoutingValue`; the write side is the missing half.
+property on every publish where it is set. The consume side already reads this
+key into `RoutingValue`; the write side is the missing half.
 
 ## Final surface
 
@@ -278,8 +277,8 @@ the publish; the body, identity, and time are fixed for the delivery.
 8. **Reserved keys.** `StreamSendHeaders.Set` and the publish entry-point
    validation reject the four framework keys.
 9. **Context construction.** `ConsumePipeline.CreateContext` builds
-   `ConsumeContext<T>` directly for typed endpoints and `ConsumeContext` for raw
-   and effectively-once pipelines. The publish path builds `PublishContext<T>`
+   `ConsumeContext<T>` directly for typed endpoints and `ConsumeContext` for
+   raw pipelines. The publish path builds `PublishContext<T>`
    where `T` is statically known.
 10. **Error envelope.** Envelope ids become `Guid?`; the `streambus.error.*`
     values are written as strings and parsed back with `Guid.TryParse`. The
@@ -298,8 +297,7 @@ the publish; the body, identity, and time are fixed for the delivery.
 - A raw message with a non-Guid `message-id` yields `MessageId == null`.
 - A native AMQP UUID `message-id` (16 bytes) parses to the expected `Guid`.
 - Super-stream publish writes `streambus.routing-key`; the consumer's
-  `RoutingValue` equals the publishing routing key; an effectively-once result
-  published to a super target carries it too.
+  `RoutingValue` equals the publishing routing key.
 - `StreamSendHeaders.Set("streambus.message-id", …)` throws;
   `PublishOptions.Properties.Headers` containing a reserved key throws.
 - `Headers.All` contains `streambus.*` keys alongside user headers.

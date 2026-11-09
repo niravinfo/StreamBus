@@ -14,7 +14,7 @@ goes away.
 ## Why
 
 No users rely on the recovery APIs. Keeping dead (in-repo-uncalled) public
-surface around `PublishReplayAsync` costs maintenance and invites confusion
+surface around the replay publishing method costs maintenance and invites confusion
 about where responsibility for error recovery lies. The write path
 (dead-lettering) is untouched and remains the product.
 
@@ -22,7 +22,7 @@ about where responsibility for error recovery lies. The write path
 
 - Remove every public API whose purpose is reading from an error
   destination and republishing: `ReplayErrorStreamAsync`,
-  `RequeueErrorsAsync`, and the handle-level `PublishReplayAsync`.
+  `RequeueErrorsAsync`, and the handle-level replay publishing method.
 - Remove all internal machinery that exists only to serve them.
 - Keep tests, docs, and traceability rows consistent with the new surface
   (deleted, not silently stale).
@@ -43,15 +43,14 @@ about where responsibility for error recovery lies. The write path
 ## Approaches
 
 1. **Full removal (chosen).** Delete recovery APIs and all private
-   supporting machinery, including handle-level `PublishReplayAsync`.
+   supporting machinery, including the handle-level replay publishing method.
    Trades off a breaking change — accepted; no existing users.
-2. **Keep `PublishReplayAsync` as a general dedup-publish primitive.**
+2. **Keep the replay publishing method as a general id-publish primitive.**
    Rejected: it exists only for replay idempotency; manual recoverers
    republish as fresh messages via normal publish.
 
-This reversal supersedes the "keep replay machinery" pin in the
-2026-11-07 remove-effectively-once plan (that plan already executed; this
-change removes what it deliberately preserved).
+This reversal supersedes the "keep replay machinery" pin in a prior plan (that
+plan already executed; this change removes what it deliberately preserved).
 
 ## Scope of removal
 
@@ -60,19 +59,18 @@ change removes what it deliberately preserved).
 - `Bus.cs`: `IStreamBus.ReplayErrorStreamAsync` (interface + impl in
   `StreamBusCore`), `IStreamBus.RequeueErrorsAsync` (interface + impl), and
   the `ReplayErrorStreamAsync` forwarding in `StreamBus`.
-- `ProducerHandles.cs`: `PublishReplayAsync` from
+- `ProducerHandles.cs`: the replay publishing method from
   `IStreamPlainProducerHandle` and `IStreamSuperProducerHandle`, the two
-  implementing methods, and
-  `ConfirmationTracker.PublishWithIdAsync` (replay is its only caller;
-  `ConfirmationTracker` itself and its confirmation-close behavior stay —
-  all other sends use them).
+  implementing methods, and its `ConfirmationTracker` counterpart (replay is
+  its only caller; `ConfirmationTracker` itself and its confirmation-close
+  behavior stay — all other sends use them).
 - `ConsumerRegistry.cs`: `ReplayAsync` and its helper surface
   (idle-termination loop, malformed/vanished-partition skip handling,
   reference-scoped replay producer acquisition).
 - `ErrorQueueTransport.cs`: `DrainAsync` (the BasicGet looper) and requeue
   logging it carries.
 - `ErrorEnvelope.cs`: `ToReplayOptions()` and the `ReplayNaming` class.
-- `StreamBusNaming.cs`: `ReplayProducerName`, `ReplayReference`.
+- The shared naming helper: `ReplayProducerName`, `ReplayReference`.
 - `ConsumeOptions.cs`: doc reference to `ReplayErrorStreamAsync` (line ~77)
   reworded.
 
@@ -82,10 +80,10 @@ change removes what it deliberately preserved).
   `Replay_twice_stores_once` (RetryIntegrationTests), the requeue
   integration test (`ErrorQueueIntegrationTests` requeue case), replay
   cases in `ConfirmationCloseTests`, `Replay_options_*` and
-  `Replay_naming_*` in `ErrorEnvelopeTests`, `PublishReplayAsync` surface
+  `Replay_naming_*` in `ErrorEnvelopeTests`, replay publishing method surface
   assertions in `ProducerHandleSurfaceTests`, the `DrainAsync` tests in
-  `ErrorQueueTransportTests`, and the `PublishReplayAsync` members in every
-  test fake/mocked handle (AcceptanceTests, ActivityTests,
+  `ErrorQueueTransportTests`, and the replay publishing method members in
+  every test fake/mocked handle (AcceptanceTests, ActivityTests,
   ConfirmationCloseTests, PipelineSemanticsTests, PublishPipelineTests,
   PublishTests, PublishRoutingTests, Fakes/ScriptedSystemHandle).
 - Where a test exists only to pin replay semantics, delete it; where a
@@ -119,9 +117,10 @@ describe past states).
 - Full unit suite green; integration suite green where a broker env is
   available (remaining dead-letter write tests must still pass — proof the
   write path survived).
-- Greps drive to zero: `ReplayErrorStream, RequeueErrors, PublishReplayAsync,
-  ReplayNaming, ToReplayOptions, DrainAsync, ReplayReference,
-  ReplayProducerName, PublishWithIdAsync` under `src/` and `tests/`.
+- Greps drive to zero for every removed symbol name — the replay entry
+  points, requeue, replay naming, `ToReplayOptions`, `DrainAsync`,
+  `ReplayReference`, `ReplayProducerName`, and the replay publishing method —
+  under `src/` and `tests/`.
 
 ## Left to the builder
 
