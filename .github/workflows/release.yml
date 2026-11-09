@@ -33,8 +33,8 @@ jobs:
     name: Pack and publish to NuGet
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    # Deployment protection: the Production environment has niravinfo as the
-    # required reviewer, so the workflow pauses for approval before publishing.
+    # Deployment protection: the Production environment required reviewer,
+    # so the workflow pauses for approval before publishing.
     environment: Production
 
     # The integration suite starts its own pinned RabbitMQ broker via
