@@ -151,25 +151,9 @@ internal sealed class StreamSystemHandle : IStreamSystemHandle
     {
         cancellationToken.ThrowIfCancellationRequested();
         var confirmations = new ConfirmationTracker();
-        // Unique producer name per handle on the ProducerReference path: the broker
-        // deduplicates publishes by (producer name, publishing id) and ids restart
-        // at 1 per handle, so a reused name would silently drop a later handle's
-        // first messages as duplicates (confirmed-Ok but never appended). Distinct
-        // names keep every handle's id sequence collision-free, including after
-        // recreates. (Explicit references are stable names that keep
-        // broker-side dedup deterministic — Phase 7 owns stable FR-6
-        // naming, and result-publish identity relies on this determinism.)
-        var producer = await _system.CreateRawProducer(new RawProducerConfig(stream)
-        {
-            MessagesBufferSize = 100,
-            Reference = reference,
-            ConfirmHandler = confirmations.Complete,
-            ConnectionClosedHandler = _ =>
-            {
-                confirmations.OnConnectionLost();
-                return Task.CompletedTask;
-            },
-        }, _factory.CreateLogger<RawProducer>()).ConfigureAwait(false);
+        var producer = await _system.CreateRawProducer(
+            ProducerConfigs.Plain(stream, reference, confirmations),
+            _factory.CreateLogger<RawProducer>()).ConfigureAwait(false);
         return new StreamProducerHandle(producer, stream, confirmations, _factory.CreateLogger<StreamProducerHandle>());
     }
 
@@ -179,19 +163,9 @@ internal sealed class StreamSystemHandle : IStreamSystemHandle
         cancellationToken.ThrowIfCancellationRequested();
         var confirmations = new ConfirmationTracker();
         var routing = new SuperStreamRouting();
-        // Same dedup rationale as the plain-producer call above.
-        var producer = await _system.CreateRawSuperStreamProducer(new RawSuperStreamProducerConfig(stream)
-        {
-            MessagesBufferSize = 100,
-            Reference = ProducerReference(stream),
-            Routing = routing.Route,
-            ConfirmHandler = confirmation => confirmations.Complete(confirmation.Item2),
-            ConnectionClosedHandler = (_, _) =>
-            {
-                confirmations.OnConnectionLost();
-                return Task.CompletedTask;
-            },
-        }, _factory.CreateLogger<RawProducer>()).ConfigureAwait(false);
+        var producer = await _system.CreateRawSuperStreamProducer(
+            ProducerConfigs.Super(stream, ProducerReference(stream), confirmations, routing),
+            _factory.CreateLogger<RawProducer>()).ConfigureAwait(false);
         return new SuperStreamProducerHandle(producer, stream, confirmations, routing, _factory.CreateLogger<SuperStreamProducerHandle>());
     }
 
@@ -204,22 +178,9 @@ internal sealed class StreamSystemHandle : IStreamSystemHandle
         cancellationToken.ThrowIfCancellationRequested();
         var confirmations = new ConfirmationTracker();
         var routing = new SuperStreamRouting();
-        // Stable name (not the unique-name path): recreating under the same name is
-        // safe — dedup is broker-side per (name, id) and the fresh tracker holds no
-        // stale in-flight ids. The same per-handle routing table as the unique-name
-        // path applies.
-        var producer = await _system.CreateRawSuperStreamProducer(new RawSuperStreamProducerConfig(stream)
-        {
-            MessagesBufferSize = 100,
-            Reference = reference,
-            Routing = routing.Route,
-            ConfirmHandler = confirmation => confirmations.Complete(confirmation.Item2),
-            ConnectionClosedHandler = (_, _) =>
-            {
-                confirmations.OnConnectionLost();
-                return Task.CompletedTask;
-            },
-        }, _factory.CreateLogger<RawProducer>()).ConfigureAwait(false);
+        var producer = await _system.CreateRawSuperStreamProducer(
+            ProducerConfigs.Super(stream, reference, confirmations, routing),
+            _factory.CreateLogger<RawProducer>()).ConfigureAwait(false);
         return new SuperStreamProducerHandle(producer, stream, confirmations, routing, _factory.CreateLogger<SuperStreamProducerHandle>());
     }
 
