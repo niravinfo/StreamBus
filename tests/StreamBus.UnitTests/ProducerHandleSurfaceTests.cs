@@ -31,7 +31,6 @@ public sealed class ProducerHandleSurfaceTests
     public void Super_handle_keeps_its_routed_members()
     {
         Assert.NotNull(Method(typeof(IStreamSuperProducerHandle), nameof(IStreamProducerHandle.SendAsync)));
-        Assert.NotNull(Method(typeof(IStreamSuperProducerHandle), nameof(IStreamSuperProducerHandle.PublishReplayAsync)));
         // EO removal: no publishing-id result surface on any handle.
         Assert.Null(Method(typeof(IStreamSuperProducerHandle), "PublishWithIdAsync"));
         Assert.Null(Method(typeof(IStreamSuperProducerHandle), "PublishResultAsync"));
@@ -44,10 +43,9 @@ public sealed class ProducerHandleSurfaceTests
     }
 
     [Fact]
-    public void Plain_handle_keeps_envelope_and_replay_sends()
+    public void Plain_handle_keeps_envelope_sends()
     {
         Assert.NotNull(Method(typeof(IStreamPlainProducerHandle), nameof(IStreamPlainProducerHandle.SendEnvelopeAsync)));
-        Assert.NotNull(Method(typeof(IStreamPlainProducerHandle), nameof(IStreamPlainProducerHandle.PublishReplayAsync)));
         // EO removal: no publishing-id result surface on the plain handle.
         Assert.Null(Method(typeof(IStreamPlainProducerHandle), "PublishResultAsync"));
     }

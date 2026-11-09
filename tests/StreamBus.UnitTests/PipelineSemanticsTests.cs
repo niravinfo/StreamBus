@@ -870,9 +870,6 @@ public sealed class PipelineSemanticsTests
             return Task.CompletedTask;
         }
 
-        public Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, PublishOptions options, CancellationToken ct)
-            => SendAsync(body, options, ct);
-
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 

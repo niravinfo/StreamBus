@@ -21,7 +21,7 @@ public interface IStreamSystemHandle : IAsyncDisposable
     /// <param name="cancellationToken">Cancels the create.</param>
     Task<IStreamPlainProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken cancellationToken);
 
-    /// <summary>Creates a plain-stream producer under an explicit stable reference (replay/dedup identity); the reference must fit the broker's 255-byte name limit.</summary>
+    /// <summary>Creates a plain-stream producer under an explicit stable reference (dedup identity); the reference must fit the broker's 255-byte name limit.</summary>
     /// <param name="stream">Target stream name.</param>
     /// <param name="reference">Stable producer reference; recreating under the same name keeps broker-side dedup deterministic.</param>
     /// <param name="cancellationToken">Cancels the create.</param>
@@ -156,8 +156,9 @@ internal sealed class StreamSystemHandle : IStreamSystemHandle
         // at 1 per handle, so a reused name would silently drop a later handle's
         // first messages as duplicates (confirmed-Ok but never appended). Distinct
         // names keep every handle's id sequence collision-free, including after
-        // recreates. (Explicit references are replay-scoped stable names — Phase 7
-        // owns stable FR-6 naming; replay idempotency relies on this determinism.)
+        // recreates. (Explicit references are stable names that keep
+        // broker-side dedup deterministic — Phase 7 owns stable FR-6
+        // naming, and result-publish identity relies on this determinism.)
         var producer = await _system.CreateRawProducer(new RawProducerConfig(stream)
         {
             MessagesBufferSize = 100,

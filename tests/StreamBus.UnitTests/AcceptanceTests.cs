@@ -75,8 +75,6 @@ public sealed class AcceptanceTests : IDisposable
         }
         public Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, StreamMessageProperties properties, CancellationToken ct)
             => throw new NotImplementedException("Acceptance tests publish plain only.");
-        public Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, PublishOptions options, CancellationToken ct)
-            => throw new NotImplementedException("Acceptance tests publish plain only.");
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 

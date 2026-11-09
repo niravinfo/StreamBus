@@ -54,18 +54,6 @@ public sealed class ErrorEnvelopeTests
     }
 
     [Fact]
-    public void Replay_options_preserve_message_identity()
-    {
-        var sample = Sample();
-
-        var options = sample.ToReplayOptions();
-
-        Assert.Equal(sample.MessageId, options.Properties!.MessageId);
-        Assert.Equal(sample.CorrelationId, options.Properties.CorrelationId);
-        Assert.Equal(sample.SentTime, options.Properties.SentTime);
-    }
-
-    [Fact]
     public void Sent_time_with_an_offset_is_normalized_to_the_same_instant()
     {
         var instant = new DateTimeOffset(2026, 10, 31, 9, 12, 3, 284, TimeSpan.FromHours(2));
@@ -99,23 +87,6 @@ public sealed class ErrorEnvelopeTests
             Assert.True(actualDict.TryGetValue(key, out var roundTripped), $"missing header '{key}'");
             Assert.Equal(value, roundTripped);
         }
-    }
-
-    [Fact]
-    public void Replay_options_preserve_user_headers_and_content_type()
-    {
-        // A requeued/replayed message must keep the headers and content
-        // type it carried when it failed, not just its identity fields.
-        var sample = Sample() with
-        {
-            UserHeaders = UserHeaders(),
-            ContentType = "application/vnd.acme+json",
-        };
-
-        var options = sample.ToReplayOptions();
-
-        Assert.Equal(sample.ContentType, options.Properties!.ContentType);
-        AssertUserHeadersEqual(sample.UserHeaders!, options.Properties.Headers);
     }
 
     [Fact]
@@ -231,17 +202,5 @@ public sealed class ErrorEnvelopeTests
             sample.ErrorStream, sample.Body, sample.ToApplicationProperties(), out var parsed));
         Assert.Null(parsed!.UserHeaders);
         Assert.Null(parsed.ContentType);
-    }
-
-    [Fact]
-    public void Replay_naming_is_stable_bounded_and_id_is_the_offset()
-    {
-        var a = ReplayNaming.ProducerName("orders", "orders-2");
-        Assert.Equal(a, ReplayNaming.ProducerName("orders", "orders-2"));
-        Assert.NotEqual(a, ReplayNaming.ProducerName("orders", "orders-3"));
-        Assert.True(System.Text.Encoding.UTF8.GetByteCount(a) <= 255);
-        Assert.Equal(41UL, ReplayNaming.PublishingId(41));
-        var r = ReplayNaming.Reference("orders.error");
-        Assert.Equal(r, ReplayNaming.Reference("orders.error"));
     }
 }

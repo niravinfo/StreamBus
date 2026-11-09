@@ -180,25 +180,11 @@ public sealed class ErrorQueueIntegrationTests : IAsyncDisposable
         Assert.Contains("InvalidOperationException", envelope.ExceptionType, StringComparison.Ordinal);
 
         await inst.DisposeAsync();
-        var requeued = await pub.Bus.RequeueErrorsAsync(stream, errorQueue, ct);
-        Assert.Equal(1, requeued);
-
-        var seen = new List<ConsumeContext>();
-        await using var reader = await pub.Bus.ConsumeAsync(stream,
-            new ConsumeOptions { Offset = ConsumeOffset.AlwaysFirst, Reference = Unique("read") },
-            ctx => { lock (seen) seen.Add(ctx); return Task.CompletedTask; }, ct);
-        await WaitForAsync(() => { lock (seen) return seen.Count >= 2; }, TimeSpan.FromSeconds(30), "redelivered copy on source stream");
-        Assert.All(seen, context =>
-        {
-            Assert.Equal(Body(poison).ToArray(), context.Body.ToArray());
-            Assert.Equal(messageId, context.MessageId);
-            Assert.Equal(sentTime, context.SentTime);
-        });
     }
 
     [Fact]
-    public async Task Explicit_classic_queue_handoff_and_requeue() => await RunErrorQueueCaseAsync(explicitQueue: true);
+    public async Task Explicit_classic_queue_handoff() => await RunErrorQueueCaseAsync(explicitQueue: true);
 
     [Fact]
-    public async Task Derived_default_queue_handoff_and_requeue() => await RunErrorQueueCaseAsync(explicitQueue: false);
+    public async Task Derived_default_queue_handoff() => await RunErrorQueueCaseAsync(explicitQueue: false);
 }

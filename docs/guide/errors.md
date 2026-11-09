@@ -74,13 +74,17 @@ endpoint throws at registration (the destination choice is a one-time,
 exactly-once decision — `OnExhausted` knobs stay last-call-wins):
 
 - `DeadLetterToStream(name, spec?)`: an error **stream** with
-  error-envelope semantics, advance-once, replayable with
-  `ReplayErrorStreamAsync`. The destination stream is declared with the
+  error-envelope semantics, advance-once, and full envelope
+  app-properties. The destination stream is declared with the
   destination's `StreamOptions` at startup.
 - `DeadLetterToQueue(name, type)`: a durable AMQP queue
   (`DeadLetterQueueType.ClassicQueue` or `DeadLetterQueueType.QuorumQueue`),
-  broker-confirmed, full `streambus.error.*` headers, requeue with
-  `RequeueErrorsAsync`. The transport declares it, never topology.
+  broker-confirmed, full `streambus.error.*` headers. The transport
+  declares it, never topology.
+
+In both cases StreamBus's responsibility ends at the hand-off: consuming
+from the error stream, draining the error queue, or moving messages back
+to the source is the application's job, using any compatible client.
 
 ## Hand-off confirmation timeouts
 
@@ -90,13 +94,13 @@ lost confirmation wedge the partition:
 - Stream hand-off: `e.ErrorHandoffTimeout(TimeSpan.FromSeconds(10))`.
   The default is 10 seconds; values below 1 second are raised to 1
   second. A lost confirmation surfaces as a timeout with an unknown
-  outcome and the envelope stays replayable.
+  outcome and the hand-off is retried without advancing.
 - Queue hand-off:
   `e.DeadLetterToQueue("orders-errors", DeadLetterQueueType.ClassicQueue,
   q => q.ConfirmTimeout(TimeSpan.FromSeconds(10)))`. The default is 10
   seconds. A timeout means the broker may or may not have accepted the
-  message; requeue/replay only when the destination can tolerate a
-  duplicate.
+  message; a duplicate in the error destination is possible and the
+  destination should tolerate one when drained.
 
 A hand-off that fails transiently (not-ready, timeout, broker unreachable,
 or a destination stream that does not exist yet) is retried without
@@ -124,25 +128,18 @@ configuring both fails with `StreamBusConfigurationException` instead of
 silently shadowing the destination. Endpoints resolve the same conflict by
 shadowing the declared destination with a startup warning.
 
-## Requeue
+## Recovery
 
-```csharp
-int requeued = await bus.RequeueErrorsAsync("orders", "orders-errors", ct);
-```
-
-`BasicGet`-loops the queue and republishes bodies to the source stream as
-new offsets (tail append, at-least-once), acknowledging only after the
-stream confirm. The envelope's `MessageId`, `CorrelationId`, and `SentTime`
-are carried over; `content-type` and consume-added headers are not
-restored, so a requeued message may carry a body without the original
-property metadata. Malformed entries are acknowledged with a warning and
-skipped. Stream destinations replay with `ReplayErrorStreamAsync` instead
-and preserve the same identity fields.
+StreamBus's responsibility ends at the hand-off. After a fix is deployed,
+move messages out of the error destination yourself: consume the error
+stream (its envelopes carry the source stream/partition/offset and original
+headers in app-properties) or drain the queue with any AMQP client, and
+republish to the source stream as new messages.
 
 ## Full example
 
 A retry schedule with an attempt limit hands the poison message to a
-classic error queue; the operator drains it back after deploying the fix:
+classic error queue for the operator to inspect:
 
 ```csharp
 services.AddStreamBus((context, cfg) =>
@@ -159,10 +156,7 @@ services.AddStreamBus((context, cfg) =>
 services.AddStreamBusHosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(30)));
 
 // ... poison message exhausts on first failure, lands in "orders-errors"
-// with full streambus.error.* headers ...
-
-// After the fix is deployed, redeliver everything:
-int requeued = await bus.RequeueErrorsAsync("orders", "orders-errors", ct);
+// with full streambus.error.* headers, ready for manual recovery ...
 ```
 
 ## Exception table
@@ -179,7 +173,7 @@ type-specific:
 | `StreamBusStartupBlockedException` | A typed consumer could not attach during blocking startup. | No - fix the consumer or dependency first. |
 | `StreamBusFatalException` | The bus connection is fatal. | No - reconnect/operator action. |
 | `StreamBusNotReadyException` | The bus is not ready for the operation yet. | Yes - transient. |
-| `StreamBusStreamNotFoundException` | A referenced publish, consume, or replay stream is missing. | No at runtime; a blocking startup attach may retry while declarations converge. |
+| `StreamBusStreamNotFoundException` | A referenced publish, consume, or error stream is missing. | No at runtime; a blocking startup attach may retry while declarations converge. |
 | `StreamBusTimeoutException` | A budget expired; the outcome may be unknown. | Only when the operation is safe/idempotent. |
 | `StreamBusPublishTransientException` | A publish failed transiently and the producer was discarded. | Yes - retry. |
 | `StreamBusPublishException` | A publish was rejected, returned, or otherwise failed without a transient classification. | Do not blindly retry. |

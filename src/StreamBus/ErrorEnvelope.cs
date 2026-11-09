@@ -5,13 +5,14 @@ namespace StreamBus;
 /// <summary>
 /// The envelope of one failed delivery as it travels to an error destination:
 /// the original body plus the failure metadata carried as
-/// <c>streambus.error.*</c> application properties. Parsed back by requeue
-/// and replay.
+/// <c>streambus.error.*</c> application properties, so the destination
+/// alone explains what happened. Consuming or draining the destination
+/// afterwards is the application's job.
 /// </summary>
 public sealed record ErrorEnvelope
 {
     /// <summary>Error destination the failed delivery was routed to: an
-    /// error stream name for replay, an AMQP queue name for requeue.</summary>
+    /// error stream name, or an AMQP queue name.</summary>
     public required string ErrorStream { get; init; }
 
     /// <summary>Logical source stream the delivery failed on; the
@@ -47,15 +48,15 @@ public sealed record ErrorEnvelope
     public required DateTimeOffset FailedAt { get; init; }
 
     /// <summary>AMQP <c>message-id</c> of the failed delivery; null when
-    /// absent or not a Guid. Carried over on replay/requeue.</summary>
+    /// absent or not a Guid.</summary>
     public required Guid? MessageId { get; init; }
 
     /// <summary>AMQP <c>correlation-id</c> of the failed delivery; null when
-    /// absent. Carried over on replay/requeue.</summary>
+    /// absent.</summary>
     public required Guid? CorrelationId { get; init; }
 
     /// <summary>AMQP <c>creation-time</c> of the failed delivery, UTC; null
-    /// when absent. Carried over on replay/requeue.</summary>
+    /// when absent.</summary>
     public DateTime? SentTime { get; init; }
 
     /// <summary>Routing value of the original super-stream publish; null for
@@ -63,12 +64,11 @@ public sealed record ErrorEnvelope
     public required string? RoutingValue { get; init; }
 
     /// <summary>Content type of the failed delivery, as it arrived from the
-    /// broker's AMQP <c>content-type</c> property. Reapplied on replay/requeue.</summary>
+    /// broker's AMQP <c>content-type</c> property.</summary>
     public string? ContentType { get; init; }
 
     /// <summary>Original user headers of the failed delivery; framework keys
-    /// (<c>streambus.*</c>) and values with unsupported types are excluded.
-    /// Reapplied on replay/requeue.</summary>
+    /// (<c>streambus.*</c>) and values with unsupported types are excluded.</summary>
     public IReadOnlyDictionary<string, object?>? UserHeaders { get; init; }
 
     /// <summary>Headers added by the consume pipeline for the failed delivery.
@@ -136,25 +136,6 @@ public sealed record ErrorEnvelope
 
         return properties;
     }
-
-    /// <summary>
-    /// Rebuilds the publish options for a requeue or replay so the message
-    /// keeps the identity, user headers, and content type it had when it
-    /// entered the error destination.
-    /// </summary>
-    internal PublishOptions ToReplayOptions() => new()
-    {
-        Properties = new StreamMessageProperties
-        {
-            MessageId = MessageId,
-            CorrelationId = CorrelationId,
-            SentTime = SentTime,
-            ContentType = ContentType,
-            Headers = UserHeaders is null
-                ? new Dictionary<string, object?>()
-                : new Dictionary<string, object?>(UserHeaders),
-        },
-    };
 
     /// <summary>
     /// Captures the original user headers of a delivery for the error
@@ -305,25 +286,3 @@ public sealed record ErrorEnvelope
     }
 }
 
-internal static class ReplayNaming
-{
-    /// <summary>Replay producer name, keyed by source stream and partition
-    /// so dedup is scoped per source partition.</summary>
-    /// <param name="sourceStream">Logical source stream.</param>
-    /// <param name="partitionStream">Physical source partition stream.</param>
-    /// <returns>The dedup-scoped replay producer reference name.</returns>
-    public static string ProducerName(string sourceStream, string partitionStream)
-        => StreamBusNaming.ReplayProducerName(sourceStream, partitionStream);
-
-    /// <summary>Cursor reference under which replay reads an error stream.</summary>
-    /// <param name="errorStream">Error stream to replay.</param>
-    /// <returns>The replay consumer reference name.</returns>
-    public static string Reference(string errorStream)
-        => StreamBusNaming.ReplayReference(errorStream);
-
-    /// <summary>Deduplication publishing id for replay: the source offset, so
-    /// a repeated replay of the same failure does not duplicate.</summary>
-    /// <param name="sourceOffset">Offset of the failed delivery in its source partition.</param>
-    /// <returns>The publishing id to use for the replayed message.</returns>
-    public static ulong PublishingId(ulong sourceOffset) => sourceOffset;
-}

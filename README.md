@@ -19,8 +19,7 @@ option is a configurator method call in code, validated once at registration.
 
 - .NET 10 SDK.
 - RabbitMQ 4.x with streams enabled: stream port `5552`, AMQP `5672`
-  (AMQP is used for queue dead-letter destinations and error-queue requeue
-  operations).
+  (AMQP is used for queue dead-letter destinations).
 - Empty credentials are rejected. `guest`/`guest` is accepted for a local
   broker; remote deployments need a dedicated non-`guest` user.
 - For contributors: the integration tests need only Docker — they start
@@ -92,7 +91,7 @@ Every capability points to its guide section:
 - Raw consume + manual offset get/set (`docs/guide/consume.md`)
 - Retry: global + per-endpoint schedules, escape hatch (`docs/guide/errors.md`)
 - Exhaustion: stream / classic+quorum queue (bounded schedule, no destination or callback: `{stream}_error`) / owning callback (`docs/guide/errors.md`)
-- Replay (streams) and requeue (queues) (`docs/guide/errors.md`)
+- Dead letters to error streams and queues (`docs/guide/errors.md`)
 - Topology derivation, runtime `bus.Topology`, adopt rule, conflicts (`docs/guide/topology.md`)
 - Multi-bus markers + shared consumer classes (`docs/guide/multi-bus.md`)
 - Message properties: message/correlation IDs and typed headers (`docs/guide/publish.md`)
@@ -127,7 +126,7 @@ Every capability points to its guide section:
 - `docs/guide/publish.md` - typed publish, super streams, escape hatches.
 - `docs/guide/consume.md` - endpoints, groups, raw consume, offsets.
 - `docs/guide/multi-bus.md` - marker buses and shared consumers.
-- `docs/guide/errors.md` - retry layering, dead letters, requeue, exception table.
+- `docs/guide/errors.md` - retry layering, dead letters, exception table.
 - `docs/guide/topology.md` - declarations, runtime topology, derivation, adopt rule.
 - `docs/guide/observability.md` - health data, metrics, log events.
 - `docs/llms.txt` - ground truths for automated consumers.

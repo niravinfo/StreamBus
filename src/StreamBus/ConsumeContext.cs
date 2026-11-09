@@ -37,8 +37,8 @@ public class ConsumeContext
     /// <summary>AMQP <c>creation-time</c>, UTC and millisecond precision.</summary>
     public DateTime? SentTime { get; init; }
 
-    /// <summary>AMQP <c>content-type</c> as received; used by the error
-    /// envelope so requeues and replays restore the original media type.</summary>
+    /// <summary>AMQP <c>content-type</c> as received; copied into the error
+    /// envelope so the destination carries the original media type.</summary>
     public string? ContentType { get; init; }
 
     /// <summary>Application properties as received, framework keys included.</summary>

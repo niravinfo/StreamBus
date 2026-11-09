@@ -16,8 +16,8 @@ short-circuit-and-replace semantics.
 - **Publish is decoration-only.** Filters run after the stream and routing key
   are resolved and before serialization. They may observe the publish and
   mutate headers, but cannot replace the body, stream, or routing key. Raw
-  publishes and error-envelope hand-off, requeue, and replay republishes are
-  documented pipeline-free escape hatches.
+  publishes and error-envelope hand-off are documented pipeline-free escape
+  hatches.
 - **Consume decorates the outer delegate.** The pipeline wraps deserialization,
   typed-consumer resolution, and handler invocation, and shares one
   per-message DI scope with the typed consumer.

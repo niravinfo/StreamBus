@@ -20,9 +20,6 @@ public sealed class NoopProducerHandle : IStreamPlainProducerHandle, IStreamSupe
     public Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, StreamMessageProperties properties, CancellationToken cancellationToken) => Task.CompletedTask;
 
     /// <inheritdoc />
-    public Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, PublishOptions options, CancellationToken cancellationToken) => Task.CompletedTask;
-
-    /// <inheritdoc />
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }
 

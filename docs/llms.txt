@@ -10,7 +10,7 @@
   once per bus. Empty credentials are rejected; `guest`/`guest` is
   accepted for a local broker, and remote deployments should use a
   dedicated non-`guest` user. Defaults: StreamPort 5552, AmqpPort 5672
-  (queue dead letters and error-queue requeues; otherwise no AMQP
+  (queue dead letters; otherwise no AMQP
   connection), Heartbeat 60s, MonitorInterval 5s (must be >0 and <=60s),
   pools 1/1.
 - Typed publish: `cfg.Publish<T>(stream)` for plain streams,
@@ -53,17 +53,20 @@
   a warning); attempt limit + neither hands off to the derived classic
   queue `{stream}_error`; no attempt limit + either is a config error.
 - Error destinations: `DeadLetterToStream(name, spec?)` uses a declared
-  error stream with envelope semantics, advance-once, and
-  `ReplayErrorStreamAsync`; `DeadLetterToQueue(name, DeadLetterQueueType)`
+  error stream with envelope semantics and advance-once;
+  `DeadLetterToQueue(name, DeadLetterQueueType)`
   uses a durable classic or quorum AMQP queue with `streambus.error.*`
-  headers and `RequeueErrorsAsync`. Queue destinations are declared by
-  the AMQP transport, never by topology.
+  headers. Queue destinations are declared by
+  the AMQP transport, never by topology. StreamBus's responsibility ends
+  at the hand-off: consuming from error destinations and republishing to
+  the source is the application's job.
 - Hand-off timeouts: stream hand-offs use
   `e.ErrorHandoffTimeout(timeout)` (default 10s, values below 1s are
   raised to 1s); queue hand-offs use
   `DeadLetterToQueue(name, type, q => q.ConfirmTimeout(timeout))`
   (default 10s). A lost confirmation surfaces as a timeout/transient
-  failure with an unknown outcome; the envelope stays replayable.
+  failure with an unknown outcome; the hand-off is retried without
+  advancing.
 - Startup blocking is service-level:
   `services.AddStreamBusHosting(h =>
   h.BlockStartupUntilReady(timeout?))`, at most once; default is
@@ -100,9 +103,9 @@
   Trimming and NativeAOT are not supported end to end (the default serializer
   is reflection-based and typed consume still closes generics from runtime
   types); the annotations mark the dynamic paths.
-- Delivery semantics are at-least-once; broker-side publishing-id dedup is
-  used only by `ReplayErrorStreamAsync` (idempotent replay of error-stream
-  messages). Applications own deduplication and idempotency everywhere else.
+- Delivery semantics are at-least-once. Applications own deduplication
+  and idempotency everywhere, including recovery out of error
+  destinations.
 - Observability: meter `StreamBus` (`streambus_partition_backlog/_inflight/_retry_blocked`,
   `streambus_connection_state`, `streambus_offset_store_rejected_total`,
   `streambus_offset_regressed_total`, `streambus_offset_fallback_total`,
