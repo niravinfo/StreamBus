@@ -109,6 +109,37 @@ public sealed class ErrorHandoffTests
     }
 
     [Fact]
+    public async Task Amqp_tls_plaintext_handshake_failure_is_not_retried()
+    {
+        // The exact shape the error-queue transport surfaces for a TLS-enabled
+        // connect against a plain listener after AmqpConnectionFactory translates
+        // it (observed live: BrokerUnreachableException -> AggregateException ->
+        // AuthenticationException "Cannot determine the frame size or a corrupted
+        // frame was received"). The handoff must surface it immediately instead of
+        // retrying a permanent misconfiguration forever.
+        var publisher = Publisher();
+        var publishes = 0;
+        var commits = 0;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromMilliseconds(300));
+        var translated = new StreamBusFatalException("AMQP TLS handshake failed.",
+            new RabbitMQ.Client.Exceptions.BrokerUnreachableException(new AggregateException(
+                new System.Security.Authentication.AuthenticationException(
+                    "Cannot determine the frame size or a corrupted frame was received."))));
+
+        var ex = await Assert.ThrowsAsync<StreamBusFatalException>(() =>
+            publisher.HandOffAsync(Sample(),
+                (_, _) => { publishes++; return Task.FromException(translated); },
+                () => { commits++; return Task.CompletedTask; },
+                (_, _) => TimeSpan.FromMilliseconds(25),
+                cts.Token));
+
+        Assert.Same(translated, ex);
+        Assert.Equal(1, publishes);
+        Assert.Equal(0, commits);
+    }
+
+    [Fact]
     public async Task Missing_error_stream_is_retried_until_the_destination_exists()
     {
         var publisher = Publisher();

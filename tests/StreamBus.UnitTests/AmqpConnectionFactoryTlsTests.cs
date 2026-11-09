@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net.Security;
 using System.Security.Authentication;
 using RabbitMQ.Client;
@@ -108,6 +109,66 @@ public sealed class AmqpConnectionFactoryTlsTests
         finally
         {
             File.Delete(certPath);
+        }
+    }
+
+    /// <summary>
+    /// Pins the observed failure shape of RabbitMQ.Client 7.2.2 when a
+    /// TLS-enabled AMQP connect meets a plain TCP listener (observed live
+    /// against a real plaintext broker port): the handshake dies with
+    /// <see cref="AuthenticationException"/> "Cannot determine the frame size or
+    /// a corrupted frame was received", wrapped in
+    /// <c>BrokerUnreachableException</c>. The factory must translate that to a
+    /// classified fatal error so the queue transport, declare loop, and handoff
+    /// retry paths never retry a permanent misconfiguration forever.
+    /// </summary>
+    [Fact]
+    public async Task Tls_handshake_failure_against_plain_listener_is_fatal_not_unclassified_retriable()
+    {
+        using var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
+        var accept = Task.Run(async () =>
+        {            try
+            {
+                using var client = await listener.AcceptTcpClientAsync(TestContext.Current.CancellationToken);
+                // Speak plaintext AMQP: the protocol header is not a TLS record,
+                // so the TLS client's handshake cannot succeed.
+                var stream = client.GetStream();
+                await stream.WriteAsync("AMQP\x00\x00\x09\x01"u8.ToArray(), TestContext.Current.CancellationToken);
+                await Task.Delay(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+            }
+            catch (Exception)
+            {
+                // Listener stopped once the observation completed.
+            }
+        },
+            TestContext.Current.CancellationToken);
+        try
+        {
+            var options = ValidOptions() with
+            {
+                Host = "127.0.0.1",
+                AmqpPort = port,
+                UserName = "user",
+                Password = "pass",
+                Tls = new StreamBusTlsOptions { Enabled = true },
+            };
+            var connector = new AmqpConnectionFactory();
+
+            var clock = Stopwatch.StartNew();
+            var ex = await Assert.ThrowsAsync<StreamBusFatalException>(
+                () => connector.ConnectAsync(options, TestContext.Current.CancellationToken));
+            clock.Stop();
+
+            Assert.True(clock.Elapsed < TimeSpan.FromSeconds(10),
+                $"TLS handshake failure took {clock.Elapsed} to surface; expected a fast classified failure.");
+            Assert.Contains("TLS", ex.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            listener.Stop();
+            try { await accept; } catch (Exception) { }
         }
     }
 }

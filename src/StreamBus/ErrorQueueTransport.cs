@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
 using RabbitMQ.Client.Exceptions;
+using System.Security.Authentication;
 
 namespace StreamBus;
 
@@ -57,6 +58,34 @@ internal sealed class AmqpConnectionFactory : IErrorQueueConnectionFactory
                 $"AMQP authentication failed for vhost '{options.Vhost}' (user '{options.UserName}'). Check UserName/Password, or create a dedicated non-guest user.",
                 ex);
         }
+        // A TLS handshake can only fail this way when the client speaks TLS to a
+        // listener that is not (observed live: RabbitMQ.Client 7.2.2 throws
+        // BrokerUnreachableException wrapping an AuthenticationException "Cannot
+        // determine the frame size or a corrupted frame was received"). That is a
+        // permanent misconfiguration, so classify it fatal: the queue transport's
+        // fatal latch, the startup declare loop, and the handoff retry path all
+        // stop instead of retrying forever with an unhelpful "endpoint
+        // unreachable" message. Guarded by TLS-enabled so plain-connect
+        // unreachability stays retriable (e.g. a restarting broker).
+        catch (BrokerUnreachableException ex) when (options.Tls is { Enabled: true } && HasTlsHandshakeFailure(ex))
+        {
+            throw new StreamBusFatalException(
+                $"AMQP TLS handshake failed for vhost '{options.Vhost}' on {options.Host}:{options.AmqpPort}. " +
+                "The listener is probably a plain (non-TLS) port, or the TLS negotiation is otherwise unrecoverable. " +
+                "Check UseTls and the AmqpPort (the TLS default is 5671).",
+                ex);
+        }
+    }
+
+    /// <summary>True when the exception's inner chain contains a TLS handshake failure.</summary>
+    private static bool HasTlsHandshakeFailure(Exception ex)
+    {
+        for (var current = ex; current is not null; current = current.InnerException)
+        {
+            if (current is AuthenticationException)
+                return true;
+        }
+        return false;
     }
 }
 

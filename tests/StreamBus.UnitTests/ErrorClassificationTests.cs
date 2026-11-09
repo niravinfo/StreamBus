@@ -26,6 +26,30 @@ public sealed class ErrorClassificationTests
     }
 
     [Fact]
+    public void Amqp_tls_handshake_failure_is_fatal_once_translated_at_the_connect_boundary()
+    {
+        // Observed live against a plaintext RabbitMQ listener (and reproduced
+        // hermetically in AmqpConnectionFactoryTlsTests): RabbitMQ.Client 7.2.2
+        // answers a TLS-enabled connect with BrokerUnreachableException wrapping
+        // an AuthenticationException ("Cannot determine the frame size or a
+        // corrupted frame was received"). IsFatal must NOT classify the raw
+        // shape — a broker restart during a plain TCP connect surfaces the same
+        // BrokerUnreachableException and must stay retriable. AmqpConnectionFactory
+        // instead translates the TLS handshake failure to StreamBusFatalException
+        // at its boundary (see AmqpConnectionFactoryTlsTests), and the handoff
+        // consumer's StreamBusFatalException branch is what stops the retry loop
+        // (pinned in ErrorHandoffTests with this exact shape).
+        var handshake = new System.Security.Authentication.AuthenticationException(
+            "Cannot determine the frame size or a corrupted frame was received.");
+        var raw = new RabbitMQ.Client.Exceptions.BrokerUnreachableException(new AggregateException(handshake));
+        Assert.False(StreamBusErrorClassification.IsFatal(raw));
+
+        // Whereas the stream-protocol client's own TLS handshake failure is
+        // classified fatal directly by IsFatal.
+        Assert.True(StreamBusErrorClassification.IsFatal(new SslException("unable to establish SSL connection.")));
+    }
+
+    [Fact]
     public void Network_errors_are_not_fatal()
     {
         Assert.False(StreamBusErrorClassification.IsFatal(new TimeoutException("t")));
