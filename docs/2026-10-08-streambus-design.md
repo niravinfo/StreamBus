@@ -315,8 +315,8 @@ message preserves the original body and carries in `ApplicationProperties`:
 - correlation / message id, original routing value
 
 Error-stream writes use library-owned stable producer names per error stream.
-Replay = read the error stream, republish to the source, with a publishing id derived
-from (partition, original offset) so replay is idempotent.
+StreamBus's responsibility ends at the dead-letter hand-off: consuming from
+error destinations and republishing to the source is the application's job.
 
 `x-max-age` retention is mandatory on this stream (**FR-5.2**). Without it there is
 no bound on growth, and there is no other mechanism available.
@@ -496,7 +496,7 @@ A duplicate registration of the same overload/marker fails at configuration time
 | 3 | Bus core: supervising connect loop, readiness gate, health | FR-8.1–FR-8.10, FR-9.2 | — |
 | 4 | Producer registry: N producers, confirms | FR-1 | — |
 | 5 | Consumer registry: N consumers, offset tracking, SAC, ordering, per-partition metrics, the promotion fix from 4.4 | FR-2, FR-3, FR-10, FR-9.1 | G-4, G-5 |
-| 6 | Retry + error stream + replay + starvation visibility | FR-4, FR-5, FR-9.3 | **G-1** |
+| 6 | Retry + error stream + starvation visibility | FR-4, FR-5, FR-9.3 | **G-1** |
 | 7 | Effectively-once read-process-write | FR-6 | **G-2** |
 | 8 | Topology with serialized declaration | FR-7 | G-3 |
 | 9 | Hosting / DI / configuration, typed `IConsumer<T>` | FR-8.9, FR-8.11, FR-2.1 | — |

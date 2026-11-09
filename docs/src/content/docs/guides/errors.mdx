@@ -22,8 +22,8 @@ builder.Services.AddStreamBus((_, cfg) =>
 ```
 
 <aside>
-This is a demo page — the full errors guide (replay, requeue, exception
-table) will live here.
+This is a demo page — the full errors guide (exception table) will live
+here.
 </aside>
 
 ## Exhaustion
@@ -41,8 +41,9 @@ cfg.ReceiveEndpoint("orders", e =>
 });
 ```
 
-## Escaping the error queue
+## Recovering from the error queue
 
-The `orders_error` queue is a regular classic queue: requeue moves
-messages back for another attempt, and dead-letter continues the escape
-hatch chain when configured.
+StreamBus's responsibility ends at the hand-off. The `orders_error`
+queue is a regular classic queue, so after deploying a fix you can drain
+it with any AMQP client and republish the bodies to the source stream
+yourself.

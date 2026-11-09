@@ -23,7 +23,7 @@ database.
 - Publish and consume on plain streams and super streams
 - Typed `IConsumer<T>` classes resolved from DI; delegate handler overload retained
 - Superseding retry inside the handler, with a per-consumer strict/skip switch
-- Error stream ("dead letter" destination) with idempotent replay
+- Error stream ("dead letter" destination)
 - Effectively-once read-process-write via offset-as-publishing-id (DES-07)
 - Supervising connect loop, per-call-site readiness gate, health checks
 - Broker-owned consumer offset tracking (`ConsumeOffset`), see FR-10
@@ -97,7 +97,7 @@ official client's namespace.
 |---|---|---|
 | FR-5.1 | A failed message (`SkipAfterDeadline` only) is published to an error stream preserving the original body and carrying original stream, partition, offset, exception type/message/stack, attempt count, timestamps, correlation/message id, and original routing value | All fields plus original body present on a captured error message |
 | FR-5.2 | The error stream MUST have effective `x-max-age` retention (queue argument or policy). Retention is part of the design, not an option | Effective retention present in the declared spec or applied policy |
-| FR-5.3 | ~~Replay reads the error stream and republishes to the source, deriving the publishing id from `(partition, original offset)`~~ **Removed 2026-11-09 (breaking change): StreamBus's responsibility ends at the dead-letter hand-off; consuming/replaying error destinations is the application's job.** | ~~Replaying the same error message twice yields one stored message~~ |
+| FR-5.3 | StreamBus's responsibility ends at the dead-letter hand-off: consuming from error destinations and republishing to the source is the application's job, using any compatible client | No library API for consuming error destinations exists; grep + review |
 | FR-5.4 | One shared error stream with routing and per-stream error streams are both supported, via `ErrorStreamOptions { Stream, RoutingValue? }` (shared form supplies a routing value defaulting to the source stream name) | Both verified |
 
 ### FR-6 Effectively-once read-process-write (design §7)

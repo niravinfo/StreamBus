@@ -57,9 +57,9 @@
   `DeadLetterToQueue(name, DeadLetterQueueType)`
   uses a durable classic or quorum AMQP queue with `streambus.error.*`
   headers. Queue destinations are declared by
-  the AMQP transport, never by topology. StreamBus ships no replay/requeue
-  API; consuming from error destinations and republishing to the source is
-  the application's job.
+  the AMQP transport, never by topology. StreamBus's responsibility ends
+  at the hand-off: consuming from error destinations and republishing to
+  the source is the application's job.
 - Hand-off timeouts: stream hand-offs use
   `e.ErrorHandoffTimeout(timeout)` (default 10s, values below 1s are
   raised to 1s); queue hand-offs use

@@ -130,9 +130,9 @@ shadowing the declared destination with a startup warning.
 
 ## Recovery
 
-StreamBus ships no replay or requeue API. After a fix is deployed, move
-messages out of the error destination yourself: consume the error stream
-(its envelopes carry the source stream/partition/offset and original
+StreamBus's responsibility ends at the hand-off. After a fix is deployed,
+move messages out of the error destination yourself: consume the error
+stream (its envelopes carry the source stream/partition/offset and original
 headers in app-properties) or drain the queue with any AMQP client, and
 republish to the source stream as new messages.
 

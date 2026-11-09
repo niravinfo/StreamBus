@@ -917,7 +917,8 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
     // would make the redelivery reject its own handoff and skip without handing
     // off). A rejected candidate only counts the metric: another instance already
     // owns this offset's handoff. A duplicate error envelope from a stale instance
-    // is benign (replay dedups on stable name + id). Residual micro-race (cancel
+    // is benign (the destination consumer must tolerate duplicates; see the
+    // at-least-once delivery semantics). Residual micro-race (cancel
     // landing between the check and the send, or a local send throw after admission)
     // is accepted: the broker store path has no acknowledgement, so no local
     // arrangement can be fully atomic; at-least-once is preserved regardless.
