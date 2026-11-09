@@ -72,5 +72,5 @@ foreign producers only. Malformed values are ignored rather than thrown.
 Expect warnings (not errors) for routine redelivery: handler failures
 during retry (debug after the first attempts), exhausted budgets naming
 stream, partition, offset, and attempts, error-stream handoff publish
-retries, `OnExhausted` faults noting the attach recycle, and requeue
-skips for malformed error-queue entries. Shutdown races log at debug.
+retries, and `OnExhausted` faults noting the attach recycle.
+Shutdown races log at debug.

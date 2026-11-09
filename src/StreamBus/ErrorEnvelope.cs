@@ -5,13 +5,14 @@ namespace StreamBus;
 /// <summary>
 /// The envelope of one failed delivery as it travels to an error destination:
 /// the original body plus the failure metadata carried as
-/// <c>streambus.error.*</c> application properties. Parsed back by requeue
-/// and replay.
+/// <c>streambus.error.*</c> application properties, so the destination
+/// alone explains what happened. Consuming or draining the destination
+/// afterwards is the application's job.
 /// </summary>
 public sealed record ErrorEnvelope
 {
     /// <summary>Error destination the failed delivery was routed to: an
-    /// error stream name for replay, an AMQP queue name for requeue.</summary>
+    /// error stream name, or an AMQP queue name.</summary>
     public required string ErrorStream { get; init; }
 
     /// <summary>Logical source stream the delivery failed on; the
@@ -47,15 +48,15 @@ public sealed record ErrorEnvelope
     public required DateTimeOffset FailedAt { get; init; }
 
     /// <summary>AMQP <c>message-id</c> of the failed delivery; null when
-    /// absent or not a Guid. Carried over on replay/requeue.</summary>
+    /// absent or not a Guid.</summary>
     public required Guid? MessageId { get; init; }
 
     /// <summary>AMQP <c>correlation-id</c> of the failed delivery; null when
-    /// absent. Carried over on replay/requeue.</summary>
+    /// absent.</summary>
     public required Guid? CorrelationId { get; init; }
 
     /// <summary>AMQP <c>creation-time</c> of the failed delivery, UTC; null
-    /// when absent. Carried over on replay/requeue.</summary>
+    /// when absent.</summary>
     public DateTime? SentTime { get; init; }
 
     /// <summary>Routing value of the original super-stream publish; null for
@@ -63,12 +64,11 @@ public sealed record ErrorEnvelope
     public required string? RoutingValue { get; init; }
 
     /// <summary>Content type of the failed delivery, as it arrived from the
-    /// broker's AMQP <c>content-type</c> property. Reapplied on replay/requeue.</summary>
+    /// broker's AMQP <c>content-type</c> property.</summary>
     public string? ContentType { get; init; }
 
     /// <summary>Original user headers of the failed delivery; framework keys
-    /// (<c>streambus.*</c>) and values with unsupported types are excluded.
-    /// Reapplied on replay/requeue.</summary>
+    /// (<c>streambus.*</c>) and values with unsupported types are excluded.</summary>
     public IReadOnlyDictionary<string, object?>? UserHeaders { get; init; }
 
     /// <summary>Headers added by the consume pipeline for the failed delivery.

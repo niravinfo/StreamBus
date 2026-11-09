@@ -28,7 +28,7 @@ services.AddStreamBus((_, cfg) =>
 
 `Host` is required exactly once per bus (a second call throws). Pool
 sizes default to 1/1, the stream port to 5552, the AMQP port to 5672
-(used for queue dead-letter destinations and error-queue requeues;
+(used for queue dead-letter destinations;
 otherwise no AMQP connection is opened), the heartbeat to 60 seconds,
 and the connection monitor interval to 5 seconds. The heartbeat is always
 mapped so a broker upgrade cannot drift it; the monitor interval is applied

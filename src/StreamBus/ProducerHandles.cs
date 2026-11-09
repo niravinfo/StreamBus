@@ -16,7 +16,7 @@ public interface IStreamProducerHandle : IAsyncDisposable
     Task SendAsync(ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken cancellationToken);
 }
 
-/// <summary>Plain-stream producer surface, adding the routing-key-free envelope send and the fixed-id replay send.</summary>
+/// <summary>Plain-stream producer surface, adding the routing-key-free envelope send to the base surface.</summary>
 public interface IStreamPlainProducerHandle : IStreamProducerHandle
 {
     /// <summary>Sends an envelope using only the supplied properties (no routing key); used for confirmed error-envelope-style sends.</summary>

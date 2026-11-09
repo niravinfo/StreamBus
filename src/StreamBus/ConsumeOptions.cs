@@ -93,7 +93,7 @@ public sealed record ConsumeOptions
     public ReadinessPolicy ReadinessPolicy { get; init; } = ReadinessPolicy.FailFastPolicy;
     /// <summary>Bound on the confirmed error-stream hand-off publish. A lost
     /// confirmation surfaces as transient so the partition dispatch gate is
-    /// never wedged; the envelope stays replayable.</summary>
+    /// never wedged; the hand-off is retried without advancing.</summary>
     public TimeSpan HandoffConfirmTimeout { get; init; } = TimeSpan.FromSeconds(10);
     internal DeadLetterOptions? DeadLetter { get; init; }
     internal DeadLetterOptions? ShadowedDeadLetter { get; init; }
