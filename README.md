@@ -61,7 +61,7 @@ builder.Services.AddStreamBus((_, cfg) =>
     });
 });
 
-builder.Services.AddStreamBusHosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(30)));
+builder.Services.AddStreamBusHosting(h => h.WaitUntilStarted(TimeSpan.FromSeconds(30)));
 
 await builder.Build().RunAsync();
 

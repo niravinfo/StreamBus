@@ -91,10 +91,10 @@ public sealed class AcceptanceIntegrationTests : IAsyncDisposable
         var gotFirst = new List<string>();
         var gotSecond = new List<string>();
         await using var c1 = await inst.Bus.ConsumeAsync(first,
-            new ConsumeOptions { Offset = ConsumeOffset.AlwaysFirst, Reference = Unique("read-1") },
+            new ConsumeOptions { StartOffset = StartOffset.AlwaysFirst, ConsumerGroup = Unique("read-1") },
             ctx => { lock (gotFirst) gotFirst.Add(Encoding.UTF8.GetString(ctx.Body.Span)); return Task.CompletedTask; }, ct);
         await using var c2 = await inst.Bus.ConsumeAsync(second,
-            new ConsumeOptions { Offset = ConsumeOffset.AlwaysFirst, Reference = Unique("read-2") },
+            new ConsumeOptions { StartOffset = StartOffset.AlwaysFirst, ConsumerGroup = Unique("read-2") },
             ctx => { lock (gotSecond) gotSecond.Add(Encoding.UTF8.GetString(ctx.Body.Span)); return Task.CompletedTask; }, ct);
         await WaitForAsync(() =>
         {
@@ -127,7 +127,7 @@ public sealed class AcceptanceIntegrationTests : IAsyncDisposable
         await using var consumer = await inst.Bus.ConsumeAsync(stream,
             new ConsumeOptions
             {
-                Reference = Unique("grp-acc"),
+                ConsumerGroup = Unique("grp-acc"),
                 Retry = new RetryPolicy { MaxAttempts = 2, BaseDelay = TimeSpan.FromMilliseconds(10), MaxJitter = TimeSpan.Zero },
                 OnExhausted = (ctx, _) =>
                 {

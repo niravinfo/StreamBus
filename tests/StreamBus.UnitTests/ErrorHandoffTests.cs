@@ -19,7 +19,7 @@ public sealed class ErrorHandoffTests
         FailedAt = DateTimeOffset.UtcNow,
         MessageId = null,
         CorrelationId = null,
-        RoutingValue = null,
+        RoutingKey = null,
     };
 
     private sealed class NeverReadyConnector : IStreamSystemConnector

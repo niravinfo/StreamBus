@@ -505,7 +505,7 @@ public sealed class TypedFilterRegistrationTests
         Stream = "orders",
         Partition = 0,
         Offset = 0,
-        RoutingValue = null,
+        RoutingKey = null,
         Body = System.Text.Encoding.UTF8.GetBytes("{}"),
         Headers = new StreamHeaders(new Dictionary<string, object?>(), SystemTextJsonStreamSerializer.Default),
         SendHeaders = new StreamSendHeaders(null, SystemTextJsonStreamSerializer.Default),

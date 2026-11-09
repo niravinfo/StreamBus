@@ -20,7 +20,7 @@ public sealed class ErrorEnvelopeTests
         MessageId = Guid.Parse("0f8fad5b-d9cb-469f-a165-70867728950e"),
         CorrelationId = Guid.Parse("6b1f5c1a-0d9e-4b6f-9a4e-1f2d3c4b5a69"),
         SentTime = new DateTime(2026, 10, 31, 9, 12, 3, 284, DateTimeKind.Utc),
-        RoutingValue = "k1",
+        RoutingKey = "k1",
     };
 
     [Fact]

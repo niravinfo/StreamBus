@@ -43,8 +43,7 @@ public sealed class ReceiveEndpointTests
             cfg.Host("localhost", "/", h => h.Credentials("app", "secret"));
             cfg.ReceiveEndpoint("orders", e => e.Consumer<OrderConsumer>("order-processors"));
         });
-        Assert.Equal(TimeSpan.FromSeconds(10),
-            Assert.Single(RegistrationsFor(defaults.BuildServiceProvider())).Options.HandoffConfirmTimeout);
+        Assert.Null(Assert.Single(RegistrationsFor(defaults.BuildServiceProvider())).Options.ErrorPublishTimeout);
 
         var clamped = new ServiceCollection();
         clamped.AddStreamBus((_, cfg) =>
@@ -53,11 +52,11 @@ public sealed class ReceiveEndpointTests
             cfg.ReceiveEndpoint("orders", e =>
             {
                 e.Consumer<OrderConsumer>("order-processors");
-                e.ErrorHandoffTimeout(TimeSpan.FromMilliseconds(5));
+                e.ErrorPublishTimeout(TimeSpan.FromMilliseconds(5));
             });
         });
         Assert.Equal(TimeSpan.FromSeconds(1),
-            Assert.Single(RegistrationsFor(clamped.BuildServiceProvider())).Options.HandoffConfirmTimeout);
+            Assert.Single(RegistrationsFor(clamped.BuildServiceProvider())).Options.ErrorPublishTimeout);
 
         var invalid = new ServiceCollection();
         Assert.Throws<StreamBusConfigurationException>(() =>
@@ -67,7 +66,7 @@ public sealed class ReceiveEndpointTests
                 cfg.ReceiveEndpoint("orders", e =>
                 {
                     e.Consumer<OrderConsumer>("order-processors");
-                    e.ErrorHandoffTimeout(TimeSpan.Zero);
+                    e.ErrorPublishTimeout(TimeSpan.Zero);
                 });
             }));
     }
@@ -83,7 +82,7 @@ public sealed class ReceiveEndpointTests
         });
         var sp = services.BuildServiceProvider();
         var reg = Assert.Single(RegistrationsFor(sp));
-        Assert.Equal("order-processors", reg.Options.Reference);
+        Assert.Equal("order-processors", reg.Options.ConsumerGroup);
         Assert.Equal("orders", reg.Stream);
         Assert.Equal(typeof(OrderEvent), reg.MessageType);
         Assert.Equal(typeof(OrderConsumer), reg.ConsumerType);
@@ -170,8 +169,8 @@ public sealed class ReceiveEndpointTests
         var sp = services.BuildServiceProvider();
         var regs = RegistrationsFor(sp);
         Assert.Equal(2, regs.Count);
-        Assert.Contains(regs, r => r.Options.Reference == "group-a");
-        Assert.Contains(regs, r => r.Options.Reference == "group-b");
+        Assert.Contains(regs, r => r.Options.ConsumerGroup == "group-a");
+        Assert.Contains(regs, r => r.Options.ConsumerGroup == "group-b");
     }
 
     [Fact]
@@ -186,7 +185,7 @@ public sealed class ReceiveEndpointTests
                 cfg.ReceiveEndpoint("orders", e => e.Consumer<OrderConsumer>("shared-scale-out"));
             });
             var sp = services.BuildServiceProvider();
-            return Assert.Single(RegistrationsFor(sp)).Options.Reference!;
+            return Assert.Single(RegistrationsFor(sp)).Options.ConsumerGroup!;
         }
         Assert.Equal(Register(), Register());
     }
@@ -195,12 +194,12 @@ public sealed class ReceiveEndpointTests
     [InlineData(null)]
     [InlineData("")]
     [InlineData("   ")]
-    public async Task Raw_consume_without_reference_throws(string? reference)
+    public async Task Raw_consume_without_reference_throws(string? consumerGroup)
     {
         var registry = UnstartedRegistry();
         var ex = await Assert.ThrowsAsync<StreamBusConfigurationException>(() =>
             registry.ConsumeAsync(typeof(DefaultBus), "orders",
-                new ConsumeOptions { Reference = reference },
+                new ConsumeOptions { ConsumerGroup = consumerGroup },
                 _ => Task.CompletedTask, TestContext.Current.CancellationToken));
         Assert.Contains("orders", ex.Message, StringComparison.Ordinal);
     }
@@ -216,7 +215,7 @@ public sealed class ReceiveEndpointTests
             {
                 e.Consumer<OrderConsumer>("grp");
                 e.SingleActiveConsumer(false);
-                e.Offset(ConsumeOffset.AlwaysFirst);
+                e.StartOffset(StartOffset.AlwaysFirst);
                 e.Partitions(3);
             });
         });
@@ -224,8 +223,8 @@ public sealed class ReceiveEndpointTests
         var reg = Assert.Single(RegistrationsFor(sp));
         Assert.True(reg.Options.IsSuperStream);
         Assert.False(reg.Options.SingleActiveConsumer);
-        Assert.Equal(ConsumeOffset.AlwaysFirst, reg.Options.Offset);
+        Assert.Equal(StartOffset.AlwaysFirst, reg.Options.StartOffset);
         var endpoint = Assert.Single(sp.GetRequiredService<StreamBusEndpointStore>().Endpoints);
-        Assert.Equal(3, endpoint.Descriptor.SuperPartitions);
+        Assert.Equal(3, endpoint.Descriptor.Partitions);
     }
 }

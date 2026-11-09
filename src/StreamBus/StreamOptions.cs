@@ -8,7 +8,7 @@ namespace StreamBus;
 /// </summary>
 public sealed record StreamOptions
 {
-    /// <summary>Partition count for a super-stream reference; null on plain
+    /// <summary>Partition count for a super-stream consumerGroup; null on plain
     /// streams. Must be >= 1 when set.</summary>
     public int? Partitions { get; init; }
 

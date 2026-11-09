@@ -91,10 +91,11 @@ to the source is the application's job, using any compatible client.
 Both error destinations bound the hand-off publish instead of letting a
 lost confirmation wedge the partition:
 
-- Stream hand-off: `e.ErrorHandoffTimeout(TimeSpan.FromSeconds(10))`.
-  The default is 10 seconds; values below 1 second are raised to 1
-  second. A lost confirmation surfaces as a timeout with an unknown
-  outcome and the hand-off is retried without advancing.
+- Stream hand-off: `e.ErrorPublishTimeout(TimeSpan.FromSeconds(10))`.
+  The default is null — the wait is bounded only by cancellation; values
+  below 1 second are raised to 1 second. A lost confirmation surfaces as
+  a timeout with an unknown outcome and the hand-off is retried without
+  advancing.
 - Queue hand-off:
   `e.DeadLetterToQueue("orders-errors", DeadLetterQueueType.ClassicQueue,
   q => q.ConfirmTimeout(TimeSpan.FromSeconds(10)))`. The default is 10
@@ -153,7 +154,7 @@ services.AddStreamBus((context, cfg) =>
         e.DeadLetterToQueue("orders-errors", DeadLetterQueueType.ClassicQueue);
     });
 });
-services.AddStreamBusHosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(30)));
+services.AddStreamBusHosting(h => h.WaitUntilStarted(TimeSpan.FromSeconds(30)));
 
 // ... poison message exhausts on first failure, lands in "orders-errors"
 // with full streambus.error.* headers, ready for manual recovery ...

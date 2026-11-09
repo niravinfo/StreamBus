@@ -52,10 +52,10 @@ public class ScriptedSystemHandle : IStreamSystemHandle
     public List<string> PartitionQueries { get; } = new();
 
     /// <summary>Offset queries received by TryQueryOffsetAsync (references are recorded even when null is returned).</summary>
-    public List<(string Reference, string Stream)> OffsetQueries { get; } = new();
+    public List<(string ConsumerGroup, string Stream)> OffsetQueries { get; } = new();
 
     /// <summary>Offset stores received by StoreSystemOffsetAsync.</summary>
-    public List<(string Reference, string Stream, ulong Offset)> StoredOffsets { get; } = new();
+    public List<(string ConsumerGroup, string Stream, ulong Offset)> StoredOffsets { get; } = new();
 
     /// <summary>When set, replaces the default plain-producer creation (the default returns <see cref="PlainProducer"/>).</summary>
     public Func<string, CancellationToken, Task<IStreamPlainProducerHandle>>? OnCreatePlainProducer { get; set; }
@@ -131,16 +131,16 @@ public class ScriptedSystemHandle : IStreamSystemHandle
             : throw new NotSupportedException("ScriptedSystemHandle creates no consumers; inject a consumer factory instead.");
 
     /// <summary>Records the query and returns <see cref="OffsetResult"/>.</summary>
-    public virtual Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken cancellationToken)
+    public virtual Task<ulong?> TryQueryOffsetAsync(string consumerGroup, string stream, CancellationToken cancellationToken)
     {
-        lock (OffsetQueries) OffsetQueries.Add((reference, stream));
+        lock (OffsetQueries) OffsetQueries.Add((consumerGroup, stream));
         return Task.FromResult(OffsetResult);
     }
 
     /// <summary>Records the store and completes.</summary>
-    public virtual Task StoreSystemOffsetAsync(string reference, string stream, ulong offset, CancellationToken cancellationToken)
+    public virtual Task StoreSystemOffsetAsync(string consumerGroup, string stream, ulong offset, CancellationToken cancellationToken)
     {
-        lock (StoredOffsets) StoredOffsets.Add((reference, stream, offset));
+        lock (StoredOffsets) StoredOffsets.Add((consumerGroup, stream, offset));
         return Task.CompletedTask;
     }
 
@@ -206,11 +206,11 @@ public class StrictScriptedSystemHandle : ScriptedSystemHandle
         => throw new NotImplementedException("StrictScriptedSystemHandle.CreateRawConsumerAsync was not scripted.");
 
     /// <summary>Throws: not scripted.</summary>
-    public override Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken cancellationToken)
+    public override Task<ulong?> TryQueryOffsetAsync(string consumerGroup, string stream, CancellationToken cancellationToken)
         => throw new NotImplementedException("StrictScriptedSystemHandle.TryQueryOffsetAsync was not scripted.");
 
     /// <summary>Throws: not scripted.</summary>
-    public override Task StoreSystemOffsetAsync(string reference, string stream, ulong offset, CancellationToken cancellationToken)
+    public override Task StoreSystemOffsetAsync(string consumerGroup, string stream, ulong offset, CancellationToken cancellationToken)
         => throw new NotImplementedException("StrictScriptedSystemHandle.StoreSystemOffsetAsync was not scripted.");
 
     /// <summary>Throws: not scripted.</summary>
@@ -249,16 +249,16 @@ public class NeverReadyConsumerSystem : StrictScriptedSystemHandle
         => throw new NotSupportedException("These tests inject their own consumer factory.");
 
     /// <summary>Records the query and reports no stored offset.</summary>
-    public override Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken cancellationToken)
+    public override Task<ulong?> TryQueryOffsetAsync(string consumerGroup, string stream, CancellationToken cancellationToken)
     {
-        lock (OffsetQueries) OffsetQueries.Add((reference, stream));
+        lock (OffsetQueries) OffsetQueries.Add((consumerGroup, stream));
         return Task.FromResult<ulong?>(null);
     }
 
     /// <summary>Records the store and completes.</summary>
-    public override Task StoreSystemOffsetAsync(string reference, string stream, ulong offset, CancellationToken cancellationToken)
+    public override Task StoreSystemOffsetAsync(string consumerGroup, string stream, ulong offset, CancellationToken cancellationToken)
     {
-        lock (StoredOffsets) StoredOffsets.Add((reference, stream, offset));
+        lock (StoredOffsets) StoredOffsets.Add((consumerGroup, stream, offset));
         return Task.CompletedTask;
     }
 

@@ -61,7 +61,7 @@ public sealed record ErrorEnvelope
 
     /// <summary>Routing value of the original super-stream publish; null for
     /// a plain stream.</summary>
-    public required string? RoutingValue { get; init; }
+    public required string? RoutingKey { get; init; }
 
     /// <summary>Content type of the failed delivery, as it arrived from the
     /// broker's AMQP <c>content-type</c> property.</summary>
@@ -96,7 +96,7 @@ public sealed record ErrorEnvelope
         [P + "message-id"] = MessageId?.ToString("D"),
         [P + "correlation-id"] = CorrelationId?.ToString("D"),
         [P + "sent-time"] = SentTime?.ToString("o", CultureInfo.InvariantCulture),
-        [P + "routing-value"] = RoutingValue,
+        [P + "routing-value"] = RoutingKey,
         [P + "content-type"] = ContentType,
     };
 
@@ -265,7 +265,7 @@ public sealed record ErrorEnvelope
             MessageId = ParseGuid(get("message-id")),
             CorrelationId = ParseGuid(get("correlation-id")),
             SentTime = ParseSentTime(get("sent-time")),
-            RoutingValue = get("routing-value"),
+            RoutingKey = get("routing-value"),
             ContentType = get("content-type"),
             UserHeaders = CaptureWireUserHeaders(raw),
         };

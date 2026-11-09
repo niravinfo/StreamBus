@@ -495,7 +495,7 @@ public sealed class PipelineSemanticsTests
         Stream = "orders",
         Partition = 0,
         Offset = 0,
-        RoutingValue = null,
+        RoutingKey = null,
         Body = ReadOnlyMemory<byte>.Empty,
         Headers = new StreamHeaders(
             new Dictionary<string, object?>(),
@@ -511,10 +511,10 @@ public sealed class PipelineSemanticsTests
         string? errorStream = null,
         Type? messageType = null) => new()
         {
-            Reference = "grp",
+            ConsumerGroup = "grp",
             SingleActiveConsumer = false,
-            Offset = ConsumeOffset.AlwaysFirst,
-            OffsetStore = new OffsetStoreOptions { EveryMessages = 1 },
+            StartOffset = StartOffset.AlwaysFirst,
+            OffsetStore = new OffsetStoreOptions { StoreEveryMessages = 1 },
             Retry = errorStream is null
             ? new RetryPolicy
             {
@@ -600,7 +600,7 @@ public sealed class PipelineSemanticsTests
         FailedAt = DateTimeOffset.UtcNow,
         MessageId = null,
         CorrelationId = null,
-        RoutingValue = null,
+        RoutingKey = null,
         SendHeaders = outputHeaders,
     };
 
@@ -894,7 +894,7 @@ public sealed class PipelineSemanticsTests
             await supervisor.StartAsync(CancellationToken.None);
             using (var timeout = new CancellationTokenSource(TestTimeout))
             {
-                Assert.Equal(BusReadiness.Ready, await supervisor.WaitUntilReadyAsync(ReadinessPolicy.Indefinitely, timeout.Token));
+                Assert.Equal(BusReadiness.Ready, await supervisor.WaitUntilReadyAsync(ReadinessPolicy.Forever, timeout.Token));
             }
 
             var services = new ServiceCollection();

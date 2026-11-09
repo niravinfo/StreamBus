@@ -219,7 +219,7 @@ internal sealed class ErrorQueueTransport : IAsyncDisposable
     // The cached publish channel and the connection it was created on are one
     // atomic pair: a torn observation (channel from one connection, connection
     // field from another) can never happen because the pair is swapped with a
-    // single reference write. All writes happen under _publishGate.
+    // single consumerGroup write. All writes happen under _publishGate.
     private PublishChannelState? _publishState;
     private bool _fatal;
     private Exception? _fatalError;

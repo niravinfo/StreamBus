@@ -19,7 +19,7 @@ public sealed class ErrorQueueTests
         FailedAt = new DateTimeOffset(2026, 10, 15, 12, 0, 0, TimeSpan.Zero),
         MessageId = Guid.Parse("0f8fad5b-d9cb-469f-a165-70867728950e"),
         CorrelationId = Guid.Parse("6b1f5c1a-0d9e-4b6f-9a4e-1f2d3c4b5a69"),
-        RoutingValue = "o-1",
+        RoutingKey = "o-1",
     };
 
     private sealed class NeverConnectFactory : IErrorQueueConnectionFactory
@@ -61,21 +61,21 @@ public sealed class ErrorQueueTests
         Assert.Equal(envelope.FailedAt, parsed.FailedAt);
         Assert.Equal(envelope.MessageId, parsed.MessageId);
         Assert.Equal(envelope.CorrelationId, parsed.CorrelationId);
-        Assert.Equal(envelope.RoutingValue, parsed.RoutingValue);
+        Assert.Equal(envelope.RoutingKey, parsed.RoutingKey);
         Assert.Equal(envelope.Body, parsed.Body);
     }
 
     [Fact]
     public void Headers_omit_nulls_but_parse_them_back()
     {
-        var envelope = SampleEnvelope() with { MessageId = null, CorrelationId = null, RoutingValue = null };
+        var envelope = SampleEnvelope() with { MessageId = null, CorrelationId = null, RoutingKey = null };
         var headers = envelope.ToHeaders();
         Assert.DoesNotContain("streambus.error.message-id", headers.Keys);
         Assert.True(ErrorEnvelope.TryParseHeaders("orders-errors", envelope.Body, headers, out var parsed));
         Assert.NotNull(parsed);
         Assert.Null(parsed.MessageId);
         Assert.Null(parsed.CorrelationId);
-        Assert.Null(parsed.RoutingValue);
+        Assert.Null(parsed.RoutingKey);
     }
 
     [Fact]
@@ -112,13 +112,13 @@ public sealed class ErrorQueueTests
     private static TypedConsumerRegistration Registration(string stream, DeadLetterOptions? deadLetter, bool callback)
         => new()
         {
-            BusMarker = typeof(DefaultBus),
+            BusType = typeof(DefaultBus),
             MessageType = typeof(WidgetEvent),
             ConsumerType = typeof(WidgetConsumer),
             Stream = stream,
             Options = new ConsumeOptions
             {
-                Reference = "grp",
+                ConsumerGroup = "grp",
                 Retry = new RetryPolicy { MaxAttempts = 2 },
                 ErrorStream = deadLetter is { IsStream: true } ? new ErrorStreamOptions { Stream = deadLetter.Name } : null,
                 DeadLetter = deadLetter is { IsStream: false } ? deadLetter : null,

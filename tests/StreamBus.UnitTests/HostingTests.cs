@@ -32,9 +32,9 @@ public sealed class HostingTests
             => throw new NotImplementedException("HostingTests never publishes.");
         public override Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
             => throw new NotImplementedException("HostingTests never publishes.");
-        public override Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken ct)
+        public override Task<ulong?> TryQueryOffsetAsync(string consumerGroup, string stream, CancellationToken ct)
             => throw new NotImplementedException("HostingTests never queries offsets.");
-        public override Task StoreSystemOffsetAsync(string reference, string stream, ulong offset, CancellationToken ct)
+        public override Task StoreSystemOffsetAsync(string consumerGroup, string stream, ulong offset, CancellationToken ct)
             => throw new NotImplementedException("HostingTests never queries offsets.");
         public override Task<string[]> QueryPartitionAsync(string superStream, CancellationToken ct)
             => Task.FromResult(Array.Empty<string>());
@@ -108,26 +108,26 @@ public sealed class HostingTests
         var services = new ServiceCollection();
         services.AddStreamBus((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("app", "secret")));
         services.AddStreamBus<OrdersBus>((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("app", "secret")));
-        services.AddStreamBusHosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(5)));
+        services.AddStreamBusHosting(h => h.WaitUntilStarted(TimeSpan.FromSeconds(5)));
         var sp = services.BuildServiceProvider();
         Assert.Equal("secret", sp.GetRequiredService<StreamBusConfigStore>().ForVhost("/").Password);
-        Assert.Equal(TimeSpan.FromSeconds(5), sp.GetRequiredService<StreamBusHostingStore>().Options.StartupTimeout);
+        Assert.Equal(TimeSpan.FromSeconds(5), sp.GetRequiredService<StreamBusHostingStore>().Options.StartTimeout);
     }
 
     [Fact]
     public void AddStreamBusHosting_second_call_throws()
     {
         var services = new ServiceCollection();
-        services.AddStreamBusHosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(5)));
+        services.AddStreamBusHosting(h => h.WaitUntilStarted(TimeSpan.FromSeconds(5)));
         Assert.Throws<StreamBusConfigurationException>(() =>
-            services.AddStreamBusHosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(5))));
+            services.AddStreamBusHosting(h => h.WaitUntilStarted(TimeSpan.FromSeconds(5))));
     }
 
     [Fact]
     public void AddStreamBusHosting_null_arguments_throw()
     {
         var services = new ServiceCollection();
-        Assert.Throws<ArgumentNullException>(() => ((IServiceCollection)null!).AddStreamBusHosting(h => h.BlockStartupUntilReady()));
+        Assert.Throws<ArgumentNullException>(() => ((IServiceCollection)null!).AddStreamBusHosting(h => h.WaitUntilStarted()));
         Assert.Throws<ArgumentNullException>(() => services.AddStreamBusHosting(null!));
     }
 
@@ -242,9 +242,9 @@ public sealed class HostingTests
     {
         await using var sup = new StreamBusConnectionSupervisor(ValidOptions(), new FatalConnector());
         await sup.StartAsync(CancellationToken.None);
-        var readiness = await sup.WaitUntilReadyAsync(ReadinessPolicy.Indefinitely, new CancellationTokenSource(TimeSpan.FromSeconds(5)).Token);
+        var readiness = await sup.WaitUntilReadyAsync(ReadinessPolicy.Forever, new CancellationTokenSource(TimeSpan.FromSeconds(5)).Token);
         Assert.Equal(BusReadiness.Fatal, readiness);
-        Assert.Equal(BusReadiness.Fatal, await sup.WaitUntilReadyAsync(ReadinessPolicy.FailFastPolicy, TestContext.Current.CancellationToken));
+        Assert.Equal(BusReadiness.Fatal, await sup.WaitUntilReadyAsync(ReadinessPolicy.Default, TestContext.Current.CancellationToken));
     }
 
     [Theory]
@@ -262,19 +262,19 @@ public sealed class HostingTests
     public void BlockUntilConsumersAttached_defaults_true_and_can_be_disabled()
     {
         var defaults = new StreamBusHostingOptionsBuilder().Build();
-        Assert.True(defaults.BlockUntilConsumersAttached);
-        Assert.False(defaults.BlockStartupUntilReady);
+        Assert.True(defaults.WaitUntilConsumersAttached);
+        Assert.False(defaults.WaitUntilStarted);
 
-        var enabled = new StreamBusHostingOptionsBuilder().BlockUntilConsumersAttached().Build();
-        Assert.True(enabled.BlockUntilConsumersAttached);
-        Assert.True(enabled.BlockStartupUntilReady);
+        var enabled = new StreamBusHostingOptionsBuilder().WaitUntilConsumersAttached().Build();
+        Assert.True(enabled.WaitUntilConsumersAttached);
+        Assert.True(enabled.WaitUntilStarted);
 
         var disabled = new StreamBusHostingOptionsBuilder()
-            .BlockStartupUntilReady()
-            .BlockUntilConsumersAttached(false)
+            .WaitUntilStarted()
+            .WaitUntilConsumersAttached(false)
             .Build();
-        Assert.False(disabled.BlockUntilConsumersAttached);
-        Assert.True(disabled.BlockStartupUntilReady);
+        Assert.False(disabled.WaitUntilConsumersAttached);
+        Assert.True(disabled.WaitUntilStarted);
     }
 
     [Fact]
@@ -337,7 +337,7 @@ public sealed class HostingTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddStreamBus((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("app", "secret")));
-        services.AddStreamBusHosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(5)));
+        services.AddStreamBusHosting(h => h.WaitUntilStarted(TimeSpan.FromSeconds(5)));
         services.AddSingleton<IStreamSystemConnector>(new SuccessConnector());
         await using var sp = services.BuildServiceProvider();
         var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
@@ -360,7 +360,7 @@ public sealed class HostingTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddStreamBus((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("app", "secret")));
-        services.AddStreamBusHosting(h => h.BlockStartupUntilReady(timeout));
+        services.AddStreamBusHosting(h => h.WaitUntilStarted(timeout));
         services.AddSingleton<IStreamSystemConnector>(new NeverReadyConnector());
         await using var sp = services.BuildServiceProvider();
         var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
@@ -376,9 +376,9 @@ public sealed class HostingTests
         }
     }
 
-    // Refutation pin: "BlockUntilConsumersAttached treats rows.Count == 0 as
+    // Refutation pin: "WaitUntilConsumersAttached treats rows.Count == 0 as
     // success — startup can pass with zero consumers" is unreachable. The attach-wait
-    // loop only runs when BlockStartupUntilReady is true (StartAsync returns early
+    // loop only runs when WaitUntilStarted is true (StartAsync returns early
     // otherwise), and the same StartAsync first awaits Task.WhenAll over the very
     // consumer start tasks whose ConsumeCoreAsync upserts the health row synchronously
     // and only returns after every partition's first attach. So a configured-but-
@@ -405,12 +405,12 @@ public sealed class HostingTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddStreamBus<OrdersBus>((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("app", "secret")));
-        services.AddStreamBusHosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(1)));
+        services.AddStreamBusHosting(h => h.WaitUntilStarted(TimeSpan.FromSeconds(1)));
         services.AddSingleton<IStreamSystemConnector>(new SuccessConnector(new NeverAttachingHandle()));
         await using var sp = services.BuildServiceProvider();
         sp.GetRequiredService<StreamBusConsumerStore>().Add(
             typeof(OrdersBus), typeof(PinEvent), typeof(PinConsumer), "orders",
-            new ConsumeOptions { Reference = "pin-group" });
+            new ConsumeOptions { ConsumerGroup = "pin-group" });
         var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
         try
         {
@@ -447,7 +447,7 @@ public sealed class HostingTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddStreamBus((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("app", "secret")));
-        services.AddStreamBusHosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(5)));
+        services.AddStreamBusHosting(h => h.WaitUntilStarted(TimeSpan.FromSeconds(5)));
         services.AddSingleton<IStreamSystemConnector>(new SuccessConnector());
         await using var sp = services.BuildServiceProvider();
         var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
@@ -500,7 +500,7 @@ public sealed class HostingTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddStreamBus((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("app", "secret")));
-        services.AddStreamBusHosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(30)));
+        services.AddStreamBusHosting(h => h.WaitUntilStarted(TimeSpan.FromSeconds(30)));
         services.AddSingleton<IStreamSystemConnector>(new NeverReadyConnector());
         await using var sp = services.BuildServiceProvider();
         var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
@@ -521,7 +521,7 @@ public sealed class HostingTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddStreamBus((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("app", "secret")));
-        services.AddStreamBusHosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(30)));
+        services.AddStreamBusHosting(h => h.WaitUntilStarted(TimeSpan.FromSeconds(30)));
         services.AddSingleton<IStreamSystemConnector>(new NeverReadyConnector());
         await using var sp = services.BuildServiceProvider();
         var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
@@ -552,7 +552,7 @@ public sealed class HostingTests
 
         var registry = sp.GetRequiredService<IStreamBusRegistry>();
         var before = registry.SupervisorFor("/");
-        await before.WaitUntilReadyAsync(ReadinessPolicy.Indefinitely, TestContext.Current.CancellationToken);
+        await before.WaitUntilReadyAsync(ReadinessPolicy.Forever, TestContext.Current.CancellationToken);
 
         await hosted.StopAsync(CancellationToken.None);
 
@@ -684,7 +684,7 @@ public sealed class HostingTests
         Assert.Equal("broker.internal", view.Host);
         Assert.Equal(5553, view.StreamPort);
         Assert.Equal(5673, view.AmqpPort);
-        Assert.Equal(30, view.HeartbeatSeconds);
+        Assert.Equal(TimeSpan.FromSeconds(30), view.Heartbeat);
         Assert.DoesNotContain(
             typeof(StreamBusRegistrationView).GetProperties(),
             p => p.Name.Contains("Password", StringComparison.OrdinalIgnoreCase));
@@ -703,7 +703,7 @@ public sealed class HostingTests
             cfg.Host("localhost", "/", h => h.Credentials("app", "secret"));
             cfg.Publish<DerivedEvent>("hung-stream");
         });
-        services.AddStreamBusHosting(h => h.BlockStartupUntilReady(TimeSpan.FromMilliseconds(200)));
+        services.AddStreamBusHosting(h => h.WaitUntilStarted(TimeSpan.FromMilliseconds(200)));
         services.AddSingleton<IStreamSystemConnector>(new SuccessConnector(handle));
         await using var sp = services.BuildServiceProvider();
         var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
@@ -739,7 +739,7 @@ public sealed class HostingTests
             "TestBus");
 
     private static ReceiveEndpointDescriptor EndpointDescriptor(
-        string stream, bool super = false, int? partitions = null, Type? consumer = null, string reference = "grp")
+        string stream, bool super = false, int? partitions = null, Type? consumer = null, string consumerGroup = "grp")
     {
         var consumerType = consumer ?? typeof(DerivedConsumer);
         return new ReceiveEndpointDescriptor
@@ -747,9 +747,9 @@ public sealed class HostingTests
             Stream = stream,
             MessageType = typeof(DerivedEvent),
             ConsumerType = consumerType,
-            Reference = reference,
+            ConsumerGroup = consumerGroup,
             IsSuperStream = super,
-            SuperPartitions = partitions,
+            Partitions = partitions,
         };
     }
 
@@ -758,11 +758,11 @@ public sealed class HostingTests
     {
         var set = DeclareSet(
             endpoints: new[] { EndpointDescriptor("endpoint-plain"), EndpointDescriptor("endpoint-super", super: true, partitions: 3) },
-            publishes: new[] { new PublishRegistration { BusMarker = typeof(DefaultBus), MessageType = typeof(DerivedEvent), Stream = "publish-plain", IsSuper = false } });
+            publishes: new[] { new PublishRegistration { BusType = typeof(DefaultBus), MessageType = typeof(DerivedEvent), Stream = "publish-plain", IsSuperStream = false } });
         Assert.Equal(3, set.Count);
-        Assert.Contains(set, d => d.Name == "endpoint-plain" && !d.IsSuper && d.Source == DeclaredStreamSource.Endpoint);
-        Assert.Contains(set, d => d is { Name: "endpoint-super", IsSuper: true, Partitions: 3 } && d.Source == DeclaredStreamSource.Endpoint);
-        Assert.Contains(set, d => d.Name == "publish-plain" && !d.IsSuper && d.Source == DeclaredStreamSource.Publish);
+        Assert.Contains(set, d => d.Name == "endpoint-plain" && !d.IsSuperStream && d.Source == DeclaredStreamSource.Endpoint);
+        Assert.Contains(set, d => d is { Name: "endpoint-super", IsSuperStream: true, Partitions: 3 } && d.Source == DeclaredStreamSource.Endpoint);
+        Assert.Contains(set, d => d.Name == "publish-plain" && !d.IsSuperStream && d.Source == DeclaredStreamSource.Publish);
         Assert.Contains(set, d => d.Name == "endpoint-plain" && d.Description == "endpoint 'endpoint-plain'");
         Assert.Contains(set, d => d.Name == "publish-plain" && d.Description.StartsWith("publish ", StringComparison.Ordinal));
     }
@@ -775,13 +775,13 @@ public sealed class HostingTests
             Stream = "orders",
             MessageType = typeof(DerivedEvent),
             ConsumerType = typeof(DerivedConsumer),
-            Reference = "grp",
-            DeadLetter = new DeadLetterOptions { Name = "orders-errors", Spec = new StreamOptions() },
+            ConsumerGroup = "grp",
+            DeadLetter = new DeadLetterOptions { Name = "orders-errors", StreamSpec = new StreamOptions() },
         };
         var set = DeclareSet(endpoints: new[] { errorEndpoint });
         Assert.Equal(2, set.Count);
-        Assert.Contains(set, d => d.Name == "orders-errors" && !d.IsSuper && d.Source == DeclaredStreamSource.DeadLetter);
-        Assert.Contains(set, d => d.Name == "orders" && !d.IsSuper && d.Source == DeclaredStreamSource.Endpoint);
+        Assert.Contains(set, d => d.Name == "orders-errors" && !d.IsSuperStream && d.Source == DeclaredStreamSource.DeadLetter);
+        Assert.Contains(set, d => d.Name == "orders" && !d.IsSuperStream && d.Source == DeclaredStreamSource.Endpoint);
     }
 
     [Fact]
@@ -802,14 +802,14 @@ public sealed class HostingTests
     {
         var plainSuper = Assert.Throws<StreamBusConfigurationException>(() => DeclareSet(
             endpoints: new[] { EndpointDescriptor("orders-super", super: true, partitions: 3) },
-            publishes: new[] { new PublishRegistration { BusMarker = typeof(DefaultBus), MessageType = typeof(DerivedEvent), Stream = "orders-super", IsSuper = false } }));
+            publishes: new[] { new PublishRegistration { BusType = typeof(DefaultBus), MessageType = typeof(DerivedEvent), Stream = "orders-super", IsSuperStream = false } }));
         Assert.Contains(typeof(DerivedEvent).FullName!, plainSuper.Message, StringComparison.Ordinal);
         Assert.Contains("orders-super", plainSuper.Message, StringComparison.Ordinal);
         Assert.Contains("PublishSuper", plainSuper.Message, StringComparison.Ordinal);
 
         var superPlain = Assert.Throws<StreamBusConfigurationException>(() => DeclareSet(
             endpoints: new[] { EndpointDescriptor("orders") },
-            publishes: new[] { new PublishRegistration { BusMarker = typeof(DefaultBus), MessageType = typeof(DerivedEvent), Stream = "orders", IsSuper = true } }));
+            publishes: new[] { new PublishRegistration { BusType = typeof(DefaultBus), MessageType = typeof(DerivedEvent), Stream = "orders", IsSuperStream = true } }));
         Assert.Contains(typeof(DerivedEvent).FullName!, superPlain.Message, StringComparison.Ordinal);
         Assert.Contains("PublishAsync", superPlain.Message, StringComparison.Ordinal);
     }
@@ -818,7 +818,7 @@ public sealed class HostingTests
     public void Super_publish_without_partitions_throws_naming_stream()
     {
         var ex = Assert.Throws<StreamBusConfigurationException>(() => DeclareSet(
-            publishes: new[] { new PublishRegistration { BusMarker = typeof(DefaultBus), MessageType = typeof(DerivedEvent), Stream = "orders-super", IsSuper = true } }));
+            publishes: new[] { new PublishRegistration { BusType = typeof(DefaultBus), MessageType = typeof(DerivedEvent), Stream = "orders-super", IsSuperStream = true } }));
         Assert.Contains("orders-super", ex.Message, StringComparison.Ordinal);
         Assert.Contains("Partitions", ex.Message, StringComparison.Ordinal);
     }
@@ -829,8 +829,8 @@ public sealed class HostingTests
         var ex = Assert.Throws<StreamBusConfigurationException>(() => DeclareSet(
             publishes: new[]
             {
-                new PublishRegistration { BusMarker = typeof(DefaultBus), MessageType = typeof(DerivedEvent), Stream = "orders-a", IsSuper = false },
-                new PublishRegistration { BusMarker = typeof(DefaultBus), MessageType = typeof(DerivedEvent), Stream = "orders-b", IsSuper = false },
+                new PublishRegistration { BusType = typeof(DefaultBus), MessageType = typeof(DerivedEvent), Stream = "orders-a", IsSuperStream = false },
+                new PublishRegistration { BusType = typeof(DefaultBus), MessageType = typeof(DerivedEvent), Stream = "orders-b", IsSuperStream = false },
             }));
         Assert.Contains("orders-a", ex.Message, StringComparison.Ordinal);
         Assert.Contains("orders-b", ex.Message, StringComparison.Ordinal);
@@ -842,9 +842,9 @@ public sealed class HostingTests
     {
         var set = DeclareSet(
             endpoints: new[] { EndpointDescriptor("orders-super", super: true, partitions: 3) },
-            publishes: new[] { new PublishRegistration { BusMarker = typeof(DefaultBus), MessageType = typeof(DerivedEvent), Stream = "orders-super", IsSuper = true } });
+            publishes: new[] { new PublishRegistration { BusType = typeof(DefaultBus), MessageType = typeof(DerivedEvent), Stream = "orders-super", IsSuperStream = true } });
         Assert.DoesNotContain(set, d => d.Source == DeclaredStreamSource.Publish);
-        Assert.Contains(set, d => d is { Name: "orders-super", IsSuper: true, Partitions: 3 });
+        Assert.Contains(set, d => d is { Name: "orders-super", IsSuperStream: true, Partitions: 3 });
     }
 
     [Fact]
@@ -901,7 +901,7 @@ public sealed class HostingTests
                 e.SuperStream();
             });
         });
-        services.AddStreamBusHosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(30)));
+        services.AddStreamBusHosting(h => h.WaitUntilStarted(TimeSpan.FromSeconds(30)));
         services.AddSingleton<IStreamSystemConnector>(new SuccessConnector(handle));
         await using var sp = services.BuildServiceProvider();
         var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
@@ -935,7 +935,7 @@ public sealed class HostingTests
                 e.Partitions(3);
             });
         });
-        services.AddStreamBusHosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(30)));
+        services.AddStreamBusHosting(h => h.WaitUntilStarted(TimeSpan.FromSeconds(30)));
         services.AddSingleton<IStreamSystemConnector>(new SuccessConnector(handle));
         await using var sp = services.BuildServiceProvider();
         var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
@@ -966,7 +966,7 @@ public sealed class HostingTests
                 e.SuperStream();
             });
         });
-        services.AddStreamBusHosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(5)));
+        services.AddStreamBusHosting(h => h.WaitUntilStarted(TimeSpan.FromSeconds(5)));
         services.AddSingleton<IStreamSystemConnector>(new SuccessConnector(handle));
         await using var sp = services.BuildServiceProvider();
         var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();

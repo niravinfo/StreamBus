@@ -79,9 +79,9 @@ public sealed class DispatchForeignCancellationTests
     {
         var options = new ConsumeOptions
         {
-            Reference = "grp",
+            ConsumerGroup = "grp",
             SingleActiveConsumer = false,
-            Offset = ConsumeOffset.AlwaysFirst,
+            StartOffset = StartOffset.AlwaysFirst,
             // Unbounded retry (the dangerous default): with the bug, the
             // foreign-token OCE is retried forever and the attach is never recycled.
             Retry = new RetryPolicy { BaseDelay = TimeSpan.FromMilliseconds(10) },

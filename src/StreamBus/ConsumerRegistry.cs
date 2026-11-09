@@ -17,56 +17,56 @@ public interface IStreamConsumer : IAsyncDisposable
     /// super-stream name for a partitioned source).</summary>
     string Stream { get; }
 
-    /// <summary>Consumer-group reference that owns the stored offsets.</summary>
-    string Reference { get; }
+    /// <summary>Consumer-group consumerGroup that owns the stored offsets.</summary>
+    string ConsumerGroup { get; }
 }
 
 internal sealed class StreamConsumerRegistration : IStreamConsumer
 {
     private readonly List<(StreamPartitionConsumer Loop, Task RunTask)> _loops;
     private readonly List<IDisposable> _scopes;
-    private readonly CancellationTokenSource _family;
+    private readonly CancellationTokenSource _groupCts;
     private readonly Action<StreamConsumerRegistration> _deregister;
     private readonly Action? _onStopped;
     private int _disposed;
 
     /// <summary>
     /// One live consume registration: the partition loops for a stream,
-    /// their scopes, and the shared family cancellation source.
+    /// their scopes, and the shared groupCts cancellation source.
     /// </summary>
     /// <param name="stream">Logical stream name being consumed.</param>
-    /// <param name="reference">Consumer-group reference for the stored offsets.</param>
+    /// <param name="consumerGroup">Consumer-group consumerGroup for the stored offsets.</param>
     /// <param name="loops">Partition loops with their run tasks.</param>
     /// <param name="scopes">Meter disposables tracked alongside the loops.</param>
-    /// <param name="family">Cancellation source shared by every partition loop.</param>
+    /// <param name="groupCts">Cancellation source shared by every partition loop.</param>
     /// <param name="deregister">Callback that removes this registration from the registry.</param>
     /// <param name="onStopped">Optional hook run after teardown completes.</param>
     public StreamConsumerRegistration(
         string stream,
-        string reference,
+        string consumerGroup,
         List<(StreamPartitionConsumer Loop, Task RunTask)> loops,
         List<IDisposable> scopes,
-        CancellationTokenSource family,
+        CancellationTokenSource groupCts,
         Action<StreamConsumerRegistration> deregister,
         Action? onStopped = null)
     {
         Stream = stream;
-        Reference = reference;
+        ConsumerGroup = consumerGroup;
         _loops = loops;
         _scopes = scopes;
-        _family = family;
+        _groupCts = groupCts;
         _deregister = deregister;
         _onStopped = onStopped;
     }
 
     /// <summary>Logical stream name being consumed.</summary>
     public string Stream { get; }
-    /// <summary>Consumer-group reference that owns the stored offsets.</summary>
-    public string Reference { get; }
+    /// <summary>Consumer-group consumerGroup that owns the stored offsets.</summary>
+    public string ConsumerGroup { get; }
 
     /// <summary>
     /// Stops the registration: cancels every partition loop, drains the
-    /// run tasks, disposes the loops, scopes, and family source, then runs
+    /// run tasks, disposes the loops, scopes, and groupCts source, then runs
     /// the stopped hook and deregisters. Idempotent.
     /// </summary>
     public async ValueTask DisposeAsync()
@@ -77,7 +77,7 @@ internal sealed class StreamConsumerRegistration : IStreamConsumer
         }
 
         await ConsumerTeardown.RunAsync(
-            _family,
+            _groupCts,
             _loops,
             _scopes,
             onStopped: _onStopped,
@@ -86,7 +86,7 @@ internal sealed class StreamConsumerRegistration : IStreamConsumer
 }
 
 /// <summary>
-/// Single owner of consumer teardown: cancel the family, drain the run tasks, dispose the
+/// Single owner of consumer teardown: cancel the groupCts, drain the run tasks, dispose the
 /// partition loops, scopes, and cancellation source, then run the stopped/deregistered hooks.
 /// Shared by the registration's <see cref="StreamConsumerRegistration.DisposeAsync"/> and the
 /// failed-start cleanup in <see cref="StreamConsumerRegistry.ConsumeAsync"/>.
@@ -94,14 +94,14 @@ internal sealed class StreamConsumerRegistration : IStreamConsumer
 internal static class ConsumerTeardown
 {
     public static async Task RunAsync(
-        CancellationTokenSource family,
+        CancellationTokenSource groupCts,
         List<(StreamPartitionConsumer Loop, Task RunTask)> loops,
         List<IDisposable> scopes,
         Action? onStopped = null,
         Action? onDisposed = null,
         bool swallowRunTaskFailures = false)
     {
-        family.Cancel();
+        groupCts.Cancel();
         try
         {
             await Task.WhenAll(loops.Select(l => l.RunTask)).ConfigureAwait(false);
@@ -120,7 +120,7 @@ internal static class ConsumerTeardown
             {
                 scope.Dispose();
             }
-            family.Dispose();
+            groupCts.Dispose();
             onStopped?.Invoke();
             onDisposed?.Invoke();
         }
@@ -258,7 +258,7 @@ internal sealed class StreamConsumerRegistry
     /// </summary>
     /// <param name="busType">Marker type that owns the consume filters and health naming.</param>
     /// <param name="stream">Stream or super stream to consume.</param>
-    /// <param name="options">Consume options; the reference is required.</param>
+    /// <param name="options">Consume options; the consumerGroup is required.</param>
     /// <param name="handler">Handler invoked for each delivery.</param>
     /// <param name="cancellationToken">Cancellation for the attach; the subscription itself runs until disposed.</param>
     /// <param name="serializer">Optional serializer override for the pipeline.</param>
@@ -290,15 +290,15 @@ internal sealed class StreamConsumerRegistry
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(handler);
         ArgumentNullException.ThrowIfNull(options.OffsetStore);
-        ArgumentNullException.ThrowIfNull(options.ReadinessPolicy);
+        ArgumentNullException.ThrowIfNull(options.Readiness);
         ArgumentNullException.ThrowIfNull(options.Retry);
-        if (options.OffsetStore.EveryMessages < 1)
+        if (options.OffsetStore.StoreEveryMessages < 1)
         {
-            throw new StreamBusConfigurationException("ConsumeOptions.OffsetStore.EveryMessages must be >= 1.");
+            throw new StreamBusConfigurationException("ConsumeOptions.OffsetStore.StoreEveryMessages must be >= 1.");
         }
-        if (options.OffsetStore.MaxInterval is { } maxInterval && maxInterval <= TimeSpan.Zero)
+        if (options.OffsetStore.MaxFlushInterval is { } maxInterval && maxInterval <= TimeSpan.Zero)
         {
-            throw new StreamBusConfigurationException("ConsumeOptions.OffsetStore.MaxInterval must be positive when set.");
+            throw new StreamBusConfigurationException("ConsumeOptions.OffsetStore.MaxFlushInterval must be positive when set.");
         }
         var retry = options.Retry;
         if (retry.MaxAttempts is { } maxAttempts && maxAttempts < 1)
@@ -346,10 +346,10 @@ internal sealed class StreamConsumerRegistry
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(errorOptions.Stream);
         }
-        var reference = ConsumerReferenceValidation.Require(options.Reference, stream);
+        var consumerGroup = ConsumerGroupValidation.Require(options.ConsumerGroup, stream);
 
         var handle = await RequireReadyAsync(
-            options.ReadinessPolicy, $"consume of '{stream}'", cancellationToken).ConfigureAwait(false);
+            options.Readiness, $"consume of '{stream}'", cancellationToken).ConfigureAwait(false);
 
         var exists = options.IsSuperStream
             ? await handle.SuperStreamExistsAsync(stream, cancellationToken).ConfigureAwait(false)
@@ -373,14 +373,14 @@ internal sealed class StreamConsumerRegistry
             ? await handle.QueryPartitionAsync(stream, cancellationToken).ConfigureAwait(false)
             : new[] { stream };
 
-        if (options.Offset == ConsumeOffset.ResumeOrFail)
+        if (options.StartOffset == StartOffset.ResumeOrFail)
         {
             foreach (var partitionStream in partitionStreams)
             {
                 ulong? stored;
                 try
                 {
-                    stored = await handle.TryQueryOffsetAsync(reference, partitionStream, cancellationToken).ConfigureAwait(false);
+                    stored = await handle.TryQueryOffsetAsync(consumerGroup, partitionStream, cancellationToken).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException)
                 {
@@ -393,7 +393,7 @@ internal sealed class StreamConsumerRegistry
                 if (stored is null)
                 {
                     throw new StreamBusConfigurationException(
-                        $"No stored offset for reference '{reference}' on partition '{partitionStream}' (mode ResumeOrFail).");
+                        $"No stored offset for consumerGroup '{consumerGroup}' on partition '{partitionStream}' (mode ResumeOrFail).");
                 }
             }
         }
@@ -403,7 +403,7 @@ internal sealed class StreamConsumerRegistry
         var tracker = _health is null ? null : new RegistrationTracker(_health, _vhost, registrationName, partitionStreams.Length);
         Action<int, BusRegistrationState, string?>? healthCallback = null;
         if (tracker is not null) healthCallback = tracker.Update;
-        var family = new CancellationTokenSource();
+        var groupCts = new CancellationTokenSource();
         var errors = new ErrorPublisher(_producers, _loggerFactory.CreateLogger<ErrorPublisher>(), _queues);
         var pipeline = BuildPipeline(busType, stream, options.ConsumeFilters, options.MessageType);
         var loops = new List<(StreamPartitionConsumer Loop, Task RunTask)>(partitionStreams.Length);
@@ -414,14 +414,14 @@ internal sealed class StreamConsumerRegistry
             {
                 var partitionStream = partitionStreams[index];
                 var state = new PartitionState();
-                scopes.Add(StreamBusMetrics.Shared.TrackPartition(_vhost, busName, stream, index, reference, state));
+                scopes.Add(StreamBusMetrics.Shared.TrackPartition(_vhost, busName, stream, index, consumerGroup, state));
                 var loop = new StreamPartitionConsumer(
-                    handle, stream, partitionStream, index, reference, options, handler,
+                    handle, stream, partitionStream, index, consumerGroup, options, handler,
                     _guard, state, StreamBusMetrics.Shared, _vhost, busName, errors,
                     _loggerFactory.CreateLogger<StreamPartitionConsumer>(), _scopes,
                     _consumerFactory, healthCallback, serializer, pipeline,
                     () => _supervisor.CurrentHandle);
-                loops.Add((loop, loop.RunAsync(family.Token)));
+                loops.Add((loop, loop.RunAsync(groupCts.Token)));
             }
             // The attach point is fixed before ConsumeAsync returns: wait for every
             // partition's first broker subscription (caller-cancellable; the shared
@@ -431,13 +431,13 @@ internal sealed class StreamConsumerRegistry
         catch
         {
             await ConsumerTeardown.RunAsync(
-                family, loops, scopes, onStopped: tracker is null ? null : tracker.Stop, swallowRunTaskFailures: true).ConfigureAwait(false);
+                groupCts, loops, scopes, onStopped: tracker is null ? null : tracker.Stop, swallowRunTaskFailures: true).ConfigureAwait(false);
             throw;
         }
 
         Action? onStopped = null;
         if (tracker is not null) onStopped = tracker.Stop;
-        var registration = new StreamConsumerRegistration(stream, reference, loops, scopes, family, Remove, onStopped);
+        var registration = new StreamConsumerRegistration(stream, consumerGroup, loops, scopes, groupCts, Remove, onStopped);
         lock (_gate)
         {
             _live.Add(registration);
@@ -445,32 +445,32 @@ internal sealed class StreamConsumerRegistry
         return registration;
     }
 
-    /// <summary>Queries the stored offset of a consumer reference on one
+    /// <summary>Queries the stored offset of a consumer consumerGroup on one
     /// partition of a stream or super stream.</summary>
     /// <param name="stream">Stream name, or the super-stream name with a partition index.</param>
-    /// <param name="reference">Consumer-group reference.</param>
+    /// <param name="consumerGroup">Consumer-group consumerGroup.</param>
     /// <param name="partition">Partition index; 0 for a plain stream.</param>
     /// <param name="cancellationToken">Cancellation for the query.</param>
-    /// <returns>The stored offset, or <see langword="null"/> when the reference has none.</returns>
+    /// <returns>The stored offset, or <see langword="null"/> when the consumerGroup has none.</returns>
     /// <exception cref="StreamBusConfigurationException"><paramref name="partition"/> is out of range.</exception>
     /// <exception cref="StreamBusNotReadyException">The connection is not ready (fail-fast readiness).</exception>
     /// <exception cref="StreamBusFatalException">The connection is in a fatal state.</exception>
     /// <exception cref="StreamBusStreamNotFoundException">The stream does not exist.</exception>
-    public async Task<ulong?> GetOffsetAsync(string stream, string reference, int partition, CancellationToken cancellationToken = default)
+    public async Task<ulong?> GetOffsetAsync(string stream, string consumerGroup, int partition, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(stream);
-        ConsumerReferenceValidation.Validate(reference);
+        ConsumerGroupValidation.Validate(consumerGroup);
         var handle = await RequireReadyAsync(
-            ReadinessPolicy.FailFastPolicy, $"offset query for '{stream}'", cancellationToken).ConfigureAwait(false);
+            ReadinessPolicy.Default, $"offset query for '{stream}'", cancellationToken).ConfigureAwait(false);
         var partitionStream = await ResolvePartitionStreamAsync(handle, stream, partition, cancellationToken).ConfigureAwait(false);
-        return await handle.TryQueryOffsetAsync(reference, partitionStream, cancellationToken).ConfigureAwait(false);
+        return await handle.TryQueryOffsetAsync(consumerGroup, partitionStream, cancellationToken).ConfigureAwait(false);
     }
 
-    /// <summary>Overwrites the stored offset of a consumer reference on one
-    /// partition, so the next consume with the same reference resumes from
+    /// <summary>Overwrites the stored offset of a consumer consumerGroup on one
+    /// partition, so the next consume with the same consumerGroup resumes from
     /// the new offset.</summary>
     /// <param name="stream">Stream name, or the super-stream name with a partition index.</param>
-    /// <param name="reference">Consumer-group reference.</param>
+    /// <param name="consumerGroup">Consumer-group consumerGroup.</param>
     /// <param name="partition">Partition index; 0 for a plain stream.</param>
     /// <param name="offset">Offset to store.</param>
     /// <param name="cancellationToken">Cancellation for the store.</param>
@@ -478,18 +478,18 @@ internal sealed class StreamConsumerRegistry
     /// <exception cref="StreamBusNotReadyException">The connection is not ready (fail-fast readiness).</exception>
     /// <exception cref="StreamBusFatalException">The connection is in a fatal state.</exception>
     /// <exception cref="StreamBusStreamNotFoundException">The stream does not exist.</exception>
-    public async Task SetOffsetAsync(string stream, string reference, int partition, ulong offset, CancellationToken cancellationToken = default)
+    public async Task SetOffsetAsync(string stream, string consumerGroup, int partition, ulong offset, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(stream);
-        ConsumerReferenceValidation.Validate(reference);
+        ConsumerGroupValidation.Validate(consumerGroup);
         var handle = await RequireReadyAsync(
-            ReadinessPolicy.FailFastPolicy, $"offset store for '{stream}'", cancellationToken).ConfigureAwait(false);
+            ReadinessPolicy.Default, $"offset store for '{stream}'", cancellationToken).ConfigureAwait(false);
         var partitionStream = await ResolvePartitionStreamAsync(handle, stream, partition, cancellationToken).ConfigureAwait(false);
-        await handle.StoreSystemOffsetAsync(reference, partitionStream, offset, cancellationToken).ConfigureAwait(false);
-        _guard.Overwrite($"{reference}@{partitionStream}", offset);
+        await handle.StoreSystemOffsetAsync(consumerGroup, partitionStream, offset, cancellationToken).ConfigureAwait(false);
+        _guard.Overwrite($"{consumerGroup}@{partitionStream}", offset);
         _logger.LogInformation(
-            "Consumer offset for reference '{Reference}' on stream '{Stream}' partition {Partition} set to offset {Offset}.",
-            reference, stream, partition, offset);
+            "Consumer offset for consumerGroup '{ConsumerGroup}' on stream '{Stream}' partition {Partition} set to offset {Offset}.",
+            consumerGroup, stream, partition, offset);
     }
 
     private async Task<IStreamSystemHandle> RequireReadyAsync(

@@ -166,7 +166,7 @@ public sealed class ConfirmationCloseTests
         var options = new StreamBusOptions { Vhost = "/", UserName = "app", Password = "secret" };
         var supervisor = new StreamBusConnectionSupervisor(options, new ReadyConnector(system));
         supervisor.StartAsync(CancellationToken.None).GetAwaiter().GetResult();
-        var readiness = supervisor.WaitUntilReadyAsync(ReadinessPolicy.Indefinitely, TestContext.Current.CancellationToken).GetAwaiter().GetResult();
+        var readiness = supervisor.WaitUntilReadyAsync(ReadinessPolicy.Forever, TestContext.Current.CancellationToken).GetAwaiter().GetResult();
         Assert.Equal(BusReadiness.Ready, readiness);
         return (new StreamProducerRegistry(supervisor, "/"), system);
     }

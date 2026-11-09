@@ -23,7 +23,7 @@ public class ConsumeContext
     public required ulong Offset { get; init; }
 
     /// <summary>Routing value selected by the publisher; null for a plain stream.</summary>
-    public required string? RoutingValue { get; init; }
+    public required string? RoutingKey { get; init; }
 
     /// <summary>Serialized message body.</summary>
     public required ReadOnlyMemory<byte> Body { get; init; }

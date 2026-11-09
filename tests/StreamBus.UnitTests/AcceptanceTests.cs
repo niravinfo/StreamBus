@@ -60,9 +60,9 @@ public sealed class AcceptanceTests : IDisposable
     [Fact]
     public void Offset_store_defaults_match_spec()
     {
-        Assert.Equal(1, new OffsetStoreOptions().EveryMessages);
-        Assert.Null(new OffsetStoreOptions().MaxInterval);
-        Assert.Equal(1, new ConsumeOptions().OffsetStore.EveryMessages);
+        Assert.Equal(1, new OffsetStoreOptions().StoreEveryMessages);
+        Assert.Null(new OffsetStoreOptions().MaxFlushInterval);
+        Assert.Equal(1, new ConsumeOptions().OffsetStore.StoreEveryMessages);
     }
 
     private sealed class CountingHandle : IStreamPlainProducerHandle, IStreamSuperProducerHandle
@@ -112,8 +112,8 @@ public sealed class AcceptanceTests : IDisposable
         var registry = new StreamProducerRegistry(supervisor, "/");
         var ct = TestContext.Current.CancellationToken;
         await Assert.ThrowsAsync<StreamBusNotReadyException>(() =>
-            registry.PublishAsync("s", new byte[] { 1 }, new PublishOptions { ReadinessPolicy = ReadinessPolicy.UpTo(TimeSpan.FromMilliseconds(100)) }, ct));
-        await registry.PublishAsync("s", new byte[] { 2 }, new PublishOptions { ReadinessPolicy = ReadinessPolicy.Indefinitely }, ct);
+            registry.PublishAsync("s", new byte[] { 1 }, new PublishOptions { Readiness = ReadinessPolicy.UpTo(TimeSpan.FromMilliseconds(100)) }, ct));
+        await registry.PublishAsync("s", new byte[] { 2 }, new PublishOptions { Readiness = ReadinessPolicy.Forever }, ct);
         Assert.Equal(1, handle.SendCount);
     }
 
@@ -204,7 +204,7 @@ public sealed class AcceptanceTests : IDisposable
         var ct = TestContext.Current.CancellationToken;
         await Assert.ThrowsAsync<StreamBusNotReadyException>(() =>
             consumers.ConsumeAsync(typeof(DefaultBus), "s",
-                new ConsumeOptions { Reference = "acc-r", ReadinessPolicy = ReadinessPolicy.UpTo(TimeSpan.FromMilliseconds(100)) },
+                new ConsumeOptions { ConsumerGroup = "acc-r", Readiness = ReadinessPolicy.UpTo(TimeSpan.FromMilliseconds(100)) },
                 _ => Task.CompletedTask, ct));
     }
 }

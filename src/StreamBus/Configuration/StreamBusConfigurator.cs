@@ -211,8 +211,8 @@ public interface IReceiveEndpointConfigurator
     void SingleActiveConsumer(bool enabled = true);
 
     /// <summary>Sets where the consumer starts when no stored offset exists.</summary>
-    /// <param name="offset">The first-offset policy.</param>
-    void Offset(ConsumeOffset offset);
+    /// <param name="startOffset">The start-offset policy.</param>
+    void StartOffset(StartOffset startOffset);
 
     /// <summary>Sets the offset-tracking store options.</summary>
     /// <param name="options">Offset store configuration.</param>
@@ -317,12 +317,13 @@ public interface IReceiveEndpointConfigurator
     void DeadLetterToQueue(string name, DeadLetterQueueType type, Action<IErrorQueueOptionsBuilder> configure);
 
     /// <summary>
-    /// Sets the confirmation budget for a stream dead-letter hand-off. Values
-    /// below one second are raised to one second.
+    /// Sets the timeout for the confirmed publish to the error stream
+    /// hand-off. Null waits indefinitely; values below one second are raised
+    /// to one second.
     /// </summary>
-    /// <param name="timeout">The stream hand-off confirmation timeout; must be positive.</param>
+    /// <param name="timeout">The error-publish timeout; must be positive when set.</param>
     /// <exception cref="StreamBusConfigurationException"><paramref name="timeout"/> is not positive.</exception>
-    void ErrorHandoffTimeout(TimeSpan timeout);
+    void ErrorPublishTimeout(TimeSpan? timeout);
 
     /// <summary>
     /// Registers a callback that owns the outcome for messages whose retry
@@ -362,28 +363,28 @@ internal sealed record ReceiveEndpointDescriptor
     public required string Stream { get; init; }
     public required Type MessageType { get; init; }
     public required Type ConsumerType { get; init; }
-    public required string Reference { get; init; }
+    public required string ConsumerGroup { get; init; }
     public bool IsSuperStream { get; init; }
-    public int? SuperPartitions { get; init; }
+    public int? Partitions { get; init; }
     public TimeSpan? MaxAge { get; init; }
     public ulong? MaxLengthBytes { get; init; }
     public int? MaxSegmentSizeBytes { get; init; }
     public StreamLeaderLocator? LeaderLocator { get; init; }
     public bool SingleActiveConsumer { get; init; } = true;
-    public ConsumeOffset Offset { get; init; } = ConsumeOffset.ResumeOrFirst;
+    public StartOffset StartOffset { get; init; } = StartOffset.ResumeOrFirst;
     public OffsetStoreOptions OffsetStore { get; init; } = new();
     public RetryPolicy? RetryOverride { get; init; }
     public DeadLetterOptions? DeadLetter { get; init; }
-    public TimeSpan HandoffConfirmTimeout { get; init; } = TimeSpan.FromSeconds(10);
+    public TimeSpan? ErrorPublishTimeout { get; init; }
     public Func<ExhaustedContext, CancellationToken, Task>? OnExhausted { get; init; }
-    public ReadinessPolicy Readiness { get; init; } = ReadinessPolicy.FailFastPolicy;
+    public ReadinessPolicy Readiness { get; init; } = ReadinessPolicy.Default;
     internal IReadOnlyList<ConsumeFilterRegistration> ConsumeFilters { get; init; } = Array.Empty<ConsumeFilterRegistration>();
 
     internal void Validate()
         => StreamOptionsValidation.Validate(
             new StreamOptions
             {
-                Partitions = IsSuperStream ? SuperPartitions : null,
+                Partitions = IsSuperStream ? Partitions : null,
                 MaxAge = MaxAge,
                 MaxLengthBytes = MaxLengthBytes,
                 MaxSegmentSizeBytes = MaxSegmentSizeBytes,
@@ -396,18 +397,18 @@ internal sealed record ReceiveEndpointDescriptor
 
 internal sealed class StreamBusEndpointStore
 {
-    private readonly List<(Type BusMarker, ReceiveEndpointDescriptor Descriptor)> _endpoints = new();
+    private readonly List<(Type BusType, ReceiveEndpointDescriptor Descriptor)> _endpoints = new();
 
-    internal void Add(Type busMarker, ReceiveEndpointDescriptor descriptor)
+    internal void Add(Type busType, ReceiveEndpointDescriptor descriptor)
     {
-        ArgumentNullException.ThrowIfNull(busMarker);
+        ArgumentNullException.ThrowIfNull(busType);
         ArgumentNullException.ThrowIfNull(descriptor);
-        if (_endpoints.Any(e => e.BusMarker == busMarker && e.Descriptor.Stream == descriptor.Stream && e.Descriptor.ConsumerType == descriptor.ConsumerType && e.Descriptor.Reference == descriptor.Reference))
-            throw new StreamBusConfigurationException($"Duplicate receive endpoint for {descriptor.ConsumerType.FullName} on stream '{descriptor.Stream}' with group '{descriptor.Reference}' (marker {busMarker.FullName}).");
-        _endpoints.Add((busMarker, descriptor));
+        if (_endpoints.Any(e => e.BusType == busType && e.Descriptor.Stream == descriptor.Stream && e.Descriptor.ConsumerType == descriptor.ConsumerType && e.Descriptor.ConsumerGroup == descriptor.ConsumerGroup))
+            throw new StreamBusConfigurationException($"Duplicate receive endpoint for {descriptor.ConsumerType.FullName} on stream '{descriptor.Stream}' with group '{descriptor.ConsumerGroup}' (marker {busType.FullName}).");
+        _endpoints.Add((busType, descriptor));
     }
 
-    public IReadOnlyList<(Type BusMarker, ReceiveEndpointDescriptor Descriptor)> Endpoints => _endpoints;
+    public IReadOnlyList<(Type BusType, ReceiveEndpointDescriptor Descriptor)> Endpoints => _endpoints;
 }
 
 internal sealed class StreamRegistrationContext : IStreamRegistrationContext
@@ -430,7 +431,7 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
     private int _producers = 1;
     private int _consumers = 1;
     private IStreamSerializer _serializer = SystemTextJsonStreamSerializer.Default;
-    private readonly List<(Type MessageType, string Stream, bool IsSuper, StreamOptions Spec)> _publishes = new();
+    private readonly List<(Type MessageType, string Stream, bool IsSuperStream, StreamOptions StreamSpec)> _publishes = new();
     private readonly List<PublishFilterRegistration> _publishFilters = new();
     private readonly List<ConsumeFilterRegistration> _consumeFilters = new();
     private readonly List<ReceiveEndpointDescriptor> _endpoints = new();
@@ -443,7 +444,7 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
         _busType = busType;
     }
 
-    internal IReadOnlyList<(Type MessageType, string Stream, bool IsSuper, StreamOptions Spec)> Publishes => _publishes;
+    internal IReadOnlyList<(Type MessageType, string Stream, bool IsSuperStream, StreamOptions StreamSpec)> Publishes => _publishes;
 
     internal IReadOnlyList<PublishFilterRegistration> PublishFilters => _publishFilters;
 
@@ -701,7 +702,7 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
         private readonly string _stream;
         private Type? _consumerType;
         private Type? _messageType;
-        private string? _reference;
+        private string? _consumerGroup;
         private bool _super;
         private int? _superPartitions;
         private TimeSpan? _maxAge;
@@ -709,13 +710,13 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
         private int? _maxSegmentSizeBytes;
         private StreamLeaderLocator? _locator;
         private bool _sac = true;
-        private ConsumeOffset _offset = ConsumeOffset.ResumeOrFirst;
+        private StartOffset _offset = global::StreamBus.StartOffset.ResumeOrFirst;
         private OffsetStoreOptions _store = new();
         private RetryPolicy? _retryOverride;
         private DeadLetterOptions? _deadLetter;
-        private TimeSpan _handoffConfirmTimeout = TimeSpan.FromSeconds(10);
+        private TimeSpan? _errorPublishTimeout;
         private Func<ExhaustedContext, CancellationToken, Task>? _onExhausted;
-        private ReadinessPolicy _readiness = ReadinessPolicy.FailFastPolicy;
+        private ReadinessPolicy _readiness = ReadinessPolicy.Default;
         private readonly List<ConsumeFilterRegistration> _consumeFilters = new();
 
         public ReceiveEndpointConfigurator(string stream) => _stream = stream;
@@ -726,18 +727,18 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
                 throw new StreamBusConfigurationException($"ReceiveEndpoint '{_stream}': Consumer<T> may be called exactly once per endpoint.");
             if (string.IsNullOrWhiteSpace(consumerGroup))
                 throw new StreamBusConfigurationException($"ReceiveEndpoint '{_stream}': consumer group must be supplied (no default exists to collide on).");
-            if (Encoding.UTF8.GetByteCount(consumerGroup) > StreamBusLimits.MaxReferenceBytes)
+            if (Encoding.UTF8.GetByteCount(consumerGroup) > StreamBusLimits.MaxConsumerGroupBytes)
                 throw new StreamBusConfigurationException($"ReceiveEndpoint '{_stream}': consumer group exceeds the broker's 255-byte limit.");
             var consumerType = typeof(TConsumer);
             var messageType = ResolveConsumerMessageType(consumerType);
             _consumerType = consumerType;
             _messageType = messageType;
-            _reference = consumerGroup;
+            _consumerGroup = consumerGroup;
         }
 
         public void SuperStream(bool enabled = true) => _super = enabled;
         public void SingleActiveConsumer(bool enabled = true) => _sac = enabled;
-        public void Offset(ConsumeOffset offset) => _offset = offset;
+        public void StartOffset(StartOffset startOffset) => _offset = startOffset;
         public void OffsetStore(OffsetStoreOptions options)
         {
             ArgumentNullException.ThrowIfNull(options);
@@ -809,7 +810,7 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
             configure?.Invoke(builder);
             var spec = builder.Build();
             StreamOptionsValidation.Validate(spec, $"ReceiveEndpoint '{_stream}' error-stream destination '{name.Trim()}'", allowPartitions: false);
-            _deadLetter = new DeadLetterOptions { Name = name.Trim(), Spec = spec };
+            _deadLetter = new DeadLetterOptions { Name = name.Trim(), StreamSpec = spec };
         }
         public void DeadLetterToStream(string name, StreamOptions spec)
         {
@@ -817,7 +818,7 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
             ArgumentException.ThrowIfNullOrWhiteSpace(name);
             ArgumentNullException.ThrowIfNull(spec);
             StreamOptionsValidation.Validate(spec, $"ReceiveEndpoint '{_stream}' error-stream destination '{name.Trim()}'", allowPartitions: false);
-            _deadLetter = new DeadLetterOptions { Name = name.Trim(), Spec = spec };
+            _deadLetter = new DeadLetterOptions { Name = name.Trim(), StreamSpec = spec };
         }
         public void DeadLetterToQueue(string name, DeadLetterQueueType type)
             => SetDeadLetterQueue(name, type, new ErrorQueueOptions());
@@ -838,11 +839,16 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
                 throw new StreamBusConfigurationException($"ReceiveEndpoint '{_stream}': DeadLetterQueueType has an undefined value.");
             _deadLetter = new DeadLetterOptions { Name = name.Trim(), QueueType = type, QueueOptions = options };
         }
-        public void ErrorHandoffTimeout(TimeSpan timeout)
+        public void ErrorPublishTimeout(TimeSpan? timeout)
         {
-            if (timeout <= TimeSpan.Zero)
-                throw new StreamBusConfigurationException($"ReceiveEndpoint '{_stream}': ErrorHandoffTimeout must be positive.");
-            _handoffConfirmTimeout = timeout < TimeSpan.FromSeconds(1) ? TimeSpan.FromSeconds(1) : timeout;
+            if (timeout is not { } value)
+            {
+                _errorPublishTimeout = null;
+                return;
+            }
+            if (value <= TimeSpan.Zero)
+                throw new StreamBusConfigurationException($"ReceiveEndpoint '{_stream}': ErrorPublishTimeout must be positive.");
+            _errorPublishTimeout = value < TimeSpan.FromSeconds(1) ? TimeSpan.FromSeconds(1) : value;
         }
         private void EnsureDeadLetterSlot(string attempted)
         {
@@ -880,7 +886,7 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
 
         public ReceiveEndpointDescriptor Build()
         {
-            if (_consumerType is null || _messageType is null || _reference is null)
+            if (_consumerType is null || _messageType is null || _consumerGroup is null)
                 throw new StreamBusConfigurationException($"ReceiveEndpoint '{_stream}': Consumer<T>(\"group\") must be called exactly once per endpoint.");
             ValidateEndpointTypedFilters(_messageType);
             var descriptor = new ReceiveEndpointDescriptor
@@ -888,19 +894,19 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
                 Stream = _stream,
                 MessageType = _messageType,
                 ConsumerType = _consumerType,
-                Reference = _reference,
+                ConsumerGroup = _consumerGroup,
                 IsSuperStream = _super,
-                SuperPartitions = _superPartitions,
+                Partitions = _superPartitions,
                 MaxAge = _maxAge,
                 MaxLengthBytes = _maxLengthBytes,
                 MaxSegmentSizeBytes = _maxSegmentSizeBytes,
                 LeaderLocator = _locator,
                 SingleActiveConsumer = _sac,
-                Offset = _offset,
+                StartOffset = _offset,
                 OffsetStore = _store,
                 RetryOverride = _retryOverride,
                 DeadLetter = _deadLetter,
-                HandoffConfirmTimeout = _handoffConfirmTimeout,
+                ErrorPublishTimeout = _errorPublishTimeout,
                 OnExhausted = _onExhausted,
                 Readiness = _readiness,
                 ConsumeFilters = _consumeFilters.ToArray(),
@@ -961,7 +967,7 @@ public static class StreamBusConfiguratorExtensions
         var options = configurator.Build(busType);
         var publishStore = ServiceCollectionExtensions.GetOrCreatePublishStore(services);
         foreach (var p in configurator.Publishes)
-            publishStore.Add(busType, p.MessageType, p.Stream, p.IsSuper, p.Spec);
+            publishStore.Add(busType, p.MessageType, p.Stream, p.IsSuperStream, p.StreamSpec);
         foreach (var filter in configurator.PublishFilters)
         {
             publishStore.AddFilter(busType, filter);
@@ -1008,14 +1014,14 @@ public static class StreamBusConfiguratorExtensions
             consumerStore.Add(busType, descriptor.MessageType, descriptor.ConsumerType, descriptor.Stream, new ConsumeOptions
             {
                 IsSuperStream = descriptor.IsSuperStream,
-                Reference = descriptor.Reference,
+                ConsumerGroup = descriptor.ConsumerGroup,
                 SingleActiveConsumer = descriptor.SingleActiveConsumer,
-                Offset = descriptor.Offset,
+                StartOffset = descriptor.StartOffset,
                 OffsetStore = descriptor.OffsetStore,
                 Retry = derived.Policy,
                 ErrorStream = derived.Kind == ExhaustionKind.StreamHandoff ? derived.Stream : null,
-                ReadinessPolicy = descriptor.Readiness,
-                HandoffConfirmTimeout = descriptor.HandoffConfirmTimeout,
+                Readiness = descriptor.Readiness,
+                ErrorPublishTimeout = descriptor.ErrorPublishTimeout,
                 OnExhausted = derived.Kind == ExhaustionKind.Callback ? descriptor.OnExhausted : null,
                 DeadLetter = derived.Kind == ExhaustionKind.QueueHandoff ? derived.Queue : null,
                 ShadowedDeadLetter = derived.DestinationShadowed ? descriptor.DeadLetter : null,

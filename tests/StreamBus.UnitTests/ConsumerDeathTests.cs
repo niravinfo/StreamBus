@@ -86,9 +86,9 @@ public sealed class ConsumerDeathTests
         var system = new NeverReadySystem();
         var options = new ConsumeOptions
         {
-            Reference = "grp",
+            ConsumerGroup = "grp",
             SingleActiveConsumer = false,
-            Offset = ConsumeOffset.AlwaysFirst,
+            StartOffset = StartOffset.AlwaysFirst,
         };
         var supervisor = new StreamBusConnectionSupervisor(
             new StreamBusOptions { Vhost = "/", UserName = "app", Password = "secret" },
@@ -131,9 +131,9 @@ public sealed class ConsumerDeathTests
         IStreamSystemHandle current = oldSystem;
         var options = new ConsumeOptions
         {
-            Reference = "grp",
+            ConsumerGroup = "grp",
             SingleActiveConsumer = false,
-            Offset = ConsumeOffset.AlwaysFirst,
+            StartOffset = StartOffset.AlwaysFirst,
         };
         var factory = new ScriptedConsumerFactory();
         var consumer = new StreamPartitionConsumer(

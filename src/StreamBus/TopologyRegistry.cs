@@ -193,7 +193,7 @@ internal sealed class StreamTopologyRegistry : IStreamTopology
 
     private async Task<IStreamSystemHandle> ReadyHandleAsync(string stream, CancellationToken cancellationToken)
     {
-        var readiness = await _supervisor.WaitUntilReadyAsync(ReadinessPolicy.FailFastPolicy, cancellationToken).ConfigureAwait(false);
+        var readiness = await _supervisor.WaitUntilReadyAsync(ReadinessPolicy.Default, cancellationToken).ConfigureAwait(false);
         if (readiness == BusReadiness.Fatal)
             throw new StreamBusFatalException($"StreamBus for vhost '{_vhost}' is in Fatal state; topology declaration for '{stream}' refused.");
         if (readiness != BusReadiness.Ready)

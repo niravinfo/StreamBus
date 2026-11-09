@@ -107,9 +107,9 @@ public sealed class AsyncScopeDisposalTests
         var factory = new ScriptedConsumerFactory();
         var options = new ConsumeOptions
         {
-            Reference = "grp",
+            ConsumerGroup = "grp",
             SingleActiveConsumer = false,
-            Offset = ConsumeOffset.AlwaysFirst,
+            StartOffset = StartOffset.AlwaysFirst,
         };
         var filter = new CapturingFilter();
         var consumer = CreateConsumer(options, filter, scopes, factory);
@@ -150,9 +150,9 @@ public sealed class AsyncScopeDisposalTests
         var exhausted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var options = new ConsumeOptions
         {
-            Reference = "grp",
+            ConsumerGroup = "grp",
             SingleActiveConsumer = false,
-            Offset = ConsumeOffset.AlwaysFirst,
+            StartOffset = StartOffset.AlwaysFirst,
             Retry = new RetryPolicy { MaxAttempts = 1, BaseDelay = TimeSpan.FromMilliseconds(10) },
             OnExhausted = (context, _) =>
             {

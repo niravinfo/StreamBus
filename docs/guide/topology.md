@@ -117,7 +117,7 @@ name (`{super}-{index}`), with no declaration ever:
 ```csharp
 await using var sub = await bus.ConsumeAsync(
     "orders-super-0",
-    new ConsumeOptions { Reference = "partition-inspector" },
+    new ConsumeOptions { ConsumerGroup = "partition-inspector" },
     handler,
     ct);
 ```

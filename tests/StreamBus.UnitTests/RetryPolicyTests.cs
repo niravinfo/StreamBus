@@ -54,7 +54,7 @@ public sealed class RetryPolicyTests
         await Assert.ThrowsAsync<StreamBusNotReadyException>(() =>
             Consume(new ConsumeOptions
             {
-                Reference = "grp",
+                ConsumerGroup = "grp",
                 Retry = new RetryPolicy { MaxAttempts = 3 },
                 ErrorStream = new ErrorStreamOptions { Stream = "e" },
             }));
@@ -68,7 +68,7 @@ public sealed class RetryPolicyTests
         await Assert.ThrowsAsync<StreamBusNotReadyException>(() =>
             Consume(new ConsumeOptions
             {
-                Reference = "grp",
+                ConsumerGroup = "grp",
                 Retry = new RetryPolicy { MaxAttempts = 3 },
                 OnExhausted = (_, _) => Task.CompletedTask,
             }));
@@ -80,7 +80,7 @@ public sealed class RetryPolicyTests
         var ex = await Assert.ThrowsAsync<StreamBusConfigurationException>(() =>
             Consume(new ConsumeOptions
             {
-                Reference = "grp",
+                ConsumerGroup = "grp",
                 Retry = new RetryPolicy { MaxAttempts = 3 },
                 ErrorStream = new ErrorStreamOptions { Stream = "e" },
                 OnExhausted = (_, _) => Task.CompletedTask,
