@@ -321,38 +321,6 @@ error destinations and republishing to the source is the application's job.
 `x-max-age` retention is mandatory on this stream (**FR-5.2**). Without it there is
 no bound on growth, and there is no other mechanism available.
 
-## 7. Effectively-once read-process-write
-
-> **Unverified end to end.** This is gate **G-2** and blocks phase 7. The
-> individual constraints below are sound, but the full cycle has never been
-> exercised. Do not treat it as working until G-2 passes.
-
-When a handler produces a result for another stream, use the **source offset as the
-publishing id of the result**. The broker stores message and publishing id atomically,
-so a crash cannot desync them. Handlers do not publish via `ConsumeContext`: the
-plain path just returns and the library stores the offset on success. The result path
-is a separate `PublishResultAsync(target, result, sourceOffset, ...)` API that enforces
-publishing-id = sourceOffset and stable producer-name selection. Requirements
-(**FR-6.1** through **FR-6.7**):
-
-- one write per processing step
-- publishing to the target stream is the only side effect
-- **only one instance publishes under a given producer name** (dedup does not support
-  concurrent publishing) - enforce with SAC on the source. A super-stream source has
-  N concurrently-active partitions, so it needs N stable producer names (one per
-  source partition to target), not one shared name.
-- stable producer names, unique per (source partition, target stream), meaningful not a GUID
-- results published in order, none skipped: keep retrying, never time out silently
-- max 255 producer names per stream
-
-For a super stream target, query the last publishing id on **every** partition and
-resume from the maximum.
-
-Note the interaction with SAC: on the `Raw*` path there is no automatic offset
-tracking to turn off. The effectively-once source stores nothing (FR-10.14) and
-computes the start offset from the last publishing id on every attach (create,
-promote, reconnect).
-
 ## 8. Topology declaration
 
 Publishing does **not** auto-create. Publishing to a missing stream fails with
@@ -415,12 +383,7 @@ IStreamBus<TBus>.WaitUntilReadyAsync(ReadinessPolicy) -> BusReadiness
 // publish (same shape on both)
 IStreamBus.PublishAsync(stream, message, PublishOptions)
 IStreamBus<TBus>.PublishAsync(stream, message, PublishOptions)
-PublishOptions { ReadinessPolicy, RoutingKey, DeduplicationName, Timeout /* confirm timeout only */ }
-
-// effectively-once result path (FR-6 only, separate from ConsumeContext)
-IStreamBus.PublishResultAsync(targetStream, result, sourceOffset, producerName, ...)
-IStreamBus<TBus>.PublishResultAsync(targetStream, result, sourceOffset, producerName, ...)
-// enforces publishing-id = sourceOffset and stable producer-name selection
+PublishOptions { ReadinessPolicy, RoutingKey, Timeout /* confirm timeout only */ }
 
 // consume - delegate overload, the lower-level path
 IStreamBus.ConsumeAsync(stream, ConsumeOptions, handler)
@@ -455,8 +418,8 @@ ConsumeContext<T> {
     T Message, string RoutingValue, string Stream, int Partition, ulong Offset,
     ReadOnlyMemory<byte> Body, MessageMetadata Metadata, CancellationToken
 }
-// ConsumeContext has no publish method. Plain paths just return and the library stores
-// the offset. Only the FR-6 result path publishes, via PublishResultAsync.
+// ConsumeContext has no publish method. Handlers just return and the library
+// stores the offset on success.
 
 // topology
 IStreamTopology.EnsureStreamAsync(spec)   // serialized in-process, cached, cross-process race tolerated, idempotent
@@ -497,15 +460,13 @@ A duplicate registration of the same overload/marker fails at configuration time
 | 4 | Producer registry: N producers, confirms | FR-1 | — |
 | 5 | Consumer registry: N consumers, offset tracking, SAC, ordering, per-partition metrics, the promotion fix from 4.4 | FR-2, FR-3, FR-10, FR-9.1 | G-4, G-5 |
 | 6 | Retry + error stream + starvation visibility | FR-4, FR-5, FR-9.3 | **G-1** |
-| 7 | Effectively-once read-process-write | FR-6 | **G-2** |
 | 8 | Topology with serialized declaration | FR-7 | G-3 |
 | 9 | Hosting / DI / configuration, typed `IConsumer<T>` | FR-8.9, FR-8.11, FR-2.1 | — |
-| 10 | Tests: unit plus integration against a real broker (all FR-1–FR-10 plus NFR-1–NFR-7) | all | G-1..G-5 |
+| 10 | Tests: unit plus integration against a real broker (all remaining FRs plus NFR-1–NFR-7) | all | G-1, G-3–G-5 |
 
 **No phase is complete until its gates pass.** Phase 6 in particular is blocked
-on G-1 (retry under load), which is not yet verified. Phase 7 is blocked on G-2
-(effectively-once end to end, unverified). NFR-1–NFR-7 are verified in Phase 10,
-not per phase.
+on G-1 (retry under load), which is not yet verified. NFR-1–NFR-7 are verified in
+Phase 10, not per phase.
 
 ## 11. Resolved questions
 
@@ -583,7 +544,7 @@ All verified in source, client main branch and `rabbitmq-server` main branch.
 | Writing, super stream | `RawSuperStreamConsumer.StoreOffset` throws `NotImplementedException("use the store offset on the stream consumer, instead")`. The super-stream entity is never a store path |
 | Broker response | **None.** The broker's `store_offset` handler resolves the leader and calls `osiris:write_tracking/3`, then returns. No response code, no confirmation, no rejection. A client cannot tell whether a store landed, and the broker will happily write a lower value over a higher one |
 | Leader lookup | If the stream leader cannot be resolved at store time the handler logs and returns, so the store is a silent no-op |
-| Reference length | 255 bytes (`IS_INVALID_REF(Ref)` is `byte_size(Ref) > 255`). A longer reference is rejected at `subscribe` with `PreconditionFailed`; at `store_offset` it is logged and dropped. Distinct from FR-6.4's 255 producer *names per stream* |
+| Reference length | 255 bytes (`IS_INVALID_REF(Ref)` is `byte_size(Ref) > 255`). A longer reference is rejected at `subscribe` with `PreconditionFailed`; at `store_offset` it is logged and dropped |
 | Promotion listener | `Func<string, string, bool, Task<IOffsetType>>`. Parameter order is **(reference, stream, promotedAsActive)**. Throwing, or returning null, makes the client fall back to `OffsetTypeNext` |
 | Client offset tracking | The reliable consumer keeps an in-memory last-dispatched offset and uses it for reconnects, writing it even when the handler threw. It is not a source of truth and the library does not use it |
 
