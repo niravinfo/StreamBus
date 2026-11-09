@@ -23,6 +23,11 @@ jobs:
         uses: actions/checkout@v7.0.1
       - name: Setup pnpm
         uses: pnpm/action-setup@v6.1.1
+        with:
+          # pnpm/action-setup only auto-detects the version from a root-level
+          # package.json "packageManager" field; ours lives in docs/, so the
+          # version must be pinned here. Keep in sync with docs/package.json.
+          version: 12.16.1
       - name: Setup Node
         uses: actions/setup-node@v7.1.0
         with:
