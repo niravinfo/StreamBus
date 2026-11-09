@@ -38,9 +38,9 @@ always show the same partition.
 
 Notes:
 
-- Consumer groups are declared verbatim. Running two consumer instances
-  with the same groups scales out (partitions are split); changing the
-  groups gives a second application an independent cursor that receives
-  every message again.
+- Consumer groups are declared verbatim. On the super stream, two consumer
+  instances with the same group split partitions; on the plain `orders`
+  stream, one instance is active and the second stands by for failover. A
+  different group gets an independent cursor that receives every message again.
 - The consumer resumes from the broker-stored offset, so restarting it
   does not replay what it already processed (until a new group is used).

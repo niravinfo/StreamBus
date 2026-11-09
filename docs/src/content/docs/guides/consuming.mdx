@@ -4,8 +4,7 @@ description: Endpoints, consumer groups, and offsets.
 ---
 
 Endpoints consume from streams through `ReceiveEndpoint`. The consumer
-group is **required** and verbatim: the same group scales out, different
-groups consume independently.
+group is required and verbatim. On a super stream, one group distributes partitions across instances; different groups consume independently.
 
 <aside>
 Demo page — the full consume guide (SAC, offsets, store knobs, raw
@@ -26,16 +25,16 @@ builder.Services.AddStreamBus((_, cfg) =>
 
 ## Scale out
 
-Run the same worker with the same group name and RabbitMQ streams
-distribute messages across instances automatically:
+Super streams distribute partitions, not individual messages. With one group,
+instances take ownership of different partitions (`SingleActiveConsumer`
+applies per partition), so adding instances reads more partitions in parallel.
 
-```bash
-# Two instances, one logical consumer
-dotnet run & dotnet run
-```
+Plain streams are different: with the default `SingleActiveConsumer = true`,
+one instance owns the group's cursor and the others stand by for failover.
+They do not add throughput. Use a super stream when you need horizontal scale.
 
-Each instance gets a share of the stream's messages — no extra
-configuration.
+A second endpoint with a different group reads the stream from its own offset.
+Delivery is at-least-once, so consumers must tolerate duplicates.
 
 ## Independent consumers
 

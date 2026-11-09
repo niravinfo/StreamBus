@@ -23,10 +23,17 @@
   Explicit-stream targets on undeclared streams raise
   `StreamBusStreamNotFoundException` and never auto-create. Raw bytes go
   through `bus.PublishRawAsync`, which does not run publish filters.
+- Producers are anonymous: StreamBus never assigns a producer name, so the
+  broker's published-message deduplication is never enabled. Any number of
+  identical instances may publish to the same stream with unchanged
+  configuration. Delivery is at-least-once; applications own duplicate handling
+  and idempotency.
 - Consumer identity: `cfg.ReceiveEndpoint(stream, e =>
   e.Consumer<TConsumer>("group"))`. The group is required, verbatim,
-  max 255 bytes, exactly one `Consumer` call per endpoint. Same group
-  scales out via a shared cursor; different groups are independent
+  max 255 bytes, exactly one `Consumer` call per endpoint. On a super stream,
+  one group distributes partitions across instances (`SingleActiveConsumer`
+  applies per partition); on a plain stream, one group has one active consumer
+  with the rest standing by for failover. Different groups are independent
   cursors. Raw `ConsumeAsync` also requires `Reference`. The library
   never derives group names.
 - Cross-process caveat: same reference, `SingleActiveConsumer = false`,
