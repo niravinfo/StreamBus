@@ -50,6 +50,9 @@ public sealed record StreamBusOptions
     /// <summary>AMQP port used for dead-letter queues and topology; 1..65535.</summary>
     public int AmqpPort { get; init; } = 5672;
 
+    /// <summary>TLS settings for both the stream protocol and AMQP connections; null means plain TCP (TLS off, the default).</summary>
+    public StreamBusTlsOptions? Tls { get; init; }
+
     /// <summary>Requested heartbeat interval; must be positive.</summary>
     public TimeSpan Heartbeat { get; init; } = TimeSpan.FromSeconds(60);
 
@@ -76,6 +79,8 @@ public sealed record StreamBusOptions
             yield return "AmqpPort must be in 1..65535.";
         if (Heartbeat <= TimeSpan.Zero)
             yield return "Heartbeat must be positive.";
+        if (Tls?.Enabled == true && Tls.ServerName is not null && string.IsNullOrWhiteSpace(Tls.ServerName))
+            yield return "Tls.ServerName must not be whitespace.";
         foreach (var error in Connection.Validate())
             yield return error;
     }
