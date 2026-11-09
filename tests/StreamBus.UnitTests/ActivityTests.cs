@@ -218,7 +218,6 @@ public sealed class ActivityTests
     {
         public Task SendAsync(ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct) => Task.CompletedTask;
         public Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, StreamMessageProperties properties, CancellationToken ct) => Task.CompletedTask;
-        public Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, PublishOptions options, CancellationToken ct) => Task.CompletedTask;
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 

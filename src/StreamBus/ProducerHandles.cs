@@ -24,9 +24,6 @@ public interface IStreamPlainProducerHandle : IStreamProducerHandle
         ReadOnlyMemory<byte> body,
         StreamMessageProperties properties,
         CancellationToken cancellationToken);
-
-    /// <summary>Sends the body under an explicit <paramref name="publishingId"/>, so duplicate ids are deduplicated broker-side (replay idempotency).</summary>
-    Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, PublishOptions options, CancellationToken cancellationToken);
 }
 
 /// <summary>
@@ -38,8 +35,6 @@ public interface IStreamPlainProducerHandle : IStreamProducerHandle
 /// </summary>
 public interface IStreamSuperProducerHandle : IStreamProducerHandle
 {
-    /// <summary>Sends the body under an explicit <paramref name="publishingId"/> with the options' routing key; duplicate ids are deduplicated broker-side (replay idempotency). The routing key is required.</summary>
-    Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, PublishOptions options, CancellationToken cancellationToken);
 }
 
 /// <summary>
@@ -141,39 +136,6 @@ internal sealed class ConfirmationTracker
                 tcs.TrySetException(error);
         }
     }
-
-    /// <summary>Sends under an explicit <paramref name="publishingId"/> and awaits its confirmation; an in-flight duplicate id throws.</summary>
-    public async Task PublishWithIdAsync(IProducer producer, string stream, ulong publishingId, Message message, CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        var confirmation = new TaskCompletionSource<ResponseCode>(TaskCreationOptions.RunContinuationsAsynchronously);
-        if (!_pending.TryAdd(publishingId, confirmation))
-            throw new StreamBusPublishException($"Replay publishing id {publishingId} is already in flight for stream '{stream}' (internal error).");
-        try
-        {
-            await producer.Send(publishingId, message).ConfigureAwait(false);
-        }
-        catch
-        {
-            _pending.TryRemove(publishingId, out _);
-            throw;
-        }
-        using (cancellationToken.Register(static state => ((TaskCompletionSource<ResponseCode>)state!).TrySetCanceled(), confirmation))
-        {
-            ResponseCode code;
-            try
-            {
-                code = await confirmation.Task.ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                _pending.TryRemove(publishingId, out _);
-                throw;
-            }
-            if (code != ResponseCode.Ok)
-                throw new StreamBusPublishException($"Publish to stream '{stream}' was not confirmed (status {code}).");
-        }
-    }
 }
 
 internal static class ProducerClose
@@ -235,16 +197,6 @@ internal sealed class StreamProducerHandle : IStreamPlainProducerHandle
         await _confirmations.PublishAsync(_producer, _stream, message, cancellationToken).ConfigureAwait(false);
     }
 
-    /// <summary>Sends the body under an explicit publishing id (replay/dedup) and awaits confirmation.</summary>
-    public async Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, PublishOptions options, CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(options);
-        cancellationToken.ThrowIfCancellationRequested();
-        var message = new Message(body.ToArray());
-        StreamMessageProperties.ApplyTo(message, options.Properties, options.RoutingKey);
-        await _confirmations.PublishWithIdAsync(_producer, _stream, publishingId, message, cancellationToken).ConfigureAwait(false);
-    }
-
     /// <summary>Cancels pending confirms and closes the producer off-thread, capped at 3s.</summary>
     public async ValueTask DisposeAsync()
     {
@@ -287,14 +239,6 @@ internal sealed class SuperStreamProducerHandle : IStreamSuperProducerHandle
     // so a super-stream envelope send cannot be routed. The interface split
     // (IStreamSuperProducerHandle no longer derives from
     // IStreamPlainProducerHandle) makes that a compile-time guarantee.
-
-    /// <summary>Sends the body under an explicit publishing id (replay/dedup) with the required routing key, and awaits confirmation.</summary>
-    public Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, PublishOptions options, CancellationToken cancellationToken)
-        => SendMessageAsync(
-            new Message(body.ToArray()),
-            options,
-            (message, token) => _confirmations.PublishWithIdAsync(_producer, _stream, publishingId, message, token),
-            cancellationToken);
 
     /// <summary>Stamps the routing key on the message for the client callback, then removes it after send.</summary>
     private async Task SendMessageAsync(

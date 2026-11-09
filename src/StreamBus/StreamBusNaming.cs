@@ -21,32 +21,6 @@ internal static class StreamBusNaming
             : $"streambus-pub-{Sha32(full)}";
     }
 
-    /// <summary>
-    /// Stable publisher reference for explicit-dedup producers (replay). The
-    /// source stream and the concrete partition stream both participate so two
-    /// sources replayed from one shared error stream never share a dedup space.
-    /// </summary>
-    public static string ReplayProducerName(string sourceStream, string sourcePartitionStream)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(sourceStream);
-        ArgumentException.ThrowIfNullOrWhiteSpace(sourcePartitionStream);
-        var key = string.Concat(
-            sourceStream.Length.ToString(System.Globalization.CultureInfo.InvariantCulture),
-            ":",
-            sourceStream,
-            sourcePartitionStream.Length.ToString(System.Globalization.CultureInfo.InvariantCulture),
-            ":",
-            sourcePartitionStream);
-        return $"streambus-replay-{Sha32(key)}";
-    }
-
-    /// <summary>Stable consumer reference for a replay run over one error stream.</summary>
-    public static string ReplayReference(string errorStream)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(errorStream);
-        return $"streambus-replay-{Sha32(errorStream)}";
-    }
-
     public static string Enforce(string name)
     {
         ArgumentNullException.ThrowIfNull(name);

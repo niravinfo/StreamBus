@@ -138,25 +138,6 @@ public sealed record ErrorEnvelope
     }
 
     /// <summary>
-    /// Rebuilds the publish options for a requeue or replay so the message
-    /// keeps the identity, user headers, and content type it had when it
-    /// entered the error destination.
-    /// </summary>
-    internal PublishOptions ToReplayOptions() => new()
-    {
-        Properties = new StreamMessageProperties
-        {
-            MessageId = MessageId,
-            CorrelationId = CorrelationId,
-            SentTime = SentTime,
-            ContentType = ContentType,
-            Headers = UserHeaders is null
-                ? new Dictionary<string, object?>()
-                : new Dictionary<string, object?>(UserHeaders),
-        },
-    };
-
-    /// <summary>
     /// Captures the original user headers of a delivery for the error
     /// envelope: framework keys (any <c>streambus.*</c> key, which covers the
     /// envelope's own fields), null values (AMQP application properties
@@ -305,25 +286,3 @@ public sealed record ErrorEnvelope
     }
 }
 
-internal static class ReplayNaming
-{
-    /// <summary>Replay producer name, keyed by source stream and partition
-    /// so dedup is scoped per source partition.</summary>
-    /// <param name="sourceStream">Logical source stream.</param>
-    /// <param name="partitionStream">Physical source partition stream.</param>
-    /// <returns>The dedup-scoped replay producer reference name.</returns>
-    public static string ProducerName(string sourceStream, string partitionStream)
-        => StreamBusNaming.ReplayProducerName(sourceStream, partitionStream);
-
-    /// <summary>Cursor reference under which replay reads an error stream.</summary>
-    /// <param name="errorStream">Error stream to replay.</param>
-    /// <returns>The replay consumer reference name.</returns>
-    public static string Reference(string errorStream)
-        => StreamBusNaming.ReplayReference(errorStream);
-
-    /// <summary>Deduplication publishing id for replay: the source offset, so
-    /// a repeated replay of the same failure does not duplicate.</summary>
-    /// <param name="sourceOffset">Offset of the failed delivery in its source partition.</param>
-    /// <returns>The publishing id to use for the replayed message.</returns>
-    public static ulong PublishingId(ulong sourceOffset) => sourceOffset;
-}

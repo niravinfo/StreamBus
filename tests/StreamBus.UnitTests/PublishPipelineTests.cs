@@ -1143,12 +1143,6 @@ public sealed class PublishPipelineTests
             return Task.CompletedTask;
         }
 
-        public Task PublishReplayAsync(ReadOnlyMemory<byte> body, ulong publishingId, PublishOptions options, CancellationToken ct)
-        {
-            system.Add(stream, body, options);
-            return Task.CompletedTask;
-        }
-
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
