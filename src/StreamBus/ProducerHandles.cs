@@ -59,8 +59,8 @@ internal sealed class SuperStreamRouting
 // Bridges the client's callback-based confirms (RawProducerConfig.ConfirmHandler)
 // to per-message tasks. The 1.12.1 raw producers expose no Task-returning Send:
 // every Send returns ValueTask and the confirm arrives later via ConfirmHandler,
-// keyed by publishing id. Publishing ids are unique per producer instance
-// (Interlocked counter; no dedup in this phase).
+// keyed by publishing id. Publishing ids are sequential per producer handle;
+// the client requires one per send and echoes it in the confirmation.
 internal sealed class ConfirmationTracker
 {
     private long _nextPublishingId;
