@@ -1,0 +1,32 @@
+---
+title: StreamBus
+description: MassTransit-style client for RabbitMQ streams on .NET
+template: splash
+hero:
+  tagline: MassTransit-style client for RabbitMQ streams on .NET 10. Typed publish, consumer-group endpoints, global retry, and first-class error handling — all with explicit, fluent configuration.
+  actions:
+    # NOTE: hero links are rendered verbatim, so the base path is hardcoded.
+    - text: Get Started
+      link: /StreamBus/guides/getting-started/
+      icon: right-arrow
+    - text: View on GitHub
+      link: https://github.com/niravinfo/StreamBus
+      icon: external
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+<CardGrid>
+  <Card title="Typed Publish" icon="paper-airplane">
+    Publish typed messages without manual serialization. Super-stream routing keys are compile-time checked.
+  </Card>
+  <Card title="Consumer Groups" icon="group">
+    `ReceiveEndpoint`s with first-class, required consumer-group identity — same group scales out, different groups are independent.
+  </Card>
+  <Card title="Retry & Errors" icon="warning">
+    Global retry with per-endpoint override, exhaustion destinations, and a per-stream classic `{stream}_error` queue.
+  </Card>
+  <Card title="Explicit Config" icon="settings">
+    No binders, no JSON discovery. Every option is a fluent configurator method, validated once at registration.
+  </Card>
+</CardGrid>

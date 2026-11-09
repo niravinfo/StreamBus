@@ -1,0 +1,41 @@
+---
+title: Publishing
+description: Publish typed messages without manual serialization.
+---
+
+Streams are declared up front with `Publish<T>`. StreamBus builds a route
+table from the message type, so publishing is a one-liner and forgetting a
+routing key for a super stream is a compile error, not a runtime surprise.
+
+<aside>
+This is a demo page — the full publish guide (super streams, overrides,
+raw bytes, typed headers) will live here.
+</aside>
+
+## Declare and publish
+
+```csharp
+builder.Services.AddStreamBus((_, cfg) =>
+{
+    cfg.Publish<OrderPlaced>("orders");
+});
+
+// Anywhere with IServiceProvider:
+await publisher.Publish(new OrderPlaced("order-42"));
+```
+
+## Super streams
+
+`PublishSuper<T>` declares a super stream; the routing key travels with the
+call:
+
+```csharp
+cfg.PublishSuper<OrderPlaced>("orders");
+
+await publisher.PublishSuper(new OrderPlaced("order-42"), routingKey: "region-a");
+```
+
+## Message properties
+
+StreamBus assigns message and correlation IDs automatically and supports
+typed headers on both publish and consume — no stringly-typed dictionaries.
