@@ -74,7 +74,7 @@ public sealed class HealthAggregatorTests
         await using var supervisor = new StreamBusConnectionSupervisor(options, new HealthConnector(system));
         await supervisor.StartAsync(CancellationToken.None);
         Assert.Equal(BusReadiness.Ready,
-            await supervisor.WaitUntilReadyAsync(ReadinessPolicy.Indefinitely, TestContext.Current.CancellationToken));
+            await supervisor.WaitUntilReadyAsync(ReadinessPolicy.Forever, TestContext.Current.CancellationToken));
 
         var health = new StreamBusHealthAggregator();
         health.SetConnection(supervisor.State);
@@ -87,9 +87,9 @@ public sealed class HealthAggregatorTests
 
         var consumeOptions = new ConsumeOptions
         {
-            Reference = "grp",
+            ConsumerGroup = "grp",
             SingleActiveConsumer = false,
-            Offset = ConsumeOffset.AlwaysFirst,
+            StartOffset = StartOffset.AlwaysFirst,
         };
         await using var first = await consumers.ConsumeAsync(
             typeof(DefaultBus), "orders", consumeOptions, _ => Task.CompletedTask, TestContext.Current.CancellationToken);
@@ -110,7 +110,7 @@ public sealed class HealthAggregatorTests
         var options = new StreamBusOptions { Vhost = "/", UserName = "app", Password = "secret" };
         await using var supervisor = new StreamBusConnectionSupervisor(options, new HealthConnector(system));
         await supervisor.StartAsync(ct);
-        Assert.Equal(BusReadiness.Ready, await supervisor.WaitUntilReadyAsync(ReadinessPolicy.Indefinitely, ct));
+        Assert.Equal(BusReadiness.Ready, await supervisor.WaitUntilReadyAsync(ReadinessPolicy.Forever, ct));
 
         var health = new StreamBusHealthAggregator();
         health.SetConnection(supervisor.State);
@@ -122,9 +122,9 @@ public sealed class HealthAggregatorTests
             consumerFactory: new ScriptedConsumerFactory().CreateAsync);
         var consumeOptions = new ConsumeOptions
         {
-            Reference = "grp",
+            ConsumerGroup = "grp",
             SingleActiveConsumer = false,
-            Offset = ConsumeOffset.AlwaysFirst,
+            StartOffset = StartOffset.AlwaysFirst,
         };
 
         await using var orders = await consumers.ConsumeAsync(
@@ -145,7 +145,7 @@ public sealed class HealthAggregatorTests
         var options = new StreamBusOptions { Vhost = "/", UserName = "app", Password = "secret" };
         await using var supervisor = new StreamBusConnectionSupervisor(options, new HealthConnector(system));
         await supervisor.StartAsync(ct);
-        Assert.Equal(BusReadiness.Ready, await supervisor.WaitUntilReadyAsync(ReadinessPolicy.Indefinitely, ct));
+        Assert.Equal(BusReadiness.Ready, await supervisor.WaitUntilReadyAsync(ReadinessPolicy.Forever, ct));
 
         var health = new StreamBusHealthAggregator();
         health.SetConnection(supervisor.State);
@@ -157,9 +157,9 @@ public sealed class HealthAggregatorTests
             consumerFactory: new ScriptedConsumerFactory().CreateAsync);
         var consumeOptions = new ConsumeOptions
         {
-            Reference = "grp",
+            ConsumerGroup = "grp",
             SingleActiveConsumer = false,
-            Offset = ConsumeOffset.AlwaysFirst,
+            StartOffset = StartOffset.AlwaysFirst,
         };
 
         await using var endpoint = await consumers.ConsumeDeclaredEndpointAsync(

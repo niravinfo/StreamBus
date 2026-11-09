@@ -131,7 +131,7 @@ public sealed class TopologyTests
         };
         var supervisor = new StreamBusConnectionSupervisor(options, new ReadyConnector(system));
         supervisor.StartAsync(CancellationToken.None).GetAwaiter().GetResult();
-        var readiness = supervisor.WaitUntilReadyAsync(ReadinessPolicy.Indefinitely, new CancellationTokenSource(TimeSpan.FromSeconds(5)).Token).GetAwaiter().GetResult();
+        var readiness = supervisor.WaitUntilReadyAsync(ReadinessPolicy.Forever, new CancellationTokenSource(TimeSpan.FromSeconds(5)).Token).GetAwaiter().GetResult();
         Assert.Equal(BusReadiness.Ready, readiness);
         return (new StreamTopologyRegistry(supervisor, "/"), system, supervisor);
     }
@@ -312,7 +312,7 @@ public sealed class TopologyTests
         }
 
         var readiness = await supervisor.WaitUntilReadyAsync(
-            ReadinessPolicy.Indefinitely, new CancellationTokenSource(TimeSpan.FromSeconds(5)).Token);
+            ReadinessPolicy.Forever, new CancellationTokenSource(TimeSpan.FromSeconds(5)).Token);
         Assert.Equal(BusReadiness.Ready, readiness);
 
         await registry.EnsureStreamAsync(decl, ct);

@@ -1,0 +1,150 @@
+using System.Diagnostics.Metrics;
+using RabbitMQ.Stream.Client;
+
+namespace StreamBus.UnitTests;
+
+public sealed class AcceptanceTests : IDisposable
+{
+    private readonly MeterListener _listener = new();
+    private readonly List<(string Instrument, double Value, KeyValuePair<string, object?>[] Tags)> _measurements = new();
+
+    public AcceptanceTests()
+    {
+        _listener.InstrumentPublished = (instrument, listener) =>
+        {
+            if (instrument.Meter.Name == "StreamBus")
+                listener.EnableMeasurementEvents(instrument);
+        };
+        _listener.SetMeasurementEventCallback<double>(Record);
+        _listener.SetMeasurementEventCallback<long>(Record);
+        _listener.SetMeasurementEventCallback<int>(Record);
+        _listener.Start();
+    }
+
+    private void Record<T>(Instrument instrument, T measurement, ReadOnlySpan<KeyValuePair<string, object?>> tags, object? state)
+    {
+        lock (_measurements) _measurements.Add((instrument.Name, Convert.ToDouble(measurement, System.Globalization.CultureInfo.InvariantCulture), tags.ToArray()));
+    }
+
+    public void Dispose() => _listener.Dispose();
+
+    [Fact]
+    public void Regressed_counter_emits_with_catalog_name()
+    {
+        StreamBusMetrics.Shared.RecordRegressed("acc-vh", "acc-bus", "acc-s", 0, "acc-r");
+        Assert.Contains(_measurements, m => m.Instrument == "streambus_offset_regressed_total"
+            && m.Tags.Any(t => t.Key == "vhost" && (string?)t.Value == "acc-vh")
+            && m.Tags.Any(t => t.Key == "bus" && (string?)t.Value == "acc-bus"));
+    }
+
+    [Fact]
+    public void Connection_state_observes_current_state()
+    {
+        var state = BusConnectionState.Starting;
+        StreamBusMetrics.Shared.TrackConnection("acc-vh", "acc-bus", () => state);
+        state = BusConnectionState.Ready;
+        _listener.RecordObservableInstruments();
+        double first;
+        lock (_measurements) first = _measurements.Last(m => m.Instrument == "streambus_connection_state"
+            && m.Tags.Any(t => t.Key == "vhost" && (string?)t.Value == "acc-vh")
+            && m.Tags.Any(t => t.Key == "bus" && (string?)t.Value == "acc-bus")).Value;
+        state = BusConnectionState.TransientFailure;
+        _listener.RecordObservableInstruments();
+        double second;
+        lock (_measurements) second = _measurements.Last(m => m.Instrument == "streambus_connection_state"
+            && m.Tags.Any(t => t.Key == "vhost" && (string?)t.Value == "acc-vh")
+            && m.Tags.Any(t => t.Key == "bus" && (string?)t.Value == "acc-bus")).Value;
+        Assert.NotEqual(first, second);
+    }
+
+    [Fact]
+    public void Offset_store_defaults_match_spec()
+    {
+        Assert.Equal(1, new OffsetStoreOptions().StoreEveryMessages);
+        Assert.Null(new OffsetStoreOptions().MaxFlushInterval);
+        Assert.Equal(1, new ConsumeOptions().OffsetStore.StoreEveryMessages);
+    }
+
+    private sealed class CountingHandle : IStreamPlainProducerHandle, IStreamSuperProducerHandle
+    {
+        public int SendCount;
+        public Task SendAsync(ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct)
+        {
+            Interlocked.Increment(ref SendCount);
+            return Task.CompletedTask;
+        }
+        public Task SendEnvelopeAsync(ReadOnlyMemory<byte> body, StreamMessageProperties properties, CancellationToken ct)
+            => throw new NotImplementedException("Acceptance tests publish plain only.");
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    private sealed class ScriptSystemHandle : ScriptedSystemHandle
+    {
+        public ScriptSystemHandle(CountingHandle handle) => PlainProducer = handle;
+        public override Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
+            => throw new NotImplementedException("Acceptance tests publish plain only.");
+        public override Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct)
+            => throw new NotImplementedException("Acceptance tests never attach.");
+    }
+
+    private sealed class DelayedConnector : IStreamSystemConnector
+    {
+        private readonly ScriptSystemHandle _handle;
+        private readonly TimeSpan _delay;
+        public DelayedConnector(ScriptSystemHandle handle, TimeSpan delay) { _handle = handle; _delay = delay; }
+        public async Task<IStreamSystemHandle> ConnectAsync(StreamBusOptions options, CancellationToken ct)
+        {
+            await Task.Delay(_delay, ct);
+            return _handle;
+        }
+    }
+
+    [Fact]
+    public async Task WaitUpTo_times_out_at_publish_then_Indefinitely_waits()
+    {
+        // FR-8.6: per-call-site policies at a publish call site (FailFast is pinned
+        // by Not_ready_failfast_throws_not_ready; confirm timeout stays independent —
+        // PublishOptions.Timeout is untouched here and no confirm elapses).
+        var handle = new CountingHandle();
+        var options = new StreamBusOptions { Vhost = "/", UserName = "app", Password = "secret" };
+        await using var supervisor = new StreamBusConnectionSupervisor(options, new DelayedConnector(new ScriptSystemHandle(handle), TimeSpan.FromMilliseconds(500)));
+        await supervisor.StartAsync(CancellationToken.None);
+        var registry = new StreamProducerRegistry(supervisor, "/");
+        var ct = TestContext.Current.CancellationToken;
+        await Assert.ThrowsAsync<StreamBusNotReadyException>(() =>
+            registry.PublishAsync("s", new byte[] { 1 }, new PublishOptions { ReadinessPolicy = ReadinessPolicy.UpTo(TimeSpan.FromMilliseconds(100)) }, ct));
+        await registry.PublishAsync("s", new byte[] { 2 }, new PublishOptions { ReadinessPolicy = ReadinessPolicy.Forever }, ct);
+        Assert.Equal(1, handle.SendCount);
+    }
+
+    private sealed class RecordingSuperProducer : ISuperStreamProducer
+    {
+        public readonly List<(ulong Id, Message Message)> Sent = new();
+        public ValueTask Send(ulong publishingId, Message message)
+        {
+            lock (Sent) Sent.Add((publishingId, message));
+            return ValueTask.CompletedTask;
+        }
+        // Remaining ISuperStreamProducer members per reflection probe on 1.12.1
+        // (only the single-message Send above does work; everything else throws):
+        // Send(UInt64, Message); Send(List<ValueTuple<UInt64, Message>>);
+        // Send(UInt64, List<Message>, CompressionType); GetLastPublishingId;
+        // IsOpen; Dispose; Close; MessagesSent/ConfirmFrames/IncomingFrames/
+        // PublishCommandsSent/PendingCount; Info; ReconnectPartition(StreamInfo).
+        public ValueTask Send(List<(ulong, Message)> messages) => throw new NotImplementedException("Acceptance routing test sends single messages.");
+        public ValueTask Send(ulong publishingId, List<Message> subEntryMessages, CompressionType compressionType) => throw new NotImplementedException("Acceptance routing test sends single messages.");
+        public Task<ulong> GetLastPublishingId() => Task.FromResult(0UL);
+        public bool IsOpen() => true;
+        public void Dispose() { }
+        public Task<ResponseCode> Close() => throw new NotImplementedException("Acceptance routing test never closes.");
+        public int MessagesSent => throw new NotImplementedException("Acceptance routing test never reports counters.");
+        public int ConfirmFrames => throw new NotImplementedException("Acceptance routing test never reports counters.");
+        public int IncomingFrames => throw new NotImplementedException("Acceptance routing test never reports counters.");
+        public int PublishCommandsSent => throw new NotImplementedException("Acceptance routing test never reports counters.");
+        public int PendingCount => throw new NotImplementedException("Acceptance routing test never reports counters.");
+        public ProducerInfo Info => throw new NotImplementedException("Acceptance routing test never reports info.");
+        public Task ReconnectPartition(StreamInfo streamInfo) => throw new NotImplementedException("Acceptance routing test never reconnects partitions.");
+    }
+
+    [Fact]
+   

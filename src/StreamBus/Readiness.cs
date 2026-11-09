@@ -65,10 +65,10 @@ public abstract record ReadinessPolicy
     public sealed record WaitIndefinitely : ReadinessPolicy;
 
     /// <summary>Shared <see cref="FailFast"/> instance, the default policy.</summary>
-    public static ReadinessPolicy FailFastPolicy { get; } = new FailFast();
+    public static ReadinessPolicy Default { get; } = new FailFast();
 
     /// <summary>Shared <see cref="WaitIndefinitely"/> instance.</summary>
-    public static ReadinessPolicy Indefinitely { get; } = new WaitIndefinitely();
+    public static ReadinessPolicy Forever { get; } = new WaitIndefinitely();
 
     /// <summary>Creates a bounded wait policy.</summary>
     /// <param name="timeout">Maximum time to wait for readiness.</param>

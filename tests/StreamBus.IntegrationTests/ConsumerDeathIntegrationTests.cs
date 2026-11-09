@@ -97,7 +97,7 @@ public sealed class ConsumerDeathIntegrationTests : IAsyncDisposable
     {
         var ct = TestContext.Current.CancellationToken;
         var stream = Unique("chaos-idle");
-        var reference = $"chaos-idle-{Guid.NewGuid():N}";
+        var consumerGroup = $"chaos-idle-{Guid.NewGuid():N}";
         var admin = await ConnectAdminAsync();
         await using var _ = admin;
         await admin.CreateStream(new StreamSpec(stream));
@@ -108,7 +108,7 @@ public sealed class ConsumerDeathIntegrationTests : IAsyncDisposable
         await using var instance = await BusInstance.StartAsync();
         await using var consumer = await instance.Bus.ConsumeAsync(
             stream,
-            new ConsumeOptions { Reference = reference },
+            new ConsumeOptions { ConsumerGroup = consumerGroup },
             ctx =>
             {
                 var seq = ParseSeq(ctx.Body);
@@ -122,12 +122,12 @@ public sealed class ConsumerDeathIntegrationTests : IAsyncDisposable
         var attached = await StreamManagementApi.WaitForAsync(
             () => management.GetStreamConsumersAsync(ct),
             consumers => consumers.Any(c => c.Queue == stream
-                && c.Reference == reference
+                && c.ConsumerGroup == consumerGroup
                 && c.ConnectionName is not null),
             TimeSpan.FromSeconds(30),
             "idle consumer connection in the management API");
         var originalConnection = attached
-            .First(c => c.Queue == stream && c.Reference == reference && c.ConnectionName is not null)
+            .First(c => c.Queue == stream && c.ConsumerGroup == consumerGroup && c.ConnectionName is not null)
             .ConnectionName!;
 
         Assert.True(
@@ -147,7 +147,7 @@ public sealed class ConsumerDeathIntegrationTests : IAsyncDisposable
         // GetConsumerOffsetAsync returns the last stored offset, not a count:
         // three messages at offsets 0..2 store offset 2.
         var stored = await StreamManagementApi.WaitForAsync(
-            () => admin.TryQueryOffset(reference, stream),
+            () => admin.TryQueryOffset(consumerGroup, stream),
             offset => offset == 2UL,
             TimeSpan.FromSeconds(10),
             "stored offset 2 after the redelivery");
@@ -156,17 +156,17 @@ public sealed class ConsumerDeathIntegrationTests : IAsyncDisposable
         var reattached = await StreamManagementApi.WaitForAsync(
             () => management.GetStreamConsumersAsync(ct),
             consumers => consumers.Any(c => c.Queue == stream
-                && c.Reference == reference
+                && c.ConsumerGroup == consumerGroup
                 && c.ConnectionName is { } name
                 && name != originalConnection),
             TimeSpan.FromSeconds(30),
             "consumer reattachment on a new connection");
         Assert.Contains(reattached, c => c.Queue == stream
-            && c.Reference == reference
+            && c.ConsumerGroup == consumerGroup
             && c.ConnectionName is { } name
             && name != originalConnection);
 
-        Assert.Equal(2UL, await instance.Bus.GetConsumerOffsetAsync(stream, reference, 0, ct));
+        Assert.Equal(2UL, await instance.Bus.GetConsumerOffsetAsync(stream, consumerGroup, 0, ct));
     }
 
     [Fact]
@@ -174,7 +174,7 @@ public sealed class ConsumerDeathIntegrationTests : IAsyncDisposable
     {
         var ct = TestContext.Current.CancellationToken;
         var super = Unique("chaos-sac");
-        var reference = $"chaos-sac-{Guid.NewGuid():N}";
+        var consumerGroup = $"chaos-sac-{Guid.NewGuid():N}";
         var admin = await ConnectAdminAsync();
         await using var _ = admin;
         await admin.CreateSuperStream(new PartitionsSuperStreamSpec(super, 2));
@@ -188,7 +188,7 @@ public sealed class ConsumerDeathIntegrationTests : IAsyncDisposable
         await using var second = await BusInstance.StartAsync();
         await first.Bus.ConsumeAsync(
             super,
-            new ConsumeOptions { IsSuperStream = true, Reference = reference, SingleActiveConsumer = true },
+            new ConsumeOptions { IsSuperStream = true, ConsumerGroup = consumerGroup, SingleActiveConsumer = true },
             ctx =>
             {
                 var seq = ParseSeq(ctx.Body);
@@ -199,22 +199,22 @@ public sealed class ConsumerDeathIntegrationTests : IAsyncDisposable
 
         var initial = await StreamManagementApi.WaitForAsync(
             () => management.GetStreamConsumersAsync(ct),
-            consumers => consumers.Count(c => c.Reference == reference
+            consumers => consumers.Count(c => c.ConsumerGroup == consumerGroup
                 && c.Active
                 && c.ConnectionName is not null) >= 2,
             TimeSpan.FromSeconds(30),
             "both SAC partitions active on the first instance");
         var firstConnections = initial
-            .Where(c => c.Reference == reference && c.Active && c.ConnectionName is not null)
+            .Where(c => c.ConsumerGroup == consumerGroup && c.Active && c.ConnectionName is not null)
             .Select(c => c.ConnectionName!)
             .ToHashSet(StringComparer.Ordinal);
         var firstPartitionZero = initial
-            .Single(c => c.Reference == reference && PartitionOf(c) == 0 && c.Active && c.ConnectionName is not null)
+            .Single(c => c.ConsumerGroup == consumerGroup && PartitionOf(c) == 0 && c.Active && c.ConnectionName is not null)
             .ConnectionName!;
 
         await second.Bus.ConsumeAsync(
             super,
-            new ConsumeOptions { IsSuperStream = true, Reference = reference, SingleActiveConsumer = true },
+            new ConsumeOptions { IsSuperStream = true, ConsumerGroup = consumerGroup, SingleActiveConsumer = true },
             ctx =>
             {
                 var seq = ParseSeq(ctx.Body);
@@ -230,7 +230,7 @@ public sealed class ConsumerDeathIntegrationTests : IAsyncDisposable
             consumers =>
             {
                 var partition = consumers
-                    .Where(c => c.Reference == reference && PartitionOf(c) == 0 && c.ConnectionName is not null)
+                    .Where(c => c.ConsumerGroup == consumerGroup && PartitionOf(c) == 0 && c.ConnectionName is not null)
                     .ToList();
                 return partition.Any(c => c.Active && firstConnections.Contains(c.ConnectionName!))
                     && partition.Any(c => !c.Active && !firstConnections.Contains(c.ConnectionName!));
@@ -238,7 +238,7 @@ public sealed class ConsumerDeathIntegrationTests : IAsyncDisposable
             TimeSpan.FromSeconds(30),
             "second instance waiting on partition 0");
         var secondPartitionZero = waiting
-            .First(c => c.Reference == reference
+            .First(c => c.ConsumerGroup == consumerGroup
                 && PartitionOf(c) == 0
                 && !c.Active
                 && c.ConnectionName is not null
@@ -251,7 +251,7 @@ public sealed class ConsumerDeathIntegrationTests : IAsyncDisposable
 
         await StreamManagementApi.WaitForAsync(
             () => management.GetStreamConsumersAsync(ct),
-            consumers => consumers.Any(c => c.Reference == reference
+            consumers => consumers.Any(c => c.ConsumerGroup == consumerGroup
                 && PartitionOf(c) == 0
                 && c.Active
                 && c.ConnectionName == secondPartitionZero),

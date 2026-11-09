@@ -107,7 +107,7 @@ internal static class TopologyMapping
 {
     /// <summary>Builds the wire-level stream spec for a declaration.</summary>
     /// <param name="declaration">Source declaration.</param>
-    /// <returns>Spec carrying only the knobs the declaration sets.</returns>
+    /// <returns>StreamSpec carrying only the knobs the declaration sets.</returns>
     public static RabbitMQ.Stream.Client.StreamSpec ToStreamSpec(StreamDeclaration declaration)
     {
         ArgumentNullException.ThrowIfNull(declaration);
@@ -121,7 +121,7 @@ internal static class TopologyMapping
 
     /// <summary>Builds the wire-level super-stream spec for a declaration.</summary>
     /// <param name="declaration">Source declaration.</param>
-    /// <returns>Spec carrying only the knobs the declaration sets.</returns>
+    /// <returns>StreamSpec carrying only the knobs the declaration sets.</returns>
     public static RabbitMQ.Stream.Client.PartitionsSuperStreamSpec ToSuperStreamSpec(SuperStreamDeclaration declaration)
     {
         ArgumentNullException.ThrowIfNull(declaration);

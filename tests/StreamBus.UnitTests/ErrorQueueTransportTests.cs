@@ -26,7 +26,7 @@ public sealed class ErrorQueueTransportTests
         FailedAt = new DateTimeOffset(2026, 10, 15, 12, 0, 0, TimeSpan.Zero),
         MessageId = Guid.Parse("0f8fad5b-d9cb-469f-a165-70867728950e"),
         CorrelationId = Guid.Parse("6b1f5c1a-0d9e-4b6f-9a4e-1f2d3c4b5a69"),
-        RoutingValue = "o-1",
+        RoutingKey = "o-1",
     };
 
     private static DeadLetterOptions Queue(string name, TimeSpan? confirmTimeout = null) => new()

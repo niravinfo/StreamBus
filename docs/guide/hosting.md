@@ -7,7 +7,7 @@ while declarations and consumer attaches converge in the background
 (permanent failures surface as critical logs).
 
 ```csharp
-services.AddStreamBusHosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(30)));
+services.AddStreamBusHosting(h => h.WaitUntilStarted(TimeSpan.FromSeconds(30)));
 ```
 
 Blocking waits for connections, topology declarations (streams, super
@@ -23,8 +23,8 @@ the host must come up before consumers can attach:
 ```csharp
 services.AddStreamBusHosting(h =>
 {
-    h.BlockStartupUntilReady(TimeSpan.FromSeconds(30));
-    h.BlockUntilConsumersAttached(false);
+    h.WaitUntilStarted(TimeSpan.FromSeconds(30));
+    h.WaitUntilConsumersAttached(false);
 });
 ```
 
@@ -38,7 +38,7 @@ if (readiness == BusReadiness.Fatal)
     throw new InvalidOperationException("Broker connection is fatal.");
 ```
 
-Policies: `FailFastPolicy` (current state, no wait), `UpTo(timeout)`,
+Policies: `Default` (current state, no wait), `UpTo(timeout)`,
 `Indefinitely`. States: `Ready`, `TimedOut`, `Fatal`. `bus.State`
 reports the live `BusConnectionState` (`Starting`, `Ready`,
 `TransientFailure`, `Fatal`).

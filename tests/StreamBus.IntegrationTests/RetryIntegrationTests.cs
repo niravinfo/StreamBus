@@ -113,7 +113,7 @@ public sealed class RetryIntegrationTests : IAsyncDisposable
         var c = await inst.Bus.ConsumeAsync(stream,
             new ConsumeOptions
             {
-                Reference = "grp-r1",
+                ConsumerGroup = "grp-r1",
                 Retry = new RetryPolicy { MaxAttempts = maxAttempts },
                 ErrorStream = new ErrorStreamOptions { Stream = error },
             },
@@ -133,7 +133,7 @@ public sealed class RetryIntegrationTests : IAsyncDisposable
         Assert.Equal(4UL, await inst.Bus.GetConsumerOffsetAsync(stream, "grp-r1", 0, TestContext.Current.CancellationToken));
         var errors = new List<(string Body, Dictionary<string, string?> App)>();
         var ec = await inst.Bus.ConsumeAsync(error,
-            new ConsumeOptions { Reference = "grp-r1-err", Offset = ConsumeOffset.AlwaysFirst },
+            new ConsumeOptions { ConsumerGroup = "grp-r1-err", StartOffset = StartOffset.AlwaysFirst },
             ctx =>
             {
                 var app = ctx.Headers.All.ToDictionary(kv => kv.Key, kv => kv.Value?.ToString());
@@ -183,7 +183,7 @@ public sealed class RetryIntegrationTests : IAsyncDisposable
         var first = new List<int>();
         await using (var inst = await BusInstance.StartAsync("i"))
         {
-            var c1 = await inst.Bus.ConsumeAsync(stream, new ConsumeOptions { Reference = "grp-r2" }, async ctx =>
+            var c1 = await inst.Bus.ConsumeAsync(stream, new ConsumeOptions { ConsumerGroup = "grp-r2" }, async ctx =>
             {
                 var (_, seq) = Parse(ctx.Body);
                 int n;
@@ -200,7 +200,7 @@ public sealed class RetryIntegrationTests : IAsyncDisposable
         // Fresh instance => fresh guard water: only a broker resume passes this test.
         var second = new List<int>();
         await using var inst2 = await BusInstance.StartAsync("i2");
-        var c2 = await inst2.Bus.ConsumeAsync(stream, new ConsumeOptions { Reference = "grp-r2" }, ctx =>
+        var c2 = await inst2.Bus.ConsumeAsync(stream, new ConsumeOptions { ConsumerGroup = "grp-r2" }, ctx =>
         {
             var (_, seq) = Parse(ctx.Body);
             lock (second) second.Add(seq);
@@ -265,9 +265,9 @@ public sealed class RetryIntegrationTests : IAsyncDisposable
         try
         {
             await a.Bus.ConsumeAsync(super,
-                new ConsumeOptions { IsSuperStream = true, Reference = "grp-r3" }, handler("ga"), TestContext.Current.CancellationToken);
+                new ConsumeOptions { IsSuperStream = true, ConsumerGroup = "grp-r3" }, handler("ga"), TestContext.Current.CancellationToken);
             await b.Bus.ConsumeAsync(super,
-                new ConsumeOptions { IsSuperStream = true, Reference = "grp-r3" }, handler("gb"), TestContext.Current.CancellationToken);
+                new ConsumeOptions { IsSuperStream = true, ConsumerGroup = "grp-r3" }, handler("gb"), TestContext.Current.CancellationToken);
             await WaitForAsync(() => all.Any(x => x.Instance == "ga") && Count(all) >= 2, TimeSpan.FromSeconds(60), "A to own a partition");
             await a.DisposeAsync();
             aDisposed = true;
@@ -325,7 +325,7 @@ public sealed class RetryIntegrationTests : IAsyncDisposable
         var c1 = await inst.Bus.ConsumeAsync(s1,
             new ConsumeOptions
             {
-                Reference = "grp-re1",
+                ConsumerGroup = "grp-re1",
                 Retry = new RetryPolicy { MaxAttempts = 2 },
                 ErrorStream = new ErrorStreamOptions { Stream = shared },
             },
@@ -334,7 +334,7 @@ public sealed class RetryIntegrationTests : IAsyncDisposable
         var c2 = await inst.Bus.ConsumeAsync(s2,
             new ConsumeOptions
             {
-                Reference = "grp-re2",
+                ConsumerGroup = "grp-re2",
                 Retry = new RetryPolicy { MaxAttempts = 2 },
                 ErrorStream = new ErrorStreamOptions { Stream = shared },
             },
@@ -342,7 +342,7 @@ public sealed class RetryIntegrationTests : IAsyncDisposable
             TestContext.Current.CancellationToken);
         var errors = new List<(string Body, Dictionary<string, string?> App)>();
         var ec = await inst.Bus.ConsumeAsync(shared,
-            new ConsumeOptions { Reference = "grp-re-read", Offset = ConsumeOffset.AlwaysFirst },
+            new ConsumeOptions { ConsumerGroup = "grp-re-read", StartOffset = StartOffset.AlwaysFirst },
             ctx =>
             {
                 var app = ctx.Headers.All.ToDictionary(kv => kv.Key, kv => kv.Value?.ToString());
@@ -385,7 +385,7 @@ public sealed class RetryIntegrationTests : IAsyncDisposable
         await using var inst = await BusInstance.StartAsync("i");
         var strictGot = new List<int>();
         var strictAttempts = new Dictionary<int, int>();
-        var cs = await inst.Bus.ConsumeAsync(strictStream, new ConsumeOptions { Reference = "grp-rf-s" }, ctx =>
+        var cs = await inst.Bus.ConsumeAsync(strictStream, new ConsumeOptions { ConsumerGroup = "grp-rf-s" }, ctx =>
         {
             var (_, seq) = Parse(ctx.Body);
             bool fail;
@@ -403,7 +403,7 @@ public sealed class RetryIntegrationTests : IAsyncDisposable
         var ck = await inst.Bus.ConsumeAsync(skipStream,
             new ConsumeOptions
             {
-                Reference = "grp-rf-k",
+                ConsumerGroup = "grp-rf-k",
                 Retry = new RetryPolicy { MaxAttempts = 2 },
                 ErrorStream = new ErrorStreamOptions { Stream = error },
             },
@@ -458,7 +458,7 @@ public sealed class RetryIntegrationTests : IAsyncDisposable
         var attempts = 0;
         var attemptsGate = new object();
         var got = new List<int>();
-        var c = await inst.Bus.ConsumeAsync(stream, new ConsumeOptions { Reference = "grp-rv" }, async ctx =>
+        var c = await inst.Bus.ConsumeAsync(stream, new ConsumeOptions { ConsumerGroup = "grp-rv" }, async ctx =>
         {
             int n;
             lock (attemptsGate) { attempts++; n = attempts; }

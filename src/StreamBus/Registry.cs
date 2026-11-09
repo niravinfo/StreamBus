@@ -240,7 +240,7 @@ internal sealed class StreamBusRegistry : IStreamBusRegistry, IAsyncDisposable
         {
             foreach (var registration in _publishStore.Registrations)
             {
-                if (registration.BusMarker == busType)
+                if (registration.BusType == busType)
                     pipelines.GetOrCreate(registration.MessageType);
             }
         }

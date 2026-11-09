@@ -93,26 +93,26 @@ public interface IStreamBus
 
     /// <summary>Attaches a raw (untyped) consumer to <paramref name="stream"/>; dispose the returned consumer to detach.</summary>
     /// <param name="stream">Stream (or super stream) to consume.</param>
-    /// <param name="options">Consume settings; <see cref="ConsumeOptions.Reference"/> is required.</param>
+    /// <param name="options">Consume settings; <see cref="ConsumeOptions.ConsumerGroup"/> is required.</param>
     /// <param name="handler">Invoked per delivery; exceptions drive the retry/error pipeline.</param>
     /// <param name="cancellationToken">Cancels the attach.</param>
     Task<IStreamConsumer> ConsumeAsync(string stream, ConsumeOptions options, Func<ConsumeContext, Task> handler, CancellationToken cancellationToken = default);
 
     /// <summary>Queries the stored broker-side offset for a consumer group on one partition.</summary>
     /// <param name="stream">Stream name.</param>
-    /// <param name="reference">Consumer group (reference) name.</param>
+    /// <param name="consumerGroup">Consumer group (consumerGroup) name.</param>
     /// <param name="partition">Partition index; 0 for plain streams.</param>
     /// <param name="cancellationToken">Cancels the query.</param>
     /// <returns>The stored offset, or null when the group has no stored offset.</returns>
-    Task<ulong?> GetConsumerOffsetAsync(string stream, string reference, int partition, CancellationToken cancellationToken = default);
+    Task<ulong?> GetConsumerOffsetAsync(string stream, string consumerGroup, int partition, CancellationToken cancellationToken = default);
 
     /// <summary>Stores the broker-side offset for a consumer group on one partition.</summary>
     /// <param name="stream">Stream name.</param>
-    /// <param name="reference">Consumer group (reference) name.</param>
+    /// <param name="consumerGroup">Consumer group (consumerGroup) name.</param>
     /// <param name="partition">Partition index; 0 for plain streams.</param>
     /// <param name="offset">Offset to store; the group resumes after it.</param>
     /// <param name="cancellationToken">Cancels the store.</param>
-    Task SetConsumerOffsetAsync(string stream, string reference, int partition, ulong offset, CancellationToken cancellationToken = default);
+    Task SetConsumerOffsetAsync(string stream, string consumerGroup, int partition, ulong offset, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Idempotent topology declaration surface. Startup declarations configured
@@ -184,7 +184,7 @@ internal abstract class StreamBusCore<TBus> : IStreamBus
     {
         ArgumentNullException.ThrowIfNull(message);
         var reg = _router.Resolve(typeof(TBus), typeof(T));
-        if (reg.IsSuper)
+        if (reg.IsSuperStream)
             throw new StreamBusConfigurationException($"Message {typeof(T).FullName} is registered with PublishSuper for stream '{reg.Stream}'. Use PublishSuperAsync (routing key required).");
         var effective = (options ?? new PublishOptions()) with { IsSuperStream = false, RoutingKey = null };
         return PublishThroughPipelineAsync(reg.Stream, routingKey: null, message, effective, cancellationToken);
@@ -210,7 +210,7 @@ internal abstract class StreamBusCore<TBus> : IStreamBus
         ArgumentNullException.ThrowIfNull(message);
         ArgumentException.ThrowIfNullOrWhiteSpace(routingKey);
         var reg = _router.Resolve(typeof(TBus), typeof(T));
-        if (!reg.IsSuper)
+        if (!reg.IsSuperStream)
             throw new StreamBusConfigurationException($"Message {typeof(T).FullName} is registered with Publish for stream '{reg.Stream}'. Use PublishAsync (no routing key).");
         var effective = (options ?? new PublishOptions()) with { IsSuperStream = true, RoutingKey = routingKey };
         return PublishThroughPipelineAsync(reg.Stream, routingKey, message, effective, cancellationToken);
@@ -324,11 +324,11 @@ internal abstract class StreamBusCore<TBus> : IStreamBus
     public Task<IStreamConsumer> ConsumeAsync(string stream, ConsumeOptions options, Func<ConsumeContext, Task> handler, CancellationToken cancellationToken = default)
         => _consumers.ConsumeAsync(typeof(TBus), stream, options, handler, cancellationToken, serializer: _serializer);
     /// <summary>Queries the stored broker-side offset for a consumer group on one partition; null when none is stored.</summary>
-    public Task<ulong?> GetConsumerOffsetAsync(string stream, string reference, int partition, CancellationToken cancellationToken = default)
-        => _consumers.GetOffsetAsync(stream, reference, partition, cancellationToken);
+    public Task<ulong?> GetConsumerOffsetAsync(string stream, string consumerGroup, int partition, CancellationToken cancellationToken = default)
+        => _consumers.GetOffsetAsync(stream, consumerGroup, partition, cancellationToken);
     /// <summary>Stores the broker-side offset for a consumer group on one partition.</summary>
-    public Task SetConsumerOffsetAsync(string stream, string reference, int partition, ulong offset, CancellationToken cancellationToken = default)
-        => _consumers.SetOffsetAsync(stream, reference, partition, offset, cancellationToken);
+    public Task SetConsumerOffsetAsync(string stream, string consumerGroup, int partition, ulong offset, CancellationToken cancellationToken = default)
+        => _consumers.SetOffsetAsync(stream, consumerGroup, partition, offset, cancellationToken);
     internal Task StartAsync(CancellationToken cancellationToken) => _supervisor.StartAsync(cancellationToken);
 }
 

@@ -49,7 +49,7 @@ internal sealed class ErrorQueueOptionsBuilder : IErrorQueueOptionsBuilder
 
 /// <summary>
 /// Kind-based dead-letter destination. A stream destination sets
-/// <see cref="Spec"/> (queue type unset); a queue destination sets
+/// <see cref="StreamSpec"/> (queue type unset); a queue destination sets
 /// <see cref="QueueType"/> (stream spec unset). Setting both is
 /// unrepresentable by construction — <see cref="IsStream"/> is
 /// <see cref="QueueType"/> being null.
@@ -63,7 +63,7 @@ public sealed record DeadLetterOptions
     public DeadLetterQueueType? QueueType { get; init; }
 
     /// <summary>Stream declaration spec when the destination is a stream; null for a queue destination.</summary>
-    public StreamOptions? Spec { get; init; }
+    public StreamOptions? StreamSpec { get; init; }
 
     /// <summary>Options for a queue destination; ignored for stream destinations.</summary>
     public ErrorQueueOptions QueueOptions { get; init; } = new();

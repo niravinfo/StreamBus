@@ -60,7 +60,7 @@ broker handle for closure. It must be positive and at most 60 seconds.
 Blocking is service-level, not per-bus:
 
 ```csharp
-services.AddStreamBusHosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(30)));
+services.AddStreamBusHosting(h => h.WaitUntilStarted(TimeSpan.FromSeconds(30)));
 ```
 
 A second `AddStreamBusHosting` call throws. Without it, startup is
@@ -73,7 +73,7 @@ consumer attaches by default. Opt out of the consumer wait explicitly:
 ```csharp
 services.AddStreamBusHosting(h =>
 {
-    h.BlockStartupUntilReady(TimeSpan.FromSeconds(30));
-    h.BlockUntilConsumersAttached(false);
+    h.WaitUntilStarted(TimeSpan.FromSeconds(30));
+    h.WaitUntilConsumersAttached(false);
 });
 ```

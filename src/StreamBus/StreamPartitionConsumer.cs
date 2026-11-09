@@ -132,7 +132,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
     private readonly string _stream;
     private readonly string _partitionStream;
     private readonly int _partitionIndex;
-    private readonly string _reference;
+    private readonly string _consumerGroup;
     private readonly ConsumeOptions _options;
     private readonly Func<ConsumeContext, Task> _handler;
     private readonly MonotonicOffsetGuard _guard;
@@ -167,7 +167,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
         string stream,
         string partitionStream,
         int partitionIndex,
-        string reference,
+        string consumerGroup,
         ConsumeOptions options,
         Func<ConsumeContext, Task> handler,
         MonotonicOffsetGuard guard,
@@ -187,7 +187,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(system);
         ArgumentNullException.ThrowIfNull(stream);
         ArgumentNullException.ThrowIfNull(partitionStream);
-        ArgumentNullException.ThrowIfNull(reference);
+        ArgumentNullException.ThrowIfNull(consumerGroup);
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(handler);
         ArgumentNullException.ThrowIfNull(guard);
@@ -202,7 +202,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
         _stream = stream;
         _partitionStream = partitionStream;
         _partitionIndex = partitionIndex;
-        _reference = reference;
+        _consumerGroup = consumerGroup;
         _options = options;
         _handler = handler;
         _guard = guard;
@@ -229,14 +229,14 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
         }
 
         // Same key format Task 4's SetOffsetAsync overwrites on the shared guard.
-        _waterKey = $"{reference}@{partitionStream}";
+        _waterKey = $"{consumerGroup}@{partitionStream}";
         _storer = new OffsetStorer(
-            options.OffsetStore.EveryMessages,
+            options.OffsetStore.StoreEveryMessages,
             guard,
             _waterKey,
             rejected =>
             {
-                _metrics.RecordStoreRejected(_vhost, _bus, _stream, _partitionIndex, _reference);
+                _metrics.RecordStoreRejected(_vhost, _bus, _stream, _partitionIndex, _consumerGroup);
                 _logger.LogDebug(
                     "Offset store rejected for stream {Stream} partition {Partition} offset {Offset} (not forward of local water).",
                     _stream, _partitionIndex, rejected);
@@ -261,13 +261,13 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
             try
             {
                 var resolved = await OffsetResolution.ResolveWithQueryAsync(
-                    _options.Offset,
+                    _options.StartOffset,
                     () => QueryStoredAsync(loopCt),
                     _guard.Water(_waterKey),
-                    _reference,
+                    _consumerGroup,
                     _partitionStream,
                     _logger,
-                    branch => _metrics.RecordFallback(_vhost, _bus, _stream, _partitionIndex, _reference, branch)).ConfigureAwait(false);
+                    branch => _metrics.RecordFallback(_vhost, _bus, _stream, _partitionIndex, _consumerGroup, branch)).ConfigureAwait(false);
 
                 var attach = new AttachState { LoopToken = loopCt };
                 // SAC+Next subscriptions receive nothing on this broker (tail attach
@@ -283,7 +283,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                 }
                 var config = new RawConsumerConfig(_partitionStream)
                 {
-                    Reference = _reference,
+                    Reference = _consumerGroup,
                     OffsetSpec = resolved,
                     IsSingleActiveConsumer = singleActive,
                     ConsumerUpdateListener = OnPromotedAsync,
@@ -337,13 +337,13 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                 failures = 0; // A successful attach resets the backoff streak.
                 Interlocked.Exchange(ref _state.RetryBlocked, 0); // A recreated attach never inherits a stuck 1 from a failed attach that died mid-retry.
                 _logger.LogInformation(
-                    "Consume attach ready for stream {Stream} partition {Partition} reference {Reference}.",
-                    _stream, _partitionIndex, _reference);
+                    "Consume attach ready for stream {Stream} partition {Partition} consumerGroup {ConsumerGroup}.",
+                    _stream, _partitionIndex, _consumerGroup);
 
                 PeriodicTimer? timer = null;
                 Task? timerTask = null;
                 CancellationTokenSource? tickCts = null;
-                if (_options.OffsetStore.MaxInterval is { } interval && interval > TimeSpan.Zero)
+                if (_options.OffsetStore.MaxFlushInterval is { } interval && interval > TimeSpan.Zero)
                 {
                     timer = new PeriodicTimer(interval);
                     lock (_life)
@@ -407,8 +407,8 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                         {
                             _logger.LogWarning(
                                 ex,
-                                "Offset timer for stream {Stream} partition {Partition} reference {Reference} faulted.",
-                                _stream, _partitionIndex, _reference);
+                                "Offset timer for stream {Stream} partition {Partition} consumerGroup {ConsumerGroup} faulted.",
+                                _stream, _partitionIndex, _consumerGroup);
                         }
                     }
                     timer?.Dispose();
@@ -441,8 +441,8 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
             {
                 _logger.LogWarning(
                     attachError,
-                    "Consume attach for stream {Stream} partition {Partition} reference {Reference} failed (streak {Attempt}); backing off before recreate.",
-                    _stream, _partitionIndex, _reference, failures);
+                    "Consume attach for stream {Stream} partition {Partition} consumerGroup {ConsumerGroup} failed (streak {Attempt}); backing off before recreate.",
+                    _stream, _partitionIndex, _consumerGroup, failures);
                 try
                 {
                     await Task.Delay(
@@ -776,7 +776,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                 CorrelationId = consumeContext.CorrelationId,
                 SentTime = consumeContext.SentTime,
                 ContentType = consumeContext.ContentType,
-                RoutingValue = consumeContext.RoutingValue,
+                RoutingKey = consumeContext.RoutingKey,
                 UserHeaders = ErrorEnvelope.CaptureUserHeaders(consumeContext.Headers),
                 SendHeaders = sendHeaders,
             };
@@ -810,7 +810,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
             CorrelationId = consumeContext.CorrelationId,
             SentTime = consumeContext.SentTime,
             ContentType = consumeContext.ContentType,
-            RoutingValue = consumeContext.RoutingValue,
+            RoutingKey = consumeContext.RoutingKey,
             UserHeaders = ErrorEnvelope.CaptureUserHeaders(consumeContext.Headers),
             SendHeaders = sendHeaders,
         };
@@ -818,15 +818,15 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
             "Retry budget exhausted for stream {Stream} partition {Partition} offset {Offset} after {Attempts} attempts; handing off to error stream {ErrorStream}.",
             _stream, _partitionIndex, offset, attempts, errorStream);
         // The handoff commit resets the cadence counter via Stored(): the handoff
-        // offset is always stored exactly once regardless of EveryMessages, and the
-        // MaxInterval timer then skips it via IsStored.
+        // offset is always stored exactly once regardless of StoreEveryMessages, and the
+        // MaxFlushInterval timer then skips it via IsStored.
         await _errors.HandOffAsync(
             envelope,
-            (env, cancellationToken) => _errors.PublishHandoffAsync(errorStream, env, _options.HandoffConfirmTimeout, cancellationToken),
+            (env, cancellationToken) => _errors.PublishHandoffAsync(errorStream, env, _options.ErrorPublishTimeout, cancellationToken),
             () => AdmitAndCommitStoreAsync(consumer, offset, attach, attach.LoopToken),
             (n, ex) => RetryDelays.ResolveDelay(_options.Retry, n, ex, _logger),
             attach.LoopToken,
-            _options.HandoffConfirmTimeout).ConfigureAwait(false);
+            _options.ErrorPublishTimeout).ConfigureAwait(false);
     }
 
     private ConsumeContext BuildContext(ulong offset, Message message, CancellationToken cancellationToken, IServiceProvider services, StreamSendHeaders sendHeaders)
@@ -842,7 +842,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
             Stream = _stream,
             Partition = _partitionIndex,
             Offset = offset,
-            RoutingValue = routingObj?.ToString(),
+            RoutingKey = routingObj?.ToString(),
             Body = body,
             MessageId = StreamWire.ReadGuid(message.Properties?.MessageId),
             CorrelationId = StreamWire.ReadGuid(message.Properties?.CorrelationId),
@@ -953,12 +953,12 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
     private async Task SendAndBookkeepAsync(IStreamConsumerHandle consumer, ulong offset, AttachState attach, CancellationToken cancellationToken)
     {
         _logger.LogDebug(
-            "Storing offset {Offset} for stream {Stream} partition {Partition} reference {Reference}.",
-            offset, _stream, _partitionIndex, _reference);
+            "Storing offset {Offset} for stream {Stream} partition {Partition} consumerGroup {ConsumerGroup}.",
+            offset, _stream, _partitionIndex, _consumerGroup);
         await consumer.StoreOffset(offset).ConfigureAwait(false);
         _logger.LogDebug(
-            "Stored offset {Offset} for stream {Stream} partition {Partition} reference {Reference}.",
-            offset, _stream, _partitionIndex, _reference);
+            "Stored offset {Offset} for stream {Stream} partition {Partition} consumerGroup {ConsumerGroup}.",
+            offset, _stream, _partitionIndex, _consumerGroup);
         _storer.Stored(offset);
         Interlocked.Exchange(ref _state.LastStored, (long)offset);
         if (Interlocked.Exchange(ref attach.RegressionChecked, 1) == 0)
@@ -972,7 +972,7 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
         ulong? brokerHeld;
         try
         {
-            brokerHeld = await ResolveSystem().TryQueryOffsetAsync(_reference, _partitionStream, cancellationToken).ConfigureAwait(false);
+            brokerHeld = await ResolveSystem().TryQueryOffsetAsync(_consumerGroup, _partitionStream, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -982,17 +982,17 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
         {
             _logger.LogDebug(
                 ex,
-                "Regression read-back query failed for stream {Stream} partition {Partition} reference {Reference}.",
-                _stream, _partitionIndex, _reference);
+                "Regression read-back query failed for stream {Stream} partition {Partition} consumerGroup {ConsumerGroup}.",
+                _stream, _partitionIndex, _consumerGroup);
             return;
         }
         var water = _guard.Water(_waterKey);
         if (brokerHeld is { } held && held < water)
         {
-            _metrics.RecordRegressed(_vhost, _bus, _stream, _partitionIndex, _reference);
+            _metrics.RecordRegressed(_vhost, _bus, _stream, _partitionIndex, _consumerGroup);
             _logger.LogWarning(
-                "Stored offset regressed for stream {Stream} partition {Partition} reference {Reference}: broker holds {Broker} below local water {Water}.",
-                _stream, _partitionIndex, _reference, held, water);
+                "Stored offset regressed for stream {Stream} partition {Partition} consumerGroup {ConsumerGroup}: broker holds {Broker} below local water {Water}.",
+                _stream, _partitionIndex, _consumerGroup, held, water);
         }
     }
 
@@ -1018,8 +1018,8 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                         {
                             _logger.LogWarning(
                                 ex,
-                                "Offset timer store faulted for stream {Stream} partition {Partition} reference {Reference}.",
-                                _stream, _partitionIndex, _reference);
+                                "Offset timer store faulted for stream {Stream} partition {Partition} consumerGroup {ConsumerGroup}.",
+                                _stream, _partitionIndex, _consumerGroup);
                         }
                     },
                     CancellationToken.None,
@@ -1037,14 +1037,14 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
         }
     }
 
-    private Task<IOffsetType> OnPromotedAsync(string reference, string stream, bool promotedAsActive)
+    private Task<IOffsetType> OnPromotedAsync(string consumerGroup, string stream, bool promotedAsActive)
     {
         // The client's fallback on listener failure is OffsetTypeNext, which would skip
         // the backlog — so this listener never throws and never returns null. It ignores
         // its arguments except for logging and queries the broker fresh on every
         // promotion. No ambient cancellation token exists here; CancellationToken.None
         // avoids coupling promotion resolution to loop shutdown.
-        return OnPromotedCoreAsync(reference, stream, promotedAsActive);
+        return OnPromotedCoreAsync(consumerGroup, stream, promotedAsActive);
     }
 
     // The supervisor swaps and disposes its StreamSystem on reconnect. A
@@ -1061,26 +1061,26 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                 "StreamBus connection is not ready; partition attach will retry.");
     }
 
-    // Resume from the stored offset (the broker's per-reference stored value);
+    // Resume from the stored offset (the broker's per-consumerGroup stored value);
     // create, promote, and reconnect attach alike.
     private Task<ulong?> QueryStoredAsync(CancellationToken cancellationToken)
-        => ResolveSystem().TryQueryOffsetAsync(_reference, _partitionStream, cancellationToken);
+        => ResolveSystem().TryQueryOffsetAsync(_consumerGroup, _partitionStream, cancellationToken);
 
-    private async Task<IOffsetType> OnPromotedCoreAsync(string reference, string stream, bool promotedAsActive)
+    private async Task<IOffsetType> OnPromotedCoreAsync(string consumerGroup, string stream, bool promotedAsActive)
     {
         try
         {
             _logger.LogInformation(
-                "Consumer promoted for reference {Reference} on {PartitionStream} (active {Active}); re-resolving offset.",
-                reference, stream, promotedAsActive);
+                "Consumer promoted for consumerGroup {ConsumerGroup} on {PartitionStream} (active {Active}); re-resolving offset.",
+                consumerGroup, stream, promotedAsActive);
             return await OffsetResolution.ResolveWithQueryAsync(
-                _options.Offset,
+                _options.StartOffset,
                 () => QueryStoredAsync(CancellationToken.None),
                 _guard.Water(_waterKey),
-                _reference,
+                _consumerGroup,
                 _partitionStream,
                 _logger,
-                branch => _metrics.RecordFallback(_vhost, _bus, _stream, _partitionIndex, _reference, branch)).ConfigureAwait(false);
+                branch => _metrics.RecordFallback(_vhost, _bus, _stream, _partitionIndex, _consumerGroup, branch)).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -1089,9 +1089,9 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
             // to a replay from the first offset instead of failing.
             _logger.LogWarning(
                 ex,
-                "Offset re-resolution on promotion failed for reference {Reference} on {PartitionStream}; falling back to first offset.",
-                reference, stream);
-            _metrics.RecordFallback(_vhost, _bus, _stream, _partitionIndex, _reference, PromotionFallbackBranch);
+                "Offset re-resolution on promotion failed for consumerGroup {ConsumerGroup} on {PartitionStream}; falling back to first offset.",
+                consumerGroup, stream);
+            _metrics.RecordFallback(_vhost, _bus, _stream, _partitionIndex, _consumerGroup, PromotionFallbackBranch);
             return new OffsetTypeFirst();
         }
     }
@@ -1156,8 +1156,8 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
         {
             _logger.LogDebug(
                 ex,
-                "Error closing consumer for stream {Stream} partition {Partition} reference {Reference}.",
-                _stream, _partitionIndex, _reference);
+                "Error closing consumer for stream {Stream} partition {Partition} consumerGroup {ConsumerGroup}.",
+                _stream, _partitionIndex, _consumerGroup);
         }
     }
 

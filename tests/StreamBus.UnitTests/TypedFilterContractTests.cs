@@ -71,7 +71,7 @@ public sealed class TypedFilterContractTests
         Stream = "contracts",
         Partition = 0,
         Offset = 0,
-        RoutingValue = null,
+        RoutingKey = null,
         Body = ReadOnlyMemory<byte>.Empty,
         Headers = new StreamHeaders(new Dictionary<string, object?>(), SystemTextJsonStreamSerializer.Default),
         SendHeaders = new StreamSendHeaders(null, SystemTextJsonStreamSerializer.Default),

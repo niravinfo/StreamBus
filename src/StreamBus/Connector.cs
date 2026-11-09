@@ -26,23 +26,23 @@ public interface IStreamSystemHandle : IAsyncDisposable
     Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken cancellationToken);
 
     /// <summary>Creates a raw consumer for one stream partition from the given client config.</summary>
-    /// <param name="config">Client raw-consumer config (reference, offset handlers, stream).</param>
+    /// <param name="config">Client raw-consumer config (consumerGroup, offset handlers, stream).</param>
     /// <param name="cancellationToken">Cancels the create.</param>
     Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken cancellationToken);
 
-    /// <summary>Queries the stored offset for a reference on a stream without failing when absent.</summary>
-    /// <param name="reference">Consumer reference.</param>
+    /// <summary>Queries the stored offset for a consumerGroup on a stream without failing when absent.</summary>
+    /// <param name="consumerGroup">Consumer consumerGroup.</param>
     /// <param name="stream">Stream name.</param>
     /// <param name="cancellationToken">Cancels the query.</param>
     /// <returns>The stored offset, or null when none is stored.</returns>
-    Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken cancellationToken);
+    Task<ulong?> TryQueryOffsetAsync(string consumerGroup, string stream, CancellationToken cancellationToken);
 
-    /// <summary>Stores an offset for a reference on a stream (broker-side persistence).</summary>
-    /// <param name="reference">Consumer reference.</param>
+    /// <summary>Stores an offset for a consumerGroup on a stream (broker-side persistence).</summary>
+    /// <param name="consumerGroup">Consumer consumerGroup.</param>
     /// <param name="stream">Stream name.</param>
     /// <param name="offset">Offset to store.</param>
     /// <param name="cancellationToken">Cancels the store.</param>
-    Task StoreSystemOffsetAsync(string reference, string stream, ulong offset, CancellationToken cancellationToken);
+    Task StoreSystemOffsetAsync(string consumerGroup, string stream, ulong offset, CancellationToken cancellationToken);
 
     /// <summary><see langword="true"/> when a plain stream with this name exists.</summary>
     /// <param name="stream">Stream name.</param>
@@ -164,18 +164,18 @@ internal sealed class StreamSystemHandle : IStreamSystemHandle
     /// <summary>Disposes the underlying system.</summary>
     public ValueTask DisposeAsync() => _system.DisposeAsync();
 
-    /// <summary>Queries the stored offset for a reference; null when none is stored.</summary>
-    public async Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken cancellationToken)
+    /// <summary>Queries the stored offset for a consumerGroup; null when none is stored.</summary>
+    public async Task<ulong?> TryQueryOffsetAsync(string consumerGroup, string stream, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        return await _system.TryQueryOffset(reference, stream).ConfigureAwait(false);
+        return await _system.TryQueryOffset(consumerGroup, stream).ConfigureAwait(false);
     }
 
-    /// <summary>Stores an offset broker-side for a reference on a stream.</summary>
-    public async Task StoreSystemOffsetAsync(string reference, string stream, ulong offset, CancellationToken cancellationToken)
+    /// <summary>Stores an offset broker-side for a consumerGroup on a stream.</summary>
+    public async Task StoreSystemOffsetAsync(string consumerGroup, string stream, ulong offset, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        await _system.StoreOffset(reference, stream, offset).ConfigureAwait(false);
+        await _system.StoreOffset(consumerGroup, stream, offset).ConfigureAwait(false);
     }
 
     /// <summary><see langword="true"/> when a plain stream with this name exists.</summary>

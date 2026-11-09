@@ -96,10 +96,10 @@ public sealed class ActivityTests
         await using var harness = await PipelineSemanticsTests.Harness.CreateAsync();
         var options = new ConsumeOptions
         {
-            Reference = "activity-grp",
+            ConsumerGroup = "activity-grp",
             SingleActiveConsumer = false,
-            Offset = ConsumeOffset.AlwaysFirst,
-            OffsetStore = new OffsetStoreOptions { EveryMessages = 1 },
+            StartOffset = StartOffset.AlwaysFirst,
+            OffsetStore = new OffsetStoreOptions { StoreEveryMessages = 1 },
         };
         harness.Consumer = await harness.Registry.ConsumeAsync(
             typeof(DefaultBus), "activity-consume", options, _ => Task.CompletedTask,
@@ -130,10 +130,10 @@ public sealed class ActivityTests
         await using var harness = await PipelineSemanticsTests.Harness.CreateAsync();
         var options = new ConsumeOptions
         {
-            Reference = "activity-error-grp",
+            ConsumerGroup = "activity-error-grp",
             SingleActiveConsumer = false,
-            Offset = ConsumeOffset.AlwaysFirst,
-            OffsetStore = new OffsetStoreOptions { EveryMessages = 1 },
+            StartOffset = StartOffset.AlwaysFirst,
+            OffsetStore = new OffsetStoreOptions { StoreEveryMessages = 1 },
             Retry = new RetryPolicy
             {
                 MaxAttempts = 1,

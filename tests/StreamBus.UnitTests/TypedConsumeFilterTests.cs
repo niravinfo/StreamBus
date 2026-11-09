@@ -781,7 +781,7 @@ public sealed class TypedConsumeFilterTests
             Stream = "orders",
             Partition = 0,
             Offset = 0,
-            RoutingValue = null,
+            RoutingKey = null,
             Body = ReadOnlyMemory<byte>.Empty,
             Headers = new StreamHeaders(new Dictionary<string, object?>(), SystemTextJsonStreamSerializer.Default),
             SendHeaders = new StreamSendHeaders(null, SystemTextJsonStreamSerializer.Default),
@@ -797,10 +797,10 @@ public sealed class TypedConsumeFilterTests
         int maxAttempts = 1,
         string? errorStream = null) => new()
         {
-            Reference = "grp",
+            ConsumerGroup = "grp",
             SingleActiveConsumer = false,
-            Offset = ConsumeOffset.AlwaysFirst,
-            OffsetStore = new OffsetStoreOptions { EveryMessages = 1 },
+            StartOffset = StartOffset.AlwaysFirst,
+            OffsetStore = new OffsetStoreOptions { StoreEveryMessages = 1 },
             Retry = errorStream is null
             ? new RetryPolicy
             {

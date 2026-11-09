@@ -72,7 +72,7 @@ public sealed class PublishTests
         var options = new StreamBusOptions { Vhost = "/", UserName = "app", Password = "secret" };
         var supervisor = new StreamBusConnectionSupervisor(options, new ReadyConnector(system));
         supervisor.StartAsync(CancellationToken.None).GetAwaiter().GetResult();
-        var readiness = supervisor.WaitUntilReadyAsync(ReadinessPolicy.Indefinitely, new CancellationTokenSource(TimeSpan.FromSeconds(5)).Token).GetAwaiter().GetResult();
+        var readiness = supervisor.WaitUntilReadyAsync(ReadinessPolicy.Forever, new CancellationTokenSource(TimeSpan.FromSeconds(5)).Token).GetAwaiter().GetResult();
         Assert.Equal(BusReadiness.Ready, readiness);
         return (new StreamProducerRegistry(supervisor, "/"), system);
     }
@@ -127,7 +127,7 @@ public sealed class PublishTests
 
         var elapsed = Stopwatch.StartNew();
         await Assert.ThrowsAsync<StreamBusTimeoutException>(() =>
-            registry.PublishAsync("orders", new byte[] { 1 }, new PublishOptions { Timeout = TimeSpan.FromMilliseconds(200) }, TestContext.Current.CancellationToken));
+            registry.PublishAsync("orders", new byte[] { 1 }, new PublishOptions { ConfirmTimeout = TimeSpan.FromMilliseconds(200) }, TestContext.Current.CancellationToken));
         elapsed.Stop();
         release.Set();
 
@@ -176,7 +176,7 @@ public sealed class PublishTests
         await supervisor.StartAsync(CancellationToken.None);
         var reg = new StreamProducerRegistry(supervisor, "/");
         var ex = await Assert.ThrowsAsync<StreamBusTimeoutException>(() =>
-            reg.PublishAsync("orders", new byte[] { 1 }, new PublishOptions { Timeout = TimeSpan.FromMilliseconds(200) }, TestContext.Current.CancellationToken));
+            reg.PublishAsync("orders", new byte[] { 1 }, new PublishOptions { ConfirmTimeout = TimeSpan.FromMilliseconds(200) }, TestContext.Current.CancellationToken));
         Assert.Contains("outcome unknown", ex.Message);
         Assert.Equal(BusConnectionState.Ready, supervisor.State);
     }
@@ -209,7 +209,7 @@ public sealed class PublishTests
         await supervisor.StartAsync(CancellationToken.None);
         var reg = new StreamProducerRegistry(supervisor, "/");
         await Assert.ThrowsAsync<StreamBusTimeoutException>(() =>
-            reg.PublishAsync("orders", new byte[] { 1 }, new PublishOptions { Timeout = TimeSpan.FromMilliseconds(200) }, TestContext.Current.CancellationToken));
+            reg.PublishAsync("orders", new byte[] { 1 }, new PublishOptions { ConfirmTimeout = TimeSpan.FromMilliseconds(200) }, TestContext.Current.CancellationToken));
         await reg.PublishAsync("orders", new byte[] { 2 }, new PublishOptions(), TestContext.Current.CancellationToken);
         Assert.Equal(2, system.PlainCreations);
     }
@@ -242,7 +242,7 @@ public sealed class PublishTests
         var options = new StreamBusOptions { Vhost = "/", UserName = "app", Password = "secret" };
         var supervisor = new StreamBusConnectionSupervisor(options, new ReadyConnector(system));
         await supervisor.StartAsync(CancellationToken.None);
-        var readiness = await supervisor.WaitUntilReadyAsync(ReadinessPolicy.Indefinitely, new CancellationTokenSource(TimeSpan.FromSeconds(5)).Token);
+        var readiness = await supervisor.WaitUntilReadyAsync(ReadinessPolicy.Forever, new CancellationTokenSource(TimeSpan.FromSeconds(5)).Token);
         Assert.Equal(BusReadiness.Ready, readiness);
         var registry = new StreamProducerRegistry(supervisor, "/");
         await registry.PublishAsync("orders", new byte[] { 1 }, new PublishOptions(), TestContext.Current.CancellationToken);
@@ -268,7 +268,7 @@ public sealed class PublishTests
     {
         var registry = CreateUnstartedRegistry();
         await Assert.ThrowsAsync<StreamBusConfigurationException>(() =>
-            registry.PublishAsync("orders", new byte[] { 1 }, new PublishOptions { Timeout = TimeSpan.FromMilliseconds(milliseconds) }, TestContext.Current.CancellationToken));
+            registry.PublishAsync("orders", new byte[] { 1 }, new PublishOptions { ConfirmTimeout = TimeSpan.FromMilliseconds(milliseconds) }, TestContext.Current.CancellationToken));
     }
 
     [Theory]

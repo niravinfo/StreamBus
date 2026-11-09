@@ -122,7 +122,7 @@ public sealed class BrokerRestartIntegrationTests : IAsyncDisposable
     {
         var ct = TestContext.Current.CancellationToken;
         var stream = Unique("chaos-kill");
-        var reference = $"chaos-kill-{Guid.NewGuid():N}";
+        var consumerGroup = $"chaos-kill-{Guid.NewGuid():N}";
         var admin = await ConnectAdminAsync();
         await using var _ = admin;
         await admin.CreateStream(new StreamSpec(stream));
@@ -134,7 +134,7 @@ public sealed class BrokerRestartIntegrationTests : IAsyncDisposable
         await using var consumerBus = await BusInstance.StartAsync();
         await using var consumer = await consumerBus.Bus.ConsumeAsync(
             stream,
-            new ConsumeOptions { Reference = reference },
+            new ConsumeOptions { ConsumerGroup = consumerGroup },
             ctx =>
             {
                 var seq = ParseSeq(ctx.Body);
@@ -183,7 +183,7 @@ public sealed class BrokerRestartIntegrationTests : IAsyncDisposable
                             await publisher.Bus.PublishRawAsync(
                                 stream,
                                 Body(seq),
-                                new PublishOptions { Timeout = TimeSpan.FromSeconds(2) },
+                                new PublishOptions { ConfirmTimeout = TimeSpan.FromSeconds(2) },
                                 ct);
                             break;
                         }
@@ -248,7 +248,7 @@ public sealed class BrokerRestartIntegrationTests : IAsyncDisposable
                 var consumers = await management.GetStreamConsumersAsync(ct);
                 var connections = await management.GetStreamConnectionsAsync(ct);
                 var rows = string.Join("; ", consumers
-                    .Where(c => c.Reference == reference)
+                    .Where(c => c.ConsumerGroup == consumerGroup)
                     .Select(c => $"{c.Queue} active={c.Active} conn={c.ConnectionName ?? "<none>"}"));
                 var errorCount = publishErrors.Count;
                 Assert.Fail(
@@ -288,7 +288,7 @@ public sealed class BrokerRestartIntegrationTests : IAsyncDisposable
             Assert.True(snapshot[i].Offset >= snapshot[i - 1].Offset, "delivery order must follow offset order");
 
         var stored = await StreamManagementApi.WaitForAsync(
-            () => admin.TryQueryOffset(reference, stream),
+            () => admin.TryQueryOffset(consumerGroup, stream),
             offset => offset == offsets[^1],
             TimeSpan.FromSeconds(30),
             "stored offset to reach the last delivered position");

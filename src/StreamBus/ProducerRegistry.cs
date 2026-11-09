@@ -26,26 +26,30 @@ internal sealed class StreamProducerRegistry
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(stream);
         ArgumentNullException.ThrowIfNull(options);
-        if (options.Timeout <= TimeSpan.Zero)
-            throw new StreamBusConfigurationException("PublishOptions.Timeout must be positive.");
+        if (options.ConfirmTimeout is { } configuredTimeout && configuredTimeout <= TimeSpan.Zero)
+            throw new StreamBusConfigurationException("PublishOptions.ConfirmTimeout must be positive.");
         if (options.IsSuperStream && string.IsNullOrWhiteSpace(options.RoutingKey))
             throw new StreamBusConfigurationException($"PublishOptions.RoutingKey is required for super stream '{stream}'.");
-        var readiness = await _supervisor.WaitUntilReadyAsync(options.ReadinessPolicy, cancellationToken).ConfigureAwait(false);
+        var readiness = await _supervisor.WaitUntilReadyAsync(options.Readiness, cancellationToken).ConfigureAwait(false);
         if (readiness == BusReadiness.Fatal)
             throw new StreamBusFatalException($"StreamBus for vhost '{_vhost}' is in Fatal state; publish to '{stream}' refused.");
         if (readiness != BusReadiness.Ready)
             throw new StreamBusNotReadyException($"StreamBus for vhost '{_vhost}' is not ready ({readiness}); publish to '{stream}' refused.");
         var (entry, handle) = await GetOrCreateAsync(stream, options.IsSuperStream, cancellationToken).ConfigureAwait(false);
-        using var timeoutCts = new CancellationTokenSource(options.Timeout);
-        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
+        using var timeoutCts = options.ConfirmTimeout is { } confirmTimeout
+            ? new CancellationTokenSource(confirmTimeout)
+            : null;
+        using var linked = timeoutCts is null
+            ? null
+            : CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
         try
         {
-            await handle.SendAsync(body, options, linked.Token).ConfigureAwait(false);
+            await handle.SendAsync(body, options, linked?.Token ?? cancellationToken).ConfigureAwait(false);
         }
-        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (timeoutCts is not null && timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
             await InvalidateAsync(entry, handle).ConfigureAwait(false);
-            throw new StreamBusTimeoutException($"Publish to stream '{stream}' was not confirmed within {options.Timeout} (outcome unknown).");
+            throw new StreamBusTimeoutException($"Publish to stream '{stream}' was not confirmed within {options.ConfirmTimeout} (outcome unknown).");
         }
         catch (StreamBusPublishException)
         {
@@ -62,13 +66,13 @@ internal sealed class StreamProducerRegistry
         }
     }
 
-    public async Task PublishEnvelopeAsync(string stream, ReadOnlyMemory<byte> body, StreamMessageProperties properties, TimeSpan confirmTimeout, CancellationToken cancellationToken = default)
+    public async Task PublishEnvelopeAsync(string stream, ReadOnlyMemory<byte> body, StreamMessageProperties properties, TimeSpan? confirmTimeout, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(stream);
         ArgumentNullException.ThrowIfNull(properties);
-        if (confirmTimeout <= TimeSpan.Zero)
+        if (confirmTimeout is { } configuredTimeout && configuredTimeout <= TimeSpan.Zero)
             throw new StreamBusConfigurationException("Error hand-off confirm timeout must be positive.");
-        var readiness = await _supervisor.WaitUntilReadyAsync(ReadinessPolicy.FailFastPolicy, cancellationToken).ConfigureAwait(false);
+        var readiness = await _supervisor.WaitUntilReadyAsync(ReadinessPolicy.Default, cancellationToken).ConfigureAwait(false);
         if (readiness == BusReadiness.Fatal)
             throw new StreamBusFatalException($"StreamBus for vhost '{_vhost}' is in Fatal state; publish to '{stream}' refused.");
         if (readiness != BusReadiness.Ready)
@@ -77,7 +81,8 @@ internal sealed class StreamProducerRegistry
         var plain = handle as IStreamPlainProducerHandle
             ?? throw new StreamBusConfigurationException($"Error hand-off target '{stream}' is not a plain stream (internal error).");
         using var attemptCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        attemptCts.CancelAfter(confirmTimeout);
+        if (confirmTimeout is { } timeout)
+            attemptCts.CancelAfter(timeout);
         try
         {
             await plain.SendEnvelopeAsync(

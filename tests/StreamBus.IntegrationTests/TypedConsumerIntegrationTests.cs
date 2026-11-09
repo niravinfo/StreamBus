@@ -295,7 +295,7 @@ public sealed class TypedConsumerIntegrationTests : IAsyncDisposable
         Assert.Equal("ok", got[0].Ctx.Message.OrderId);
         var errors = new List<byte[]>();
         await using var reader = await inst.Bus.ConsumeAsync(error,
-            new ConsumeOptions { Offset = ConsumeOffset.AlwaysFirst, Reference = Unique("read") },
+            new ConsumeOptions { StartOffset = StartOffset.AlwaysFirst, ConsumerGroup = Unique("read") },
             ctx => { lock (errors) errors.Add(ctx.Body.ToArray()); return Task.CompletedTask; }, ct);
         await WaitForAsync(() => { lock (errors) return errors.Count >= 1; }, TimeSpan.FromSeconds(30), "error handoff");
         Assert.Equal("{bad json", Encoding.UTF8.GetString(errors[0]));
@@ -399,7 +399,7 @@ public sealed class TypedConsumerIntegrationTests : IAsyncDisposable
         await pub.DisposeAsync();
         var errors = new List<byte[]>();
         await using var reader = await inst.Bus.ConsumeAsync(error,
-            new ConsumeOptions { Offset = ConsumeOffset.AlwaysFirst, Reference = Unique("read") },
+            new ConsumeOptions { StartOffset = StartOffset.AlwaysFirst, ConsumerGroup = Unique("read") },
             ctx => { lock (errors) errors.Add(ctx.Body.ToArray()); return Task.CompletedTask; }, ct);
         await WaitForAsync(() => { lock (errors) return errors.Count >= 1; }, TimeSpan.FromSeconds(30), "mismatch handoff");
         Assert.Equal(mismatched, errors[0]);
