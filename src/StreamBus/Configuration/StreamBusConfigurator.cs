@@ -1,4 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Net.Security;
+using System.Security.Authentication;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
@@ -44,6 +46,36 @@ public interface IHostConfigurator
     /// <summary>Sets consumers multiplexed per connection.</summary>
     /// <param name="count">Consumer count; 1..255.</param>
     void ConsumersPerConnection(int count = 1);
+
+    /// <summary>Enables TLS for both the stream protocol and AMQP connections. Optional; off by default.</summary>
+    /// <param name="configure">Optional TLS settings callback.</param>
+    /// <remarks>
+    /// Without explicit <see cref="StreamPort"/>/<see cref="AmqpPort"/> calls, enabling TLS switches the
+    /// default ports to the conventional RabbitMQ TLS ports (5551 stream, 5671 AMQP). Explicit port calls
+    /// always win, regardless of call order. Calling UseTls again replaces the previous TLS settings.
+    /// </remarks>
+    void UseTls(Action<ITlsConfigurator>? configure = null);
+}
+
+/// <summary>Configures TLS settings inside <c>UseTls</c>.</summary>
+public interface ITlsConfigurator
+{
+    /// <summary>Sets the server name used for TLS certificate validation (SNI and name matching); null falls back to the host name.</summary>
+    /// <param name="name">Server name; must not be null.</param>
+    void ServerName(string name);
+
+    /// <summary>Sets a PFX client certificate file presented to the broker.</summary>
+    /// <param name="path">Path to the PFX certificate file; must not be null.</param>
+    /// <param name="password">Optional password for the certificate file.</param>
+    void ClientCertificate(string path, string? password = null);
+
+    /// <summary>Sets certificate policy errors accepted despite failing validation.</summary>
+    /// <param name="errors">The accepted policy errors; default <see cref="SslPolicyErrors.None"/>.</param>
+    void AcceptableCertificateErrors(SslPolicyErrors errors);
+
+    /// <summary>Sets the allowed TLS protocol versions; <see cref="SslProtocols.None"/> means the operating system default.</summary>
+    /// <param name="version">Allowed TLS protocol versions.</param>
+    void ProtocolVersion(SslProtocols version);
 }
 
 /// <summary>Configures one StreamBus bus: connection, topology, and retry.</summary>
@@ -425,6 +457,10 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
     private string _password = "";
     private int _streamPort = 5552;
     private int _amqpPort = 5672;
+    private int? _streamPortUser;
+    private int? _amqpPortUser;
+    private bool _tlsEnabled;
+    private StreamBusTlsOptions? _tls;
     private TimeSpan _heartbeat = TimeSpan.FromSeconds(60);
     private TimeSpan _monitorInterval = TimeSpan.FromSeconds(5);
     private int _producers = 1;
@@ -639,8 +675,9 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
             UserName = _user,
             Password = _password,
             Host = _host!.Trim(),
-            StreamPort = _streamPort,
-            AmqpPort = _amqpPort,
+            StreamPort = _streamPortUser ?? (_tlsEnabled ? 5551 : _streamPort),
+            AmqpPort = _amqpPortUser ?? (_tlsEnabled ? 5671 : _amqpPort),
+            Tls = _tls,
             Heartbeat = _heartbeat,
             Connection = new StreamBusConnectionOptions
             {
@@ -668,9 +705,25 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
             _owner._password = password;
         }
 
-        public void StreamPort(int port = 5552) => _owner._streamPort = port;
+        public void StreamPort(int port = 5552)
+        {
+            _owner._streamPort = port;
+            _owner._streamPortUser = port;
+        }
 
-        public void AmqpPort(int port = 5672) => _owner._amqpPort = port;
+        public void AmqpPort(int port = 5672)
+        {
+            _owner._amqpPort = port;
+            _owner._amqpPortUser = port;
+        }
+
+        public void UseTls(Action<ITlsConfigurator>? configure = null)
+        {
+            _owner._tlsEnabled = true;
+            var tls = new TlsConfigurator();
+            configure?.Invoke(tls);
+            _owner._tls = tls.Build();
+        }
 
         public void Heartbeat(TimeSpan heartbeat) => _owner._heartbeat = heartbeat;
 
@@ -679,6 +732,42 @@ internal sealed class StreamBusConfigurator : IStreamBusConfigurator
         public void ProducersPerConnection(int count = 1) => _owner._producers = count;
 
         public void ConsumersPerConnection(int count = 1) => _owner._consumers = count;
+    }
+
+    private sealed class TlsConfigurator : ITlsConfigurator
+    {
+        private string? _serverName;
+        private string? _clientCertPath;
+        private string? _clientCertPassword;
+        private SslPolicyErrors _acceptableErrors;
+        private SslProtocols _protocolVersion;
+
+        public void ServerName(string name)
+        {
+            ArgumentNullException.ThrowIfNull(name);
+            _serverName = name;
+        }
+
+        public void ClientCertificate(string path, string? password = null)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(path);
+            _clientCertPath = path;
+            _clientCertPassword = password;
+        }
+
+        public void AcceptableCertificateErrors(SslPolicyErrors errors) => _acceptableErrors = errors;
+
+        public void ProtocolVersion(SslProtocols version) => _protocolVersion = version;
+
+        public StreamBusTlsOptions Build() => new()
+        {
+            Enabled = true,
+            ServerName = _serverName,
+            ClientCertPath = _clientCertPath,
+            ClientCertPassword = _clientCertPassword,
+            AcceptableCertificateErrors = _acceptableErrors,
+            ProtocolVersion = _protocolVersion,
+        };
     }
 
     internal static Type ResolveConsumerMessageType(Type consumerType)
