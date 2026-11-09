@@ -63,14 +63,7 @@ internal interface IErrorQueueControlChannel : IAsyncDisposable
     bool IsOpen { get; }
     Task DeclareAsync(string queue, IReadOnlyDictionary<string, object?> arguments, CancellationToken cancellationToken);
     Task DeclarePassiveAsync(string queue, CancellationToken cancellationToken);
-    Task<ErrorQueueDelivery?> GetAsync(string queue, CancellationToken cancellationToken);
-    Task AckAsync(ulong deliveryTag, CancellationToken cancellationToken);
 }
-
-internal sealed record ErrorQueueDelivery(
-    ulong DeliveryTag,
-    ReadOnlyMemory<byte> Body,
-    IReadOnlyDictionary<string, object?> Headers);
 
 internal sealed class AmqpErrorQueueConnection : IErrorQueueConnection
 {
@@ -208,19 +201,6 @@ internal sealed class AmqpControlChannel : IErrorQueueControlChannel
     public async Task DeclarePassiveAsync(string queue, CancellationToken cancellationToken)
         => await _channel.QueueDeclarePassiveAsync(queue, cancellationToken).ConfigureAwait(false);
 
-    public async Task<ErrorQueueDelivery?> GetAsync(string queue, CancellationToken cancellationToken)
-    {
-        var delivery = await _channel.BasicGetAsync(queue, autoAck: false, cancellationToken: cancellationToken).ConfigureAwait(false);
-        if (delivery is null) return null;
-        var headers = delivery.BasicProperties?.Headers is { } raw
-            ? new Dictionary<string, object?>(raw, StringComparer.Ordinal)
-            : new Dictionary<string, object?>(StringComparer.Ordinal);
-        return new ErrorQueueDelivery(delivery.DeliveryTag, delivery.Body, headers);
-    }
-
-    public async Task AckAsync(ulong deliveryTag, CancellationToken cancellationToken)
-        => await _channel.BasicAckAsync(deliveryTag, multiple: false, cancellationToken: cancellationToken).ConfigureAwait(false);
-
     public async ValueTask DisposeAsync()
         => await _channel.DisposeAsync().ConfigureAwait(false);
 }
@@ -228,9 +208,6 @@ internal sealed class AmqpControlChannel : IErrorQueueControlChannel
 internal sealed class ErrorQueueTransport : IAsyncDisposable
 {
     private sealed record PublishChannelState(IErrorQueuePublishChannel Channel, IErrorQueueConnection Connection);
-
-    private static readonly TimeSpan DrainIdle = TimeSpan.FromSeconds(5);
-    private static readonly TimeSpan DrainPoll = TimeSpan.FromMilliseconds(200);
 
     private readonly StreamBusOptions _options;
     private readonly Func<StreamBusOptions, CancellationToken, Task<IErrorQueueConnection>> _connect;
@@ -423,52 +400,6 @@ internal sealed class ErrorQueueTransport : IAsyncDisposable
         if (state is null) return;
         try { await state.Channel.DisposeAsync().ConfigureAwait(false); }
         catch { }
-    }
-
-    public async Task<int> DrainAsync(string errorQueue, Func<ErrorEnvelope, CancellationToken, Task> republish, CancellationToken cancellationToken = default)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(errorQueue);
-        ArgumentNullException.ThrowIfNull(republish);
-        var connection = await GetConnectionAsync(cancellationToken).ConfigureAwait(false);
-        await using var channel = await connection.CreateControlChannelAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            await channel.DeclarePassiveAsync(errorQueue, cancellationToken).ConfigureAwait(false);
-        }
-        catch (OperationInterruptedException ex) when (ex.ShutdownReason is { ReplyCode: 404 })
-        {
-            throw new StreamBusStreamNotFoundException(errorQueue, ex);
-        }
-        var requeued = 0;
-        var skipped = 0;
-        var lastTicks = DateTimeOffset.UtcNow.UtcTicks;
-        while (true)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var delivery = await channel.GetAsync(errorQueue, cancellationToken).ConfigureAwait(false);
-            if (delivery is null)
-            {
-                var since = DateTimeOffset.UtcNow - new DateTimeOffset(Interlocked.Read(ref lastTicks), TimeSpan.Zero);
-                if (since >= DrainIdle) break;
-                await Task.Delay(DrainPoll, cancellationToken).ConfigureAwait(false);
-                continue;
-            }
-            Interlocked.Exchange(ref lastTicks, DateTimeOffset.UtcNow.UtcTicks);
-            if (!ErrorEnvelope.TryParseHeaders(errorQueue, delivery.Body.ToArray(), delivery.Headers, out var envelope) || envelope is null)
-            {
-                _logger.LogWarning("Requeue skipping malformed message on error queue '{Queue}' (delivery tag {Tag}).",
-                    errorQueue, delivery.DeliveryTag);
-                await channel.AckAsync(delivery.DeliveryTag, cancellationToken).ConfigureAwait(false);
-                skipped++;
-                continue;
-            }
-            await republish(envelope, cancellationToken).ConfigureAwait(false);
-            await channel.AckAsync(delivery.DeliveryTag, cancellationToken).ConfigureAwait(false);
-            requeued++;
-        }
-        if (skipped > 0)
-            _logger.LogWarning("Requeue from error queue '{Queue}' skipped {Skipped} malformed entries.", errorQueue, skipped);
-        return requeued;
     }
 
     private async Task<IErrorQueueConnection> GetConnectionAsync(CancellationToken cancellationToken)

@@ -90,12 +90,6 @@ public interface IStreamBus
     /// <param name="cancellationToken">Cancels the publish.</param>
     Task PublishRawAsync(string stream, ReadOnlyMemory<byte> body, PublishOptions? options = null, CancellationToken cancellationToken = default);
 
-    /// <summary>Drains <paramref name="errorQueue"/> (an AMQP queue written by <c>DeadLetterToQueue</c>) and requeues each envelope, unmodified, onto <paramref name="stream"/>.</summary>
-    /// <param name="stream">Destination stream for the requeued bodies.</param>
-    /// <param name="errorQueue">Queue to drain.</param>
-    /// <param name="cancellationToken">Cancels the drain.</param>
-    /// <returns>The number of messages requeued.</returns>
-    Task<int> RequeueErrorsAsync(string stream, string errorQueue, CancellationToken cancellationToken = default);
 
     /// <summary>Attaches a raw (untyped) consumer to <paramref name="stream"/>; dispose the returned consumer to detach.</summary>
     /// <param name="stream">Stream (or super stream) to consume.</param>
@@ -325,15 +319,6 @@ internal abstract class StreamBusCore<TBus> : IStreamBus
         StreamMessageProperties.ValidateHeaders(options?.Properties?.Headers);
         StreamBusActivity.SetSize(activity, body.Length);
         await _producers.PublishAsync(stream, body, options ?? new PublishOptions(), cancellationToken).ConfigureAwait(false);
-    }
-    /// <summary>Drains <paramref name="errorQueue"/> (an AMQP queue written by <c>DeadLetterToQueue</c>) and requeues each envelope, unmodified, onto <paramref name="stream"/>.</summary>
-    /// <returns>The number of messages requeued.</returns>
-    public Task<int> RequeueErrorsAsync(string stream, string errorQueue, CancellationToken cancellationToken = default)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(stream);
-        ArgumentException.ThrowIfNullOrWhiteSpace(errorQueue);
-        return _errorQueues.DrainAsync(errorQueue, (envelope, ct2) =>
-            _producers.PublishAsync(stream, envelope.Body, envelope.ToReplayOptions(), ct2), cancellationToken);
     }
     /// <summary>Attaches a raw (untyped) consumer to <paramref name="stream"/>; dispose the returned consumer to detach.</summary>
     public Task<IStreamConsumer> ConsumeAsync(string stream, ConsumeOptions options, Func<ConsumeContext, Task> handler, CancellationToken cancellationToken = default)

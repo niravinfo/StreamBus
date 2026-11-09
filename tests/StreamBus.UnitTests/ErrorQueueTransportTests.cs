@@ -64,8 +64,6 @@ public sealed class ErrorQueueTransportTests
 
     private sealed class FakeControlChannel : IErrorQueueControlChannel
     {
-        public readonly Queue<ErrorQueueDelivery> Deliveries = new();
-        public readonly List<ulong> Acked = new();
         public bool IsOpen { get; set; } = true;
 
         public Task DeclareAsync(string queue, IReadOnlyDictionary<string, object?> arguments, CancellationToken ct)
@@ -73,22 +71,12 @@ public sealed class ErrorQueueTransportTests
 
         public Task DeclarePassiveAsync(string queue, CancellationToken ct) => Task.CompletedTask;
 
-        public Task<ErrorQueueDelivery?> GetAsync(string queue, CancellationToken ct)
-            => Task.FromResult(Deliveries.Count > 0 ? Deliveries.Dequeue() : null);
-
-        public Task AckAsync(ulong deliveryTag, CancellationToken ct)
-        {
-            Acked.Add(deliveryTag);
-            return Task.CompletedTask;
-        }
-
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
     private sealed class FakeConnection : IErrorQueueConnection
     {
         public readonly List<FakePublishChannel> PublishChannels = new();
-        public FakeControlChannel? ControlChannel;
         public int PublishChannelCreations;
         public bool IsOpen { get; set; } = true;
 
@@ -105,8 +93,7 @@ public sealed class ErrorQueueTransportTests
         }
 
         public Task<IErrorQueueControlChannel> CreateControlChannelAsync(CancellationToken ct)
-            => Task.FromResult<IErrorQueueControlChannel>(
-                ControlChannel ?? throw new InvalidOperationException("test did not configure a control channel"));
+            => Task.FromResult<IErrorQueueControlChannel>(new FakeControlChannel());
 
         public Task CloseAsync(CancellationToken ct)
         {
@@ -129,36 +116,6 @@ public sealed class ErrorQueueTransportTests
 
         Assert.Equal(1, connection.PublishChannelCreations);
         Assert.Equal(2000, connection.Current.PublishCount);
-    }
-
-    [Fact]
-    public async Task Mid_burst_failure_leaves_the_remainder_unacked()
-    {
-        var connection = new FakeConnection
-        {
-            ControlChannel = new FakeControlChannel(),
-        };
-        var first = Envelope(1);
-        var second = Envelope(2);
-        var third = Envelope(3);
-        connection.ControlChannel.Deliveries.Enqueue(new ErrorQueueDelivery(101, first.Body, first.ToHeaders()));
-        connection.ControlChannel.Deliveries.Enqueue(new ErrorQueueDelivery(102, second.Body, second.ToHeaders()));
-        connection.ControlChannel.Deliveries.Enqueue(new ErrorQueueDelivery(103, third.Body, third.ToHeaders()));
-        await using var transport = Transport(connection);
-
-        var republished = new List<ulong>();
-        await Assert.ThrowsAsync<InvalidOperationException>(() => transport.DrainAsync(
-            "orders-error",
-            (envelope, _) =>
-            {
-                if (envelope.SourceOffset == 2) throw new InvalidOperationException("mid-burst shutdown");
-                republished.Add(envelope.SourceOffset);
-                return Task.CompletedTask;
-            },
-            TestContext.Current.CancellationToken));
-
-        Assert.Equal(new ulong[] { 1 }, republished);
-        Assert.Equal(new ulong[] { 101 }, connection.ControlChannel.Acked);
     }
 
     [Fact]

@@ -95,9 +95,6 @@ public sealed class ErrorQueueShutdownTests
         public Task DeclareAsync(string queue, IReadOnlyDictionary<string, object?> arguments, CancellationToken ct)
             => Task.CompletedTask;
         public Task DeclarePassiveAsync(string queue, CancellationToken ct) => Task.CompletedTask;
-        public Task<ErrorQueueDelivery?> GetAsync(string queue, CancellationToken ct)
-            => Task.FromResult<ErrorQueueDelivery?>(null);
-        public Task AckAsync(ulong deliveryTag, CancellationToken ct) => Task.CompletedTask;
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
