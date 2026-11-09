@@ -120,15 +120,6 @@ public interface IStreamBus
     /// <param name="cancellationToken">Cancels the store.</param>
     Task SetConsumerOffsetAsync(string stream, string reference, int partition, ulong offset, CancellationToken cancellationToken = default);
 
-    /// <summary>Replays an error stream (written by <c>DeadLetterToStream</c>): each
-    /// error envelope is republished, unmodified, to its original source. Publishing
-    /// ids are deterministic, so replays onto the same destination are idempotent.</summary>
-    /// <param name="errorStream">Plain error stream to read. Malformed messages and vanished partition streams are skipped.</param>
-    /// <param name="targetStream">Optional explicit destination stream; when null each envelope returns to the partition stream it came from.</param>
-    /// <param name="cancellationToken">Cancels the replay.</param>
-    /// <returns>The number of error envelopes replayed.</returns>
-    Task<int> ReplayErrorStreamAsync(string errorStream, string? targetStream = null, CancellationToken cancellationToken = default);
-
     /// <summary>
     /// Idempotent topology declaration surface. Startup declarations configured
     /// via topology are declared automatically when the bus starts; use this
@@ -353,16 +344,6 @@ internal abstract class StreamBusCore<TBus> : IStreamBus
     /// <summary>Stores the broker-side offset for a consumer group on one partition.</summary>
     public Task SetConsumerOffsetAsync(string stream, string reference, int partition, ulong offset, CancellationToken cancellationToken = default)
         => _consumers.SetOffsetAsync(stream, reference, partition, offset, cancellationToken);
-    /// <summary>Replays an error stream: each error envelope is republished, unmodified,
-    /// to its original source. Publishing ids are deterministic, so replays onto the
-    /// same destination are idempotent. Malformed messages and vanished partition
-    /// streams are skipped.</summary>
-    /// <param name="errorStream">Plain error stream to read.</param>
-    /// <param name="targetStream">Optional explicit destination stream; when null each envelope returns to the partition stream it came from.</param>
-    /// <param name="cancellationToken">Propagates notification that the replay should be canceled.</param>
-    /// <returns>The number of error envelopes replayed.</returns>
-    public Task<int> ReplayErrorStreamAsync(string errorStream, string? targetStream = null, CancellationToken cancellationToken = default)
-        => _consumers.ReplayAsync(errorStream, targetStream, cancellationToken);
     internal Task StartAsync(CancellationToken cancellationToken) => _supervisor.StartAsync(cancellationToken);
 }
 
