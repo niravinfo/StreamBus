@@ -38,13 +38,13 @@ Meter name: `StreamBus`.
 
 | Instrument | Kind | Tags |
 |---|---|---|
-| `streambus_partition_backlog` | up-down counter | vhost, bus, stream, partition, reference |
-| `streambus_partition_inflight` | up-down counter | vhost, bus, stream, partition, reference |
-| `streambus_partition_retry_blocked` | up-down counter | vhost, bus, stream, partition, reference, failure_mode |
+| `streambus_partition_backlog` | up-down counter | vhost, bus, stream, partition, consumerGroup |
+| `streambus_partition_inflight` | up-down counter | vhost, bus, stream, partition, consumerGroup |
+| `streambus_partition_retry_blocked` | up-down counter | vhost, bus, stream, partition, consumerGroup |
 | `streambus_connection_state` | up-down counter (int) | vhost, bus |
-| `streambus_offset_store_rejected_total` | counter | vhost, bus, stream, partition, reference |
-| `streambus_offset_regressed_total` | counter | vhost, bus, stream, partition, reference |
-| `streambus_offset_fallback_total` | counter | vhost, bus, stream, partition, reference |
+| `streambus_offset_store_rejected_total` | counter | vhost, bus, stream, partition, consumerGroup |
+| `streambus_offset_regressed_total` | counter | vhost, bus, stream, partition, consumerGroup |
+| `streambus_offset_fallback_total` | counter | vhost, bus, stream, partition, consumerGroup, branch |
 | `streambus_pipeline_duration` | histogram (seconds) | kind = publish \| consume |
 
 The backlog gauge measures the consumer-held unprocessed backlog (last

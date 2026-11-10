@@ -54,10 +54,11 @@ public sealed class CheckoutWorker(IStreamBus bus) : BackgroundService
 }
 ```
 
-Policies: `Default` (current state, no wait), `UpTo(timeout)`,
-`Indefinitely`. States: `Ready`, `TimedOut`, `Fatal`. `bus.State` reports
-the live connection state (`Starting`, `Ready`, `TransientFailure`,
-`Fatal`).
+Policies: `ReadinessPolicy.Default` (fail-fast: the current state, no
+wait — yields `TimedOut` when not ready), `ReadinessPolicy.UpTo(timeout)`,
+and `ReadinessPolicy.Forever` (wait indefinitely). States: `Ready`,
+`TimedOut`, `Fatal`. `bus.State` reports the live connection state
+(`Starting`, `Ready`, `TransientFailure`, `Fatal`).
 
 ## Health checks
 

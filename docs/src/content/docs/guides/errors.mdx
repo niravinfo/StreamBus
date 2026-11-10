@@ -84,6 +84,8 @@ marked failed and recycled (redelivery, never a skip).
 Take the outcome into your own hands:
 
 ```csharp
+cfg.Publish<PaymentFailed>("payments-dlq");   // the stream the callback targets
+
 cfg.ReceiveEndpoint("payments", e =>
 {
     e.Consumer<PaymentsConsumer>("payments-ops");

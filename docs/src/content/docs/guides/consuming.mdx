@@ -74,7 +74,7 @@ requirement:
 ```csharp
 await using var sub = await bus.ConsumeAsync(
     "audit",
-    new ConsumeOptions { ConsumerGroup = "ops-tail", Offset = StartOffset.AlwaysFirst },
+    new ConsumeOptions { ConsumerGroup = "ops-tail", StartOffset = StartOffset.AlwaysFirst },
     ctx => bus.SetConsumerOffsetAsync(
         "audit", "ops-tail", ctx.Partition, ctx.Offset, ctx.CancellationToken),
     ct);
