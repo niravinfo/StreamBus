@@ -17,12 +17,20 @@ cfg.ReceiveEndpoint("orders", e =>
 - The group is used verbatim. Empty groups and groups over the broker's
   255-byte limit are configuration errors.
 - Two services sharing one consumer class must supply different groups.
-  The same group across instances scales out through a shared cursor.
+- A super stream with one group distributes its partitions across instances
+  (`SingleActiveConsumer` applies per partition), so adding instances adds
+  parallel partition readers.
+- A plain stream with the default `SingleActiveConsumer = true` has one active
+  consumer per group; other instances stand by for failover and do not add
+  throughput. Use a super stream when you need horizontal scale.
+- Different groups are independent cursors: each receives every message.
+- Delivery is at-least-once. Consumers must tolerate duplicates and own their
+  idempotency.
 
 ### Cross-process caveat
 
 Same reference, `SingleActiveConsumer = false`, two processes: both receive
-deliveries (at-least-once doubles, never skips). Stores interleave; a stale
+deliveries (at-least-once duplicates, never skips). Stores interleave; a stale
 process may regress the broker-side offset - never run two writers on one
 reference outside SAC.
 
@@ -33,8 +41,8 @@ cfg.ReceiveEndpoint("orders", e =>
 {
     e.Consumer<OrderConsumer>("order-processors");
     e.SingleActiveConsumer(false);
-    e.Offset(ConsumeOffset.AlwaysFirst);
-    e.OffsetStore(new OffsetStoreOptions { EveryMessages = 10 });
+    e.StartOffset(StartOffset.AlwaysFirst);
+    e.OffsetStore(new OffsetStoreOptions { StoreEveryMessages = 10 });
     e.Readiness(ReadinessPolicy.UpTo(TimeSpan.FromSeconds(30)));
     e.SuperStream(); // expect a super stream without declaring partitions here
 });
@@ -54,12 +62,12 @@ is declared from the endpoint's and any publish registration's spec).
 ```csharp
 await using var sub = await bus.ConsumeAsync(
     "audit",
-    new ConsumeOptions { Reference = "ops" },
+    new ConsumeOptions { ConsumerGroup = "ops" },
     handler,
     ct);
 ```
 
-Raw consume also requires `Reference` — a missing group throws
+Raw consume also requires `ConsumerGroup` — a missing group throws
 `StreamBusConfigurationException` at attach instead of guessing.
 
 ## Pipelines
@@ -116,7 +124,7 @@ for the lifetime of the context; `Headers` (read-only) and `SendHeaders`
 | `SentTime` | `DateTime?` | AMQP `creation-time`, UTC, millisecond precision |
 | `Headers` | `IStreamHeaders` | application properties as received, framework keys included |
 | `SendHeaders` | `IStreamSendHeaders` | headers carried on the error envelope |
-| `Stream` / `Partition` / `Offset` / `RoutingValue` / `Body` / `Services` / `CancellationToken` | — | unchanged semantics |
+| `Stream` / `Partition` / `Offset` / `RoutingKey` / `Body` / `Services` / `CancellationToken` | — | unchanged semantics |
 
 ### Typed consume filters
 
@@ -180,14 +188,14 @@ cfg.ReceiveEndpoint("orders", e =>
 {
     e.Consumer<OrderConsumer>("order-processors");
     e.SingleActiveConsumer();
-    e.Offset(ConsumeOffset.ResumeOrFirst);
-    e.OffsetStore(new OffsetStoreOptions { EveryMessages = 10, MaxInterval = TimeSpan.FromSeconds(5) });
+    e.StartOffset(StartOffset.ResumeOrFirst);
+    e.OffsetStore(new OffsetStoreOptions { StoreEveryMessages = 10, MaxFlushInterval = TimeSpan.FromSeconds(5) });
 });
 
 // Raw tail with manual offset control.
 await using var tail = await bus.ConsumeAsync(
     "audit",
-    new ConsumeOptions { Offset = ConsumeOffset.AlwaysFirst, Reference = "ops-tail" },
+    new ConsumeOptions { Offset = StartOffset.AlwaysFirst, ConsumerGroup = "ops-tail" },
     ctx => bus.SetConsumerOffsetAsync(
         "audit", "ops-tail", ctx.Partition, ctx.Offset, ctx.CancellationToken),
     ct);

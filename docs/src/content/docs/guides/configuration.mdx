@@ -64,5 +64,5 @@ block until ready, or start in the background:
 
 ```csharp
 builder.Services.AddStreamBusHosting(h =>
-    h.BlockStartupUntilReady(TimeSpan.FromSeconds(30)));
+    h.WaitUntilStarted(TimeSpan.FromSeconds(30)));
 ```

@@ -44,8 +44,7 @@ MassTransit has one context instance and no wrapper. Its non-generic contexts
 do not expose `Message` at all; only `PublishContext<T>` / `ConsumeContext<T>`
 do. A MassTransit filter short-circuits by not calling `next.Send(context)`;
 there is no `CanSkip` equivalent. StreamBus will follow that shape while
-keeping its existing decoration-only pipeline (ADR-2), except that
-effectively-once pipelines must still produce a result.
+keeping its existing decoration-only pipeline (ADR-2).
 
 ## Chosen API
 
@@ -146,10 +145,10 @@ public class StreamConsumeFilterContext
     /// <summary>The transport message: stream, partition, offset, body, metadata, and cancellation token.</summary>
     public required ConsumeContext Raw { get; init; }
 
-    /// <summary>Endpoint message type; <see langword="null"/> for raw and effectively-once pipelines.</summary>
+    /// <summary>Endpoint message type; <see langword="null"/> for raw pipelines.</summary>
     public virtual Type? MessageType { get; init; }
 
-    /// <summary>Headers added to exhaustion envelopes and effectively-once result publishes.</summary>
+    /// <summary>Headers added to exhaustion envelopes.</summary>
     public required IStreamHeaderWriter OutputHeaders { get; init; }
 
     /// <summary>Service scope for this delivery, shared with the consumer.</summary>
@@ -235,12 +234,6 @@ views.
 - **Consume filters** call `next()` zero or one time. Zero means the filter
   handled or filtered the message: the handler is not invoked and the offset
   advances. Multiple calls throw as today.
-- **Effectively-once consume filters** call `next()` exactly once. Zero would
-  produce no result while the source offset still advances; because the EO
-  resume point is the target's last publishing id, that either replays the
-  source forever or publishes an empty result. The pipeline therefore rejects
-  a zero-`next` return with a contract error. This is a pipeline-mode rule, not
-  a filter capability flag.
 - `CanSkip`, `SkipHandler`, and `AllowPipelineSkip` are removed. There is no
   configuration rejection based on a filter's skip capability and no endpoint
   opt-in.
@@ -255,7 +248,7 @@ views.
   message lives only on `StreamConsumeFilterContext<T>.Message`.
 - `Inner` is removed from both typed contexts.
 - Filter lifetime, ordering, open-generic closure, eager deserialization,
-  per-message DI scope, and effectively-once result flow remain unchanged.
+  and per-message DI scope remain unchanged.
 
 ### Filtering versus skipping
 
@@ -265,9 +258,7 @@ message itself. The consumer is skipped and the offset advances because the
 filter accepted responsibility for the message.
 
 MassTransit behaves the same way: a filter short-circuits by not calling
-`next`. StreamBus does not need a capability declaration; the only special
-case is effectively-once, where the pipeline must produce a result to advance
-the target publishing id.
+`next`. StreamBus does not need a capability declaration.
 
 ## XML documentation
 
@@ -408,7 +399,6 @@ suppression is the follow-up definition of done. Any other XML-doc warning
 | `IStreamConsumeFilter<T>.CanSkip` | capability declaration | removed |
 | `StreamConsumeFilterContext.SkipHandler` | manual skip flag | removed |
 | `IReceiveEndpointConfigurator.AllowPipelineSkip` | skip opt-in | removed |
-| Effectively-once consume filter zero-`next` | configuration rejected `CanSkip => true` filters | runtime contract error; EO filters must call `next` once |
 
 A filter that previously did:
 
@@ -444,8 +434,7 @@ changelog already records breaking changes; no compatibility shims.
    an internal configuration error naming the filter and type, not a public
    wrapper fallback.
 4. **Consume pipeline.** `ConsumePipeline` is constructed with the endpoint
-   message type, whether a typed context is required, and
-   `bool requiresContinuation` (true only for effectively-once). It exposes
+   message type and whether a typed context is required. It exposes
    `CreateContext(ConsumeContext, HeaderWriter, IServiceProvider)`. When a typed
    context is required, the method uses a per-type cached factory that creates
    `StreamConsumeFilterContext<T>` and reads `ConsumeContext.TypedMessage`;
@@ -457,14 +446,12 @@ changelog already records breaking changes; no compatibility shims.
    `StreamConsumeFilterContext<T>` and passes the same `next` delegate. It no
    longer constructs a context.
 6. **Partition consumer.** Typed and universal delivery both call
-   `ConsumePipeline.CreateContext(...)`; the effectively-once path stays on
-   the universal base context. The terminal is the handler directly; there is
-   no `SkipHandler` check. Eager deserialization and `TypedMessage` sharing are
-   unchanged.
-7. **Zero-`next` enforcement.** `ConsumePipeline` allows a zero-`next` return
-   when `requiresContinuation` is false. It throws the existing contract error
-   when the pipeline is effectively-once (zero would produce no result) or
-   when a filter calls `next` more than once.
+   `ConsumePipeline.CreateContext(...)`. The terminal is the handler
+   directly; there is no `SkipHandler` check. Eager deserialization and
+   `TypedMessage` sharing are unchanged.
+7. **Zero-`next` enforcement.** `ConsumePipeline` allows a zero-`next` return.
+   It throws the existing contract error when a filter calls `next` more than
+   once.
 8. **Configuration.** `ConsumerRegistry.BuildPipeline` loses the `allowSkip`
    and `CanSkip` checks. `ConsumeOptions` loses `AllowPipelineSkip`; the
    descriptor loses it too.
@@ -480,8 +467,6 @@ changelog already records breaking changes; no compatibility shims.
   returns without `next` does not invoke the handler and stores the offset.
   More than one `next` still throws. A publish filter that returns without
   `next` still throws.
-- Effectively-once: a filter that returns without `next` throws the contract
-  error; a filter that calls `next` once publishes exactly one result.
 - Remove all `CanSkip`, `SkipHandler`, and `AllowPipelineSkip` tests and
   replace the old skip assertions with filtering assertions.
 - Replace `ContextSwapFilter`/`Super_routing_and_body_cannot_be_replaced_by_a_filter_context`
@@ -507,7 +492,6 @@ contradict each other.
 | --- | --- | --- |
 | `ErrorStreamOptions.RoutingValue` + `ErrorEnvelope.ErrorRoutingValue` | Written into the envelope but never read by publish, replay, or handoff logic. | Remove both; `ErrorEnvelope.TryParse` stops requiring the header. |
 | `RetryPolicy.FailureMode` | Validation allows only two states: `Strict` with `MaxAttempts == null`, or `SkipAfterDeadline` with `MaxAttempts != null`. The enum is fully derivable. | Remove `FailureMode`; derive strictness from `MaxAttempts is null`. |
-| `PublishResultOptions.BaseDelay`, `Multiplier`, `MaxDelay`, `MaxJitter` | Duplicate the retry knobs on `RetryPolicy`, are absent from the guide, and need a parallel validator. | Replace with one `RetryPolicy Retry` property, or remove the knobs and use the default. |
 | `ConsumeContext<T>` transport fields | Duplicates `Stream`, `Partition`, `Offset`, `RoutingValue`, `Body`, `Metadata`, and `CancellationToken` from `ConsumeContext`. | Derive `ConsumeContext<T> : ConsumeContext` and add only `Message`, matching the filter-context shape. |
 | `StreamBusConfigStore.ForVhost` | Returns the live `StreamBusOptions`, including `UserName` and `Password`; contradicts the credential-free `StreamBusRegistrationView` contract. | Make it internal, or return a credential-free view. |
 
@@ -566,8 +550,6 @@ change, not a test rewrite.
 - No `CanSkip`, `SkipHandler`, or `AllowPipelineSkip` anywhere.
 - Consume filters may return without `next` on raw and typed endpoints; the
   handler is not invoked and the offset advances.
-- Effectively-once consume filters must call `next` exactly once; zero throws a
-  contract error.
 - Every public member in the documentation scope has an XML summary; the
   package generates the XML documentation file.
 - `dotnet build` and the test suite pass; brokered integration tests pass when

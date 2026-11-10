@@ -23,15 +23,15 @@ public sealed class OffsetResolutionTests
     public void Always_modes_ignore_the_broker()
     {
         var (log, branches) = NewSink();
-        Assert.IsType<OffsetTypeFirst>(OffsetResolution.ResolveOffset(ConsumeOffset.AlwaysFirst, 99, 50, "r", "p", log, branches.Add));
-        Assert.IsType<OffsetTypeNext>(OffsetResolution.ResolveOffset(ConsumeOffset.AlwaysNext, 99, 50, "r", "p", log, branches.Add));
+        Assert.IsType<OffsetTypeFirst>(OffsetResolution.ResolveOffset(StartOffset.AlwaysFirst, 99, 50, "r", "p", log, branches.Add));
+        Assert.IsType<OffsetTypeNext>(OffsetResolution.ResolveOffset(StartOffset.AlwaysNext, 99, 50, "r", "p", log, branches.Add));
         Assert.Empty(branches);
     }
 
     [Theory]
-    [InlineData(ConsumeOffset.ResumeOrFirst, "ResumeOrFirst", typeof(OffsetTypeFirst))]
-    [InlineData(ConsumeOffset.ResumeOrNext, "ResumeOrNext", typeof(OffsetTypeNext))]
-    public void No_stored_offset_falls_back(ConsumeOffset mode, string branch, Type expected)
+    [InlineData(StartOffset.ResumeOrFirst, "ResumeOrFirst", typeof(OffsetTypeFirst))]
+    [InlineData(StartOffset.ResumeOrNext, "ResumeOrNext", typeof(OffsetTypeNext))]
+    public void No_stored_offset_falls_back(StartOffset mode, string branch, Type expected)
     {
         var (log, branches) = NewSink();
         var result = OffsetResolution.ResolveOffset(mode, null, 0, "ref-A", "part-0", log, branches.Add);
@@ -45,7 +45,7 @@ public sealed class OffsetResolutionTests
     {
         var (log, branches) = NewSink();
         var ex = Assert.Throws<StreamBusConfigurationException>(() =>
-            OffsetResolution.ResolveOffset(ConsumeOffset.ResumeOrFail, null, 0, "ref-B", "part-2", log, branches.Add));
+            OffsetResolution.ResolveOffset(StartOffset.ResumeOrFail, null, 0, "ref-B", "part-2", log, branches.Add));
         Assert.Contains("ref-B", ex.Message);
         Assert.Contains("part-2", ex.Message);
     }
@@ -54,7 +54,7 @@ public sealed class OffsetResolutionTests
     public void Stored_offset_resolves_to_next_and_broker_wins_over_local()
     {
         var (log, branches) = NewSink();
-        var result = OffsetResolution.ResolveOffset(ConsumeOffset.ResumeOrFirst, 5, 9, "r", "p", log, branches.Add);
+        var result = OffsetResolution.ResolveOffset(StartOffset.ResumeOrFirst, 5, 9, "r", "p", log, branches.Add);
         Assert.Equal(new OffsetTypeOffset(6), result);
         Assert.Contains(log.Lines, l => l.Contains('9') && l.Contains('5'));
         Assert.Empty(branches);
@@ -65,7 +65,7 @@ public sealed class OffsetResolutionTests
     {
         var (log, branches) = NewSink();
         var result = await OffsetResolution.ResolveWithQueryAsync(
-            ConsumeOffset.ResumeOrFirst, () => Task.FromException<ulong?>(new TimeoutException("blip")),
+            StartOffset.ResumeOrFirst, () => Task.FromException<ulong?>(new TimeoutException("blip")),
             0, "r", "p", log, branches.Add);
         Assert.IsType<OffsetTypeFirst>(result);
         Assert.Equal(new[] { "ResumeOrFirst" }, branches);
@@ -87,13 +87,13 @@ public sealed class OffsetResolutionTests
     [Fact]
     public void Reference_validation_is_stable_distinct_and_bounded()
     {
-        ConsumerReferenceValidation.Validate("orders");
+        ConsumerGroupValidation.Validate("orders");
         var ex = Assert.Throws<StreamBusConfigurationException>(() =>
-            ConsumerReferenceValidation.Require(null, "orders"));
+            ConsumerGroupValidation.Require(null, "orders"));
         Assert.Contains("orders", ex.Message, StringComparison.Ordinal);
         Assert.Throws<StreamBusConfigurationException>(() =>
-            ConsumerReferenceValidation.Validate(new string('r', 300)));
-        Assert.Equal("grp", ConsumerReferenceValidation.Require("grp", "orders"));
+            ConsumerGroupValidation.Validate(new string('r', 300)));
+        Assert.Equal("grp", ConsumerGroupValidation.Require("grp", "orders"));
     }
 }
 
@@ -121,7 +121,7 @@ public sealed class ConsumeValidationTests
     {
         var registry = UnstartedRegistry();
         var ex = await Assert.ThrowsAsync<StreamBusConfigurationException>(() =>
-            Consume(registry, "s", new ConsumeOptions { Reference = new string('r', 300) }));
+            Consume(registry, "s", new ConsumeOptions { ConsumerGroup = new string('r', 300) }));
         Assert.Contains("255", ex.Message);
     }
 
@@ -132,7 +132,7 @@ public sealed class ConsumeValidationTests
     {
         var registry = UnstartedRegistry();
         await Assert.ThrowsAsync<StreamBusConfigurationException>(() =>
-            Consume(registry, "s", new ConsumeOptions { OffsetStore = new OffsetStoreOptions { EveryMessages = every } }));
+            Consume(registry, "s", new ConsumeOptions { OffsetStore = new OffsetStoreOptions { StoreEveryMessages = every } }));
     }
 
     [Theory]
@@ -142,7 +142,7 @@ public sealed class ConsumeValidationTests
     {
         var registry = UnstartedRegistry();
         await Assert.ThrowsAsync<StreamBusConfigurationException>(() =>
-            Consume(registry, "s", new ConsumeOptions { OffsetStore = new OffsetStoreOptions { MaxInterval = TimeSpan.FromSeconds(seconds) } }));
+            Consume(registry, "s", new ConsumeOptions { OffsetStore = new OffsetStoreOptions { MaxFlushInterval = TimeSpan.FromSeconds(seconds) } }));
     }
 
     [Theory]
@@ -184,9 +184,9 @@ public sealed class ConsumeValidationTests
     {
         public bool Exists = true;
         public bool SuperExists;
-        public override Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken ct)
+        public override Task<ulong?> TryQueryOffsetAsync(string consumerGroup, string stream, CancellationToken ct)
             => Task.FromResult<ulong?>(null);
-        public override Task StoreSystemOffsetAsync(string reference, string stream, ulong offset, CancellationToken ct)
+        public override Task StoreSystemOffsetAsync(string consumerGroup, string stream, ulong offset, CancellationToken ct)
             => Task.CompletedTask;
         public override Task<bool> StreamExistsAsync(string stream, CancellationToken ct) => Task.FromResult(Exists);
         public override Task<bool> SuperStreamExistsAsync(string superStream, CancellationToken ct) => Task.FromResult(SuperExists);
@@ -218,7 +218,7 @@ public sealed class ConsumeValidationTests
         var handle = new StubSystemHandle { Exists = false, SuperExists = false };
         var registry = RegistryWithLogging(factory, handle);
         await Assert.ThrowsAsync<StreamBusStreamNotFoundException>(() =>
-            registry.ConsumeAsync(typeof(DefaultBus), "missing", new ConsumeOptions { Reference = "grp" }, _ => Task.CompletedTask, TestContext.Current.CancellationToken));
+            registry.ConsumeAsync(typeof(DefaultBus), "missing", new ConsumeOptions { ConsumerGroup = "grp" }, _ => Task.CompletedTask, TestContext.Current.CancellationToken));
         await Assert.ThrowsAsync<StreamBusStreamNotFoundException>(() =>
             registry.GetOffsetAsync("missing", "grp", 0, TestContext.Current.CancellationToken));
         await Assert.ThrowsAsync<StreamBusStreamNotFoundException>(() =>

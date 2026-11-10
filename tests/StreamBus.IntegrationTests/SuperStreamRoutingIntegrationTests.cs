@@ -93,14 +93,14 @@ public sealed class SuperStreamRoutingIntegrationTests : IAsyncDisposable
         await using var consumer = await BusInstance.StartAsync("routing-con");
         await using var subscription = await consumer.Bus.ConsumeAsync(
             super,
-            new ConsumeOptions { IsSuperStream = true, Reference = "routing-grp", Offset = ConsumeOffset.AlwaysFirst },
+            new ConsumeOptions { IsSuperStream = true, ConsumerGroup = "routing-grp", StartOffset = StartOffset.AlwaysFirst },
             ctx => { lock (seen) seen.Add(ctx); return Task.CompletedTask; },
             TestContext.Current.CancellationToken);
 
         await WaitForAsync(() => Count(seen) == 3, TimeSpan.FromSeconds(30), "routed deliveries");
-        Assert.All(seen, ctx => Assert.False(string.IsNullOrWhiteSpace(ctx.RoutingValue)));
-        Assert.All(seen, ctx => Assert.Equal(ctx.RoutingValue, ctx.Headers.GetString("streambus.routing-key")));
-        Assert.Contains(seen, ctx => ctx.RoutingValue == "key-a");
+        Assert.All(seen, ctx => Assert.False(string.IsNullOrWhiteSpace(ctx.RoutingKey)));
+        Assert.All(seen, ctx => Assert.Equal(ctx.RoutingKey, ctx.Headers.GetString("streambus.routing-key")));
+        Assert.Contains(seen, ctx => ctx.RoutingKey == "key-a");
         Assert.All(seen, ctx => Assert.NotEqual(Guid.Empty, ctx.MessageId));
     }
 }

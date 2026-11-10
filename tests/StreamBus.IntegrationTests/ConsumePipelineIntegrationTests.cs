@@ -128,12 +128,12 @@ public sealed class ConsumePipelineIntegrationTests : IAsyncDisposable
             : $"Timed out waiting for {what}. Last observed: {describeLast()}.";
 
     /// <summary>
-    /// Raw-reads the stream from offset 0 with an untracked consumer (no reference,
+    /// Raw-reads the stream from offset 0 with an untracked consumer (no consumerGroup,
     /// no filters) and returns the offset of the last message it can see.
     /// </summary>
     /// <remarks>
     /// RabbitMQ interleaves offset-tracking records into the stream: every
-    /// broker-side offset store for any tracked reference is materialized as a
+    /// broker-side offset store for any tracked consumerGroup is materialized as a
     /// record that consumes a stream offset but is not readable. Message offsets
     /// are therefore NOT contiguous while consumers track offsets, so a test
     /// must discover the real last-message offset instead of assuming
@@ -269,8 +269,8 @@ public sealed class ConsumePipelineIntegrationTests : IAsyncDisposable
             cfg => cfg.UseConsumeFilter<ConsumePipelineHeaderThrowingFilter>());
         var consumer = await bus.Bus.ConsumeAsync(source, new ConsumeOptions
         {
-            Reference = "exhaust-grp",
-            Offset = ConsumeOffset.AlwaysFirst,
+            ConsumerGroup = "exhaust-grp",
+            StartOffset = StartOffset.AlwaysFirst,
             Retry = new RetryPolicy
             {
                 MaxAttempts = 1,
@@ -331,8 +331,8 @@ public sealed class ConsumePipelineIntegrationTests : IAsyncDisposable
         await using var bus = await BusInstance.StartAsync(configureServices: null, _ => { });
         var filteringConsumer = await bus.Bus.ConsumeAsync(stream, new ConsumeOptions
         {
-            Reference = "filter-grp",
-            Offset = ConsumeOffset.AlwaysFirst,
+            ConsumerGroup = "filter-grp",
+            StartOffset = StartOffset.AlwaysFirst,
             ConsumeFilters = new[] { ConsumeFilterRegistration.ForInstance(new ConsumePipelineFilteringFilter()) },
         }, _ => throw new InvalidOperationException("the handler must not run for a filtered message"), ct);
 
@@ -362,8 +362,8 @@ public sealed class ConsumePipelineIntegrationTests : IAsyncDisposable
         var delivered = new List<string>();
         var resumed = await bus.Bus.ConsumeAsync(stream, new ConsumeOptions
         {
-            Reference = "filter-grp",
-            Offset = ConsumeOffset.ResumeOrFirst,
+            ConsumerGroup = "filter-grp",
+            StartOffset = StartOffset.ResumeOrFirst,
         }, ctx =>
         {
             lock (delivered) delivered.Add(System.Text.Encoding.UTF8.GetString(ctx.Body.Span));

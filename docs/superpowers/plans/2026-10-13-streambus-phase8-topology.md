@@ -1049,12 +1049,9 @@ public sealed class TopologyTests
             return Task.CompletedTask;
         }
         public Task<IStreamProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct) => throw new NotImplementedException("Topology tests declare only.");
-        public Task<IStreamProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct) => throw new NotImplementedException("Topology tests declare only.");
         public Task<IStreamProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct) => throw new NotImplementedException("Topology tests declare only.");
-        public Task<IStreamProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct) => throw new NotImplementedException("Topology tests declare only.");
         public Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct) => throw new NotImplementedException("Topology tests never attach.");
         public Task<ulong?> TryQueryOffsetAsync(string reference, string stream, CancellationToken ct) => Task.FromResult<ulong?>(null);
-        public Task<ulong> QuerySequenceAsync(string reference, string stream, CancellationToken ct) => Task.FromResult(0UL);
         public Task StoreSystemOffsetAsync(string reference, string stream, ulong offset, CancellationToken ct) => Task.CompletedTask;
         public Task<bool> StreamExistsAsync(string stream, CancellationToken ct) { Interlocked.Increment(ref ExistsProbes); return Task.FromResult(StreamExists(stream)); }
         public Task<bool> SuperStreamExistsAsync(string superStream, CancellationToken ct) { Interlocked.Increment(ref ExistsProbes); return Task.FromResult(SuperExists(superStream)); }

@@ -17,7 +17,7 @@ internal sealed class ErrorPublisher
         _queues = queues;
     }
 
-    public Task PublishHandoffAsync(string errorStream, ErrorEnvelope envelope, TimeSpan confirmTimeout, CancellationToken cancellationToken)
+    public Task PublishHandoffAsync(string errorStream, ErrorEnvelope envelope, TimeSpan? confirmTimeout, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(errorStream);
         ArgumentNullException.ThrowIfNull(envelope);

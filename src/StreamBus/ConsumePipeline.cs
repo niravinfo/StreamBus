@@ -203,19 +203,19 @@ internal sealed class StreamBusConsumeFilterStore
     private readonly Dictionary<Type, List<ConsumeFilterRegistration>> _filters = new();
     private readonly HashSet<Type> _sealedBusTypes = new();
 
-    internal void AddFilter(Type busMarker, ConsumeFilterRegistration filter)
+    internal void AddFilter(Type busType, ConsumeFilterRegistration filter)
     {
-        ArgumentNullException.ThrowIfNull(busMarker);
+        ArgumentNullException.ThrowIfNull(busType);
         ArgumentNullException.ThrowIfNull(filter);
-        if (_sealedBusTypes.Contains(busMarker))
+        if (_sealedBusTypes.Contains(busType))
         {
             throw new StreamBusConfigurationException(
-                $"Consume filters cannot be registered after bus {busMarker.FullName} is built.");
+                $"Consume filters cannot be registered after bus {busType.FullName} is built.");
         }
-        if (!_filters.TryGetValue(busMarker, out var filters))
+        if (!_filters.TryGetValue(busType, out var filters))
         {
             filters = new List<ConsumeFilterRegistration>();
-            _filters[busMarker] = filters;
+            _filters[busType] = filters;
         }
         if (filter.FilterType is { } type && filters.Any(filter.ConflictsWith))
         {
@@ -225,12 +225,12 @@ internal sealed class StreamBusConsumeFilterStore
         filters.Add(filter);
     }
 
-    internal IReadOnlyList<ConsumeFilterRegistration> FiltersFor(Type busMarker)
-        => _filters.TryGetValue(busMarker, out var filters)
+    internal IReadOnlyList<ConsumeFilterRegistration> FiltersFor(Type busType)
+        => _filters.TryGetValue(busType, out var filters)
             ? filters
             : Array.Empty<ConsumeFilterRegistration>();
 
-    internal void Seal(Type busMarker) => _sealedBusTypes.Add(busMarker);
+    internal void Seal(Type busType) => _sealedBusTypes.Add(busType);
 }
 
 internal sealed class ConsumePipeline
@@ -348,7 +348,7 @@ internal sealed class TypedConsumeContextFactory<T> : ITypedConsumeContextFactor
             Stream = delivery.Stream,
             Partition = delivery.Partition,
             Offset = delivery.Offset,
-            RoutingValue = delivery.RoutingValue,
+            RoutingKey = delivery.RoutingKey,
             Body = delivery.Body,
             MessageId = delivery.MessageId,
             CorrelationId = delivery.CorrelationId,

@@ -93,7 +93,7 @@ public sealed class ConsumerIntegrationTests : IAsyncDisposable
     };
 
     [Fact]
-    public async Task Super_stream_splits_across_instances_exactly_once_ordered()
+    public async Task Super_stream_partitions_distribute_across_instances_without_duplicates()
     {
         var super = Unique("con-super");
         var admin = await ConnectAdminAsync();
@@ -111,7 +111,7 @@ public sealed class ConsumerIntegrationTests : IAsyncDisposable
                         new PublishOptions { IsSuperStream = true, RoutingKey = key }, TestContext.Current.CancellationToken);
         }
         finally { await pub.DisposeAsync(); }
-        // three same-reference instances consume the 24-message backlog
+        // three same-consumerGroup instances consume the 24-message backlog
         var instances = new List<BusInstance>();
         var all = new List<(string Key, int Seq, string Instance, int Partition)>();
         try
@@ -121,7 +121,7 @@ public sealed class ConsumerIntegrationTests : IAsyncDisposable
                 var inst = await BusInstance.StartAsync(name);
                 instances.Add(inst);
                 await inst.Bus.ConsumeAsync(super,
-                    new ConsumeOptions { IsSuperStream = true, Reference = "grp-a" },
+                    new ConsumeOptions { IsSuperStream = true, ConsumerGroup = "grp-a" },
                     ctx =>
                     {
                         var (key, seq) = Parse(ctx.Body);
@@ -139,6 +139,60 @@ public sealed class ConsumerIntegrationTests : IAsyncDisposable
         // Partition enumeration sanity (the registry depends on stable QueryPartition order).
         var partitions = await admin.QueryPartition(super);
         Assert.Equal(4, partitions.Length);
+    }
+
+    [Fact]
+    public async Task Multiple_publisher_instances_to_one_stream_lose_nothing()
+    {
+        // The real collision regression guard is ProducerConfigTests: every producer
+        // config has ConsumerGroup == null. Two in-process instances share one process,
+        // so they cannot reproduce a cross-process producer-name collision. This test
+        // pins the anonymous multi-publisher contract end to end.
+        var ct = TestContext.Current.CancellationToken;
+        var stream = Unique("con-many-pub");
+        var admin = await ConnectAdminAsync();
+        await using var _ = admin;
+        await admin.CreateStream(new StreamSpec(stream));
+        _streams.Add(stream);
+
+        await using var first = await BusInstance.StartAsync("pub-a");
+        await using var second = await BusInstance.StartAsync("pub-b");
+
+        const int perPublisher = 20;
+        await Task.WhenAll(
+            PublishLoopAsync(first, stream, perPublisher, ct),
+            PublishLoopAsync(second, stream, perPublisher, ct));
+
+        var received = new List<(string Key, int Seq)>();
+        await using var consumer = await first.Bus.ConsumeAsync(
+            stream,
+            new ConsumeOptions { StartOffset = StartOffset.AlwaysFirst, ConsumerGroup = Unique("many-read") },
+            ctx =>
+            {
+                var parsed = Parse(ctx.Body);
+                lock (received) received.Add(parsed);
+                return Task.CompletedTask;
+            },
+            ct);
+
+        await WaitForAsync(() => Count(received) >= 2 * perPublisher, TimeSpan.FromSeconds(30), "all published messages");
+        await Task.Delay(500, ct);
+
+        lock (received)
+        {
+            Assert.Equal(2 * perPublisher, received.Count);
+            Assert.Equal(2 * perPublisher, received.Distinct().Count());
+        }
+
+        static async Task PublishLoopAsync(BusInstance instance, string stream, int count, CancellationToken ct)
+        {
+            for (var i = 0; i < count; i++)
+                await instance.Bus.PublishRawAsync(
+                    stream,
+                    Body($"{instance.Name}:{i}"),
+                    new PublishOptions(),
+                    ct);
+        }
     }
 
     [Fact]
@@ -167,7 +221,7 @@ public sealed class ConsumerIntegrationTests : IAsyncDisposable
         {
             foreach (var (inst, name) in new[] { (a, "fa"), (b, "fb") })
                 await inst.Bus.ConsumeAsync(super,
-                    new ConsumeOptions { IsSuperStream = true, Reference = "grp-b" },
+                    new ConsumeOptions { IsSuperStream = true, ConsumerGroup = "grp-b" },
                     ctx =>
                     {
                         var (key, seq) = Parse(ctx.Body);
@@ -225,13 +279,13 @@ public sealed class ConsumerIntegrationTests : IAsyncDisposable
         var g2 = new List<(int Seq, int Partition)>();
         await using var i1 = await BusInstance.StartAsync("i1");
         await using var i2 = await BusInstance.StartAsync("i2");
-        await i1.Bus.ConsumeAsync(stream, new ConsumeOptions { Reference = "grp-c1" }, ctx =>
+        await i1.Bus.ConsumeAsync(stream, new ConsumeOptions { ConsumerGroup = "grp-c1" }, ctx =>
         {
             var (_, seq) = Parse(ctx.Body);
             lock (g1) g1.Add((seq, ctx.Partition));
             return Task.CompletedTask;
         }, TestContext.Current.CancellationToken);
-        await i2.Bus.ConsumeAsync(stream, new ConsumeOptions { Reference = "grp-c2" }, ctx =>
+        await i2.Bus.ConsumeAsync(stream, new ConsumeOptions { ConsumerGroup = "grp-c2" }, ctx =>
         {
             var (_, seq) = Parse(ctx.Body);
             lock (g2) g2.Add((seq, ctx.Partition));
@@ -262,7 +316,7 @@ public sealed class ConsumerIntegrationTests : IAsyncDisposable
         var first = new List<int>();
         await using (var inst = await BusInstance.StartAsync("i"))
         {
-            var c1 = await inst.Bus.ConsumeAsync(stream, new ConsumeOptions { Reference = "grp-d" }, Rec(first), TestContext.Current.CancellationToken);
+            var c1 = await inst.Bus.ConsumeAsync(stream, new ConsumeOptions { ConsumerGroup = "grp-d" }, Rec(first), TestContext.Current.CancellationToken);
             await WaitForAsync(() => Count(first) == 5, TimeSpan.FromSeconds(60), "first drain");
             await c1.DisposeAsync();
         }
@@ -276,7 +330,7 @@ public sealed class ConsumerIntegrationTests : IAsyncDisposable
         // Fresh instance => fresh guard water: only a broker resume passes this test.
         var second = new List<int>();
         await using var inst2 = await BusInstance.StartAsync("i2");
-        var c2 = await inst2.Bus.ConsumeAsync(stream, new ConsumeOptions { Reference = "grp-d" }, Rec(second), TestContext.Current.CancellationToken);
+        var c2 = await inst2.Bus.ConsumeAsync(stream, new ConsumeOptions { ConsumerGroup = "grp-d" }, Rec(second), TestContext.Current.CancellationToken);
         await WaitForAsync(() => Count(second) == 5, TimeSpan.FromSeconds(60), "second drain");
         await c2.DisposeAsync();
         Assert.Equal(new[] { 0, 1, 2, 3, 4 }, first);
@@ -297,23 +351,23 @@ public sealed class ConsumerIntegrationTests : IAsyncDisposable
         foreach (var seq in Enumerable.Range(0, 3))
             await inst.Bus.PublishRawAsync(e1, Body($"k:{seq}"), new PublishOptions(), TestContext.Current.CancellationToken);
         var first = new List<int>();
-        var c1 = await inst.Bus.ConsumeAsync(e1, new ConsumeOptions { Reference = "grp-e1" }, Rec(first), TestContext.Current.CancellationToken);
+        var c1 = await inst.Bus.ConsumeAsync(e1, new ConsumeOptions { ConsumerGroup = "grp-e1" }, Rec(first), TestContext.Current.CancellationToken);
         await WaitForAsync(() => Count(first) == 3, TimeSpan.FromSeconds(60), "e1 first drain");
         await c1.DisposeAsync();
         Assert.Equal(new[] { 0, 1, 2 }, first);
         foreach (var seq in Enumerable.Range(3, 3))
             await inst.Bus.PublishRawAsync(e1, Body($"k:{seq}"), new PublishOptions(), TestContext.Current.CancellationToken);
         var second = new List<int>();
-        var c2 = await inst.Bus.ConsumeAsync(e1, new ConsumeOptions { Reference = "grp-e1" }, Rec(second), TestContext.Current.CancellationToken);
+        var c2 = await inst.Bus.ConsumeAsync(e1, new ConsumeOptions { ConsumerGroup = "grp-e1" }, Rec(second), TestContext.Current.CancellationToken);
         await WaitForAsync(() => Count(second) == 3, TimeSpan.FromSeconds(60), "e1 resume drain");
         await c2.DisposeAsync();
         Assert.Equal(new[] { 3, 4, 5 }, second);
-        // e2: ResumeOrFail on a fresh reference throws
+        // e2: ResumeOrFail on a fresh consumerGroup throws
         var e2 = Unique("con-e2");
         await admin.CreateStream(new StreamSpec(e2));
         _streams.Add(e2);
         await Assert.ThrowsAsync<StreamBusConfigurationException>(() =>
-            inst.Bus.ConsumeAsync(e2, new ConsumeOptions { Reference = "grp-e2", Offset = ConsumeOffset.ResumeOrFail }, Rec(new List<int>()), TestContext.Current.CancellationToken));
+            inst.Bus.ConsumeAsync(e2, new ConsumeOptions { ConsumerGroup = "grp-e2", StartOffset = StartOffset.ResumeOrFail }, Rec(new List<int>()), TestContext.Current.CancellationToken));
         // e3: AlwaysFirst replays; AlwaysNext tails (attach point fixed at creation, so
         // publishing after ConsumeAsync returns is deterministically post-attach)
         var e3 = Unique("con-e3");
@@ -322,12 +376,12 @@ public sealed class ConsumerIntegrationTests : IAsyncDisposable
         foreach (var seq in Enumerable.Range(0, 2))
             await inst.Bus.PublishRawAsync(e3, Body($"k:{seq}"), new PublishOptions(), TestContext.Current.CancellationToken);
         var replay = new List<int>();
-        var c3 = await inst.Bus.ConsumeAsync(e3, new ConsumeOptions { Reference = "grp-e3", Offset = ConsumeOffset.AlwaysFirst }, Rec(replay), TestContext.Current.CancellationToken);
+        var c3 = await inst.Bus.ConsumeAsync(e3, new ConsumeOptions { ConsumerGroup = "grp-e3", StartOffset = StartOffset.AlwaysFirst }, Rec(replay), TestContext.Current.CancellationToken);
         await WaitForAsync(() => Count(replay) == 2, TimeSpan.FromSeconds(60), "e3 replay drain");
         await c3.DisposeAsync();
         Assert.Equal(new[] { 0, 1 }, replay);
         var tail = new List<int>();
-        var c4 = await inst.Bus.ConsumeAsync(e3, new ConsumeOptions { Reference = "grp-e3b", Offset = ConsumeOffset.AlwaysNext }, Rec(tail), TestContext.Current.CancellationToken);
+        var c4 = await inst.Bus.ConsumeAsync(e3, new ConsumeOptions { ConsumerGroup = "grp-e3b", StartOffset = StartOffset.AlwaysNext }, Rec(tail), TestContext.Current.CancellationToken);
         foreach (var seq in Enumerable.Range(2, 2))
             await inst.Bus.PublishRawAsync(e3, Body($"k:{seq}"), new PublishOptions(), TestContext.Current.CancellationToken);
         await WaitForAsync(() => Count(tail) == 2, TimeSpan.FromSeconds(60), "e3 tail drain");
@@ -354,7 +408,7 @@ public sealed class ConsumerIntegrationTests : IAsyncDisposable
         await inst.Bus.SetConsumerOffsetAsync(stream, "grp-f", 0, 7, TestContext.Current.CancellationToken);
         Assert.Equal(7UL, await inst.Bus.GetConsumerOffsetAsync(stream, "grp-f", 0, TestContext.Current.CancellationToken));
         var got = new List<int>();
-        var c = await inst.Bus.ConsumeAsync(stream, new ConsumeOptions { Reference = "grp-f" }, Rec(got), TestContext.Current.CancellationToken);
+        var c = await inst.Bus.ConsumeAsync(stream, new ConsumeOptions { ConsumerGroup = "grp-f" }, Rec(got), TestContext.Current.CancellationToken);
         await WaitForAsync(() => Count(got) == 2, TimeSpan.FromSeconds(60), "post-set drain");
         await c.DisposeAsync();
         Assert.Equal(new[] { 8, 9 }, got);
@@ -378,7 +432,7 @@ public sealed class ConsumerIntegrationTests : IAsyncDisposable
         await using var inst = await BusInstance.StartAsync("i");
         var got = new List<int>();
         var attempts = new Dictionary<int, int>();
-        var c = await inst.Bus.ConsumeAsync(stream, new ConsumeOptions { Reference = "grp-g" }, ctx =>
+        var c = await inst.Bus.ConsumeAsync(stream, new ConsumeOptions { ConsumerGroup = "grp-g" }, ctx =>
         {
             var (_, seq) = Parse(ctx.Body);
             lock (attempts) attempts[seq] = attempts.TryGetValue(seq, out var n) ? n + 1 : 1;
@@ -428,7 +482,7 @@ public sealed class ConsumerIntegrationTests : IAsyncDisposable
         listener.Start();
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var c = await inst.Bus.ConsumeAsync(stream, new ConsumeOptions { Reference = "grp-h" }, async ctx =>
+        var c = await inst.Bus.ConsumeAsync(stream, new ConsumeOptions { ConsumerGroup = "grp-h" }, async ctx =>
         {
             entered.TrySetResult();
             await release.Task;
@@ -497,7 +551,7 @@ public sealed class ConsumerIntegrationTests : IAsyncDisposable
         {
             await using var plain = await consumer.Bus.ConsumeAsync(
                 stream,
-                new ConsumeOptions { Reference = "props-plain-grp", Offset = ConsumeOffset.AlwaysFirst },
+                new ConsumeOptions { ConsumerGroup = "props-plain-grp", StartOffset = StartOffset.AlwaysFirst },
                 ctx =>
                 {
                     lock (seen) seen.Add(("plain", ctx));
@@ -506,7 +560,7 @@ public sealed class ConsumerIntegrationTests : IAsyncDisposable
                 ct);
             await using var superSub = await consumer.Bus.ConsumeAsync(
                 super,
-                new ConsumeOptions { IsSuperStream = true, Reference = "props-super-grp", Offset = ConsumeOffset.AlwaysFirst },
+                new ConsumeOptions { IsSuperStream = true, ConsumerGroup = "props-super-grp", StartOffset = StartOffset.AlwaysFirst },
                 ctx =>
                 {
                     lock (seen) seen.Add(("super", ctx));

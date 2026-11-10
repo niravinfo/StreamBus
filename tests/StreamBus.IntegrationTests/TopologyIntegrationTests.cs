@@ -221,7 +221,7 @@ public sealed class TopologyIntegrationTests : IAsyncDisposable
             cfg.Publish<TopologyPlainEvent>(plain);
             cfg.PublishSuper<TopologySuperEvent>(super, s => s.Partitions(2));
         });
-        services.AddStreamBusHosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(30)));
+        services.AddStreamBusHosting(h => h.WaitUntilStarted(TimeSpan.FromSeconds(30)));
         await using var sp = services.BuildServiceProvider();
         var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
         await hosted.StartAsync(ct);
@@ -255,7 +255,7 @@ public sealed class TopologyIntegrationTests : IAsyncDisposable
             cfg.Host(handle.Host, "/", h => { h.Credentials(handle.Username, handle.Password); h.StreamPort(handle.StreamPort); });
             cfg.PublishSuper<TopologySuperEvent>(super, s => s.Partitions(5));
         });
-        services.AddStreamBusHosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(30)));
+        services.AddStreamBusHosting(h => h.WaitUntilStarted(TimeSpan.FromSeconds(30)));
         await using var sp = services.BuildServiceProvider();
         var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
         var ex = await Assert.ThrowsAsync<StreamBusStreamConfigurationConflictException>(() => hosted.StartAsync(ct));
@@ -277,7 +277,7 @@ public sealed class TopologyIntegrationTests : IAsyncDisposable
         await inst.Bus.PublishRawAsync(error, Body("k:0"), new PublishOptions(), ct);
         var got = new List<string>();
         await using var c = await inst.Bus.ConsumeAsync(error,
-            new ConsumeOptions { Offset = ConsumeOffset.AlwaysFirst, Reference = Unique("read") },
+            new ConsumeOptions { StartOffset = StartOffset.AlwaysFirst, ConsumerGroup = Unique("read") },
             ctx => { lock (got) got.Add(Encoding.UTF8.GetString(ctx.Body.Span)); return Task.CompletedTask; }, ct);
         await WaitForAsync(() => { lock (got) return got.Count >= 1; }, TimeSpan.FromSeconds(30), "retained message");
     }

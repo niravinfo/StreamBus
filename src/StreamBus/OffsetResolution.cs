@@ -7,49 +7,49 @@ namespace StreamBus;
 internal static class OffsetResolution
 {
     public static IOffsetType ResolveOffset(
-        ConsumeOffset mode,
+        StartOffset mode,
         ulong? stored,
         ulong localWater,
-        string reference,
+        string consumerGroup,
         string partitionStream,
         ILogger logger,
         Action<string> onFallback)
     {
         ArgumentNullException.ThrowIfNull(logger);
         ArgumentNullException.ThrowIfNull(onFallback);
-        if (mode is ConsumeOffset.AlwaysFirst) return new OffsetTypeFirst();
-        if (mode is ConsumeOffset.AlwaysNext) return new OffsetTypeNext();
+        if (mode is StartOffset.AlwaysFirst) return new OffsetTypeFirst();
+        if (mode is StartOffset.AlwaysNext) return new OffsetTypeNext();
         if (stored is null)
         {
             var branch = mode switch
             {
-                ConsumeOffset.ResumeOrFirst => "ResumeOrFirst",
-                ConsumeOffset.ResumeOrNext => "ResumeOrNext",
-                ConsumeOffset.ResumeOrFail => "ResumeOrFail",
+                StartOffset.ResumeOrFirst => "ResumeOrFirst",
+                StartOffset.ResumeOrNext => "ResumeOrNext",
+                StartOffset.ResumeOrFail => "ResumeOrFail",
                 _ => throw new StreamBusConfigurationException($"Unknown consume offset mode {mode}."),
             };
-            if (mode == ConsumeOffset.ResumeOrFail)
+            if (mode == StartOffset.ResumeOrFail)
                 throw new StreamBusConfigurationException(
-                    $"No stored offset for reference '{reference}' on partition '{partitionStream}' (mode ResumeOrFail).");
-            var resolved = mode == ConsumeOffset.ResumeOrFirst ? (IOffsetType)new OffsetTypeFirst() : new OffsetTypeNext();
+                    $"No stored offset for consumerGroup '{consumerGroup}' on partition '{partitionStream}' (mode ResumeOrFail).");
+            var resolved = mode == StartOffset.ResumeOrFirst ? (IOffsetType)new OffsetTypeFirst() : new OffsetTypeNext();
             logger.LogWarning(
-                "No stored offset for reference '{Reference}' on partition '{Partition}' (branch {Branch}); resolved {Resolved}.",
-                reference, partitionStream, branch, resolved.GetType().Name);
+                "No stored offset for consumerGroup '{ConsumerGroup}' on partition '{Partition}' (branch {Branch}); resolved {Resolved}.",
+                consumerGroup, partitionStream, branch, resolved.GetType().Name);
             onFallback(branch);
             return resolved;
         }
         if (localWater > stored.Value)
             logger.LogWarning(
-                "Local high-water {Local} exceeds broker-stored {Stored} for reference '{Reference}' on partition '{Partition}'; broker wins, replaying from {Resume}.",
-                localWater, stored.Value, reference, partitionStream, stored.Value + 1);
+                "Local high-water {Local} exceeds broker-stored {Stored} for consumerGroup '{ConsumerGroup}' on partition '{Partition}'; broker wins, replaying from {Resume}.",
+                localWater, stored.Value, consumerGroup, partitionStream, stored.Value + 1);
         return new OffsetTypeOffset(stored.Value + 1);
     }
 
     public static async Task<IOffsetType> ResolveWithQueryAsync(
-        ConsumeOffset mode,
+        StartOffset mode,
         Func<Task<ulong?>> queryStored,
         ulong localWater,
-        string reference,
+        string consumerGroup,
         string partitionStream,
         ILogger logger,
         Action<string> onFallback)
@@ -68,11 +68,11 @@ internal static class OffsetResolution
             // ResumeOrNext plus a transient query failure degrades to Next (skip),
             // observable via this warning plus the fallback metric in ResolveOffset.
             logger.LogWarning(ex,
-                "Offset query failed for reference '{Reference}' on partition '{Partition}'; degrading to the no-stored-offset branch.",
-                reference, partitionStream);
+                "Offset query failed for consumerGroup '{ConsumerGroup}' on partition '{Partition}'; degrading to the no-stored-offset branch.",
+                consumerGroup, partitionStream);
             stored = null;
         }
-        return ResolveOffset(mode, stored, localWater, reference, partitionStream, logger, onFallback);
+        return ResolveOffset(mode, stored, localWater, consumerGroup, partitionStream, logger, onFallback);
     }
 }
 

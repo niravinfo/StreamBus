@@ -30,8 +30,7 @@ builder.Services.AddStreamBus((context, cfg) =>
                 builder.Configuration["StreamBus:UserName"] ?? "guest",
                 builder.Configuration["StreamBus:Password"] ?? "guest");
             h.StreamPort();
-            h.Heartbeat(TimeSpan.FromSeconds(
-                double.TryParse(builder.Configuration["StreamBus:HeartbeatSeconds"], out var seconds) ? seconds : 60));
+            h.Heartbeat(TimeSpan.TryParse(builder.Configuration["StreamBus:Heartbeat"], out var heartbeat) ? heartbeat : TimeSpan.FromSeconds(60));
         });
 
     // Cross-cutting middleware runs before each typed send. Filters are
@@ -59,7 +58,7 @@ builder.Services.AddStreamBus((context, cfg) =>
 });
 
 // Blocking startup waits for connections and topology declarations first.
-builder.Services.AddStreamBusHosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(30)));
+builder.Services.AddStreamBusHosting(h => h.WaitUntilStarted(TimeSpan.FromSeconds(30)));
 builder.Services.AddHostedService<SeedWorker>();
 
 var app = builder.Build();

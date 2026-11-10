@@ -19,7 +19,7 @@ internal sealed class StreamBusMetrics
     public static readonly StreamBusMetrics Shared = new();
 
     private readonly Meter _meter = new("StreamBus");
-    private readonly ConcurrentDictionary<(string Vhost, string Bus, string Stream, int Partition, string Reference), PartitionState> _partitions = new();
+    private readonly ConcurrentDictionary<(string Vhost, string Bus, string Stream, int Partition, string ConsumerGroup), PartitionState> _partitions = new();
     private readonly ConcurrentDictionary<(string Vhost, string Bus), Func<BusConnectionState>> _connections = new();
 
     private StreamBusMetrics()
@@ -40,25 +40,25 @@ internal sealed class StreamBusMetrics
         _ = _meter.CreateObservableUpDownCounter<int>("streambus_connection_state",
             () => _connections.Select(kv => new Measurement<int>((int)kv.Value(),
                 new TagList { { "vhost", kv.Key.Vhost }, { "bus", kv.Key.Bus } })));
-        StoreRejected = _meter.CreateCounter<long>("streambus_offset_store_rejected_total");
-        Regressed = _meter.CreateCounter<long>("streambus_offset_regressed_total");
-        Fallback = _meter.CreateCounter<long>("streambus_offset_fallback_total");
+        OffsetStoreRejected = _meter.CreateCounter<long>("streambus_offset_store_rejected_total");
+        OffsetRegressed = _meter.CreateCounter<long>("streambus_offset_regressed_total");
+        OffsetFallback = _meter.CreateCounter<long>("streambus_offset_fallback_total");
         _pipelineDuration = _meter.CreateHistogram<double>("streambus_pipeline_duration", unit: "s",
             description: "End-to-end duration of a publish or consume filter pipeline, including the terminal handler.");
     }
 
-    public Counter<long> StoreRejected { get; }
-    public Counter<long> Regressed { get; }
-    public Counter<long> Fallback { get; }
+    public Counter<long> OffsetStoreRejected { get; }
+    public Counter<long> OffsetRegressed { get; }
+    public Counter<long> OffsetFallback { get; }
 
     private readonly Histogram<double> _pipelineDuration;
 
     public void RecordPipelineDuration(string kind, double seconds)
         => _pipelineDuration.Record(seconds, new KeyValuePair<string, object?>("kind", kind));
 
-    public IDisposable TrackPartition(string vhost, string bus, string stream, int partition, string reference, PartitionState state)
+    public IDisposable TrackPartition(string vhost, string bus, string stream, int partition, string consumerGroup, PartitionState state)
     {
-        var key = (vhost, bus, stream, partition, reference);
+        var key = (vhost, bus, stream, partition, consumerGroup);
         _partitions[key] = state;
         return new Unregister(() => _partitions.TryRemove(key, out _));
     }
@@ -68,14 +68,14 @@ internal sealed class StreamBusMetrics
         _connections[(vhost, bus)] = readState;
     }
 
-    public void RecordStoreRejected(string vhost, string bus, string stream, int partition, string reference)
-        => StoreRejected.Add(1, BuildTags(vhost, bus, stream, partition, reference));
+    public void RecordStoreRejected(string vhost, string bus, string stream, int partition, string consumerGroup)
+        => OffsetStoreRejected.Add(1, BuildTags(vhost, bus, stream, partition, consumerGroup));
 
-    public void RecordRegressed(string vhost, string bus, string stream, int partition, string reference)
-        => Regressed.Add(1, BuildTags(vhost, bus, stream, partition, reference));
+    public void RecordRegressed(string vhost, string bus, string stream, int partition, string consumerGroup)
+        => OffsetRegressed.Add(1, BuildTags(vhost, bus, stream, partition, consumerGroup));
 
-    public void RecordFallback(string vhost, string bus, string stream, int partition, string reference, string branch)
-        => Fallback.Add(1, BuildTags(vhost, bus, stream, partition, reference, ("branch", branch)));
+    public void RecordFallback(string vhost, string bus, string stream, int partition, string consumerGroup, string branch)
+        => OffsetFallback.Add(1, BuildTags(vhost, bus, stream, partition, consumerGroup, ("branch", branch)));
 
     private IEnumerable<Measurement<long>> ObservePartitions(Func<PartitionState, long> select)
     {
@@ -87,14 +87,14 @@ internal sealed class StreamBusMetrics
                 { "bus", kv.Key.Bus },
                 { "stream", kv.Key.Stream },
                 { "partition", kv.Key.Partition },
-                { "reference", kv.Key.Reference },
+                { "consumerGroup", kv.Key.ConsumerGroup },
             };
             yield return new Measurement<long>(select(kv.Value), tags);
         }
     }
 
     private static TagList BuildTags(
-        string vhost, string bus, string stream, int partition, string reference,
+        string vhost, string bus, string stream, int partition, string consumerGroup,
         (string Name, string Value)? extra = null)
     {
         var tags = new TagList
@@ -103,7 +103,7 @@ internal sealed class StreamBusMetrics
             { "bus", bus },
             { "stream", stream },
             { "partition", partition },
-            { "reference", reference },
+            { "consumerGroup", consumerGroup },
         };
         if (extra is { } e)
         {

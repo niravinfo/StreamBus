@@ -180,7 +180,7 @@ public sealed class TypedStartupIntegrationTests : IAsyncDisposable
             services.AddSingleton(new List<(string Who, int Seq)>());
             services.AddStreamBus((_, cfg) => cfg.Host(handle.Host, "/", h => { h.Credentials(handle.Username, handle.Password); h.StreamPort(handle.StreamPort); }));
             await using var sp = services.BuildServiceProvider();
-            sp.GetRequiredService<StreamBusConsumerStore>().Add(typeof(GhostBus), typeof(OrderEvent), typeof(OrderConsumer), stream, new ConsumeOptions { Reference = "ghost-group" });
+            sp.GetRequiredService<StreamBusConsumerStore>().Add(typeof(GhostBus), typeof(OrderEvent), typeof(OrderConsumer), stream, new ConsumeOptions { ConsumerGroup = "ghost-group" });
             var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
             var ex = await Assert.ThrowsAsync<StreamBusConfigurationException>(() => hosted.StartAsync(ct));
             Assert.Contains("GhostBus", ex.Message);
@@ -192,9 +192,9 @@ public sealed class TypedStartupIntegrationTests : IAsyncDisposable
             services.AddLogging();
             services.AddSingleton(new List<(string Who, int Seq)>());
             services.AddStreamBus((_, cfg) => cfg.Host(handle.Host, "/", h => { h.Credentials(handle.Username, handle.Password); h.StreamPort(handle.StreamPort); }));
-            services.AddStreamBusHosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(30)));
+            services.AddStreamBusHosting(h => h.WaitUntilStarted(TimeSpan.FromSeconds(30)));
             await using var sp = services.BuildServiceProvider();
-            sp.GetRequiredService<StreamBusConsumerStore>().Add(typeof(GhostBus), typeof(OrderEvent), typeof(OrderConsumer), stream, new ConsumeOptions { Reference = "ghost-group" });
+            sp.GetRequiredService<StreamBusConsumerStore>().Add(typeof(GhostBus), typeof(OrderEvent), typeof(OrderConsumer), stream, new ConsumeOptions { ConsumerGroup = "ghost-group" });
             var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
             var ex = await Assert.ThrowsAsync<StreamBusConfigurationException>(() => hosted.StartAsync(ct));
             Assert.Contains("GhostBus", ex.Message);

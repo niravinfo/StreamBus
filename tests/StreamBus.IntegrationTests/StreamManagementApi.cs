@@ -13,7 +13,7 @@ internal sealed record StreamConnectionInfo(
 
 internal sealed record StreamConsumerInfo(
     string Queue,
-    string Reference,
+    string ConsumerGroup,
     bool Active,
     string? ConnectionName);
 

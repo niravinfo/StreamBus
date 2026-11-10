@@ -35,12 +35,6 @@ public sealed class PublishRoutingTests
             PartitionsResult = _ => Array.Empty<string>();
         }
 
-        public override Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
-            => throw new NotImplementedException("PublishRoutingTests never replays.");
-        public override Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
-            => throw new NotImplementedException("PublishRoutingTests never replays.");
-        public override Task<ulong> QuerySequenceAsync(string reference, string stream, CancellationToken ct)
-            => throw new NotImplementedException("PublishRoutingTests never queries sequences.");
         public override Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct)
             => throw new NotImplementedException("PublishRoutingTests never consumes.");
     }
@@ -66,7 +60,7 @@ public sealed class PublishRoutingTests
             _ => SystemTextJsonStreamSerializer.Default);
         var supervisor = ((IStreamBusRegistry)registry).SupervisorFor("/");
         supervisor.StartAsync(CancellationToken.None).GetAwaiter().GetResult();
-        var readiness = supervisor.WaitUntilReadyAsync(ReadinessPolicy.Indefinitely, new CancellationTokenSource(TimeSpan.FromSeconds(5)).Token).GetAwaiter().GetResult();
+        var readiness = supervisor.WaitUntilReadyAsync(ReadinessPolicy.Forever, new CancellationTokenSource(TimeSpan.FromSeconds(5)).Token).GetAwaiter().GetResult();
         Assert.Equal(BusReadiness.Ready, readiness);
         return (registry, system);
     }
@@ -79,8 +73,8 @@ public sealed class PublishRoutingTests
         store.Add(typeof(DefaultBus), typeof(InvoiceEvent), "invoices-super", isSuper: true);
         var router = new StreamPublishRouter(store);
         Assert.Equal("orders", router.Resolve(typeof(DefaultBus), typeof(OrderEvent)).Stream);
-        Assert.False(router.Resolve(typeof(DefaultBus), typeof(OrderEvent)).IsSuper);
-        Assert.True(router.Resolve(typeof(DefaultBus), typeof(InvoiceEvent)).IsSuper);
+        Assert.False(router.Resolve(typeof(DefaultBus), typeof(OrderEvent)).IsSuperStream);
+        Assert.True(router.Resolve(typeof(DefaultBus), typeof(InvoiceEvent)).IsSuperStream);
     }
 
     [Fact]
@@ -129,8 +123,8 @@ public sealed class PublishRoutingTests
         var sp = services.BuildServiceProvider();
         var store = sp.GetRequiredService<StreamBusPublishStore>();
         var router = new StreamPublishRouter(store);
-        Assert.False(router.Resolve(typeof(DefaultBus), typeof(OrderEvent)).IsSuper);
-        Assert.True(router.Resolve(typeof(DefaultBus), typeof(InvoiceEvent)).IsSuper);
+        Assert.False(router.Resolve(typeof(DefaultBus), typeof(OrderEvent)).IsSuperStream);
+        Assert.True(router.Resolve(typeof(DefaultBus), typeof(InvoiceEvent)).IsSuperStream);
     }
 
     [Fact]
@@ -210,14 +204,8 @@ public sealed class PublishRoutingTests
             StreamExistsResult = _ => false;
             PartitionsResult = _ => Array.Empty<string>();
         }
-        public override Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
-            => throw new NotImplementedException("NotFoundSystem never replays.");
         public override Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct)
             => throw new NotImplementedException("NotFoundSystem never creates super producers.");
-        public override Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct)
-            => throw new NotImplementedException("NotFoundSystem never replays.");
-        public override Task<ulong> QuerySequenceAsync(string reference, string stream, CancellationToken ct)
-            => throw new NotImplementedException("NotFoundSystem never queries sequences.");
         public override Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct)
             => throw new NotImplementedException("NotFoundSystem never consumes.");
     }
@@ -234,7 +222,7 @@ public sealed class PublishRoutingTests
             _ => SystemTextJsonStreamSerializer.Default);
         var supervisor = ((IStreamBusRegistry)registry).SupervisorFor("/");
         await supervisor.StartAsync(TestContext.Current.CancellationToken);
-        var readiness = await supervisor.WaitUntilReadyAsync(ReadinessPolicy.Indefinitely, TestContext.Current.CancellationToken);
+        var readiness = await supervisor.WaitUntilReadyAsync(ReadinessPolicy.Forever, TestContext.Current.CancellationToken);
         Assert.Equal(BusReadiness.Ready, readiness);
         var bus = registry.GetOrCreateBus("/");
         var ex = await Assert.ThrowsAsync<StreamBusStreamNotFoundException>(() =>

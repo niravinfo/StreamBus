@@ -52,8 +52,6 @@ Typed filters attach by compile-time `T` and do not depend on wire metadata.
   Correlation is carried when supplied.
 - No `ContentType` stamping in v1; `IStreamSerializer` does not expose one.
 - No metadata for raw `PublishRawAsync` unless the caller supplies it.
-- No metadata for effectively-once result publishes, whose bytes have no
-  declared `T`.
 
 ## Wire representation
 
@@ -96,10 +94,6 @@ The body is unchanged. No envelope is added.
 - `StreamMessageProperties.ApplyTo` keeps a final guard for the normal send
   path. `SendEnvelopeAsync` (error hand-off) bypasses it and writes the
   envelope's own `streambus.error.*` keys, so the error path is unaffected.
-- Effectively-once result publishes pass `OutputHeaders` through
-  `PublishReplayAsync`; they are subject to the same guard. A filter that
-  writes `streambus.message-type` fails rather than corrupting result
-  metadata.
 
 ## Type identity
 
@@ -240,7 +234,7 @@ Changed public surface:
 - `ErrorEnvelope` gains `string? MessageType` and
   `DateTimeOffset? MessageTimestamp`.
 - `ConsumeOptions` gains an internal expected message type for typed
-  endpoints; raw/EO pipelines leave it null.
+  endpoints; raw pipelines leave it null.
 - `StreamBusErrorClassification` does not change in v1; type mismatch follows
   the same path as deserialization failure.
 

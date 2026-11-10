@@ -16,7 +16,6 @@
 - `RabbitMQ.Stream.Client` exactly `1.12.1`; `Microsoft.Extensions.Hosting` / `Diagnostics.HealthChecks` / `Logging.Abstractions` exactly `10.0.12`; `xunit.v3` 4.0.2, `xunit.runner.visualstudio` 4.0.1, `Microsoft.NET.Test.Sdk` 18.10.1. No new packages (`System.Text.Json` ships inbox with .NET 10).
 - Library root namespace `StreamBus`; never `RabbitMQ.Stream.*`.
 - The typed path adds no new broker or offset mechanics: it delegates to `IStreamBus.ConsumeAsync`, so retry, error-stream, SAC, ordering, and offset rules are reused verbatim — never reimplemented.
-- Effectively-once (`EffectivelyOnceConfig`) stays off the typed path in v1 (FR-6 uses the byte-level managed loop + `PublishResultAsync`).
 - Integration tests require the local broker at `localhost:5552` with non-guest creds (`STREAMBUS_USER`/`STREAMBUS_PASSWORD`, defaulting to `app`/`password` in-test); never use `guest`.
 - Every commit step requires explicit human approval before running; never push, never amend without permission.
 
@@ -45,7 +44,7 @@ Modified files (existing suites must stay green):
 - `tests/StreamBus.UnitTests/TypedConsumerTests.cs` (new, Task 3) + `tests/StreamBus.UnitTests/HostingTests.cs` (3 conformance tests, Tasks 3+5 reconfirmed below).
 - `tests/StreamBus.IntegrationTests/TypedConsumerIntegrationTests.cs` (new, Task 4) + `tests/StreamBus.IntegrationTests/TypedStartupIntegrationTests.cs` (new, Task 5).
 
-Explicitly out of Phase 9 (deferred, not stubs): typed *publish* (`PublishAsync` stays byte-based; publishers serialize with the same options by hand — documented); effectively-once typed handlers (byte-level FR-6 path only); `BindingsSuperStreamSpec` (Phase 8 scope stands); policy management (operator domain); per-message TTL/priority (do not exist).
+Explicitly out of Phase 9 (deferred, not stubs): typed *publish* (`PublishAsync` stays byte-based; publishers serialize with the same options by hand — documented); `BindingsSuperStreamSpec` (Phase 8 scope stands); policy management (operator domain); per-message TTL/priority (do not exist).
 
 Recorded rulings (spec as authority; bind all tasks): scope + consumer instance resolve fresh PER ATTEMPT (failure isolation beats scope economy); no startup resolve-probe (Add always registers via TryAddTransient, so a missing type is unreachable through public API — resolution failure surfaces as a loud handler error naming the type); no typed-publish API in v1; `TryAddTransient` respects user pre-registration (explicit lifetime wins); registration order is free (consumer-before-bus and bus-before-consumer both work — resolution happens at Start); `StreamConfigurationConflictException` hierarchy untouched (startup catch checks conflict then configuration separately); `StartupTimeout` must be positive when set (validated at Add time); same-vhost registrations may carry different topology lists (unioned, Phase 8 ruling stands).
 

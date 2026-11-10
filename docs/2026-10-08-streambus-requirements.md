@@ -24,7 +24,6 @@ database.
 - Typed `IConsumer<T>` classes resolved from DI; delegate handler overload retained
 - Superseding retry inside the handler, with a per-consumer strict/skip switch
 - Error stream ("dead letter" destination)
-- Effectively-once read-process-write via offset-as-publishing-id (DES-07)
 - Supervising connect loop, per-call-site readiness gate, health checks
 - Broker-owned consumer offset tracking (`ConsumeOffset`), see FR-10
 - Serialized, cached topology declaration
@@ -63,7 +62,7 @@ official client's namespace.
 |---|---|---|
 | FR-2.1 | A typed MassTransit-style `IConsumer<T>` registered in DI with an explicit stream binding is invoked for `T` messages on that stream — single-bus `AddStreamBusConsumer<T, TConsumer>(stream, ...)` (inject `IStreamBus`), multi-bus `AddStreamBusConsumer<TBus, T, TConsumer>(stream, ...)` (inject `IStreamBus<TBus>`) | Consumer receives deserialized `T`; stream binding is explicit, no convention magic |
 | FR-2.2 | The delegate overload (`ConsumeAsync(stream, options, handler)`) works and is not deprecated | Both paths covered by tests |
-| FR-2.3 | Consumers sharing one `Reference` form one SAC group and split partitions across instances | Super stream of 6 partitions, 4 instances → all 6 partitions owned, every message consumed exactly once |
+| FR-2.3 | Consumers sharing one `Reference` form one SAC group and split partitions across instances | Super stream of 6 partitions, 4 instances → all 6 partitions owned, every message consumed without loss |
 | FR-2.4 | Consumers NOT sharing a `Reference` each receive every message | Broadcast semantics verified |
 | FR-2.5 | On becoming ACTIVE, and on every reconnect, a consumer resumes from the offset the broker has stored for its (reference, partition) — never from offset 0, and never from a local, in-memory, or last-dispatched value. The offset is resolved on every attach (create, promote, reconnect) and is never cached across one. Ordered paths use `RawConsumer` plus the library supervision loop, never `Reliable*` (whose built-in reconnect cannot be disabled) | Promotion scenario and reconnect scenario: total consumed == total published, no entity processed twice |
 | FR-2.6 | Strict per-key ordering holds across SAC promotion | Every entity's sequence arrives in order on the promoting instance |
@@ -99,19 +98,6 @@ official client's namespace.
 | FR-5.2 | The error stream MUST have effective `x-max-age` retention (queue argument or policy). Retention is part of the design, not an option | Effective retention present in the declared spec or applied policy |
 | FR-5.3 | StreamBus's responsibility ends at the dead-letter hand-off: consuming from error destinations and republishing to the source is the application's job, using any compatible client | No library API for consuming error destinations exists; grep + review |
 | FR-5.4 | One shared error stream with routing and per-stream error streams are both supported, via `ErrorStreamOptions { Stream, RoutingValue? }` (shared form supplies a routing value defaulting to the source stream name) | Both verified |
-
-### FR-6 Effectively-once read-process-write (design §7)
-
-| ID | Requirement | Acceptance |
-|---|---|---|
-| FR-6.1 | The result's publishing id is derived from the **source offset**, enforced by `PublishResultAsync` (`ConsumeContext` has no publish method) | Publishing id equals source offset |
-| FR-6.2 | Exactly one write per processing step; publishing to the target is the only side effect | Verified by inspection and test |
-| FR-6.3 | Only one instance publishes under a given producer name. Enforced by SAC on the source. A super-stream source needs one stable producer name per (source partition, target stream), not one shared name | Two instances under one name: no dedup corruption |
-| FR-6.4 | Producer names are stable, unique per (source partition, target stream), meaningful (not a GUID), and within the 255-per-stream limit | Name set inspected; count enforced |
-| FR-6.5 | Results are published in order with none skipped. Keep retrying; never time out silently | No gaps in the result sequence |
-| FR-6.6 | For a super stream target, the last publishing id is queried on **every** partition and the maximum is used as the resume point | Resume from max across all partitions verified |
-| FR-6.7 | No automatic offset tracking exists on the `Raw*` effectively-once path: the source consumer stores nothing and the start offset is computed from the last publishing id on every attach instead | No offset override observed |
-| FR-6.8 | The full read-process-write cycle is correct end to end | **Gate G-2.** Unverified. Must pass before this phase is complete |
 
 ### FR-7 Topology
 
@@ -165,12 +151,11 @@ touch the mechanics.
 | FR-10.6 | The stored offset is always the exact `context.Offset` just processed (never +1) and never exceeds the last successfully processed offset of that (reference, partition) | A handler that throws does not advance the stored offset |
 | FR-10.7 | Monotonicity: an offset is stored only when greater than the highest value already written for that (reference, partition), per FR-2.7 | A lower candidate is rejected locally, counted, and never sent to the broker |
 | FR-10.8 | Store cadence is configurable (`OffsetStoreOptions.EveryMessages`, `MaxInterval`) and defaults to storing after every successful message (`EveryMessages = 1`, `MaxInterval = null`). With `EveryMessages = N > 1` a crash redelivers up to N-1 messages; with `MaxInterval` set a timer stores the last-success offset (still monotonicity-checked, fire-and-forget) | Default and both options tested, including the redelivery window |
-| FR-10.9 | Stores go through the per-partition consumer obtained inside the message handler. `RawSuperStreamConsumer.StoreOffset` throws `NotImplementedException`, so the super-stream entity is never a store path. `ConsumeContext` has no publish method; plain paths just return and the library stores the offset, while only the FR-6 result path publishes via `PublishResultAsync` | No call to the super-stream store path exists |
+| FR-10.9 | Stores go through the per-partition consumer obtained inside the message handler. `RawSuperStreamConsumer.StoreOffset` throws `NotImplementedException`, so the super-stream entity is never a store path. `ConsumeContext` has no publish method; handlers just return and the library stores the offset | No call to the super-stream store path exists |
 | FR-10.10 | `Reference` is optional and auto-derived by default. The derivation is deterministic from (bus marker type, consumer/message type, stream), stable across restarts, unique per consumer group — never a GUID/random, and never shared between two consumer types on one stream. A caller-supplied value MUST also be stable, unique per group, and is validated per FR-10.11 | Omitted reference derives to a stable unique value; two consumer types on one stream get distinct references; the value survives a restart |
 | FR-10.11 | `Reference` is validated against the broker's 255-byte limit at configuration time with an actionable message | An over-long reference fails in our configuration error, not as a broker `PreconditionFailed` |
 | FR-10.12 | Whenever the library falls back because the broker has no stored offset, it logs a warning naming the reference, the partition, the branch taken and the resolved offset, and publishes it to the metrics surface | The fallback is observable. It is never silent |
 | FR-10.13 | `GetConsumerOffsetAsync(reference, partition)` returns `ulong?` (exact stored value, null when nothing is stored) and `SetConsumerOffsetAsync(reference, partition, offset)` seeds the exact last-processed value (resume will be `offset + 1`), where `partition` is the 0-based partition index for super streams (0 for plain streams). `Set` overwrites `localWater` with audit log (it bypasses the FR-10.7 guard by design). Neither is used internally on the per-message path; `AlwaysFirst`/`AlwaysNext` remain explicit operator escapes for replay/tail-attach | Escape hatches exist and are not on the hot path |
-| FR-10.14 | A consumer used for effectively-once read-process-write stores no offset on its source: the publishing ID is the resume point (FR-6.1, FR-6.7) | No store is observed on the effectively-once source reference |
 
 ## 2. Non-functional requirements
 
@@ -186,8 +171,8 @@ touch the mechanics.
 
 ## 3. Acceptance summary
 
-v1 is done when all FR-1 through FR-10 pass against a real broker, and gates
-G-1 through G-5 (§5) pass.
+v1 is done when all FR-1 through FR-10 pass against a real broker, and every
+gate in §5 passes.
 
 ## 4. Hot-key starvation (NFR-4)
 
@@ -216,7 +201,6 @@ These are **not** assumed to work. Each is a release blocker for its phase.
 | ID | Gate | Blocks | Why |
 |---|---|---|---|
 | G-1 | In-handler retry preserves ordering under concurrent load and mid-stream SAC failover | FR-4.7, phase 6 | Untested. The design §4.4 measurement only covered the no-retry case |
-| G-2 | Effectively-once read-process-write is correct end to end | FR-6.8, phase 7 | Design §7 is unverified end to end |
 | G-3 | `x-queue-leader-locator` and replica placement behave as documented on a 3-node cluster | FR-7.3, NFR-5, phase 8 | All measurements so far were on a single node, where both are no-ops |
 | G-4 | Mid-stream SAC failover preserves offsets and ordering | FR-2.5, FR-2.6, phase 5 | Only same-broker promotion was measured |
 | G-5 | A reconnect that lands while a `Strict` retry is pending does not skip the unprocessed message, and a stale instance cannot regress a stored offset | FR-2.5, FR-2.7, FR-10.4, FR-10.7, phase 5 | Ordered paths use `RawConsumer` plus the library supervision loop (`Reliable*` is not used because its built-in reconnect cannot be disabled); the broker's `store_offset` accepts any value without responding |

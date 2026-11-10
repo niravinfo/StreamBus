@@ -78,7 +78,7 @@ public sealed class ConnectionSupervisorTests
         var states = new List<BusConnectionState>();
         sup.StateChanged += states.Add;
         await sup.StartAsync(CancellationToken.None);
-        var readiness = await sup.WaitUntilReadyAsync(ReadinessPolicy.Indefinitely, new CancellationTokenSource(TimeSpan.FromSeconds(10)).Token);
+        var readiness = await sup.WaitUntilReadyAsync(ReadinessPolicy.Forever, new CancellationTokenSource(TimeSpan.FromSeconds(10)).Token);
         Assert.Equal(BusReadiness.Ready, readiness);
         Assert.Contains(BusConnectionState.TransientFailure, states);
         Assert.Equal(BusConnectionState.Ready, sup.State);
@@ -91,7 +91,7 @@ public sealed class ConnectionSupervisorTests
         connector.FailWith(new GenericProtocolException(ResponseCode.InternalError, "p"));
         await using var sup = new StreamBusConnectionSupervisor(Valid(), connector);
         await sup.StartAsync(CancellationToken.None);
-        var readiness = await sup.WaitUntilReadyAsync(ReadinessPolicy.Indefinitely, new CancellationTokenSource(TimeSpan.FromSeconds(5)).Token);
+        var readiness = await sup.WaitUntilReadyAsync(ReadinessPolicy.Forever, new CancellationTokenSource(TimeSpan.FromSeconds(5)).Token);
         Assert.Equal(BusReadiness.Fatal, readiness);
         Assert.Equal(BusConnectionState.Fatal, sup.State);
     }
@@ -107,7 +107,7 @@ public sealed class ConnectionSupervisorTests
         Assert.Equal(BusReadiness.TimedOut, readiness);
         Assert.NotEqual(BusConnectionState.Ready, sup.State);
         connector.Succeed();
-        var later = await sup.WaitUntilReadyAsync(ReadinessPolicy.Indefinitely, new CancellationTokenSource(TimeSpan.FromSeconds(35)).Token);
+        var later = await sup.WaitUntilReadyAsync(ReadinessPolicy.Forever, new CancellationTokenSource(TimeSpan.FromSeconds(35)).Token);
         Assert.Equal(BusReadiness.Ready, later);
     }
 
@@ -165,7 +165,7 @@ public sealed class ConnectionSupervisorTests
 
         await sup.StartAsync(CancellationToken.None);
         Assert.Equal(BusReadiness.Ready,
-            await sup.WaitUntilReadyAsync(ReadinessPolicy.Indefinitely, TestContext.Current.CancellationToken));
+            await sup.WaitUntilReadyAsync(ReadinessPolicy.Forever, TestContext.Current.CancellationToken));
         Assert.Same(first, sup.CurrentHandle);
 
         first.IsClosed = true;
@@ -187,7 +187,7 @@ public sealed class ConnectionSupervisorTests
 
         await using var sup = new StreamBusConnectionSupervisor(FastMonitor(), connector);
         await sup.StartAsync(CancellationToken.None);
-        await sup.WaitUntilReadyAsync(ReadinessPolicy.Indefinitely, TestContext.Current.CancellationToken);
+        await sup.WaitUntilReadyAsync(ReadinessPolicy.Forever, TestContext.Current.CancellationToken);
 
         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
         while (connector.AttemptCount < 5 && DateTime.UtcNow < deadline)

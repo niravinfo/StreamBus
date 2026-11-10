@@ -25,17 +25,17 @@ v1 verdict for the exact lines.
 | FR-1.5 | One producer instance serves N publishes to a stream | `N_publishes_reuse_one_producer` (unit: 5 publishes, 1 `PlainCreations`) | ✅ |
 | FR-2.1 | Typed `IConsumer<T>` via DI with explicit stream binding (single + multi-bus) | `Typed_round_trip_plain` + `Binding_is_explicit` (unbound stream gets nothing) + `Multi_bus_isolation` (BusA/BusB markers, per-stream delivery) + unit `Store_rejects_duplicates_but_allows_variants`, `Explicit_service_lifetime_wins` | ✅ |
 | FR-2.2 | Delegate `ConsumeAsync` overload works, not deprecated | `Handler_failure_redelivers_without_advancing` (delegate handler with throwing-handler asserts: attempts[2]==3, stored==4 — fails if the delegate path breaks) | ✅ |
-| FR-2.3 | Shared `Reference` = one SAC group splitting partitions, exactly once | `Super_stream_splits_across_instances_exactly_once_ordered` (24/24 distinct, per-key ordered; actual scale 4 partitions × 3 instances, not the 6×4 in the criterion text — property fully pinned, scale differs) | ✅ |
+| FR-2.3 | Shared `Reference` = one SAC group splitting partitions, without loss | `Super_stream_partitions_distribute_across_instances_without_duplicates` (24/24 distinct, per-key ordered; actual scale 4 partitions × 3 instances, not the 6×4 in the criterion text — property fully pinned, scale differs) | ✅ |
 | FR-2.4 | Distinct references = broadcast, every message to each | `Distinct_references_each_receive_everything` + `Two_consumer_types_each_receive_everything` | ✅ |
 | FR-2.5 | Resume from broker-stored offset on attach (create/promote/reconnect); never 0, never local | `Recreate_resumes_from_broker_stored_offset` (fresh-guard recreate: [0..4] then [5..9], no overlap) + `Failover_preserves_offsets_and_order` (promotion: 24/24, no dupes) + `Strict_retry_window_survives_kill_without_skip` (kill mid-retry → second drain [1..4]) | ✅ |
 | FR-2.6 | Strict per-key ordering holds across SAC promotion | `Failover_preserves_offsets_and_order` (per-key 1..12 ordered) + `Retry_preserves_order_under_load_and_failover` (per-key 1..12 ordered) | ✅ |
 | FR-2.7 | Non-monotonic store rejected locally, counted; read-back never regresses | `Guard_rejects_non_monotonic_and_set_overwrites` (unit) + `Fallback_and_rejected_counters_emit_with_tags` (unit: `streambus_offset_store_rejected_total` emits) + failover/G-1 read-backs (stored == max received). Note: stale-instance path pinned at unit level; no broker-level stale-writer test | ✅ |
 | FR-2.8 | Typed path deserializes via `IStreamSerializer` (default JSON); poison follows Retry/FailureMode | Unit `Serializer_round_trips` + `Attempts_resolve_fresh_and_poison_translates` (poison → `StreamBusDeserializationException`) + integration `Poison_skip_goes_to_error_stream`, `Poison_strict_never_skips`, `Type_mismatch_is_loud` | ✅ |
-| FR-3.1 | Same routing value processed in publish order | `Super_stream_splits_across_instances_exactly_once_ordered` (per-key [1,2,3,4]) + `Typed_super_stream_ordered_per_key` + G-1/G-2 per-key groups | ✅ |
+| FR-3.1 | Same routing value processed in publish order | `Super_stream_partitions_distribute_across_instances_without_duplicates` (per-key [1,2,3,4]) + `Typed_super_stream_ordered_per_key` + G-1 per-key groups | ✅ |
 | FR-3.2 | Routing value is the only partition-selection input | Unit `Super_routing_passes_only_the_routing_value` (per-send equality: same key + different bodies agree, different keys preserved as-is) + integration `Super_stream_keys_land_on_stable_partitions` (same-key stability) | ✅ per Ruling R8: the library's FR-3.2 surface is the routing passthrough; partition selection itself lives in the client and is not pinnable deterministically — hash distribution is a client property, not a library behavior |
 | FR-3.3 | Partition count immutable after declaration | `Super_partition_conflict_names_expected_and_actual` (integration: 5 vs 3 → conflict naming both) + unit `Partition_mismatch_throws_with_expected_and_actual` | ✅ |
 | FR-3.4 | Hot-key ceiling (one partition's throughput per key) | N/A — docs-side by design (ceiling documented in design §4.5 + requirements §4; observability pinned by FR-9.3 test) | N/A (docs-side, stated explicitly) |
-| FR-4.1 | Retry lives inside the handler; no external wrapping | `Strict_retry_window_survives_kill_without_skip` (kill mid-retry-window → nothing advanced) + order-under-retry tests (G-1, typed retry, EO partition order) + code fact: zero `Reliable*` references in `src/` (grep), `RawConsumer` is the only consumer factory | ✅ |
+| FR-4.1 | Retry lives inside the handler; no external wrapping | `Strict_retry_window_survives_kill_without_skip` (kill mid-retry-window → nothing advanced) + order-under-retry tests (G-1, typed retry, retry partition order) + code fact: zero `Reliable*` references in `src/` (grep), `RawConsumer` is the only consumer factory | ✅ |
 | FR-4.2 | Throwing handler never silently skipped; ordered paths avoid `Reliable` | `Handler_failure_redelivers_without_advancing` (attempts[2]==3, stored==4) + same no-`Reliable` code fact as FR-4.1 | ✅ |
 | FR-4.3 | Every `RetryPolicy` knob exercised; 1-based attempts; `MaxAttempts` semantics | `Attempt_1_resolves_to_base_delay_without_jitter` (BaseDelay+Multiplier 200→400→800) + `Delay_caps_at_max_delay_and_jitter_stays_bounded` (MaxDelay+Jitter) + `Delay_calculator_overrides_knobs_with_one_based_attempts` (override + seen==[1,2]) + `Skip_with_max_attempts_1_hands_off_after_one_attempt` vs `Skip_handoff_publishes_envelope_and_advances_once` (MaxAttempts 1 vs 3) + `Strict_with_max_attempts_throws` (null-only-with-Strict) + bound-validation tests | ✅ |
 | FR-4.4 | Strict stalls, never advances until success; Strict+ErrorStream rejected | `Strict_retry_window_survives_kill_without_skip` (redelivers same offset after kill) + `Strict_with_error_stream_throws` + `Strict_with_max_attempts_throws` | ✅ |
@@ -46,14 +46,11 @@ v1 verdict for the exact lines.
 | FR-5.2 | Error stream has effective `x-max-age` retention | N/A — docs-side by design (effective retention is not readable via the stream protocol). Partial pins exist and are recorded: unit spec emission (`Default_spec_emits_no_retention_args`, 7d → `"604800s"`) + integration `Retention_declaration_is_usable` (retention-carrying declaration succeeds and works) | N/A (docs-side, stated explicitly) |
 | FR-5.3 | StreamBus's responsibility ends at the dead-letter hand-off: consuming from error destinations and republishing to the source is the application's job | No library API for consuming error destinations exists (grep + review) | ✅ |
 | FR-5.4 | Shared (default + custom routing) and per-stream error forms | `Shared_and_per_stream_error_forms_coexist` (default routing s1 + custom "custom-2", bodies distinct) + per-stream form in every skip test (dedicated error stream per source) | ✅ |
-| FR-6.1 | Result publishing id = source offset (enforced by `PublishResultAsync`) | Unit `Publishing_id_equals_source_offset` + `Plain_to_plain_maps_publishing_id_to_source_offset` (`QuerySequence`==4 after offsets 0..4) | ✅ |
 | FR-6.2 | Exactly one write per step; target publish is the only side effect | `Kill_mid_run_resumes_without_dupes_or_gaps` (exactly-10 convergence) + `Stable_producer_is_reused_and_carries_source_offset_as_id` + inspection (plain path returns; only result path publishes) | ✅ |
-| FR-6.3 | One publisher per producer name (SAC-enforced); N names for super sources | `Two_instances_share_one_group_without_corruption` (one SAC group, 8/8 exactly once) + unit `Duplicate_in_flight_id_fails_loudly` (concurrent same-id misuse rejected loudly) | ✅ |
 | FR-6.4 | Stable, meaningful, per-(partition,target) names within 255/stream cap | Unit naming tests (stable/meaningful/differ-per-partition-and-target/≤255B) + `Producer_name_cap_is_enforced_per_target` (255 enforced per target, other targets unaffected) | ✅ |
 | FR-6.5 | Results in order, none skipped; retry forever, never silent timeout | `Handler_retry_preserves_partition_order` (exact 0..4, attempts[2]==3) + unit `Fail_twice_then_confirms_three_publishes_one_return` + `Cancel_mid_handoff_throws_and_stops` | ✅ |
 | FR-6.6 | Super target resumes from max last-id across all partitions | Unit `Resume_takes_max_across_super_partitions_and_skips_unknown` (+ null/empty cases) + `Plain_to_super_target_resumes_from_max` (8/8 distinct across resume) | ✅ |
-| FR-6.7 | No offset tracking on the EO source path | `Plain_to_plain_…` asserts `GetConsumerOffsetAsync` null for the EO reference + `Super_target_without_routing_redelivers_and_writes_nothing` (no routing → redeliver, target untouched) | ✅ |
-| FR-6.8 | Full read-process-write cycle correct end to end (G-2) | `Full_cycle_super_to_super_with_flakes_and_kill_G2` (20/20 distinct, per-key ordered, kill mid-run) | ✅ |
+| FR-6.7 | No offset tracking on the source path | `Plain_to_plain_…` asserts `GetConsumerOffsetAsync` null for the source reference + `Super_target_without_routing_redelivers_and_writes_nothing` (no routing → redeliver, target untouched) | ✅ |
 | FR-7.1 | Ensure* idempotent and cached | `Repeat_same_spec_makes_no_further_broker_calls` (unit: cached, probe count frozen) + `Repeat_and_concurrent_declares_converge` (integration: repeat no-op, streams usable) | ✅ |
 | FR-7.2 | Concurrent declaration serialized; race tolerated, genuine conflict throws | Unit `Four_concurrent_same_spec_issue_single_create` + integration 4-way in `Repeat_and_concurrent_…` + conflict tests (`Partition_mismatch_…`, `Super_partition_conflict_…`, `Kind_mismatch_…`) + `Restart_with_identical_spec_succeeds` | ✅ |
 | FR-7.3 | Leader locator defaults to `least-leaders` | Unit `Locator_defaults_to_least_leaders` + `Locator_maps_all_values` (declared-spec side; on-broker placement is G-3, open) | ✅ |
@@ -81,12 +78,12 @@ v1 verdict for the exact lines.
 | FR-10.6 | Stored == exact `context.Offset`; throwing handler never advances | `Handler_failure_redelivers_without_advancing` (attempts[2]==3, stored==4) + skip-case advance-once (stored==4 with poison at 2) | ✅ |
 | FR-10.7 | Monotonicity per FR-2.7 | Same pins as FR-2.7 (guard unit + rejected-counter unit + failover/G-1 read-backs) | ✅ |
 | FR-10.8 | Configurable cadence; default every message; redelivery window documented | `Every3_stores_at_3_and_redelivers_at_most_2` + `MaxInterval_timer_stores_last_success` + `Non_positive_every_messages/max_interval_throws` + defaults pinned (Task 2): `Offset_store_defaults_match_spec` (`new OffsetStoreOptions()` == `{ EveryMessages = 1, MaxInterval = null }`, incl. the `ConsumeOptions` default) | ✅ |
-| FR-10.9 | Stores go through the per-partition consumer; super-stream entity never a store path | `Failover_preserves_offsets_and_order` (per-partition stored == max received; empty → null) + same read-back in G-1 test + API facts: `RawSuperStreamConsumer.StoreOffset` throws per client; `ConsumeContext` has no publish method (only `PublishResultAsync` publishes) | ✅ |
+| FR-10.9 | Stores go through the per-partition consumer; super-stream entity never a store path | `Failover_preserves_offsets_and_order` (per-partition stored == max received; empty → null) + same read-back in G-1 test + API facts: `RawSuperStreamConsumer.StoreOffset` throws per client; `ConsumeContext` has no publish method | ✅ |
 | FR-10.10 | Optional auto-derived `Reference`: deterministic, stable, unique per group, ≤255B | Unit `Derivation_is_stable_distinct_and_bounded` + `References_differ_per_consumer_type_but_stable` (two consumer types on one stream differ) + integration `Two_consumer_types_each_receive_everything` (distinct refs → both get all). Restart-stability follows from pure deterministic derivation (nothing persisted) | ✅ |
 | FR-10.11 | Over-long `Reference` fails at config, not as broker `PreconditionFailed` | `Over_long_reference_throws_naming_limit` (300-char ref → config error naming 255) | ✅ |
 | FR-10.12 | No-stored-offset fallback warns (ref, partition, branch, resolved) + metrics/health | Warning pinned (`No_stored_offset_falls_back` asserts ref+partition+branch in log; resolved type name logged per `OffsetResolution.cs:35-37`) + metrics pinned (`RecordFallback` emission with branch tag). **Health half not implemented**: health exposes only per-(vhost,bus) connection state (`Hosting.cs:660-683`; `DescribeStates` = Vhost/BusType/State) — no per-fallback health entry; fallback is observable via logs + `streambus_offset_fallback_total` only | ✅ — health clause reworded per Ruling R7 with user sign-off (requirements doc updated); fallback observable via warning logs + `streambus_offset_fallback_total` |
 | FR-10.13 | `Get/SetConsumerOffsetAsync` escape hatches; exact values; not on hot path | `Set_then_get_round_trip_and_resume` (set 7 → get 7 → resume delivers [8,9]) + `Missing_stream_throws_not_found_on_all_entry_points` + `Bus_level_set_audit_reaches_a_real_logger` (Set audit log; Set bypasses guard by design). Hot-path exclusion: code pointer (Get/Set live on registry/bus; per-message path uses guard + partition consumer only) | ✅ |
-| FR-10.14 | EO source stores nothing; publishing id is the resume point | `Plain_to_plain_…` asserts `GetConsumerOffsetAsync` null for the EO reference | ✅ |
+| FR-10.14 | Source consumer stores no offset; publishing id is the resume point | `Plain_to_plain_…` asserts `GetConsumerOffsetAsync` null for the source reference | ✅ |
 
 ### Candidate further gaps for the controller (resolved by Task 2 + Rulings R7/R8)
 
@@ -118,11 +115,10 @@ One subsection per NFR-1–NFR-7. Each names its evidence type; Task 3 outputs
 pasted verbatim below (commands run from the repo root on 2026-10-13).
 
 - NFR-1: ordering-first — evidence: ordering test roll-up (per-key-order
-  tests: `Super_stream_splits_across_instances_exactly_once_ordered`,
+  tests: `Super_stream_partitions_distribute_across_instances_without_duplicates`,
   `Failover_preserves_offsets_and_order`,
   `Retry_preserves_order_under_load_and_failover`,
   `Typed_super_stream_ordered_per_key`, `Handler_retry_preserves_partition_order`,
-  `Full_cycle_super_to_super_with_flakes_and_kill_G2` per-key groups,
   `Two_instances_share_one_group_without_corruption`) + Strict-by-default code
   pointer (`RetryPolicy` default `FailureMode.Strict`; `Strict` + `MaxAttempts`
   rejected). Final green lines (all roll-up members green — unit 179/179,
@@ -165,10 +161,7 @@ pasted verbatim below (commands run from the repo root on 2026-10-13).
   src/StreamBus/StreamPartitionConsumer.cs:945  promotion-degrade fallback to First
       (listener must never throw; loud via warning :940-943 + RecordFallback :944)
   ```
-  First-run EO resume shape: `QueryStoredAsync` (`StreamPartitionConsumer.cs:914-917`)
-  returns the target's last publishing id; never-published → null → the
-  stored-null branch with the default `ResumeOrFirst` mode → First. Every
-  production site fits one of the four sanctioned shapes; no implicit `Next`
+  Every production site fits one of the four sanctioned shapes; no implicit `Next`
   production exists.
 - NFR-4: hot-key documented, not auto-solved — evidence: doc pointers
   (design §4.5, §11.3; requirements §4) + metrics visibility test
@@ -202,9 +195,8 @@ pasted verbatim below (commands run from the repo root on 2026-10-13).
   pattern overmatches (producer factories, not topology creation):
   `Connector.cs:15,16,24,25,89,104,124,128,131,135` (interface + pass-throughs),
   `TopologyRegistry.cs:50,93` (via-handle declaration calls),
-  `ProducerRegistry.cs:138` (`CreateSuperStreamProducerAsync` — producer, not a stream),
-  `ResultProducerRegistry.cs:202` (`CreateSuperStreamProducerWithReferenceAsync` — producer, not a stream).
-- NFR-7: broker-owned offsets — evidence: FR-10 roll-up (FR-10.1–FR-10.14
+  `ProducerRegistry.cs:138` (`CreateSuperStreamProducerAsync` — producer, not a stream).
+- NFR-7: broker-owned offsets — evidence: FR-10 roll-up (FR-10.1–FR-10.13
   above) + no-local-resume code pointers (`QueryStoredAsync` /
   `OnPromotedCoreAsync` re-read on every attach; `localWater` write-guard
   only) + metric catalog match table (FR-9.1 support — every name in the
@@ -226,16 +218,15 @@ pasted verbatim below (commands run from the repo root on 2026-10-13).
 | ID | Gate | Evidence | Status |
 |---|---|---|---|
 | G-1 | Retry under load + failover preserves order | `Retry_preserves_order_under_load_and_failover` | PASS (green this session) |
-| G-2 | Effectively-once end to end | `Full_cycle_super_to_super_with_flakes_and_kill_G2` | PASS (green this session) |
 | G-3 | 3-node placement | `Leader_placement_gate_G3` (skip-guarded: proves the gate is wired, skips on single node) | OPEN (no cluster; single node confirmed by skip path, not by version probe) |
-| G-4 | SAC failover offsets + ordering | `Failover_preserves_offsets_and_order` + `Super_stream_splits_across_instances_exactly_once_ordered` | PASS (green this session) |
+| G-4 | SAC failover offsets + ordering | `Failover_preserves_offsets_and_order` + `Super_stream_partitions_distribute_across_instances_without_duplicates` | PASS (green this session) |
 | G-5 | Reconnect-during-retry + stale monotonicity | `Strict_retry_window_survives_kill_without_skip` + `Guard_rejects_non_monotonic_and_set_overwrites` (+ `Fallback_and_rejected_counters_emit_with_tags`) | PASS (green this session) |
 
 ## v1 verdict
 
 v1 is done: every FR row is ✅ or accepted-⚠️ (FR-10.12 ✅ with the R7 reword
 applied; FR-7.4 ⚠️ environment-gated with its explicit reason;
-FR-3.4/FR-5.2 N/A docs-side by design, stated explicitly) and G-1/G-2/G-4/G-5
+FR-3.4/FR-5.2 N/A docs-side by design, stated explicitly) and G-1, G-4 and G-5
 are PASS — with G-3 open pending a cluster (no 3-node broker available; the
 skip-guarded placement test proves the gate is wired and skips on the single
 node; close the gate only on green non-skipped evidence from a cluster run).
@@ -263,7 +254,7 @@ d46a363 (this amendment lands on top).
 
 Matrix discipline carries over: a row is ✅ ONLY if a test asserts the
 criterion. v1 rows whose API changed are re-pinned below; unchanged
-runtime rows (ordering, offsets, effectively-once, metrics) keep their
+runtime rows (ordering, offsets, metrics) keep their
 v1 pins and stayed green unmodified.
 
 | Area | v2 behavior (one line) | Pinning tests | Status |

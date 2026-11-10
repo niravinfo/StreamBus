@@ -99,9 +99,7 @@ public sealed class TopologyTests
         public override Task<string[]> QueryPartitionAsync(string superStream, CancellationToken ct)
             => Task.FromResult(Partitions(superStream));
         public override Task<IStreamPlainProducerHandle> CreatePlainProducerAsync(string stream, CancellationToken ct) => throw new NotImplementedException("Topology tests declare only.");
-        public override Task<IStreamPlainProducerHandle> CreatePlainProducerWithReferenceAsync(string stream, string reference, CancellationToken ct) => throw new NotImplementedException("Topology tests declare only.");
         public override Task<IStreamSuperProducerHandle> CreateSuperStreamProducerAsync(string stream, CancellationToken ct) => throw new NotImplementedException("Topology tests declare only.");
-        public override Task<IStreamSuperProducerHandle> CreateSuperStreamProducerWithReferenceAsync(string stream, string reference, CancellationToken ct) => throw new NotImplementedException("Topology tests declare only.");
         public override Task<RawConsumer> CreateRawConsumerAsync(RawConsumerConfig config, CancellationToken ct) => throw new NotImplementedException("Topology tests never attach.");
     }
 
@@ -133,7 +131,7 @@ public sealed class TopologyTests
         };
         var supervisor = new StreamBusConnectionSupervisor(options, new ReadyConnector(system));
         supervisor.StartAsync(CancellationToken.None).GetAwaiter().GetResult();
-        var readiness = supervisor.WaitUntilReadyAsync(ReadinessPolicy.Indefinitely, new CancellationTokenSource(TimeSpan.FromSeconds(5)).Token).GetAwaiter().GetResult();
+        var readiness = supervisor.WaitUntilReadyAsync(ReadinessPolicy.Forever, new CancellationTokenSource(TimeSpan.FromSeconds(5)).Token).GetAwaiter().GetResult();
         Assert.Equal(BusReadiness.Ready, readiness);
         return (new StreamTopologyRegistry(supervisor, "/"), system, supervisor);
     }
@@ -314,7 +312,7 @@ public sealed class TopologyTests
         }
 
         var readiness = await supervisor.WaitUntilReadyAsync(
-            ReadinessPolicy.Indefinitely, new CancellationTokenSource(TimeSpan.FromSeconds(5)).Token);
+            ReadinessPolicy.Forever, new CancellationTokenSource(TimeSpan.FromSeconds(5)).Token);
         Assert.Equal(BusReadiness.Ready, readiness);
 
         await registry.EnsureStreamAsync(decl, ct);

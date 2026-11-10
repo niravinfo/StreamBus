@@ -15,10 +15,10 @@ internal static class FilterRegistrationSupport
     public static void EnsureSingletonLifetime(
         IServiceProvider rootProvider,
         Type? filterType,
-        string family)
+        string pipeline)
     {
         ArgumentNullException.ThrowIfNull(rootProvider);
-        ArgumentException.ThrowIfNullOrWhiteSpace(family);
+        ArgumentException.ThrowIfNullOrWhiteSpace(pipeline);
         if (filterType is null)
             return;
         if (rootProvider.GetService(typeof(IServiceScopeFactory)) is not IServiceScopeFactory scopeFactory)
@@ -32,8 +32,8 @@ internal static class FilterRegistrationSupport
         catch (InvalidOperationException ex)
         {
             throw new StreamBusConfigurationException(
-                $"{family} filter '{filterType.FullName}' could not be resolved from the root service provider. " +
-                $"{family} filters are resolved once per bus and must be registered as singletons; resolve scoped services from the context's Services member. " +
+                $"{pipeline} filter '{filterType.FullName}' could not be resolved from the root service provider. " +
+                $"{pipeline} filters are resolved once per bus and must be registered as singletons; resolve scoped services from the context's Services member. " +
                 ex.Message);
         }
 
@@ -47,8 +47,8 @@ internal static class FilterRegistrationSupport
         if (!ReferenceEquals(rootInstance, scopedInstance))
         {
             throw new StreamBusConfigurationException(
-                $"{family} filter '{filterType.FullName}' is registered with a scoped or transient lifetime, " +
-                $"but {family.ToLowerInvariant()} filters are resolved once per bus and cached, so a non-singleton registration becomes a captive dependency. " +
+                $"{pipeline} filter '{filterType.FullName}' is registered with a scoped or transient lifetime, " +
+                $"but {pipeline.ToLowerInvariant()} filters are resolved once per bus and cached, so a non-singleton registration becomes a captive dependency. " +
                 "Register the filter as a singleton and resolve scoped services from the context's Services member.");
         }
     }
@@ -59,27 +59,27 @@ internal static class FilterRegistrationSupport
         Func<IServiceProvider, TFilter>? factory,
         TFilter? instance,
         bool isTyped,
-        string family)
+        string pipeline)
         where TFilter : class
     {
         ArgumentNullException.ThrowIfNull(provider);
-        ArgumentException.ThrowIfNullOrWhiteSpace(family);
+        ArgumentException.ThrowIfNullOrWhiteSpace(pipeline);
 
         if (isTyped)
         {
             throw new StreamBusConfigurationException(
-                $"{family} filter '{filterType}' is typed and cannot be created without a message type.");
+                $"{pipeline} filter '{filterType}' is typed and cannot be created without a message type.");
         }
         if (instance is not null)
             return instance;
         if (factory is not null)
         {
             return factory(provider)
-                ?? throw new StreamBusConfigurationException($"{family} filter factory returned null.");
+                ?? throw new StreamBusConfigurationException($"{pipeline} filter factory returned null.");
         }
         return provider.GetService(filterType!) as TFilter
             ?? throw new StreamBusConfigurationException(
-                $"{family} filter '{filterType!.FullName}' could not be resolved from the root service provider.");
+                $"{pipeline} filter '{filterType!.FullName}' could not be resolved from the root service provider.");
     }
 
     public static Type? ClosedFilterType(
@@ -88,12 +88,12 @@ internal static class FilterRegistrationSupport
         IReadOnlyList<Type> typedMessageTypes,
         Type messageType,
         Type typedInterfaceDefinition,
-        string family)
+        string pipeline)
     {
         ArgumentNullException.ThrowIfNull(typedMessageTypes);
         ArgumentNullException.ThrowIfNull(messageType);
         ArgumentNullException.ThrowIfNull(typedInterfaceDefinition);
-        ArgumentException.ThrowIfNullOrWhiteSpace(family);
+        ArgumentException.ThrowIfNullOrWhiteSpace(pipeline);
 
         return kind switch
         {
@@ -103,9 +103,9 @@ internal static class FilterRegistrationSupport
                 filterType!,
                 messageType,
                 typedInterfaceDefinition,
-                family),
+                pipeline),
             _ => throw new StreamBusConfigurationException(
-                $"{family} filter '{filterType}' has unknown registration kind '{kind}'."),
+                $"{pipeline} filter '{filterType}' has unknown registration kind '{kind}'."),
         };
     }
 
@@ -113,23 +113,23 @@ internal static class FilterRegistrationSupport
         Type? registeredFilterType,
         Type closedFilterType,
         IServiceProvider provider,
-        string family)
+        string pipeline)
     {
         ArgumentNullException.ThrowIfNull(closedFilterType);
         ArgumentNullException.ThrowIfNull(provider);
-        ArgumentException.ThrowIfNullOrWhiteSpace(family);
+        ArgumentException.ThrowIfNullOrWhiteSpace(pipeline);
 
         var namedFilterType = registeredFilterType ?? closedFilterType;
         return provider.GetService(closedFilterType)
             ?? throw new StreamBusConfigurationException(
-                $"{family} filter '{namedFilterType.FullName}' could not be resolved from the root service provider.");
+                $"{pipeline} filter '{namedFilterType.FullName}' could not be resolved from the root service provider.");
     }
 
     private static Type CloseOpenGeneric(
         Type filterType,
         Type messageType,
         Type typedInterfaceDefinition,
-        string family)
+        string pipeline)
     {
         Type closedFilterType;
         try
@@ -139,14 +139,14 @@ internal static class FilterRegistrationSupport
         catch (ArgumentException ex)
         {
             throw new StreamBusConfigurationException(
-                $"{family} filter '{filterType}' cannot be closed for message type '{messageType.FullName}': {ex.Message}");
+                $"{pipeline} filter '{filterType}' cannot be closed for message type '{messageType.FullName}': {ex.Message}");
         }
 
         var typedInterface = typedInterfaceDefinition.MakeGenericType(messageType);
         if (!typedInterface.IsAssignableFrom(closedFilterType))
         {
             throw new StreamBusConfigurationException(
-                $"{family} filter '{filterType}' closed for message type '{messageType.FullName}' does not implement {DisplayName(typedInterfaceDefinition)}<{messageType.Name}>.");
+                $"{pipeline} filter '{filterType}' closed for message type '{messageType.FullName}' does not implement {DisplayName(typedInterfaceDefinition)}<{messageType.Name}>.");
         }
         return closedFilterType;
     }

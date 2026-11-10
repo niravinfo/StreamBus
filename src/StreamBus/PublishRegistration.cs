@@ -4,10 +4,10 @@ namespace StreamBus;
 
 internal sealed record PublishRegistration
 {
-    public required Type BusMarker { get; init; }
+    public required Type BusType { get; init; }
     public required Type MessageType { get; init; }
     public required string Stream { get; init; }
-    public required bool IsSuper { get; init; }
+    public required bool IsSuperStream { get; init; }
     public int? Partitions { get; init; }
     public TimeSpan? MaxAge { get; init; }
     public ulong? MaxLengthBytes { get; init; }
@@ -151,19 +151,19 @@ internal sealed class StreamBusPublishStore
     private readonly Dictionary<Type, List<PublishFilterRegistration>> _filters = new();
     private readonly HashSet<Type> _sealedBusTypes = new();
 
-    internal void AddFilter(Type busMarker, PublishFilterRegistration filter)
+    internal void AddFilter(Type busType, PublishFilterRegistration filter)
     {
-        ArgumentNullException.ThrowIfNull(busMarker);
+        ArgumentNullException.ThrowIfNull(busType);
         ArgumentNullException.ThrowIfNull(filter);
-        if (_sealedBusTypes.Contains(busMarker))
+        if (_sealedBusTypes.Contains(busType))
         {
             throw new StreamBusConfigurationException(
-                $"Publish filters cannot be registered after bus {busMarker.FullName} is built.");
+                $"Publish filters cannot be registered after bus {busType.FullName} is built.");
         }
-        if (!_filters.TryGetValue(busMarker, out var filters))
+        if (!_filters.TryGetValue(busType, out var filters))
         {
             filters = new List<PublishFilterRegistration>();
-            _filters[busMarker] = filters;
+            _filters[busType] = filters;
         }
         if (filter.FilterType is { } type && filters.Any(filter.ConflictsWith))
         {
@@ -173,27 +173,27 @@ internal sealed class StreamBusPublishStore
         filters.Add(filter);
     }
 
-    internal IReadOnlyList<PublishFilterRegistration> FiltersFor(Type busMarker)
-        => _filters.TryGetValue(busMarker, out var filters)
+    internal IReadOnlyList<PublishFilterRegistration> FiltersFor(Type busType)
+        => _filters.TryGetValue(busType, out var filters)
             ? filters
             : Array.Empty<PublishFilterRegistration>();
 
-    internal void Seal(Type busMarker) => _sealedBusTypes.Add(busMarker);
+    internal void Seal(Type busType) => _sealedBusTypes.Add(busType);
 
-    internal void Add(Type busMarker, Type messageType, string stream, bool isSuper, StreamOptions? spec = null)
+    internal void Add(Type busType, Type messageType, string stream, bool isSuper, StreamOptions? spec = null)
     {
-        ArgumentNullException.ThrowIfNull(busMarker);
+        ArgumentNullException.ThrowIfNull(busType);
         ArgumentNullException.ThrowIfNull(messageType);
         ArgumentException.ThrowIfNullOrWhiteSpace(stream);
         StreamOptionsValidation.Validate(spec ?? new StreamOptions(), $"Publish '{stream}'", allowPartitions: isSuper);
-        if (_registrations.Any(r => r.BusMarker == busMarker && r.MessageType == messageType && r.Stream == stream))
-            throw new StreamBusConfigurationException($"Duplicate publish registration for {messageType.FullName} on stream '{stream}' (marker {busMarker.FullName}).");
+        if (_registrations.Any(r => r.BusType == busType && r.MessageType == messageType && r.Stream == stream))
+            throw new StreamBusConfigurationException($"Duplicate publish registration for {messageType.FullName} on stream '{stream}' (marker {busType.FullName}).");
         _registrations.Add(new PublishRegistration
         {
-            BusMarker = busMarker,
+            BusType = busType,
             MessageType = messageType,
             Stream = stream,
-            IsSuper = isSuper,
+            IsSuperStream = isSuper,
             Partitions = spec?.Partitions,
             MaxAge = spec?.MaxAge,
             MaxLengthBytes = spec?.MaxLengthBytes,
@@ -215,19 +215,19 @@ internal sealed class StreamPublishRouter
         _store = store;
     }
 
-    public PublishRegistration Resolve(Type busMarker, Type messageType)
+    public PublishRegistration Resolve(Type busType, Type messageType)
     {
-        ArgumentNullException.ThrowIfNull(busMarker);
+        ArgumentNullException.ThrowIfNull(busType);
         ArgumentNullException.ThrowIfNull(messageType);
         var matches = _store.Registrations
-            .Where(r => r.BusMarker == busMarker && r.MessageType == messageType)
+            .Where(r => r.BusType == busType && r.MessageType == messageType)
             .ToList();
         if (matches.Count == 0)
-            throw new StreamBusConfigurationException($"No publish registration for message {messageType.FullName} on bus {busMarker.FullName}. Register it with cfg.Publish<{messageType.Name}>(stream) or cfg.PublishSuper<{messageType.Name}>(stream).");
+            throw new StreamBusConfigurationException($"No publish registration for message {messageType.FullName} on bus {busType.FullName}. Register it with cfg.Publish<{messageType.Name}>(stream) or cfg.PublishSuper<{messageType.Name}>(stream).");
         if (matches.Count > 1)
         {
             var streams = string.Join("', '", matches.Select(m => m.Stream));
-            throw new StreamBusConfigurationException($"Ambiguous publish registration for message {messageType.FullName} on bus {busMarker.FullName}: registered for streams '{streams}'. Publish with an explicit stream: PublishAsync<T>(stream, message, ...) or PublishSuperAsync<T>(stream, message, key, ...).");
+            throw new StreamBusConfigurationException($"Ambiguous publish registration for message {messageType.FullName} on bus {busType.FullName}: registered for streams '{streams}'. Publish with an explicit stream: PublishAsync<T>(stream, message, ...) or PublishSuperAsync<T>(stream, message, key, ...).");
         }
         return matches[0];
     }

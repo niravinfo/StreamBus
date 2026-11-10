@@ -13,9 +13,9 @@
 ## Global Constraints
 
 - Breaking changes are acceptable; keep the existing non-generic filters as universal filters that run for every message in their scope.
-- Preserve exactly: registration order, bus-wide filters before endpoint filters, exactly-one-`next`, `CanSkip` rules, effectively-once rejection of `CanSkip`, one per-message DI scope shared by filters and the typed consumer, retry/exhaustion behavior, and no second deserialization.
+- Preserve exactly: registration order, bus-wide filters before endpoint filters, exactly-one-`next`, `CanSkip` rules, one per-message DI scope shared by filters and the typed consumer, retry/exhaustion behavior, and no second deserialization.
 - Typed consume filters are eager: when any typed filter attaches, deserialize before the consume pipeline per attempt and share that exact object with the handler.
-- No wire envelope/metadata, no per-publish-stream filters, no polymorphic dispatch, no typed raw/effectively-once filters, no change to raw/result/replay/requeue paths.
+- No wire envelope/metadata, no per-publish-stream filters, no polymorphic dispatch, no typed raw filters, no change to raw/result/replay/requeue paths.
 - The `next` delegate remains the existing universal `PublishDelegate` / `ConsumeDelegate`; typed filters continue the chain with `next(context.Inner)` as the spec's public surface shows.
 - Public context members are additive; directly constructed universal test contexts must still compile.
 - `TreatWarningsAsErrors` stays ON; `dotnet build StreamBus.slnx -v:minimal` must report 0 warnings and 0 errors after every task.
@@ -511,7 +511,7 @@ git commit -m "feat: build publish pipelines per message type"
   - `ConsumePipeline(IReadOnlyList<IStreamConsumeFilter> filters, bool requiresTypedMessage = false)` with `public bool RequiresTypedMessage { get; }`.
   - `StreamConsumerRegistry.BuildPipeline(..., Type? messageType)` attaches typed filters; `RequiresTypedMessage` is true when at least one `ITypedFilterAdapter` attached.
   - Endpoint-scoped concrete mismatch repeats defensively at attach; bus-scoped concrete non-matches are silently skipped.
-  - Typed adapter `CanSkip` participates in the existing `AllowPipelineSkip` and effectively-once rejection checks.
+  - Typed adapter `CanSkip` participates in the existing `AllowPipelineSkip` checks.
   - One typed filter instance per bus per closed type; one universal filter instance per bus/registration as today.
 
 - [ ] **Step 1: Write the failing consume attachment tests**
@@ -602,7 +602,7 @@ Expected: FAIL — consume filters are still universal-only; typed filters are n
 
 - [ ] **Step 3: Implement typed attachment**
 
-Add `RequiresTypedMessage` to `ConsumePipeline` with the optional constructor parameter (default false). `BuildPipeline` gains a `Type? messageType` parameter and passes it from `ConsumeAsync`; effectively-once passes `null`.
+Add `RequiresTypedMessage` to `ConsumePipeline` with the optional constructor parameter (default false). `BuildPipeline` gains a `Type? messageType` parameter and passes it from `ConsumeAsync`; raw paths pass `null`.
 
 In `StreamConsumerRegistry`, keep `_filterInstances` for universal filters and add:
 
@@ -638,7 +638,7 @@ else
 
 Keep the per-scope `HashSet<Type>` of `FilterIdentity.TypeOf(filter)` and the existing "already registered on this bus/endpoint" messages. Keep the `CanSkip` loop exactly as today, but name filters through `FilterIdentity.TypeOf(filter).Name` so adapter errors name the user filter. Return `new ConsumePipeline(filters, filters.Any(f => f is ITypedFilterAdapter))`.
 
-Do not change raw or effectively-once attachment behavior: both pass `messageType: null`, so typed registrations are skipped and universal filters behave as before.
+Do not change raw attachment behavior: it passes `messageType: null`, so typed registrations are skipped and universal filters behave as before.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -734,7 +734,7 @@ Expected: FAIL — typed filters currently run after the handler's lazy deserial
 
 - [ ] **Step 3: Implement eager deserialization**
 
-Add `internal Type? MessageType { get; init; }` to `ConsumeOptions` and set `MessageType = descriptor.MessageType` in the `ConsumeOptions` object created by `AddCore` for typed endpoints. Raw and effectively-once options leave it null.
+Add `internal Type? MessageType { get; init; }` to `ConsumeOptions` and set `MessageType = descriptor.MessageType` in the `ConsumeOptions` object created by `AddCore` for typed endpoints. Raw options leave it null.
 
 Add `TypedMessageDeserializer` with a cached compiled delegate per message type:
 
@@ -908,7 +908,7 @@ In `docs/guide/consume.md`, extend the Pipelines section:
 - Show a typed consume filter calling `next(context.Inner)`, reading `context.Message`, and using `context.SetPayload`.
 - State that when at least one typed filter attaches, the message is deserialized before the pipeline per attempt; failures retry/exhaust without running filters or the handler; the same instance is shared with the consumer.
 - State that universal-only pipelines keep lazy deserialization, so `CanSkip` skip still avoids deserialization; typed-filter pipelines deserialize before a skip.
-- State that raw and effectively-once pipelines never attach typed filters and retain the existing `CanSkip` rules.
+- State that raw pipelines never attach typed filters and retain the existing `CanSkip` rules.
 
 - [ ] **Step 3: Add example filters**
 
@@ -945,6 +945,6 @@ git commit -m "docs: document typed publish and consume filters"
 - Open generic and concrete typed filters attach per declared/endpoint message type; bus-wide non-matches skip silently; endpoint mismatches fail during `AddStreamBus`.
 - Publish pipelines are cached per message type, built eagerly for registered types and lazily for explicit unregistered types.
 - Typed consume filters receive the eagerly deserialized message; the consumer receives the same instance with no second deserialization.
-- Registration order, bus-before-endpoint order, exactly-one-`next`, skip rules, effectively-once `CanSkip` rejection, per-message DI scope sharing, and retry/exhaustion behavior are preserved.
+- Registration order, bus-before-endpoint order, exactly-one-`next`, skip rules, per-message DI scope sharing, and retry/exhaustion behavior are preserved.
 - All new unit and integration tests pass; existing universal-filter tests pass unchanged; `dotnet test` is green.
 - `docs/guide/publish.md`, `docs/guide/consume.md`, examples, and `CHANGELOG.md` describe bus-wide vs endpoint behavior and eager deserialization timing.

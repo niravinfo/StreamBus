@@ -34,8 +34,8 @@ want a lazy "maybe deserialized" contract.
   whenever at least one typed filter is attached, and share that exact message
   instance with the consumer. No second deserialization.
 - Preserve existing pipeline guarantees: registration order, bus-wide before
-  endpoint filters, exactly-one-`next`, skip rules, effectively-once rejection
-  of `CanSkip`, per-message DI scope sharing, retry/exhaustion behavior.
+  endpoint filters, exactly-one-`next`, skip rules,
+  per-message DI scope sharing, retry/exhaustion behavior.
 
 ## Non-goals
 
@@ -47,8 +47,8 @@ want a lazy "maybe deserialized" contract.
 - No polymorphic/runtime payload dispatch. `PublishAsync<T>` uses declared
   `T`; a typed consumer endpoint uses the `IConsumer<T>` message type. A
   filter for a derived type does not automatically match a base type.
-- No typed filters for raw `ConsumeAsync` or `ConsumeEffectivelyOnceAsync`
-  (they have no message type). Raw pipelines remain universal-only.
+- No typed filters for raw `ConsumeAsync` (it has no message type). Raw
+  pipelines remain universal-only.
 - No message envelope or automatic wire metadata (message type, generated
   message id, timestamp, conversation/request/address fields). Type identity
   for this change is the compile-time pipe type only. See
@@ -57,8 +57,8 @@ want a lazy "maybe deserialized" contract.
   metadata design.
 - No change from singleton-per-bus filter instances to per-message scoped
   instances. Scoped services remain available through `context.Services`.
-- No change to `PublishRawAsync`, error hand-off, requeue, replay, or result
-  publishes; those still bypass publish filters.
+- No change to `PublishRawAsync`, error hand-off, requeue, or replay; those
+  still bypass publish filters.
 
 ## Current behavior (for reference)
 
@@ -219,9 +219,8 @@ the payload.
   deliberately stricter than MassTransit, which skips mismatches even at
   endpoint level. Open generic endpoint filters always close to the endpoint's
   `T`; universal endpoint filters always run.
-- **Raw consume / effectively-once:** no message type is known, so typed
-  filters never attach. Universal filters behave as today. The EO `CanSkip`
-  rejection remains.
+- **Raw consume:** no message type is known, so typed filters never attach.
+  Universal filters behave as today.
 - **Publish raw / hand-off / replay / requeue:** unchanged; no publish
   pipeline.
 
@@ -253,7 +252,7 @@ skipped silently.
 ### Eager consume message
 
 - Add `internal Type? MessageType` to `ConsumeOptions`, set from the typed
-  endpoint descriptor; null for raw/EO pipelines.
+  endpoint descriptor; null for raw pipelines.
 - `ConsumerRegistry.BuildPipeline` closes/attaches typed consume filters for
   `options.MessageType` and records whether the resulting pipeline contains at
   least one typed filter (`RequiresTypedMessage`).
@@ -334,7 +333,7 @@ Unit:
 - eager consume: typed filter and consumer receive the same instance; typed
   filter sees a deserialized `T`; universal filter still sees raw; typed
   deserialization failure retries/exhausts without running filters; skip with
-  `CanSkip` and `AllowPipelineSkip`; EO rejects `CanSkip`.
+  `CanSkip` and `AllowPipelineSkip`.
 - ordering: bus universal/typed then endpoint universal/typed; non-matching
   filters omitted.
 - duplicate detection per closed type within one scope, and the documented

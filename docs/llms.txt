@@ -23,11 +23,18 @@
   Explicit-stream targets on undeclared streams raise
   `StreamBusStreamNotFoundException` and never auto-create. Raw bytes go
   through `bus.PublishRawAsync`, which does not run publish filters.
+- Producers are anonymous: StreamBus never assigns a producer name, so the
+  broker's published-message deduplication is never enabled. Any number of
+  identical instances may publish to the same stream with unchanged
+  configuration. Delivery is at-least-once; applications own duplicate handling
+  and idempotency.
 - Consumer identity: `cfg.ReceiveEndpoint(stream, e =>
   e.Consumer<TConsumer>("group"))`. The group is required, verbatim,
-  max 255 bytes, exactly one `Consumer` call per endpoint. Same group
-  scales out via a shared cursor; different groups are independent
-  cursors. Raw `ConsumeAsync` also requires `Reference`. The library
+  max 255 bytes, exactly one `Consumer` call per endpoint. On a super stream,
+  one group distributes partitions across instances (`SingleActiveConsumer`
+  applies per partition); on a plain stream, one group has one active consumer
+  with the rest standing by for failover. Different groups are independent
+  cursors. Raw `ConsumeAsync` also requires `ConsumerGroup`. The library
   never derives group names.
 - Cross-process caveat: same reference, `SingleActiveConsumer = false`,
   two processes: both receive deliveries (at-least-once doubles, never
@@ -61,17 +68,17 @@
   at the hand-off: consuming from error destinations and republishing to
   the source is the application's job.
 - Hand-off timeouts: stream hand-offs use
-  `e.ErrorHandoffTimeout(timeout)` (default 10s, values below 1s are
-  raised to 1s); queue hand-offs use
+  `e.ErrorPublishTimeout(timeout?)` (null waits indefinitely; values
+  below 1s are raised to 1s); queue hand-offs use
   `DeadLetterToQueue(name, type, q => q.ConfirmTimeout(timeout))`
   (default 10s). A lost confirmation surfaces as a timeout/transient
   failure with an unknown outcome; the hand-off is retried without
   advancing.
-- Startup blocking is service-level:
+- Startup waiting is service-level:
   `services.AddStreamBusHosting(h =>
-  h.BlockStartupUntilReady(timeout?))`, at most once; default is
-  non-blocking. Blocking startup waits for connections, topology, and
-  typed consumer attaches by default; `h.BlockUntilConsumersAttached(false)`
+  h.WaitUntilStarted(timeout?))`, at most once; default is
+  non-blocking. Waiting startup waits for connections, topology, and
+  typed consumer attaches by default; `h.WaitUntilConsumersAttached(false)`
   opts out of the consumer wait. A consumer that cannot attach raises
   `StreamBusStartupBlockedException`; a budget expiry raises
   `StreamBusTimeoutException`.

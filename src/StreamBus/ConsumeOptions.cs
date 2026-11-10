@@ -4,7 +4,7 @@ namespace StreamBus;
 /// Where a consumer group starts on a partition when no stored offset exists,
 /// and how a stored offset is treated.
 /// </summary>
-public enum ConsumeOffset
+public enum StartOffset
 {
     /// <summary>Resume from the stored offset, or the very first offset when none is stored.</summary>
     ResumeOrFirst = 0,
@@ -22,10 +22,10 @@ public enum ConsumeOffset
 public sealed record OffsetStoreOptions
 {
     /// <summary>Store the offset after this many messages; 1 stores every delivery (default).</summary>
-    public int EveryMessages { get; init; } = 1;
+    public int StoreEveryMessages { get; init; } = 1;
 
     /// <summary>Also flush the stored offset at least every this often; null disables the time-based flush.</summary>
-    public TimeSpan? MaxInterval { get; init; }
+    public TimeSpan? MaxFlushInterval { get; init; }
 }
 
 /// <summary>
@@ -39,22 +39,22 @@ public sealed record ConsumeOptions
     public bool IsSuperStream { get; init; }
 
     /// <summary>
-    /// Consumer-group reference; the group is the cursor identity and is used
+    /// Consumer-group consumerGroup; the group is the cursor identity and is used
     /// verbatim. Required: a missing group throws
     /// <see cref="StreamBusConfigurationException"/> at attach instead of
     /// guessing; over the broker's 255-byte limit is also an error.
     /// </summary>
-    public string? Reference { get; init; }
+    public string? ConsumerGroup { get; init; }
 
     /// <summary>
-    /// Single-active-consumer per (stream, reference): only one instance in the
+    /// Single-active-consumer per (stream, consumerGroup): only one instance in the
     /// group receives deliveries. Set <see langword="false"/> to fan out to every
-    /// instance (never run two offset writers on one reference outside SAC).
+    /// instance (never run two offset writers on one consumerGroup outside SAC).
     /// </summary>
     public bool SingleActiveConsumer { get; init; } = true;
 
     /// <summary>Start-offset policy for the group; defaults to resume-or-first.</summary>
-    public ConsumeOffset Offset { get; init; } = ConsumeOffset.ResumeOrFirst;
+    public StartOffset StartOffset { get; init; } = StartOffset.ResumeOrFirst;
 
     /// <summary>Broker-side offset persistence cadence.</summary>
     public OffsetStoreOptions OffsetStore { get; init; } = new();
@@ -90,11 +90,12 @@ public sealed record ConsumeOptions
     public Func<ExhaustedContext, CancellationToken, Task>? OnExhausted { get; init; }
 
     /// <summary>Gates the consumer attach: fail fast, wait bounded, or wait indefinitely (default fail fast).</summary>
-    public ReadinessPolicy ReadinessPolicy { get; init; } = ReadinessPolicy.FailFastPolicy;
-    /// <summary>Bound on the confirmed error-stream hand-off publish. A lost
-    /// confirmation surfaces as transient so the partition dispatch gate is
-    /// never wedged; the hand-off is retried without advancing.</summary>
-    public TimeSpan HandoffConfirmTimeout { get; init; } = TimeSpan.FromSeconds(10);
+    public ReadinessPolicy Readiness { get; init; } = ReadinessPolicy.Default;
+    /// <summary>Timeout for the confirmed publish to the error stream;
+    /// null waits indefinitely (the partition loop's cancellation token is the
+    /// only bound). A lost confirmation surfaces as transient so the partition
+    /// dispatch gate is never wedged; the hand-off is retried without advancing.</summary>
+    public TimeSpan? ErrorPublishTimeout { get; init; }
     internal DeadLetterOptions? DeadLetter { get; init; }
     internal DeadLetterOptions? ShadowedDeadLetter { get; init; }
     internal IReadOnlyList<ConsumeFilterRegistration> ConsumeFilters { get; init; } = Array.Empty<ConsumeFilterRegistration>();

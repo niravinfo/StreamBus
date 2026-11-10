@@ -14,10 +14,10 @@
 
 - Target framework `net10.0`; `TreatWarningsAsErrors` stays ON for every task; central package management stays; do NOT bump `RabbitMQ.Stream.Client` / `RabbitMQ.Client` versions in this plan.
 - Branch: `v2` (created in Task 0). One branch, frequent commits, one task per commit.
-- Preserve verbatim (spec §4): (1) strict per-partition handler ordering, at most one in-flight handler per partition; (2) offset advances only after handler success (cadence rules) or **confirmed** error-destination publish, never before, with the monotonic-window guard rejecting regression; (3) never skip before hand-off confirms; exhaustion is confirmed-then-commit; (4) effectively-once: publishing id = source offset, resume = target's last confirmed publishing id recomputed each attach, source never stores offsets, `QuerySequence == 0` resolves to replay-from-first under dedup; (5) unique process-wide producer names (broker dedup trap); replay/EO names stable per (source-partition → target); (6) SAC promotion listener never throws (client fallback for a throwing listener = scroll forward = skipped backlog); (7) `ConsumeAsync` returns only after the broker confirms the subscription.
+- Preserve verbatim (spec §4): (1) strict per-partition handler ordering, at most one in-flight handler per partition; (2) offset advances only after handler success (cadence rules) or **confirmed** error-destination publish, never before, with the monotonic-window guard rejecting regression; (3) never skip before hand-off confirms; exhaustion is confirmed-then-commit; (4) unique process-wide producer names (avoiding the broker publishing-id reuse trap); replay names stable per (source-partition → target); (5) SAC promotion listener never throws (client fallback for a throwing listener = scroll forward = skipped backlog); (6) `ConsumeAsync` returns only after the broker confirms the subscription.
 - Public API adds only what the spec defines; every removed/changed public member goes into CHANGELOG.md; version becomes 0.2.0.
 - **Configuration is explicit — no `IConfiguration` surface (ADR: supersedes spec B8).** Callers configure the library by calling methods: `AddStreamBus((context, cfg) => cfg.Host(host, vhost, h => ...))`. Do NOT add `IConfiguration`/`IConfigurationSection` overloads, `string sectionName` overloads, `Bind(...)` methods, section-key parsing, unknown-key warnings, or per-field code-vs-section precedence. Every knob (including `MonitorInterval`, `HandoffConfirmTimeout`, `ErrorQueueOptions.ConfirmTimeout`) must be reachable from a configurator method; nothing may be settable only from a config file.
-- **Pipelines are additive and ordered (C2/C3 contract).** Users may register any number of publish filters and any number of consume filters. Order of execution is exactly registration order; first registered = outermost wrapper = runs first on the way in and last on the way out. No filtering, reordering, deduplication or cap (beyond rejecting an accidental duplicate registration of the same filter type). Filters compose; each one may call `next` exactly once.
+- **Pipelines are additive and ordered (C2/C3 contract).** Users may register any number of publish filters and any number of consume filters. Order of execution is exactly registration order; first registered = outermost wrapper = runs first on the way in and last on the way out. No filtering, reordering or cap (beyond rejecting an accidental duplicate registration of the same filter type). Filters compose; each one may call `next` exactly once.
 - Line anchors in this plan reflect the tree as of 2026-10-18. If a symbol name or line drifted, locate by symbol (`grep -n "<symbol>" src/StreamBus`) and apply the edit to the located member — the change itself is fully specified everywhere.
 - Every task's verify gate BEFORE its commit: `dotnet build StreamBus.slnx` reports **0 warnings, 0 errors** and `dotnet test tests/StreamBus.UnitTests` is fully green (the suite takes ~4s locally). Integration tests need a broker on `localhost:5552` (env `STREAMBUS_USER`/`STREAMBUS_PASSWORD`).
 - New test naming follows the repo's lowercase-snake test-method convention (see existing `RetryIntegrationTests`).
@@ -28,8 +28,8 @@ The five failure modes from the spec that are most likely to bite a real user, e
 
 1. **Idle connection death stalls consumers silently (green-but-dead)** — pinned by unit `ConsumerDeathTests` callback tests (Task 2), integration `ConsumerDeathTests.Connection_closed_while_idle_reattaches_within_bounds` (Task 19), and `BrokerRestartTests` (Task 19). A reasonable person expects a dead consumer connection to detach within ~5s and reattach from the stored offset.
 2. **Hand-off confirm wait wedges the partition dispatch gate forever** — pinned by `ConfirmationCloseTests.Handoff_returns_transient_after_timeout_and_message_stays_replayable` (Task 1). Expect a lost confirm on the error hand-off to surface as a retryable transient within `ErrorHandoffTimeout`.
-3. **Replay republish silently swallowed by broker dedup (cross-source name collision)** — pinned by `ReplayNamingTests.Replay_names_are_unique_per_source_stream` (Task 10). Expect replay after naming change to never drop envelopes.
-4. **Pipeline semantics drift (ordering, skip, exception classification)** — pinned by `PipelineSemanticsTests` ordering/skip/classification matrix (Task 16). Task 17 re-asserts skip-in-EO rejection through integration. Expect filters to run registration-order; skip to advance offset exactly once; skip to be rejected at config time under EO.
+3. **Replay republish silently swallowed by the broker (cross-source publishing-id collision)** — pinned by a naming-uniqueness test (Task 10). Expect replay after a naming change to never drop envelopes.
+4. **Pipeline semantics drift (ordering, skip, exception classification)** — pinned by `PipelineSemanticsTests` ordering/skip/classification matrix (Task 16). Expect filters to run registration-order; skip to advance offset exactly once; skip to be rejected at config time on typed endpoints without an explicit allowance.
 5. **Docs/README factual drift again** — pinned by DocsSnippets compile project (Task 13) and llms.txt grep checks (Task 13). Expect the README "90% case" to compile against shipped API verbatim.
 
 ---
@@ -41,7 +41,7 @@ The five failure modes from the spec that are most likely to bite a real user, e
 - **M3 — Surface consolidation** (Tasks 8–11, gate V2-G3)
 - **M4 — Docs honesty** (Task 13, gate V2-G4)
 - **M5 — Properties + publish pipeline** (Tasks 14–15, gate V2-G5)
-- **M6 — Consume pipeline + EO + telemetry** (Tasks 16–17, gate V2-G6)
+- **M6 — Consume pipeline + telemetry** (Tasks 16–17, gate V2-G6)
 - **M7 — CI & chaos** (Tasks 18–19, gate V2-G7)
 
 # Task 0: Branch & baseline
@@ -79,7 +79,7 @@ Expected: 0 warnings; all unit tests pass (247 as of 2026-10-18; record actual c
 - Test: `tests/StreamBus.UnitTests/ConfirmationCloseTests.cs` (new)
 
 **Interfaces:**
-- Consumes: `ConfirmationTracker.PublishAsync/PublishWithIdAsync` (existing); `RawProducerConfig` (client type).
+- Consumes: `ConfirmationTracker.PublishAsync` (existing); `RawProducerConfig` (client type).
 - Produces: `ConfirmationTracker.OnConnectionLost()` (idempotent, call-any-thread, no-throw); `IStreamProducerHandle`-level transient semantics unchanged (callers already treat `StreamBusTransientException` as invalidate-and-retry); `ConsumeOptions.HandoffConfirmTimeout` (`TimeSpan`, default 10s); `IReceiveEndpointConfigurator.ErrorHandoffTimeout(TimeSpan)`.
 
 - [ ] **Step 1: ConfirmationTracker gains a close hook**
@@ -158,7 +158,7 @@ public class ConfirmationCloseTests
 }
 ```
 
-Test 1 construction: build a `ConfirmationTracker` (it must be publicly constructible for tests already — existing `PublishTests` constructs it; follow that fixture style), call `PublishWithIdAsync(...)` with a fake producer whose `Send` succeeds but never confirms, invoke `tracker.OnConnectionLost()`, and assert the returned task throws `StreamBusTransientException` with message containing "outcome unknown"; assert a racing waiter resolves rather than hanging (use a 5s `WaitAsync` timeout in the test; if the test would hang the assertion fails — no flakiness invitation).
+Test 1 construction: build a `ConfirmationTracker` (it must be publicly constructible for tests already — existing `PublishTests` constructs it; follow that fixture style), publish with a fake producer whose `Send` succeeds but never confirms, invoke `tracker.OnConnectionLost()`, and assert the returned task throws `StreamBusTransientException` with message containing "outcome unknown"; assert a racing waiter resolves rather than hanging (use a 5s `WaitAsync` timeout in the test; if the test would hang the assertion fails — no flakiness invitation).
 Test 3: call `registry.PublishEnvelopeAsync` against a scripted `IStreamProducerHandle` whose `SendEnvelopeAsync` never completes when given a token that was NOT cancelled by the caller (use the scripted-handle pattern from `ConnectionSupervisorTests`/`PublishTests` — hand-rolled fakes, unexercised methods throw). Assert `StreamBusTransientException`, and that invalidation ran (existing registry invalidation observable pattern).
 
 - [ ] **Step 6: Verify**
@@ -729,14 +729,13 @@ git commit -m "feat(errors): channel reuse for dead-letter bursts; uniform Confi
 **Files:**
 - Modify: `src/StreamBus/Bus.cs` (replace both classes)
 - Create: `src/StreamBus/StreamRuntimeLoop.cs`
-- Create: `src/StreamBus/StreamBusNaming.cs`
 - Modify: `src/StreamBus/Hosting.cs` (route the three retry loops onto the helper)
 - Modify: `src/StreamBus/ConnectionSupervisor.cs` (review-side connect loop keeps its custom shape — see below)
 - Modify: validation sites per Step 3 list
 - Test: behavior-only verification (existing suites are the contract)
 
 **Interfaces:**
-- Produces: `StreamBusCore<TBus>` (internal, single implementation); shims `StreamBus : StreamBusCore<DefaultBus>` and `StreamBus<TBus> : StreamBusCore<TBus>` (3 lines each); public API textually unchanged; `StreamRuntimeLoop.RetryUntilAsync<T>(...)`; `StreamBusNaming` (publish references, replay names, EO names; 255-byte rule).
+- Produces: `StreamBusCore<TBus>` (internal, single implementation); shims `StreamBus : StreamBusCore<DefaultBus>` and `StreamBus<TBus> : StreamBusCore<TBus>` (3 lines each); public API textually unchanged; `StreamRuntimeLoop.RetryUntilAsync<T>(...)`.
 
 - [ ] **Step 1: Write StreamBusCore<TBus>**
 
@@ -821,61 +820,28 @@ Swap the three Hosting loops (`DeclareDerivedUntilReadyAsync`, `DeclareQueuesUnt
 
 Move every range/member validation into the owning record's `Validate()`: `StreamBusConnectionOptions.Validate()`, `StreamOptionsValidation.Validate()`, and a new `StreamBusOptions.Validate()` (ports, ranges, heartbeat, pool limits, retry bounds). Then DELETE the duplicated checks from: `HostConfigurator` setters, `StreamBusConfigurator.Build()`, `ConnectionSupervisor` ctor, `Connector.ConnectAsync` pool re-check, `ReceiveEndpointConfigurator` setters, `TopologyValidation.ValidateKnobs` — each calls the owning record's `Validate()` (configurator-level also calls it once in `Build()` — the single call site, not re-implementation). All existing error-message texts are preserved verbatim (asserted by existing tests; if a test pinned a message produced at configurator-set time that now comes from `Validate()`, update the test to the same text).
 
-- [ ] **Step 4: StreamBusNaming**
-
-```csharp
-namespace StreamBus;
-
-internal static class StreamBusNaming
-{
-    public const int MaxName = 255;
-
-    /// Stable publisher reference for explicit-dedup producers (replay).
-    public static string ReplayProducerName(string sourceStream, string sourcePartitionStream)
-    {
-        // "streambus-replay-" + sha256(sourcePartitionStream)[..16] + "-" + sourcePartitionStream
-        // (kept under 255 bytes; existing ReplayNaming recipe migrated verbatim)
-    }
-
-    /// Unique-per-handle publish refs (dedup safety): consumed via Connector's
-    /// existing counter — migrate the hashing recipe here, keep format.
-    public static string PublishReference(string streamName, long sequence) { ... }
-
-    /// Effectively-once producer name per (source partition stream -> target).
-    public static string EffectivelyOnceProducerName(string sourcePartitionStream, string targetStream) { ... }
-
-    private static string Sha16(string input) { /* SHA256, first 16 hex chars, UTF8 */ }
-
-    public static string Enforce(string name)
-        => name.Length <= MaxName ? name
-            : throw new StreamBusException($"Stable producer name would exceed {MaxName} bytes: {TruncateForMessage(name)}");
-}
-```
-
-Migrate the three recipe sites: `Connector.cs` (PublishReference), `ErrorEnvelope.cs` (`ReplayNaming`, both usages), `EffectivelyOnce.cs` (naming + 255 rule), keeping every produced string byte-identical to today (pinned by `EffectivelyOnceTests` naming tests — extend them to cover `ReplayProducerName`).
-
-- [ ] **Step 5: Verify**
+- [ ] **Step 4: Verify**
 
 Full suite + build: ALL existing behavior tests green with NO expectation changes except: any test asserting a validation message's *origin* stays identical. `grep -n "typeof(DefaultBus)" src/StreamBus/Bus.cs` returns at most one hit (inside the shim's generic-instantiation path if kept at all).
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add src/StreamBus/Bus.cs src/StreamBus/StreamRuntimeLoop.cs src/StreamBus/StreamBusNaming.cs src/StreamBus/Hosting.cs src/StreamBus/ConnectionSupervisor.cs
+git add src/StreamBus/Bus.cs src/StreamBus/StreamRuntimeLoop.cs src/StreamBus/Hosting.cs src/StreamBus/ConnectionSupervisor.cs
 git add -A src/StreamBus/Configuration tests/StreamBus.UnitTests
-git commit -m "refactor(core): single generic bus core; one retry skeleton; one validation boundary; one namer (B1-B4)"
+git commit -m "refactor(core): single generic bus core; one retry skeleton; one validation boundary (B1-B4)"
 ```
 
 # Task 9 (B5–B6): Handle split, store hygiene, factory hosting service
 
 **Files:**
 - Modify: `src/StreamBus/ProducerHandles.cs` (`IStreamProducerHandle` split)
-- Modify: `src/StreamBus/Connector.cs`, `src/StreamBus/ResultProducerRegistry.cs`, `src/StreamBus/ProducerRegistry.cs` (implementations track the split)
+- Modify: `src/StreamBus/Connector.cs`, `src/StreamBus/ProducerRegistry.cs` (implementations track the split)
 - Modify: `src/StreamBus/Hosting.cs` (stores internalized; `StreamBusRegistrationView`; `StreamBusHostedService` factory)
 - Modify: `src/StreamBus/PublishRouting.cs` → renamed `PublishRegistration.cs` (type `StreamBusPublishStore` keeps its name; file rename only)
 
 **Interfaces:**
-- Produces: `IStreamPlainProducerHandle { SendAsync(ReadOnlyMemory<byte>, PublishOptions, ct); PublishReplayAsync(...) }`, `IStreamSuperProducerHandle : IStreamPlainProducerHandle { PublishWithIdAsync(ulong, ReadOnlyMemory<byte>, ct); PublishResultAsync(...); QuerySequenceAsync(...) }` — the super-only members leave the plain surface; the silently-ignored routingKey parameter disappears from plain; super-side `SendEnvelopeAsync` throw-path disappears.
+- Produces: `IStreamPlainProducerHandle { SendAsync(ReadOnlyMemory<byte>, PublishOptions, ct) }`, `IStreamSuperProducerHandle : IStreamPlainProducerHandle` — the super-only members leave the plain surface; the silently-ignored routingKey parameter disappears from plain; super-side throw-path members declared on the base disappear.
 - Produces: `StreamBusRegistrationView` (record: `Vhost, Host, StreamPort, AmqpPort, HeartbeatSeconds` — no `Password`).
 
 - [ ] **Step 1: Interface split**
@@ -884,18 +850,15 @@ git commit -m "refactor(core): single generic bus core; one retry skeleton; one 
 public interface IStreamPlainProducerHandle : IAsyncDisposable
 {
     Task SendAsync(ReadOnlyMemory<byte> body, PublishOptions options, CancellationToken ct);
-    Task<int> PublishReplayAsync(string errorStream, string? targetStream, CancellationToken ct);
 }
 
 public interface IStreamSuperProducerHandle : IStreamPlainProducerHandle
 {
-    Task PublishWithIdAsync(ulong publishingId, ReadOnlyMemory<byte> body, CancellationToken ct);
-    Task PublishResultAsync(ReadOnlyMemory<byte> body, ulong publishingId, string? routingKey, CancellationToken ct); // copy the EXACT current super-handle signature (symbol-locate if drifted)
-    Task<ulong?> QuerySequenceAsync(/* copy the EXACT current parameter list from the super-handle implementation — do NOT invent */);
+    // super-only publishing members (copy the EXACT current signatures — do NOT invent)
 }
 ```
 
-Registry caches the union under the existing keyed slots; callers that need super members down-cast (currently: `ResultProducerRegistry`, `ConsumerRegistry.ReplayAsync`, `ErrorPublisher`) — each gets the narrowed type from the registry API instead (`GetOrCreateAsync` gains `Func<StreamProducerHandle, THandle>` accessor where needed), so `PublishRouting`/`Connector` casting moves to ONE site. The per-handle static routing table (per spec B5) arrives in Task 8's registry rework if it did not land there — verify `grep -n "ConditionalWeakTable" src/StreamBus/ProducerHandles.cs` returns zero after this task; if a residual exists here, migrate the CWT into the handle instance field now.
+Registry caches the union under the existing keyed slots; callers that need super members down-cast (currently: `ConsumerRegistry.ReplayAsync`, `ErrorPublisher`) — each gets the narrowed type from the registry API instead (`GetOrCreateAsync` gains `Func<StreamProducerHandle, THandle>` accessor where needed), so `PublishRouting`/`Connector` casting moves to ONE site. The per-handle static routing table (per spec B5) arrives in Task 8's registry rework if it did not land there — verify `grep -n "ConditionalWeakTable" src/StreamBus/ProducerHandles.cs` returns zero after this task; if a residual exists here, migrate the CWT into the handle instance field now.
 
 - [ ] **Step 2: Store hygiene**
 
@@ -910,31 +873,28 @@ git add src/StreamBus tests/StreamBus.UnitTests
 git commit -m "refactor(surface): handle interface split; internal stores; credential-free registration view (B5-B6)"
 ```
 
-# Task 10 (B7+B9+B14): Dead surface removal, typed keys, replay naming
+# Task 10 (B7+B9+B14): Dead surface removal, typed keys
 
 **Files:**
 - Delete members from: `src/StreamBus/Hosting.cs` (`StreamBusConnectionOptionsBuilder`, `ConsumeOptionsBuilder`), `src/StreamBus/ConsumeOptions.cs` (`ConsumeOrdering`, `ConsumeOptions.Ordering`)
-- Modify: `src/StreamBus/Registry.cs` (typed keys), `src/StreamBus/ErrorEnvelope.cs` + `src/StreamBus/ConsumerRegistry.cs` (replay naming per source)
-- Test: `tests/StreamBus.UnitTests/TypedConsumerTests.cs` (update — removes `ConsumeOptionsBuilder` usage), new `ReplayNamingTests.cs`
+- Modify: `src/StreamBus/Registry.cs` (typed keys)
+- Test: `tests/StreamBus.UnitTests/TypedConsumerTests.cs` (update — removes `ConsumeOptionsBuilder` usage)
 
 - [ ] **Step 1: Delete dead surface** — remove the three members + the orphaned `AddStreamBusConsumer` hints in tests; CHANGELOG break list entries added (Task 13 refuses none of them).
 
 - [ ] **Step 2: Typed registry keys** — `_supervisors`/bus entry dictionary key becomes `(Type BusType, string Vhost)` (value-tuple); `DescribeStates` drops the `@`-split parse entirely. Update all `.Keys`/`.TryGetValue` sites.
 
-- [ ] **Step 3: Replay naming per source** — `StreamBusNaming.ReplayProducerName` (Task 8) now takes BOTH `sourceStream` AND `sourcePartitionStream`; `ConsumerRegistry.ReplayAsync` passes `envelope.SourceStream` so two sources replaying from one shared error stream to an explicit target never share a name (broker dedup id spaces stay disjoint). Update `ReplayNaming` callers in `ErrorEnvelope.cs` — after Task 8 the caller list is one place.
-
-- [ ] **Step 4: Tests (`ReplayNamingTests.cs`)**
+- [ ] **Step 3: Tests**
 
 ```csharp
-[Theory] public void Replay_names_are_unique_per_source_stream(...) // two sources, same partition id space, different names; each ≤ 255 bytes
-[Fact]   public void Typed_registry_keys_survive_vhost_with_at_sign() // "(t, 'v@h')" lookup equality
+[Fact] public void Typed_registry_keys_survive_vhost_with_at_sign() // "(t, 'v@h')" lookup equality
 ```
 
-- [ ] **Step 5: Verify + commit**
+- [ ] **Step 4: Verify + commit**
 
 ```bash
 git add -A src tests
-git commit -m "refactor(surface): delete dead knobs; typed registry keys; replay names unique per source (B7+B9+B14)"
+git commit -m "refactor(surface): delete dead knobs; typed registry keys (B7+B9+B14)"
 ```
 
 # Task 11 (B10–B13+B15): Exception base, declaration cache, topology merge, parallel start, raw guard
@@ -1297,13 +1257,10 @@ The runner records a per-layer invocation count, so the message names the **spec
 - [ ] **Step 4: Configuration-time rejection matrix**
 
 ```csharp
-// Effectively-once pipeline + any filter with CanSkip == true -> config exception naming the filter:
-throw new StreamBusConfigurationException(
-    $"Consume filter '{filterType.Name}' can skip messages (CanSkip), but effectively-once pipelines must never skip: a skipped source message would publish no result and replay forever.");
 // Typed endpoint + any CanSkip filter without e.AllowPipelineSkip() -> config exception naming both.
 ```
 
-- [ ] **Step 5: Tests (`PipelineSemanticsTests.cs`)** — the matrix: ordering across **three** filters at one scope and across bus+endpoint scopes (entry/exit sequence recorded, first-in/last-out asserted), duplicate-type rejection, zero-`next` without `SkipHandler` → transient (offset NOT advanced), double-`next` → transient, exception→retry→exhaustion with OutputHeaders on envelope, skip→advance-without-destination (no error publish, offset stored per cadence), skip NOT possible in EO (config rejection), typed endpoint without AllowPipelineSkip (config rejection), scope-sharing assert (payload set by filter read by consumer — the flagship tenant E2E), OutputHeaders key-collision warning path.
+- [ ] **Step 5: Tests (`PipelineSemanticsTests.cs`)** — the matrix: ordering across **three** filters at one scope and across bus+endpoint scopes (entry/exit sequence recorded, first-in/last-out asserted), duplicate-type rejection, zero-`next` without `SkipHandler` → transient (offset NOT advanced), double-`next` → transient, exception→retry→exhaustion with OutputHeaders on envelope, skip→advance-without-destination (no error publish, offset stored per cadence), typed endpoint without AllowPipelineSkip (config rejection), scope-sharing assert (payload set by filter read by consumer — the flagship tenant E2E), OutputHeaders key-collision warning path.
 
 - [ ] **Step 6: Verify + commit**
 
@@ -1312,20 +1269,18 @@ git add -A src tests
 git commit -m "feat(consume): consume pipeline wrapping outer delegate; shared scope; skip semantics (C3)"
 ```
 
-# Task 17 (C4+C5+C6): Telemetry spans, in-box samples, EO results, pipeline metrics
+# Task 17 (C4+C5+C6): Telemetry spans, in-box samples, pipeline metrics
 
 **Files:**
 - Create: `src/StreamBus/StreamBusActivity.cs`, `examples/StreamBus.Examples.Producer/TenantFilter.cs`, `examples/StreamBus.Examples.Consumer/TenantFilter.cs` (+ guide edits)
-- Modify: `src/StreamBus/EffectivelyOnce.cs` + `StreamPartitionConsumer.cs` (EO OutputHeaders on result publish), `src/StreamBus/StreamBusMetrics.cs` (new instruments), `docs/guide/publish.md|consume.md|observability.md`
-- Test: `tests/StreamBus.UnitTests/ActivityTests.cs`, EO additions, MeterListener additions
+- Modify: `src/StreamBus/StreamBusMetrics.cs` (new instruments), `docs/guide/publish.md|consume.md|observability.md`
+- Test: `tests/StreamBus.UnitTests/ActivityTests.cs`, MeterListener additions
 
 - [ ] **Step 1: ActivitySource** — `static readonly ActivitySource Source = new("StreamBus", "2.0.0");` spans: `streambus.publish` (tags: `streambus.stream`, `streambus.size`, `streambus.routing_key?`), `streambus.consume` (tags: `streambus.stream`, `streambus.partition`, `streambus.offset`, exception event on classification). Always constructed; sampled only if a listener subscribes. Wire in `StreamBusCore` publish methods + `DispatchAsync` (start span in try/finally; consume span links to `CorrelationId` when present via `Activity LinksSourceContext` if correlation carries W3C parent — parse defensively, never throw).
 
 - [ ] **Step 2: Helpers are EXAMPLES** (per adopted default 4): `TenantFilter.cs` in both example projects (publish side sets `x-tenant` from ambient; consume side reads `x-tenant` into a payload for downstream scoping) PLUS `CorrelationIdFilter` in producer example. `docs/guide/publish.md` + `consume.md` gain short "Pipelines" sections referencing these files.
 
-- [ ] **Step 3: EO integration** — `_resultTarget` publishes carry the consume-context `OutputHeaders` (same C1 projection as Task 16); skip-in-EO remains config-rejected (Task 16 matrix pinned). Integration: EO pipeline test with an annotating filter — headers present at target; resume behavior unchanged (existing 9 EO tests all still green).
-
-- [ ] **Step 4: Pipeline metrics** — `StreamBusMetrics` gains:
+- [ ] **Step 3: Pipeline metrics** — `StreamBusMetrics` gains:
 
 ```csharp
 private readonly Histogram<double> _pipelineDuration;  // "streambus_pipeline_duration"
@@ -1335,12 +1290,12 @@ private readonly Histogram<double> _pipelineDuration;  // "streambus_pipeline_du
 
 Recorded in both pipelines at a single choke point; MeterListener unit tests pin the tag sets. Update `docs/guide/observability.md` instrument contract (8th + 9th instruments).
 
-- [ ] **Step 5: Verify + commit**
+- [ ] **Step 4: Verify + commit**
 
 ```bash
 dotnet test tests/StreamBus.UnitTests
 git add -A src tests examples docs
-git commit -m "feat(telemetry): ActivitySource spans + sample filters + EO header flow + pipeline duration metric (C4-C6)"
+git commit -m "feat(telemetry): ActivitySource spans + sample filters + pipeline duration metric (C4-C6)"
 ```
 
 # Task 18 (D1): CI — GitHub Actions with brokered integration
@@ -1464,13 +1419,13 @@ git commit -m "test(integration): forced-close, metadata-close, and connection-k
 | Channel-per-message dead-letter burst | A8 | V2-A8 | Task 7 | `ErrorQueueTransportTests` burst + mid-burst-shutdown |
 | Bus twins / drift debt | B1–B4 | V2-G3 | Task 8 | full suites green unchanged; LOC delta negative |
 | Two-transport handle / public stores / password leak | B5–B6 | V2-B5/B6 | Task 9 | compile probes + grep gates |
-| Dead knobs, `@`-keys, replay dedup loss | B7+B9+B14 | V2-B7.1 | Task 10 | `ReplayNamingTests` + greps |
+| Dead knobs, `@`-keys, replay republish loss | B7+B9+B14 | V2-B7.1 | Task 10 | greps |
 | Exception hierarchy, per-publish declare rebuild, topology dupes, serial starts, raw Strict | B10–B15 | V2-B10.1 | Task 11 | suite + `grep` gates |
 | README does not compile / `llms.txt` lies | D3 | V2-G4 | Task 13 | DocsSnippets compile + llms grep gates |
 | Configuration binding (proposed, **dropped** — explicit config only) | B8 (dropped) | — | Task 12 (removed) | `grep -rn "IConfiguration" src/StreamBus` = 0 hits |
 | No header carrier / no pipelines | C1–C3 | V2-C1..C3 | Tasks 14–16 | `HeaderCarrierTests`, `PublishPipelineTests`, `PipelineSemanticsTests` |
 | Pipeline registration is additive + ordered (N filters, registration order, contract guards) | C2/C3 | V2-C2.1/C3.1 | Tasks 15–16 | 3-filter ordering tests, duplicate-type rejection, zero/double-`next` guards, bus+endpoint scope ordering |
-| EO + filter composition / telemetry silent | C4–C6 | V2-C4..C6 | Tasks 17 | Activity/Meter tests + EO integration |
+| Filter composition / telemetry silent | C4–C6 | V2-C4..C6 | Tasks 17 | Activity/Meter tests + pipeline integration tests |
 | Analyzers off / lint debt | B16 | V2-B16 | Task 13 | build gate: 0 diagnostics at latest-recommended |
 | Cross-process reference caveat undocumented | B17 | V2-B17 | Task 13 | guide consume section text (quoted rule) |
 | No CI / green requires memory | D1 | V2-G7 | Task 18 | workflow run on `v2` |

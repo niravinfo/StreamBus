@@ -39,9 +39,9 @@ public sealed class ConsumeScopeValidationTests
         var consumer = new StreamPartitionConsumer(
             system, Stream, Stream, Partition, "grp", new ConsumeOptions
             {
-                Reference = "grp",
+                ConsumerGroup = "grp",
                 SingleActiveConsumer = false,
-                Offset = ConsumeOffset.AlwaysFirst,
+                StartOffset = StartOffset.AlwaysFirst,
             },
             _ => Task.CompletedTask,
             new MonotonicOffsetGuard(),

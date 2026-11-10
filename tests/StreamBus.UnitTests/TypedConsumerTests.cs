@@ -37,11 +37,11 @@ public sealed class TypedConsumerTests
     public void Store_rejects_duplicates_but_allows_variants()
     {
         var store = new StreamBusConsumerStore();
-        var options = new ConsumeOptions { Reference = "grp" };
+        var options = new ConsumeOptions { ConsumerGroup = "grp" };
         store.Add(typeof(DefaultBus), typeof(OrderEvent), typeof(OrderConsumer), "orders", options);
         Assert.Throws<StreamBusConfigurationException>(() =>
             store.Add(typeof(DefaultBus), typeof(OrderEvent), typeof(OrderConsumer), "orders", options));
-        store.Add(typeof(DefaultBus), typeof(OrderEvent), typeof(OrderConsumer), "orders", new ConsumeOptions { Reference = "other-grp" });
+        store.Add(typeof(DefaultBus), typeof(OrderEvent), typeof(OrderConsumer), "orders", new ConsumeOptions { ConsumerGroup = "other-grp" });
         store.Add(typeof(DefaultBus), typeof(OrderEvent), typeof(OrderConsumer), "other-stream", options);
         store.Add(typeof(DefaultBus), typeof(OrderEvent), typeof(OrderConsumerTests_Other), "orders", options);
         Assert.Equal(4, store.Registrations.Count);
@@ -104,7 +104,7 @@ public sealed class TypedConsumerTests
         Stream = "orders",
         Partition = 0,
         Offset = 0,
-        RoutingValue = null,
+        RoutingKey = null,
         Body = System.Text.Encoding.UTF8.GetBytes(body),
         Headers = new StreamHeaders(new Dictionary<string, object?>(), SystemTextJsonStreamSerializer.Default),
         SendHeaders = new StreamSendHeaders(null, SystemTextJsonStreamSerializer.Default),
@@ -160,7 +160,7 @@ public sealed class TypedConsumerTests
         var store = new StreamBusConfigStore();
         store.Add(typeof(DefaultBus), new StreamBusOptions { Vhost = "/", UserName = "a", Password = "b" });
         var consumers = new StreamBusConsumerStore();
-        consumers.Add(typeof(DefaultBus), typeof(OrderEvent), typeof(OrderConsumer), "orders", new ConsumeOptions { Reference = "test-group" });
+        consumers.Add(typeof(DefaultBus), typeof(OrderEvent), typeof(OrderConsumer), "orders", new ConsumeOptions { ConsumerGroup = "test-group" });
         var registry = new StreamBusRegistry(
             _ => throw new InvalidOperationException("no resolve"),
             _ => throw new InvalidOperationException("no supervisor"),
@@ -180,7 +180,7 @@ public sealed class TypedConsumerTests
     [Fact]
     public void Non_positive_timeout_rejected_at_config()
     {
-        Assert.Throws<StreamBusConfigurationException>(() => new StreamBusHostingOptionsBuilder().BlockStartupUntilReady(TimeSpan.Zero));
-        Assert.Throws<StreamBusConfigurationException>(() => new StreamBusHostingOptionsBuilder().BlockStartupUntilReady(TimeSpan.FromSeconds(-1)));
+        Assert.Throws<StreamBusConfigurationException>(() => new StreamBusHostingOptionsBuilder().WaitUntilStarted(TimeSpan.Zero));
+        Assert.Throws<StreamBusConfigurationException>(() => new StreamBusHostingOptionsBuilder().WaitUntilStarted(TimeSpan.FromSeconds(-1)));
     }
 }

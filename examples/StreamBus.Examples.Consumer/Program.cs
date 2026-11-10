@@ -31,8 +31,7 @@ builder.Services.AddStreamBus((context, cfg) =>
                 builder.Configuration["StreamBus:UserName"] ?? "guest",
                 builder.Configuration["StreamBus:Password"] ?? "guest");
             h.StreamPort();
-            h.Heartbeat(TimeSpan.FromSeconds(
-                double.TryParse(builder.Configuration["StreamBus:HeartbeatSeconds"], out var seconds) ? seconds : 60));
+            h.Heartbeat(TimeSpan.TryParse(builder.Configuration["StreamBus:Heartbeat"], out var heartbeat) ? heartbeat : TimeSpan.FromSeconds(60));
         });
 
     // Bus-wide consume middleware: read the tenant header once per message.
@@ -64,7 +63,7 @@ builder.Services.AddStreamBus((context, cfg) =>
     });
 });
 
-builder.Services.AddStreamBusHosting(h => h.BlockStartupUntilReady(TimeSpan.FromSeconds(30)));
+builder.Services.AddStreamBusHosting(h => h.WaitUntilStarted(TimeSpan.FromSeconds(30)));
 
 var app = builder.Build();
 await app.RunAsync(); // Runs until Ctrl+C.

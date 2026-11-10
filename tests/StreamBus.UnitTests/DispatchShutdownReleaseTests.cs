@@ -50,9 +50,9 @@ public sealed class DispatchShutdownReleaseTests
         var enteredHandoff = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var options = new ConsumeOptions
         {
-            Reference = "grp",
+            ConsumerGroup = "grp",
             SingleActiveConsumer = false,
-            Offset = ConsumeOffset.AlwaysFirst,
+            StartOffset = StartOffset.AlwaysFirst,
             Retry = new RetryPolicy { MaxAttempts = 1, BaseDelay = TimeSpan.FromMilliseconds(10) },
             // The exhaustion handoff signals entry, then blocks on its cancellation
             // token, so cancelling the run token races shutdown straight through the

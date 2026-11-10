@@ -10,7 +10,7 @@ internal enum DeclaredStreamSource
 internal sealed record DeclaredStream
 {
     public required string Name { get; init; }
-    public required bool IsSuper { get; init; }
+    public required bool IsSuperStream { get; init; }
     public int? Partitions { get; init; }
     public TimeSpan? MaxAge { get; init; }
     public ulong? MaxLengthBytes { get; init; }
@@ -50,7 +50,7 @@ internal static class DeclareSetBuilder
             Merge(result, index,
                 stream: endpoint.Stream,
                 wantSuper: endpoint.IsSuperStream,
-                partitions: endpoint.SuperPartitions,
+                partitions: endpoint.Partitions,
                 maxAge: endpoint.MaxAge,
                 maxLengthBytes: endpoint.MaxLengthBytes,
                 maxSegmentSizeBytes: endpoint.MaxSegmentSizeBytes,
@@ -70,15 +70,15 @@ internal static class DeclareSetBuilder
         foreach (var publish in publishes)
         {
             var describe = $"publish {publish.MessageType.FullName}";
-            if (index.TryGetValue(publish.Stream, out var position) && result[position].IsSuper != publish.IsSuper)
+            if (index.TryGetValue(publish.Stream, out var position) && result[position].IsSuperStream != publish.IsSuperStream)
             {
-                var knownSuper = result[position].IsSuper;
+                var knownSuper = result[position].IsSuperStream;
                 throw new StreamBusConfigurationException(
-                    $"Message {publish.MessageType.FullName} is registered with {(publish.IsSuper ? "PublishSuper" : "Publish")} for {(knownSuper ? "super" : "plain")} stream '{publish.Stream}'. Use {(knownSuper ? "PublishSuperAsync (routing key required)" : "PublishAsync (no routing key)")}.");
+                    $"Message {publish.MessageType.FullName} is registered with {(publish.IsSuperStream ? "PublishSuper" : "Publish")} for {(knownSuper ? "super" : "plain")} stream '{publish.Stream}'. Use {(knownSuper ? "PublishSuperAsync (routing key required)" : "PublishAsync (no routing key)")}.");
             }
             Merge(result, index,
                 stream: publish.Stream,
-                wantSuper: publish.IsSuper,
+                wantSuper: publish.IsSuperStream,
                 partitions: publish.Partitions,
                 maxAge: publish.MaxAge,
                 maxLengthBytes: publish.MaxLengthBytes,
@@ -86,7 +86,7 @@ internal static class DeclareSetBuilder
                 leaderLocator: publish.LeaderLocator,
                 source: DeclaredStreamSource.Publish,
                 describe: describe);
-            if (publish.IsSuper)
+            if (publish.IsSuperStream)
             {
                 var entry = result[index[publish.Stream]];
                 if (entry.Partitions is null)
@@ -105,10 +105,10 @@ internal static class DeclareSetBuilder
                 stream: destination.Name,
                 wantSuper: false,
                 partitions: null,
-                maxAge: destination.Spec?.MaxAge,
-                maxLengthBytes: destination.Spec?.MaxLengthBytes,
-                maxSegmentSizeBytes: destination.Spec?.MaxSegmentSizeBytes,
-                leaderLocator: destination.Spec?.LeaderLocator,
+                maxAge: destination.StreamSpec?.MaxAge,
+                maxLengthBytes: destination.StreamSpec?.MaxLengthBytes,
+                maxSegmentSizeBytes: destination.StreamSpec?.MaxSegmentSizeBytes,
+                leaderLocator: destination.StreamSpec?.LeaderLocator,
                 source: DeclaredStreamSource.DeadLetter,
                 describe: $"error-stream destination '{destination.Name}' of endpoint '{endpoint.Stream}'");
         }
@@ -138,17 +138,17 @@ internal static class DeclareSetBuilder
         if (index.TryGetValue(stream, out var position))
         {
             var existing = result[position];
-            if (existing.IsSuper != wantSuper)
+            if (existing.IsSuperStream != wantSuper)
             {
                 if (existing.Source == DeclaredStreamSource.Endpoint && source == DeclaredStreamSource.Endpoint)
                 {
                     throw new StreamBusStreamConfigurationConflictException(stream,
                         $"endpoint '{stream}' expects {(wantSuper ? "a super stream" : "a plain stream")}",
-                        $"another endpoint '{stream}' expects {(existing.IsSuper ? "a super stream" : "a plain stream")}");
+                        $"another endpoint '{stream}' expects {(existing.IsSuperStream ? "a super stream" : "a plain stream")}");
                 }
                 throw new StreamBusStreamConfigurationConflictException(stream,
                     $"{describe} expects {(wantSuper ? "a super stream" : "a plain stream")}",
-                    $"{existing.Description} expects {(existing.IsSuper ? "a super stream" : "a plain stream")}");
+                    $"{existing.Description} expects {(existing.IsSuperStream ? "a super stream" : "a plain stream")}");
             }
             var updated = existing;
             if (existing.Source == DeclaredStreamSource.Endpoint && source == DeclaredStreamSource.Endpoint)
@@ -204,7 +204,7 @@ internal static class DeclareSetBuilder
         var created = new DeclaredStream
         {
             Name = stream,
-            IsSuper = wantSuper,
+            IsSuperStream = wantSuper,
             Partitions = partitions,
             MaxAge = maxAge,
             MaxLengthBytes = maxLengthBytes,
@@ -222,8 +222,8 @@ internal static class DeclareSetBuilder
     public static void ValidateCallTarget(DeclaredStream? known, string stream, bool wantSuper)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(stream);
-        if (known is not null && known.IsSuper != wantSuper)
+        if (known is not null && known.IsSuperStream != wantSuper)
             throw new StreamBusConfigurationException(
-                $"Explicit publish target '{stream}' is a known {(known.IsSuper ? "super" : "plain")} stream. Use {(known.IsSuper ? "PublishSuperAsync (routing key required)" : "PublishAsync (no routing key)")}.");
+                $"Explicit publish target '{stream}' is a known {(known.IsSuperStream ? "super" : "plain")} stream. Use {(known.IsSuperStream ? "PublishSuperAsync (routing key required)" : "PublishAsync (no routing key)")}.");
     }
 }

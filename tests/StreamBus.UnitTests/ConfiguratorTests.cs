@@ -121,8 +121,8 @@ public sealed class ConfiguratorTests
         });
         var sp = services.BuildServiceProvider();
         var publishes = sp.GetRequiredService<StreamBusPublishStore>().Registrations;
-        Assert.Contains(publishes, r => r.Stream == "audit" && !r.IsSuper && r.MaxAge == TimeSpan.FromDays(30));
-        Assert.Contains(publishes, r => r.Stream == "orders-super" && r.IsSuper && r.Partitions == 3);
+        Assert.Contains(publishes, r => r.Stream == "audit" && !r.IsSuperStream && r.MaxAge == TimeSpan.FromDays(30));
+        Assert.Contains(publishes, r => r.Stream == "orders-super" && r.IsSuperStream && r.Partitions == 3);
     }
 
     [Fact]
