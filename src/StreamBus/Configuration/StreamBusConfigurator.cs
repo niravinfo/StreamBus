@@ -70,10 +70,12 @@ public interface ITlsConfigurator
     void ClientCertificate(string path, string? password = null);
 
     /// <summary>Sets certificate policy errors accepted despite failing validation.</summary>
-    /// <param name="errors">The accepted policy errors; default <see cref="SslPolicyErrors.None"/>.</param>
+    /// <param name="errors">The accepted policy errors; default <see cref="SslPolicyErrors.None"/>. Accepting
+    /// <see cref="SslPolicyErrors.RemoteCertificateNameMismatch"/> or <see cref="SslPolicyErrors.RemoteCertificateNotAvailable"/>
+    /// disables hostname verification and should not be used in production.</param>
     void AcceptableCertificateErrors(SslPolicyErrors errors);
 
-    /// <summary>Sets the allowed TLS protocol versions; <see cref="SslProtocols.None"/> means the operating system default.</summary>
+    /// <summary>Sets the allowed TLS protocol versions; <see cref="SslProtocols.None"/> means the operating system default. Versions below TLS 1.2 are rejected by validation.</summary>
     /// <param name="version">Allowed TLS protocol versions.</param>
     void ProtocolVersion(SslProtocols version);
 }

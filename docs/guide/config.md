@@ -86,9 +86,12 @@ Details:
 - `AcceptableCertificateErrors` lists certificate policy errors that are
   tolerated despite failing validation (private-CA deployments commonly
   pass `SslPolicyErrors.RemoteCertificateChainErrors`); the default is
-  `None`, i.e. every error fails the connection.
+  `None`, i.e. every error fails the connection. **Caution:** accepting
+  `RemoteCertificateNameMismatch` or `RemoteCertificateNotAvailable`
+  disables hostname verification — the TLS protection against
+  man-in-the-middle attacks — and should not be used in production.
 - `ProtocolVersion` defaults to the operating system default
-  (`SslProtocols.None`).
+  (`SslProtocols.None`). Anything below TLS 1.2 is rejected.
 - The client certificate (optional; for mutual TLS) is a PFX file path plus
   optional password. The file's existence is checked at connect time, not
   at configuration time.

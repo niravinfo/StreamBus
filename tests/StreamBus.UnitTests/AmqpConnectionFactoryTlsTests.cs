@@ -90,8 +90,7 @@ public sealed class AmqpConnectionFactoryTlsTests
     }
 
     [Fact]
-    public void Enabled_tls_with_existing_cert_file_sets_cert_path()
-    {
+    public void Enabled_tls_with_existing_cert_file_sets_cert_path()    {
         var certPath = Path.Combine(Path.GetTempPath(), $"streambus-cert-{Guid.NewGuid():N}.pfx");
         try
         {
@@ -170,5 +169,50 @@ public sealed class AmqpConnectionFactoryTlsTests
             listener.Stop();
             try { await accept; } catch (Exception) { }
         }
+    }
+
+    /// <summary>
+    /// Pins the aggregate traversal in HasTlsHandshakeFailure: RabbitMQ.Client's
+    /// IEndpointResolverExtensions.SelectOneAsync collects per-endpoint failures
+    /// into AggregateException(exceptions), and AggregateException.InnerException
+    /// exposes only the first child — an AuthenticationException in any other slot
+    /// (multi-endpoint or nested-aggregate shapes) must still classify the
+    /// connect as a fatal TLS handshake failure, not fall back to retriable.
+    /// </summary>
+    [Fact]
+    public void Handshake_failure_in_non_first_aggregate_slot_is_detected()
+    {
+        var handshake = new AuthenticationException(
+            "Cannot determine the frame size or a corrupted frame was received.");
+        var aggregate = new AggregateException(new System.IO.IOException("endpoint down"), handshake);
+
+        Assert.True(AmqpConnectionFactory.HasTlsHandshakeFailure(
+            new RabbitMQ.Client.Exceptions.BrokerUnreachableException(aggregate)));
+    }
+
+    [Fact]
+    public void Handshake_failure_in_nested_aggregate_is_detected()
+    {
+        var handshake = new AuthenticationException("handshake");
+        var nested = new AggregateException(
+            new System.IO.IOException("first"),
+            new AggregateException(new System.IO.IOException("second"), handshake));
+
+        Assert.True(AmqpConnectionFactory.HasTlsHandshakeFailure(
+            new RabbitMQ.Client.Exceptions.BrokerUnreachableException(
+                new AggregateException(nested))));
+    }
+
+    [Fact]
+    public void Aggregate_without_handshake_failure_is_not_detected()
+    {
+        var aggregate = new AggregateException(
+            new System.IO.IOException("endpoint down"),
+            new System.Net.Sockets.SocketException(10061));
+
+        Assert.False(AmqpConnectionFactory.HasTlsHandshakeFailure(
+            new RabbitMQ.Client.Exceptions.BrokerUnreachableException(aggregate)));
+        Assert.False(AmqpConnectionFactory.HasTlsHandshakeFailure(
+            new RabbitMQ.Client.Exceptions.BrokerUnreachableException(new System.IO.IOException("plain"))));
     }
 }

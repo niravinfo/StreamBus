@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
 using RabbitMQ.Client.Exceptions;
+using System.Linq;
 using System.Security.Authentication;
 
 namespace StreamBus;
@@ -71,19 +72,27 @@ internal sealed class AmqpConnectionFactory : IErrorQueueConnectionFactory
         {
             throw new StreamBusFatalException(
                 $"AMQP TLS handshake failed for vhost '{options.Vhost}' on {options.Host}:{options.AmqpPort}. " +
-                "The listener is probably a plain (non-TLS) port, or the TLS negotiation is otherwise unrecoverable. " +
+                "The listener is probably a plain (non-TLS) port, or the TLS negotiation otherwise failed " +
+                "(including a server certificate rejected by the configured policy). " +
                 "Check UseTls and the AmqpPort (the TLS default is 5671).",
                 ex);
         }
     }
 
     /// <summary>True when the exception's inner chain contains a TLS handshake failure.</summary>
-    private static bool HasTlsHandshakeFailure(Exception ex)
+    internal static bool HasTlsHandshakeFailure(Exception ex)
     {
         for (var current = ex; current is not null; current = current.InnerException)
         {
             if (current is AuthenticationException)
                 return true;
+            // RabbitMQ.Client aggregates per-endpoint failures
+            // (IEndpointResolverExtensions.SelectOneAsync throws
+            // AggregateException(exceptions)), and AggregateException's
+            // InnerException reveals only the first child — the
+            // AuthenticationException can sit in any slot.
+            if (current is AggregateException aggregate)
+                return aggregate.InnerExceptions.Any(HasTlsHandshakeFailure);
         }
         return false;
     }

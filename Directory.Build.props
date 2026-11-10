@@ -24,6 +24,13 @@
          conventionally end in 'Collection'. The shipped library sets no such
          suppression; a public 'Delegate'/'Collection' name there must fail. -->
     <NoWarn Condition="$([System.Text.RegularExpressions.Regex]::IsMatch('$(MSBuildProjectName)', 'Tests$'))">$(NoWarn);CA1711</NoWarn>
+    <!-- CA5397/SYSLIB0039/CS0618 (tests only): TLS options validation tests must
+         name deprecated protocols (Ssl2, Ssl3, Tls 1.0, Tls 1.1) as theory data to
+         assert they are rejected; naming them is exactly what these analyzers
+         flag. The shipped library never references them: the insecure-protocol
+         mask in StreamBusOptions.Validate is expressed numerically so the shipped
+         assembly keeps the analyzers fully enforced. -->
+    <NoWarn Condition="$([System.Text.RegularExpressions.Regex]::IsMatch('$(MSBuildProjectName)', 'Tests$'))">$(NoWarn);CA5397;SYSLIB0039;CS0618</NoWarn>
     <!-- xunit.v3 4.x sets IsTestingPlatformApplication transitively via xunit.v3.mtp-v2, whose MSBuild
          targets hard-error the VSTest target on .NET 10 SDK. False restores classic `dotnet test`
          (verified by isolated probe); inert for non-test projects. -->

@@ -81,9 +81,20 @@ public sealed record StreamBusOptions
             yield return "Heartbeat must be positive.";
         if (Tls?.Enabled == true && Tls.ServerName is not null && string.IsNullOrWhiteSpace(Tls.ServerName))
             yield return "Tls.ServerName must not be whitespace.";
+        if (Tls?.Enabled == true && (Tls.ProtocolVersion & InsecureProtocolMask) != 0)
+            yield return "Tls.ProtocolVersion must not enable protocols older than TLS 1.2 (Ssl2, Ssl3, Tls, or Tls11); " +
+                         "leave it at SslProtocols.None for the operating system default.";
         foreach (var error in Connection.Validate())
             yield return error;
     }
+
+    // Mask of every SslProtocols value below TLS 1.2. Written as the members'
+    // stable numeric values (Ssl2=0x0C, Ssl3=0x30, Tls 1.0=0xC0, Tls11=0x300)
+    // because referencing the deprecated members by name is itself a build
+    // error under TreatWarningsAsErrors (CA5397/SYSLIB0039): precisely the
+    // configurations this guard exists to reject.
+    private const System.Security.Authentication.SslProtocols InsecureProtocolMask =
+        (System.Security.Authentication.SslProtocols)0x3FC;
 
     internal IEnumerable<string> ValidateCredentials()
     {
