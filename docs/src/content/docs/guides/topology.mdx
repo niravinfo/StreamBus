@@ -1,6 +1,94 @@
 ---
 title: Topology
-description: Stream and super-stream declarations, derivation, and the runtime topology view.
+description: Stream declarations, agreement rules, and runtime topology.
 ---
 
-Streams and super streams are declared from your publish and endpoint registrations; this page covers the declaration knobs, how topology is derived, the adopt rule for existing streams, and the runtime `bus.Topology` view.
+StreamBus declares topology from your registrations — no separate declare
+step. Every stream's broker spec is carried by the registrations that
+reference the stream (publish registrations, consuming endpoints, and
+dead-letter stream destinations).
+
+## Stream specifications
+
+```csharp
+cfg.Publish<InvoiceEvent>("invoices", s =>
+{
+    s.MaxAge(TimeSpan.FromDays(30));
+    s.MaxLengthBytes(1_000_000_000);
+    s.MaxSegmentSizeBytes(16_000_000);
+    s.LeaderLocator(StreamLeaderLocator.LeastLeaders);
+});
+
+cfg.Publish<AuditEvent>("audit"); // bare reference: stream is declared with defaults
+
+cfg.PublishSuper<OrderEvent>("orders-super", s => s.Partitions(3));
+```
+
+Setters return void by design — one knob per statement, no fluent chaining:
+`s.Partitions(3).MaxAge(...)` does not compile. `Partitions` exists only on
+the super spec builder, so a plain stream with partitions is not expressible.
+
+## Agreement rules
+
+The startup declare-set is the union of all registrations on one bus.
+Multiple references to the same stream must agree:
+
+- **Kind** — super vs plain must match across every reference; conflicts
+  throw `StreamBusStreamConfigurationConflictException` naming the stream
+  and both references.
+- **Every knob** — where two references set the same knob, the values must
+  match; where only one sets it, its value fills the hole.
+- A `PublishSuper` registration with no partition count anywhere (its own
+  spec or a consuming endpoint's `Partitions(n)`) fails at startup naming
+  the type and stream.
+- Publish kind must match the merged kind (`Publish`↔plain,
+  `PublishSuper`↔super).
+
+Registration-owned streams are create-or-verify: an existing stream with a
+conflicting spec throws. A plain stream's full argument detail isn't readable
+via the stream protocol, so an existing plain stream is adopted with a
+warning — keep specs in sync across services.
+
+## The adopt rule
+
+A consuming endpoint adopts broker reality instead of assuming it owns the
+topology: a matching existing stream is consumed as-is (the broker-reported
+partition count rules for super streams), a kind mismatch is a conflict,
+and a missing stream is declared from the endpoint's registration.
+
+```csharp
+// This service only consumes: it adopts "orders" if another service
+// created it; if nothing exists yet, this registration declares it.
+cfg.ReceiveEndpoint("orders", e => e.Consumer<OrderConsumer>("billing"));
+```
+
+Dead-letter **stream** destinations are declared by the service owning the
+endpoint; queue destinations are declared by the AMQP transport, never by
+topology.
+
+## Runtime declarations
+
+For operator-driven or post-startup declarations, `bus.Topology` declares
+idempotently — repeated calls are cached, and kind or partition conflicts
+throw:
+
+```csharp
+await bus.Topology.EnsureStreamAsync(
+    new StreamDeclaration { Name = "audit", MaxAge = TimeSpan.FromDays(7) }, ct);
+
+await bus.Topology.EnsureSuperStreamAsync(
+    new SuperStreamDeclaration { Name = "orders-super", Partitions = 3 }, ct);
+```
+
+## Partition reads
+
+Reading one super-stream partition is a plain consume of its physical name
+(`{super}-{index}`), with no declaration ever:
+
+```csharp
+await using var sub = await bus.ConsumeAsync(
+    "orders-super-0",
+    new ConsumeOptions { ConsumerGroup = "partition-inspector" },
+    handler,
+    ct);
+```

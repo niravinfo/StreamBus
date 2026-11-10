@@ -3,4 +3,68 @@ title: Hosting
 description: Startup modes, readiness waits, and health checks.
 ---
 
-StreamBus hosts itself inside the generic host; this page covers blocking vs non-blocking startup, readiness waits for publishers that must not fire early, and the automatic `streambus` health check.
+StreamBus hosts inside the generic host. Startup is **non-blocking by
+default**: `StartAsync` returns once connections start, while declarations
+and consumer attaches converge in the background (permanent failures
+surface as critical logs).
+
+## Blocking startup
+
+When a service must not accept traffic before its consumers are live, wait
+at the service level (a second `AddStreamBusHosting` call throws):
+
+```csharp
+builder.Services.AddStreamBusHosting(h => h.WaitUntilStarted(TimeSpan.FromSeconds(30)));
+```
+
+Blocking waits for connections, topology declarations (streams, super
+streams, error queues), and typed consumer attaches — then returns, or
+throws. A timeout raises `StreamBusTimeoutException`, a configuration or
+topology conflict raises immediately, and a consumer that cannot attach
+raises `StreamBusStartupBlockedException`. Omit the timeout to wait
+indefinitely.
+
+By default the block also waits for consumers; disable that part when the
+host must come up before consumers can attach:
+
+```csharp
+builder.Services.AddStreamBusHosting(h =>
+{
+    h.WaitUntilStarted(TimeSpan.FromSeconds(30));
+    h.WaitUntilConsumersAttached(false);
+});
+```
+
+## Readiness waits
+
+A worker that must not publish before the bus is ready waits explicitly:
+
+```csharp
+public sealed class CheckoutWorker(IStreamBus bus) : BackgroundService
+{
+    protected override async Task ExecuteAsync(CancellationToken ct)
+    {
+        var readiness = await bus.WaitUntilReadyAsync(
+            ReadinessPolicy.UpTo(TimeSpan.FromSeconds(30)), ct);
+        if (readiness != BusReadiness.Ready)
+            throw new StreamBusTimeoutException("StreamBus did not become ready.");
+
+        await bus.PublishAsync(new OrderPlaced("o-1"), ct);
+    }
+}
+```
+
+Policies: `Default` (current state, no wait), `UpTo(timeout)`,
+`Indefinitely`. States: `Ready`, `TimedOut`, `Fatal`. `bus.State` reports
+the live connection state (`Starting`, `Ready`, `TransientFailure`,
+`Fatal`).
+
+## Health checks
+
+A `streambus` health check is registered automatically (see
+[Observability](../observability/) for the data-entry shapes and metrics).
+It is healthy only when every registration is attached and every
+connection is ready; degraded while starting or retrying; unhealthy when a
+connection is fatal, a declaration exhausts its retry budget, or every
+typed consumer has failed. No buses registered reports degraded with a
+hint.

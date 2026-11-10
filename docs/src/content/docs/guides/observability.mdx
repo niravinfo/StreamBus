@@ -1,42 +1,74 @@
 ---
 title: Observability
-description: Health checks, metrics, and structured log events.
+description: Health check details, metrics, activities, and logs.
 ---
 
-StreamBus surfaces its state through the standard .NET extensibility
-points — no custom dashboard required.
+StreamBus emits standard .NET observability signals: an aggregated health
+check, `System.Diagnostics.Metrics` instruments, activity spans, and log
+events. Wire them to OpenTelemetry or the host's dashboard — no extra
+packages required.
 
-<aside>
-Demo page — the full observability guide (per-registration health data,
-metric names, log event catalog) will live here.
-</aside>
+## Health
 
-## Health checks
+The `streambus` health check reports both connection and registration
+state as data entries:
 
-Every bus registration reports its own health data, so
-`AddHealthChecks` output shows broker connectivity and consumer
-readiness per bus:
+- `{vhost}|{busType}` — the live connection state for that bus (for
+  example `/|StreamBus.DefaultBus`).
+- `{vhost}|{registration}` — one row per consumer or declaration. Consumer
+  rows carry the bus type so several buses on one vhost stay attributable:
+  `endpoint:{busType}:{stream}` for typed receive endpoints, and
+  `raw:{busType}:{stream}` for `IStreamBus.ConsumeAsync` (with `:2`, `:3`,
+  ... on repeat consumes). Declarations use `declare:{name}`. The value is
+  `consumer:<state>` or `declare:<state>`, with the failure reason and
+  `since` timestamp appended when present.
 
 ```csharp
-builder.Services.AddHealthChecks();
+var report = await health.CheckHealthAsync(ct);
+var entry = report.Entries["streambus"];
+var connection = entry.Data["/|StreamBus.DefaultBus"];
 ```
+
+The connection monitor runs at `h.MonitorInterval(...)` (default 5
+seconds), so a broker that disappears is detected on that cadence.
 
 ## Metrics
 
-Consumer throughput, retry counts, and offset lag are emitted via the
-standard `Meter`/`Counter` APIs, pick them up with OpenTelemetry:
+Meter name: `StreamBus`.
 
-```csharp
-builder.Services.AddOpenTelemetry()
-    .WithMetrics(m => m.AddMeter("StreamBus"));
-```
+| Instrument | Kind | Tags |
+|---|---|---|
+| `streambus_partition_backlog` | up-down counter | vhost, bus, stream, partition, reference |
+| `streambus_partition_inflight` | up-down counter | vhost, bus, stream, partition, reference |
+| `streambus_partition_retry_blocked` | up-down counter | vhost, bus, stream, partition, reference, failure_mode |
+| `streambus_connection_state` | up-down counter (int) | vhost, bus |
+| `streambus_offset_store_rejected_total` | counter | vhost, bus, stream, partition, reference |
+| `streambus_offset_regressed_total` | counter | vhost, bus, stream, partition, reference |
+| `streambus_offset_fallback_total` | counter | vhost, bus, stream, partition, reference |
+| `streambus_pipeline_duration` | histogram (seconds) | kind = publish \| consume |
 
-## Log events
+The backlog gauge measures the consumer-held unprocessed backlog (last
+delivered offset minus last stored offset per partition), not
+broker-total lag — a growing stream nobody consumes reports 0.
 
-Structured log events with well-known names flow through `ILogger`,
-which makes filtering consumer activity trivial:
+## Activities
 
-```text
-info: StreamBus.Consumer[12]
-      Consume OrderPlaced OrderId=order-42 Offset=1024
-```
+`ActivitySource` name: `StreamBus`. It costs nothing when no listener
+samples it.
+
+| Span | Kind | Tags |
+|---|---|---|
+| `streambus.publish` | Producer | `streambus.stream`, `streambus.size`, `streambus.routing_key` (super only) |
+| `streambus.consume` | Consumer | `streambus.stream`, `streambus.partition`, `streambus.offset` |
+
+Consume spans add an `exception` event when a delivery fails, and carry an
+`ActivityLink` when the AMQP `correlation-id` holds a valid W3C
+`traceparent` (ids produced by StreamBus are Guids, so the link applies to
+foreign producers only).
+
+## Logs
+
+Expect warnings — not errors — for routine redelivery: handler failures
+during retry, exhausted budgets naming stream, partition, offset, and
+attempts, error-destination hand-off retries, and `OnExhausted` faults
+noting the attach recycle. Shutdown races log at debug.
