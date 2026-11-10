@@ -55,6 +55,49 @@ pass a dedicated non-`guest` user.
 `MonitorInterval` controls how often the connection supervisor checks the
 broker handle for closure. It must be positive and at most 60 seconds.
 
+## TLS
+
+TLS is optional and off by default: with no `UseTls` call, both
+transports (stream protocol and the AMQP error-queue connection) speak
+plain TCP. Enabling it switches both at once — there is no per-transport
+toggle — and, unless you set ports explicitly, moves the defaults to the
+conventional RabbitMQ TLS ports (stream 5551, AMQP 5671):
+
+```csharp
+cfg.Host("rabbitmq.internal", "/", h =>
+{
+    h.Credentials("app", "s3cret");
+    h.StreamPort(15552);      // optional: explicit ports always win,
+    h.AmqpPort(15671);        // regardless of call order
+    h.UseTls(tls =>
+    {
+        tls.ServerName("rabbitmq.internal");            // default: Host
+        tls.ClientCertificate("./certs/client.pfx", "pw"); // mutual TLS
+        tls.AcceptableCertificateErrors(SslPolicyErrors.None);
+        tls.ProtocolVersion(SslProtocols.Tls13);        // optional
+    });
+});
+```
+
+Details:
+
+- `ServerName` defaults to the host; it drives TLS certificate validation
+  (SNI and name matching).
+- `AcceptableCertificateErrors` lists certificate policy errors that are
+  tolerated despite failing validation (private-CA deployments commonly
+  pass `SslPolicyErrors.RemoteCertificateChainErrors`); the default is
+  `None`, i.e. every error fails the connection. **Caution:** accepting
+  `RemoteCertificateNameMismatch` or `RemoteCertificateNotAvailable`
+  disables hostname verification — the TLS protection against
+  man-in-the-middle attacks — and should not be used in production.
+- `ProtocolVersion` defaults to the operating system default
+  (`SslProtocols.None`). Anything below TLS 1.2 is rejected.
+- The client certificate (optional; for mutual TLS) is a PFX file path plus
+  optional password. The file's existence is checked at connect time, not
+  at configuration time.
+- Calling `UseTls` again replaces the previous TLS settings (last call
+  wins).
+
 ## Startup hosting
 
 Blocking is service-level, not per-bus:

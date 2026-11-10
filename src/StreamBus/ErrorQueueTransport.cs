@@ -3,6 +3,8 @@ using Microsoft.Extensions.Logging.Abstractions;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
 using RabbitMQ.Client.Exceptions;
+using System.Linq;
+using System.Security.Authentication;
 
 namespace StreamBus;
 
@@ -13,7 +15,7 @@ internal interface IErrorQueueConnectionFactory
 
 internal sealed class AmqpConnectionFactory : IErrorQueueConnectionFactory
 {
-    public async Task<IConnection> ConnectAsync(StreamBusOptions options, CancellationToken cancellationToken)
+    internal static ConnectionFactory BuildFactory(StreamBusOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
         var factory = new ConnectionFactory
@@ -26,6 +28,27 @@ internal sealed class AmqpConnectionFactory : IErrorQueueConnectionFactory
             ClientProvidedName = "streambus-error-queues",
             RequestedHeartbeat = options.Heartbeat,
         };
+        if (options.Tls is { Enabled: true } tls)
+        {
+            if (tls.ClientCertPath is { } certPath && !File.Exists(certPath))
+                throw new StreamBusConfigurationException($"TLS client certificate not found at '{certPath}'.");
+            factory.Ssl = new SslOption
+            {
+                Enabled = true,
+                ServerName = tls.ServerName ?? options.Host,
+                CertPath = tls.ClientCertPath ?? string.Empty,
+                CertPassphrase = tls.ClientCertPassword ?? string.Empty,
+                AcceptablePolicyErrors = tls.AcceptableCertificateErrors,
+                Version = tls.ProtocolVersion,
+            };
+        }
+        return factory;
+    }
+
+    public async Task<IConnection> ConnectAsync(StreamBusOptions options, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        var factory = BuildFactory(options);
         try
         {
             return await factory.CreateConnectionAsync(cancellationToken).ConfigureAwait(false);
@@ -36,6 +59,42 @@ internal sealed class AmqpConnectionFactory : IErrorQueueConnectionFactory
                 $"AMQP authentication failed for vhost '{options.Vhost}' (user '{options.UserName}'). Check UserName/Password, or create a dedicated non-guest user.",
                 ex);
         }
+        // A TLS handshake can only fail this way when the client speaks TLS to a
+        // listener that is not (observed live: RabbitMQ.Client 7.2.2 throws
+        // BrokerUnreachableException wrapping an AuthenticationException "Cannot
+        // determine the frame size or a corrupted frame was received"). That is a
+        // permanent misconfiguration, so classify it fatal: the queue transport's
+        // fatal latch, the startup declare loop, and the handoff retry path all
+        // stop instead of retrying forever with an unhelpful "endpoint
+        // unreachable" message. Guarded by TLS-enabled so plain-connect
+        // unreachability stays retriable (e.g. a restarting broker).
+        catch (BrokerUnreachableException ex) when (options.Tls is { Enabled: true } && HasTlsHandshakeFailure(ex))
+        {
+            throw new StreamBusFatalException(
+                $"AMQP TLS handshake failed for vhost '{options.Vhost}' on {options.Host}:{options.AmqpPort}. " +
+                "The listener is probably a plain (non-TLS) port, or the TLS negotiation otherwise failed " +
+                "(including a server certificate rejected by the configured policy). " +
+                "Check UseTls and the AmqpPort (the TLS default is 5671).",
+                ex);
+        }
+    }
+
+    /// <summary>True when the exception's inner chain contains a TLS handshake failure.</summary>
+    internal static bool HasTlsHandshakeFailure(Exception ex)
+    {
+        for (var current = ex; current is not null; current = current.InnerException)
+        {
+            if (current is AuthenticationException)
+                return true;
+            // RabbitMQ.Client aggregates per-endpoint failures
+            // (IEndpointResolverExtensions.SelectOneAsync throws
+            // AggregateException(exceptions)), and AggregateException's
+            // InnerException reveals only the first child — the
+            // AuthenticationException can sit in any slot.
+            if (current is AggregateException aggregate)
+                return aggregate.InnerExceptions.Any(HasTlsHandshakeFailure);
+        }
+        return false;
     }
 }
 

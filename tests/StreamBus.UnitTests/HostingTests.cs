@@ -685,9 +685,146 @@ public sealed class HostingTests
         Assert.Equal(5553, view.StreamPort);
         Assert.Equal(5673, view.AmqpPort);
         Assert.Equal(TimeSpan.FromSeconds(30), view.Heartbeat);
+        Assert.False(view.TlsEnabled);
         Assert.DoesNotContain(
             typeof(StreamBusRegistrationView).GetProperties(),
             p => p.Name.Contains("Password", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void Registration_view_reports_tls_enabled()
+    {
+        var store = new StreamBusConfigStore();
+        store.Add(typeof(DefaultBus), new StreamBusOptions
+        {
+            Vhost = "/",
+            UserName = "app",
+            Password = "secret",
+            Tls = new StreamBusTlsOptions { Enabled = true },
+        });
+        store.Add(typeof(OrdersBus), new StreamBusOptions
+        {
+            Vhost = "/orders-vhost",
+            UserName = "app",
+            Password = "secret",
+        });
+
+        Assert.True(store.Registrations.Single(r => r.Vhost == "/").TlsEnabled);
+        Assert.False(store.Registrations.Single(r => r.Vhost == "/orders-vhost").TlsEnabled);
+    }
+
+    [Fact]
+    public void Same_vhost_conflicting_tls_settings_rejected()
+    {
+        var store = new StreamBusConfigStore();
+        store.Add(typeof(DefaultBus), new StreamBusOptions
+        {
+            Vhost = "/",
+            UserName = "app",
+            Password = "secret",
+            Tls = new StreamBusTlsOptions { Enabled = true },
+        });
+        Assert.Throws<StreamBusConfigurationException>(() =>
+            store.Add(typeof(OrdersBus), new StreamBusOptions
+            {
+                Vhost = "/",
+                UserName = "app",
+                Password = "secret",
+                Tls = null,
+            }));
+    }
+
+    [Fact]
+    public void Same_vhost_identical_enabled_tls_no_conflict()
+    {
+        var store = new StreamBusConfigStore();
+        store.Add(typeof(DefaultBus), new StreamBusOptions
+        {
+            Vhost = "/",
+            UserName = "app",
+            Password = "secret",
+            Tls = new StreamBusTlsOptions { Enabled = true, ServerName = null },
+        });
+        store.Add(typeof(OrdersBus), new StreamBusOptions
+        {
+            Vhost = "/",
+            UserName = "app",
+            Password = "secret",
+            Tls = new StreamBusTlsOptions { Enabled = true, ServerName = null },
+        });
+        Assert.Equal(2, store.Registrations.Count);
+    }
+
+    [Fact]
+    public void Same_vhost_conflicting_enabled_tls_settings_rejected()
+    {
+        var store = new StreamBusConfigStore();
+        store.Add(typeof(DefaultBus), new StreamBusOptions
+        {
+            Vhost = "/",
+            UserName = "app",
+            Password = "secret",
+            Tls = new StreamBusTlsOptions { Enabled = true, ServerName = "broker.internal" },
+        });
+        Assert.Throws<StreamBusConfigurationException>(() =>
+            store.Add(typeof(OrdersBus), new StreamBusOptions
+            {
+                Vhost = "/",
+                UserName = "app",
+                Password = "secret",
+                Tls = new StreamBusTlsOptions { Enabled = true, ServerName = "other.internal" },
+            }));
+    }
+
+    [Fact]
+    public void Disabled_tls_conflict_rejected_against_enabled()
+    {
+        var store = new StreamBusConfigStore();
+        store.Add(typeof(DefaultBus), new StreamBusOptions
+        {
+            Vhost = "/",
+            UserName = "app",
+            Password = "secret",
+            Tls = new StreamBusTlsOptions { Enabled = false },
+        });
+        Assert.Throws<StreamBusConfigurationException>(() =>
+            store.Add(typeof(OrdersBus), new StreamBusOptions
+            {
+                Vhost = "/",
+                UserName = "app",
+                Password = "secret",
+                Tls = new StreamBusTlsOptions { Enabled = true },
+            }));
+    }
+
+    [Fact]
+    public void Disabled_tls_record_treated_same_as_null_tls()
+    {
+        // A disabled TLS record means TLS-off, exactly like a null Tls;
+        // the two must not conflict for the same vhost.
+        var store = new StreamBusConfigStore();
+        store.Add(typeof(DefaultBus), new StreamBusOptions
+        {
+            Vhost = "/",
+            UserName = "app",
+            Password = "secret",
+            Tls = new StreamBusTlsOptions { Enabled = false },
+        });
+        store.Add(typeof(OrdersBus), new StreamBusOptions
+        {
+            Vhost = "/",
+            UserName = "app",
+            Password = "secret",
+            Tls = null,
+        });
+        store.Add(typeof(BillingBus), new StreamBusOptions
+        {
+            Vhost = "/",
+            UserName = "app",
+            Password = "secret",
+            Tls = new StreamBusTlsOptions { Enabled = false },
+        });
+        Assert.Equal(3, store.Registrations.Count);
     }
 
     [Fact]

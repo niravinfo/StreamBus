@@ -210,6 +210,18 @@ internal sealed class StreamSystemConnector : IStreamSystemConnector
     /// <summary>Validates <paramref name="options"/>, builds the endpoint and pool config, connects, and returns the handle.</summary>
     public async Task<IStreamSystemHandle> ConnectAsync(StreamBusOptions options, CancellationToken cancellationToken)
     {
+        var config = BuildLocatorConfig(options);
+        var system = await StreamSystem.Create(config, _factory.CreateLogger<StreamSystem>()).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+        return new StreamSystemHandle(system, _factory);
+    }
+
+    /// <summary>
+    /// Validates <paramref name="options"/> and builds the locator <see cref="StreamSystemConfig"/>,
+    /// mapping TLS settings (and a missing client-certificate guard) when TLS is enabled.
+    /// </summary>
+    internal static StreamSystemConfig BuildLocatorConfig(StreamBusOptions options)
+    {
         ArgumentNullException.ThrowIfNull(options);
         foreach (var error in options.Validate())
             throw new StreamBusConfigurationException(error);
@@ -230,8 +242,21 @@ internal sealed class StreamSystemConnector : IStreamSystemConnector
                 ConsumersPerConnection = (byte)options.Connection.ConsumersPerConnection,
             },
         };
-        var system = await StreamSystem.Create(config, _factory.CreateLogger<StreamSystem>()).ConfigureAwait(false);
-        cancellationToken.ThrowIfCancellationRequested();
-        return new StreamSystemHandle(system, _factory);
+        if (options.Tls?.Enabled == true)
+        {
+            var tls = options.Tls;
+            if (tls.ClientCertPath is { } certPath && !File.Exists(certPath))
+                throw new StreamBusConfigurationException($"TLS client certificate not found at '{certPath}'.");
+            config.Ssl = new RabbitMQ.Stream.Client.SslOption
+            {
+                Enabled = true,
+                ServerName = tls.ServerName ?? options.Host,
+                CertPath = tls.ClientCertPath,
+                CertPassphrase = tls.ClientCertPassword,
+                AcceptablePolicyErrors = tls.AcceptableCertificateErrors,
+                Version = tls.ProtocolVersion,
+            };
+        }
+        return config;
     }
 }
