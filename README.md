@@ -1,37 +1,28 @@
+<p align="center">
+  <a href="https://github.com/niravinfo/StreamBus/actions/workflows/build.yml"><img src="https://github.com/niravinfo/StreamBus/actions/workflows/build.yml/badge.svg" alt="Build" /></a>
+  <a href="https://www.nuget.org/packages/StreamBus"><img src="https://img.shields.io/nuget/vpre/StreamBus.svg" alt="NuGet" /></a>
+  <a href="https://www.nuget.org/packages/StreamBus"><img src="https://img.shields.io/nuget/dt/StreamBus.svg" alt="NuGet downloads" /></a>
+  <a href="https://github.com/niravinfo/StreamBus/blob/main/LICENSE"><img src="https://img.shields.io/github/license/niravinfo/StreamBus" alt="License: MIT" /></a>
+  <a href="#"><img src="https://img.shields.io/badge/.NET-10-512BD4" alt=".NET 10" /></a>
+</p>
+
 # StreamBus
 
-[![Build](https://github.com/niravinfo/StreamBus/actions/workflows/build.yml/badge.svg)](https://github.com/niravinfo/StreamBus/actions/workflows/build.yml)
-[![NuGet](https://img.shields.io/nuget/v/StreamBus.svg)](https://www.nuget.org/packages/StreamBus)
+A modern .NET client for RabbitMQ Streams. Publish and consume typed messages, with retries and dead-lettering built in.
 
-MassTransit-style client for RabbitMQ streams on .NET 10. Workers register
-buses with nested `AddStreamBus((context, cfg) => ...)` blocks, publish typed
-messages without manual serialization, and consume through `ReceiveEndpoint`s
-with first-class consumer-group identity. Global retry with per-endpoint
-override is strict and unbounded by default; a bounded schedule can hand
-exhausted messages to a configured destination or an owning callback or,
-when neither is set, to a per-stream classic `{stream}_error` queue.
-
-**Configuration is explicit and fluent.** StreamBus does not read host
-configuration, bind JSON settings, or discover connection settings. Every
-option is a configurator method call in code, validated once at registration.
-
-## Prerequisites
-
-- .NET 10 SDK.
-- RabbitMQ 4.x with streams enabled: stream port `5552`, AMQP `5672`
-  (AMQP is used for queue dead-letter destinations).
-- Empty credentials are rejected. `guest`/`guest` is accepted for a local
-  broker; remote deployments need a dedicated non-`guest` user.
-- For contributors: the integration tests need only Docker — they start
-  their own RabbitMQ (pinned 4.2 image) via Testcontainers.
+- **Consumer groups built in** — each endpoint has a first-class group; on a super stream, partitions spread across instances.
+- **Retries and dead-lettering** — global or per-endpoint retry schedules; exhausted messages land in an error stream, a queue, or a default `{stream}_error` queue.
+- **Code-only configuration** — every option is a validated configurator call; no settings binder, no JSON discovery.
 
 ## Install
 
 ```xml
-<PackageReference Include="StreamBus" Version="0.2.0" />
+<PackageReference Include="StreamBus" Version="0.4.0-beta.1" />
 ```
 
-## The 90% case
+## Quick start
+
+Publish objects, consume them with typed handlers:
 
 ```csharp
 using Microsoft.Extensions.DependencyInjection;
@@ -43,14 +34,7 @@ var builder = Host.CreateApplicationBuilder(args);
 
 builder.Services.AddStreamBus((_, cfg) =>
 {
-    cfg.Host("localhost", "/", h =>
-    {
-        h.Credentials("guest", "guest");
-        h.StreamPort(5552);
-        h.AmqpPort(5672);
-        h.Heartbeat(TimeSpan.FromSeconds(60));
-        h.MonitorInterval(TimeSpan.FromSeconds(5));
-    });
+    cfg.Host("localhost", "/", h => h.Credentials("guest", "guest"));
 
     cfg.Publish<OrderPlaced>("orders");
 
@@ -77,62 +61,31 @@ public sealed class OrderConsumer(ILogger<OrderConsumer> log) : IConsumer<OrderP
 }
 ```
 
-## Features
+Need a local broker? `docker run -d --name rabbitmq -p 5552:5552 -p 5672:5672 -p 15672:15672 rabbitmq:4.2-management`
 
-Every capability points to its guide section:
+## Documentation
 
-- Buses: default + marker buses, explicit fluent configuration (`docs/guide/config.md`)
-- Connection: host/credentials/ports/heartbeat/monitor/pools (`docs/guide/config.md`)
-- Serialization: JSON options per bus (`docs/guide/config.md`)
-- Declarations: streams/super-streams + retention/placement knobs (`docs/guide/topology.md`)
-- Startup: blocking/non-blocking, readiness waits, health checks (`docs/guide/hosting.md`)
-- Typed publish: route table, keyed super publish, overrides, raw bytes (`docs/guide/publish.md`)
-- Publishing from many instances: producers are anonymous, so any number of
-  identical instances publish safely; the library never enables broker
-  published-message deduplication (`docs/guide/publish.md`)
-- Endpoints: required groups, super-stream partition scale-out, SAC/offset/store knobs (`docs/guide/consume.md`)
-- Raw consume + manual offset get/set (`docs/guide/consume.md`)
-- Retry: global + per-endpoint schedules, escape hatch (`docs/guide/errors.md`)
-- Exhaustion: stream / classic+quorum queue (bounded schedule, no destination or callback: `{stream}_error`) / owning callback (`docs/guide/errors.md`)
-- Dead letters to error streams and queues (`docs/guide/errors.md`)
-- Topology derivation, runtime `bus.Topology`, adopt rule, conflicts (`docs/guide/topology.md`)
-- Multi-bus markers + shared consumer classes (`docs/guide/multi-bus.md`)
-- Message properties: message/correlation IDs and typed headers (`docs/guide/publish.md`)
-- Middleware: ordered publish/consume filters, telemetry (`docs/guide/publish.md`, `docs/guide/consume.md`)
-- Observability: per-registration health, metrics, log events (`docs/guide/observability.md`)
+For more information, see the docs at **[niravinfo.github.io/StreamBus](https://niravinfo.github.io/StreamBus)**:
 
-## Concepts
+- [Getting Started](https://niravinfo.github.io/StreamBus/guides/getting-started/)
+- [Configuration](https://niravinfo.github.io/StreamBus/guides/configuration/) — hosts, credentials, ports, TLS, serializers
+- [Publishing](https://niravinfo.github.io/StreamBus/guides/publishing/) — typed publish, super streams, filters
+- [Consuming](https://niravinfo.github.io/StreamBus/guides/consuming/) — consumer groups, scale-out, offsets
+- [Errors & Retry](https://niravinfo.github.io/StreamBus/guides/errors/) — schedules, dead-lettering, exceptions
+- [Topology](https://niravinfo.github.io/StreamBus/guides/topology/) — declarations, agreement rules, runtime API
+- [Multi-bus](https://niravinfo.github.io/StreamBus/guides/multi-bus/) — marker buses, shared consumers
+- [Hosting](https://niravinfo.github.io/StreamBus/guides/hosting/) — startup modes, readiness, health checks
+- [Observability](https://niravinfo.github.io/StreamBus/guides/observability/) — health data, metrics, logs
+- [TLS](https://niravinfo.github.io/StreamBus/guides/tls/) — secure connections
+- [Changelog](https://niravinfo.github.io/StreamBus/guides/changelog/)
 
-- **Bus registration** (`docs/guide/config.md`): one `AddStreamBus` per bus,
-  `AddStreamBus<TBus>` per extra bus. `Host` exactly once; streams declared
-  up front; startup blocking is service-level via `AddStreamBusHosting`.
-- **Explicit configuration** (`docs/guide/config.md`): no configuration binder.
-  Read environment variables or a vault in your own code if you want to, then
-  pass the values to `Host`, `Publish`, `ReceiveEndpoint`, and the other
-  configurator methods.
-- **Typed publish** (`docs/guide/publish.md`): `Publish<T>` for plain streams,
-  `PublishSuper<T>` for super streams; the routing key travels with the
-  `PublishSuperAsync` call (forgetting it is a compile error).
-- **Endpoints** (`docs/guide/consume.md`): the consumer group is required and verbatim.
-  On a super stream, one group distributes partitions across instances; on a
-  plain stream, SAC keeps one active consumer with standby failover. Different
-  groups are independent cursors, and delivery is at-least-once, so consumers
-  must tolerate duplicates.
-- **Multi-bus** (`docs/guide/multi-bus.md`): marker types disambiguate buses;
-  a shared consumer class needs a different group per bus.
-- **Retry and errors** (`docs/guide/errors.md`): global schedule, per-endpoint
-  override, exhaustion to a stream, a classic/quorum queue (a bounded
-  schedule with neither destination nor callback defaults to
-  `{stream}_error`), or an owning `OnExhausted` callback.
+Runnable examples live in [`examples/`](examples/).
 
-## Docs map
+## Contributing
 
-- `docs/guide/config.md` - connection, declarations, serializers, hosting.
-- `docs/guide/hosting.md` - startup blocking, readiness, health checks.
-- `docs/guide/publish.md` - typed publish, super streams, escape hatches.
-- `docs/guide/consume.md` - endpoints, groups, raw consume, offsets.
-- `docs/guide/multi-bus.md` - marker buses and shared consumers.
-- `docs/guide/errors.md` - retry layering, dead letters, exception table.
-- `docs/guide/topology.md` - declarations, runtime topology, derivation, adopt rule.
-- `docs/guide/observability.md` - health data, metrics, log events.
-- `docs/llms.txt` - ground truths for automated consumers.
+Issues and pull requests are welcome. The integration tests need only
+Docker — they start their own RabbitMQ (4.2, via Testcontainers).
+
+## License
+
+[MIT](LICENSE)

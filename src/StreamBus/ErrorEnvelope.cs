@@ -163,7 +163,7 @@ public sealed record ErrorEnvelope
         return captured;
     }
 
-    // Flat reconstruction, MassTransit-style: user headers are the plain
+    // Flat reconstruction: user headers are the plain
     // non-framework keys that traveled next to the error metadata, so AMQP's
     // own field-table typing (string/bool/int/long) round-trips the values
     // with no encoding layer.
