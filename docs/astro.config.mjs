@@ -9,7 +9,7 @@ export default defineConfig({
   integrations: [
     starlight({
       title: 'StreamBus',
-      description: 'MassTransit-style client for RabbitMQ streams on .NET',
+      description: 'A modern .NET client for RabbitMQ Streams.',
       social: [
         {
           icon: 'github',
@@ -28,13 +28,17 @@ export default defineConfig({
             { slug: 'guides/configuration' },
             { slug: 'guides/publishing' },
             { slug: 'guides/consuming' },
+            { slug: 'guides/errors' },
           ],
         },
         {
           label: 'Advanced',
           items: [
-            { slug: 'guides/errors' },
+            { slug: 'guides/topology' },
+            { slug: 'guides/multi-bus' },
+            { slug: 'guides/hosting' },
             { slug: 'guides/observability' },
+            { slug: 'guides/tls' },
           ],
         },
         { slug: 'guides/changelog' },

@@ -1,23 +1,24 @@
 ---
 title: Getting Started
-description: Install StreamBus and wire up your first bus in minutes.
+description: Publish and consume your first typed message on RabbitMQ Streams in minutes.
 ---
 
 import { Card, CardGrid } from '@astrojs/starlight/components';
 
-// Internal links in MDX bodies are rendered verbatim, so we prefix Astro's
-// base path inline (works in dev and production without hardcoding).
+StreamBus is a modern .NET client for RabbitMQ Streams. You publish plain
+objects to a stream by type, consume them with typed handlers, and get
+retries and dead-lettering built in.
 
-StreamBus is a MassTransit-style client for RabbitMQ streams on .NET 10.
-Workers register buses with nested `AddStreamBus` blocks, publish typed
-messages without manual serialization, and consume through
-`ReceiveEndpoint`s with first-class consumer-group identity.
+## Run a local broker
 
-## Prerequisites
+If you don't have RabbitMQ 4.x handy, start one with Docker (streams are
+enabled out of the box; the management UI is on `http://localhost:15672`):
 
-- .NET 10 SDK
-- RabbitMQ 4.x with streams enabled (stream port `5552`, AMQP `5672`)
-- Non-empty credentials; `guest`/`guest` works for a local broker
+```bash
+docker run -d --name rabbitmq -p 5552:5552 -p 5672:5672 -p 15672:15672 rabbitmq:4.2-management
+```
+
+The `guest` / `guest` credentials work on a local broker.
 
 ## Install
 
@@ -27,8 +28,8 @@ messages without manual serialization, and consume through
 
 ## The 90% case
 
-Register a host, publish a typed message to a stream, and consume it with a
-consumer group:
+Register a host, publish a typed message to a stream, and consume it with
+a consumer group. This is a complete program:
 
 ```csharp
 using Microsoft.Extensions.DependencyInjection;
@@ -40,14 +41,7 @@ var builder = Host.CreateApplicationBuilder(args);
 
 builder.Services.AddStreamBus((_, cfg) =>
 {
-    cfg.Host("localhost", "/", h =>
-    {
-        h.Credentials("guest", "guest");
-        h.StreamPort(5552);
-        h.AmqpPort(5672);
-        h.Heartbeat(TimeSpan.FromSeconds(60));
-        h.MonitorInterval(TimeSpan.FromSeconds(5));
-    });
+    cfg.Host("localhost", "/", h => h.Credentials("guest", "guest"));
 
     cfg.Publish<OrderPlaced>("orders");
 
@@ -74,13 +68,26 @@ public sealed class OrderConsumer(ILogger<OrderConsumer> log) : IConsumer<OrderP
 }
 ```
 
+## What happens at startup
+
+- The `orders` stream is declared on the broker if it doesn't exist.
+- The `billing` consumer group resumes where it last left off, or reads the
+  stream from the first offset on a fresh group; each distinct group name
+  gets an independent cursor.
+- `AddStreamBusHosting` blocks startup until the broker connection and
+  consumers are ready (up to `WaitUntilStarted`), so the service only accepts
+  traffic once it can actually process messages.
+
 ## What's next?
 
 <CardGrid>
+  <Card title="Configuration" icon="settings" href={`${import.meta.env.BASE_URL}guides/configuration/`}>
+    Hosts, credentials, ports, TLS, and serializer options.
+  </Card>
   <Card title="Publishing" icon="paper-airplane" href={`${import.meta.env.BASE_URL}guides/publishing/`}>
     Typed publish, super streams, and message properties.
   </Card>
-  <Card title="Error Handling" icon="warning" href={`${import.meta.env.BASE_URL}guides/errors/`}>
-    Retry schedules, exhaustion destinations, and dead letters.
+  <Card title="Consuming" icon="group" href={`${import.meta.env.BASE_URL}guides/consuming/`}>
+    Consumer groups, scale-out, and manual offsets.
   </Card>
 </CardGrid>
