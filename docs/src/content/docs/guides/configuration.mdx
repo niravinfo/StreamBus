@@ -1,68 +1,89 @@
 ---
 title: Configuration
-description: Hosts, credentials, buses, and explicit fluent configuration.
+description: Hosts, credentials, options, and serializers.
 ---
 
-StreamBus is **explicit**. It does not read host configuration, bind JSON
-settings, or discover connection settings. Every option is a configurator
-method call in code, validated once at registration.
+One `AddStreamBus` call registers a bus. Everything is code-first: no
+settings binder, no JSON discovery — read environment variables or a vault
+yourself, then pass the values to the configurators.
 
-<aside>
-Demo page — the full configuration guide (serialization options, pools,
-declarations, retention knobs) will live here.
-</aside>
-
-## Host
-
-`Host` is called exactly once per bus:
+## Register a bus
 
 ```csharp
 builder.Services.AddStreamBus((_, cfg) =>
 {
-    cfg.Host("localhost", "/", h =>
+    cfg.Host("localhost", "/", h => h.Credentials("guest", "guest"));
+
+    cfg.Publish<OrderPlaced>("orders");
+
+    cfg.ReceiveEndpoint("orders", e =>
     {
-        h.Credentials("guest", "guest");
-        h.StreamPort(5552);
-        h.AmqpPort(5672);
-        h.Heartbeat(TimeSpan.FromSeconds(60));
-        h.MonitorInterval(TimeSpan.FromSeconds(5));
+        e.Consumer<OrderConsumer>("billing");
+        e.UseRetry(r => r.Immediate(3));
     });
 });
 ```
 
-## Multiple buses
+`Host` is required exactly once per bus — a second call throws. Credentials
+must be non-empty; `guest`/`guest` works against a machine-local broker, but
+remote deployments need a dedicated non-`guest` user.
 
-One `AddStreamBus` for the default bus, `AddStreamBus<TBus>` per extra
-bus, disambiguated by marker types:
+Every option is validated once at registration: a bad value fails fast with
+a `StreamBusConfigurationException`, not at runtime.
 
-```csharp
-builder.Services.AddStreamBus((_, cfg) => { /* default bus */ });
-builder.Services.AddStreamBus<PaymentBus>((_, cfg) => { /* payments */ });
-```
+## Options
 
-A shared consumer class consuming from both buses needs a different
-group per bus.
-
-## Bring your own settings
-
-Want environment variables or a vault? Read them yourself and pass the
-values in:
+The defaults match a standard RabbitMQ 4.x install; pass these only when
+yours differ.
 
 ```csharp
-var host = Environment.GetEnvironmentVariable("RABBIT_HOST") ?? "localhost";
-
-builder.Services.AddStreamBus((_, cfg) =>
+cfg.Host("rabbitmq.internal", "/", h =>
 {
-    cfg.Host(host, "/", h => h.Credentials(user, pass));
+    h.Credentials("app", "s3cret");
+    h.StreamPort(5552);   // when the stream port isn't the default
+    h.AmqpPort(5672);    // AMQP is used for queue dead-letter destinations
+    h.Heartbeat(TimeSpan.FromSeconds(60));
+    h.MonitorInterval(TimeSpan.FromSeconds(5));
+    h.ProducersPerConnection(1);
+    h.ConsumersPerConnection(1);
 });
 ```
 
-## Startup
+- `StreamPort` / `AmqpPort` — override when the broker isn't on `5552` /
+  `5672`. The AMQP connection is only opened when a queue dead-letter
+  destination is configured.
+- `Heartbeat` (default 60s) — value is always mapped so broker upgrades
+  can't drift it.
+- `MonitorInterval` (default 5s, max 60s) — how often the connection
+  supervisor checks the broker handle for closure.
+- `ProducersPerConnection` / `ConsumersPerConnection` (default 1/1) —
+  connection pool sizes.
 
-`AddStreamBusHosting` controls startup behavior at the service level —
-block until ready, or start in the background:
+For secure connections, see [TLS](../tls/) — TLS is off by default
+and enabled with `h.UseTls(...)`.
+
+## Serializer
+
+Messages are JSON by default. Adjust the serializer per bus:
 
 ```csharp
-builder.Services.AddStreamBusHosting(h =>
-    h.WaitUntilStarted(TimeSpan.FromSeconds(30)));
+cfg.Serializer(json => json.PropertyNamingPolicy = JsonNamingPolicy.CamelCase);
 ```
+
+## Multiple buses
+
+One application can run independent buses — different brokers, vhosts, or
+serializers — each identified by a marker type. See
+[Multi-bus](../multi-bus/) for marker types and shared consumer classes.
+
+## Startup
+
+Blocking startup is a service-level opt-in on top of the default
+non-blocking start:
+
+```csharp
+builder.Services.AddStreamBusHosting(h => h.WaitUntilStarted(TimeSpan.FromSeconds(30)));
+```
+
+See [Hosting](../hosting/) for blocking vs non-blocking startup, readiness
+waits, and health checks.

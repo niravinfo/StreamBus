@@ -1,49 +1,121 @@
 ---
 title: Publishing
-description: Publish typed messages without manual serialization.
+description: Typed publish, super streams, message properties, and filters.
 ---
 
-Streams are declared up front with `Publish<T>`. StreamBus builds a route
-table from the message type, so publishing is a one-liner and forgetting a
-routing key for a super stream is a compile error, not a runtime surprise.
-
-<aside>
-This is a demo page — the full publish guide (super streams, overrides,
-raw bytes, typed headers) will live here.
-</aside>
-
-## Declare and publish
+Register a message type against a stream once; publish without stream names
+or manual serialization.
 
 ```csharp
 builder.Services.AddStreamBus((_, cfg) =>
 {
+    cfg.Host("localhost", "/", h => h.Credentials("app", "s3cret"));
     cfg.Publish<OrderPlaced>("orders");
 });
 
-// Anywhere with IServiceProvider:
-await publisher.Publish(new OrderPlaced("order-42"));
+await bus.PublishAsync(new OrderPlaced("o-1"), ct);
 ```
+
+The stream and the serializer come from the registration. Registering one
+message type on two streams of one bus fails fast instead of picking a
+random destination.
 
 ## Super streams
 
-`PublishSuper<T>` declares a super stream; the routing key travels with the
-call:
+```csharp
+cfg.PublishSuper<OrderPlaced>("orders-super", s => s.Partitions(3));
+
+await bus.PublishSuperAsync(new OrderPlaced("o-1"), "o-1", ct);
+```
+
+The routing key is a required `PublishSuperAsync` parameter — forgetting
+it is a compile error, not a runtime surprise. The key selects the
+partition at the broker.
+
+A `PublishSuper` registration carries its own spec (`s.Partitions(n)`, plus
+the same retention knobs as plain streams), or a consuming endpoint on the
+same stream can supply the count with `e.Partitions(n)`. With neither,
+startup fails naming the type and the stream. Registration kind must agree
+across every reference: `Publish` for a super stream (or `PublishSuper` for
+a plain one) fails at startup. Calling the wrong method for a registration
+throws a `StreamBusConfigurationException` telling you which method to use.
+
+## Message properties and headers
+
+`MessageId` and `SentTime` are always populated before the publish pipeline
+runs — `MessageId` is generated when absent, `SentTime` defaults to UTC now.
+`CorrelationId` is never invented: it stays null unless you supply it.
 
 ```csharp
-cfg.PublishSuper<OrderPlaced>("orders");
-
-await publisher.PublishSuper(new OrderPlaced("order-42"), routingKey: "region-a");
+await bus.PublishAsync(new OrderPlaced("o-1"), new PublishOptions
+{
+    Properties = new StreamMessageProperties
+    {
+        CorrelationId = correlationId,
+        Headers = new Dictionary<string, object?> { ["x-tenant"] = "acme" },
+    },
+}, ct);
 ```
+
+Header values may be `string`, `bool`, `int`, `long`, or `null`. The four
+framework keys (`streambus.message-id`, `streambus.correlation-id`,
+`streambus.sent-time`, `streambus.routing-key`) are rejected.
 
 ## Publishing from many instances
 
-StreamBus never assigns a producer name. RabbitMQ Streams only deduplicates
-published messages for a named producer, so with no name the broker filters
-nothing: any number of identical application instances can share this
-configuration and publish to the same stream or super stream. Delivery stays
-at-least-once; consumers own duplicate handling and idempotency.
+StreamBus never assigns a producer name. RabbitMQ Streams only
+deduplicates published messages for a named producer, so with no name the
+broker filters nothing: any number of identical application instances can
+publish to the same stream or super stream. Delivery stays at-least-once;
+consumers own duplicate handling and idempotency. See
+[Consuming](../consuming/).
 
-## Message properties
+## Escape hatches
 
-StreamBus assigns message and correlation IDs automatically and supports
-typed headers on both publish and consume — no stringly-typed dictionaries.
+Explicit-stream targets, for when one type must reach more than the
+registered stream:
+
+```csharp
+await bus.PublishAsync("orders-manual", new OrderPlaced("o-2"), ct);
+await bus.PublishRawAsync("orders", preSerializedBytes, new PublishOptions(), ct);
+```
+
+Explicit targets keep the method-implied kind (plain vs super) and must be
+registered as publishable — an undeclared target surfaces
+`StreamBusStreamNotFoundException`, never an auto-create. `PublishRawAsync`
+sends pre-serialized bytes and bypasses the publish pipeline.
+
+## Publish filters
+
+Cross-cutting publish logic is an ordered filter pipeline. Filters run
+first-registered-first-in / last-out and can enrich headers without
+touching the payload or routing:
+
+```csharp
+cfg.UsePublishFilter<TenantFilter>();      // bus-wide, applied to every publish
+cfg.UsePublishFilter<CorrelationIdFilter>();
+
+public sealed class TenantFilter(TenantScope ambient) : IStreamPublishFilter
+{
+    public Task OnPublish(PublishContext context, PublishNext next)
+    {
+        context.Headers.Set("x-tenant", ambient.Tenant);
+        return next();
+    }
+}
+```
+
+Notes that matter:
+
+- Filters are singletons per bus and must be thread-safe; each publish gets
+  its own DI scope through `context.Services`.
+- A filter must call `next` exactly once — zero or double continuations
+  throw `StreamBusFilterContractException`.
+- `IStreamPublishFilter<T>` attaches only to publishes of `T`; register it
+  with `cfg.UsePublishFilter<OrderFilter>()` or pin the pipe type at the
+  call site with `UsePublishFilter<OrderFilter, OrderEvent>()`.
+- Filter header mutations take precedence over call-level
+  `PublishOptions.Properties` headers.
+
+Complete samples: `examples/StreamBus.Examples.Producer/TenantFilter.cs` and
+`CorrelationIdFilter.cs`.

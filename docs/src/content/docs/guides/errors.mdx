@@ -1,49 +1,134 @@
 ---
-title: Error Handling
-description: Retry schedules, exhausted messages, and the error queue.
+title: Errors & Retry
+description: Retry schedules, exhaustion destinations, and the exception hierarchy.
 ---
 
-## Retry
+Consumers fail. StreamBus retries them on a schedule and, when retries run
+out, hands the message to a destination you choose.
 
-Global retry is strict and unbounded by default. Endpoints can override the
-schedule:
+## Retry layering
+
+Every endpoint inherits the global schedule unless it overrides it.
+Without any configuration the endpoint retries forever.
 
 ```csharp
 builder.Services.AddStreamBus((_, cfg) =>
 {
-    cfg.UseRetry(r => r.Intervals(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(5)));
+    cfg.Host("localhost", "/", h => h.Credentials("app", "s3cret"));
+
+    // Global schedule: inherited by every endpoint.
+    cfg.UseRetry(r => r.Intervals(
+        TimeSpan.FromMilliseconds(200),
+        TimeSpan.FromSeconds(2),
+        TimeSpan.FromSeconds(10)));
+
+    cfg.Publish<OrderPlaced>("orders");
 
     cfg.ReceiveEndpoint("orders", e =>
     {
         e.Consumer<OrderConsumer>("billing");
-        e.UseRetry(r => r.Immediate(3));
+        e.UseRetry(r => r.Immediate(3));   // per-endpoint override
+    });
+
+    cfg.ReceiveEndpoint("audit", e =>
+    {
+        e.Consumer<AuditConsumer>("audit-log");
+        e.UseRetry(r => r.None());          // first failure goes straight to exhaustion
+        e.DeadLetterToQueue("audit-errors", DeadLetterQueueType.ClassicQueue);
     });
 });
 ```
 
-<aside>
-This is a demo page — the full errors guide (exception table) will live
-here.
-</aside>
+Schedules: `Immediate(n)`, `Interval(n, delay)`, `Intervals(params)`,
+`Exponential(count, base, max, multiplier)`, `None()`. `MaxAttempts`
+counts total attempts including the first: `Immediate(5)` is six attempts;
+leaving it unset sets no attempt limit, so the endpoint retries until the
+handler succeeds and its partition waits.
 
 ## Exhaustion
 
-When retries run out, a message goes to a configured destination, an owning
-callback, or — when neither is set, and the schedule is bounded — the
-per-stream classic `{stream}_error` queue:
+| Retry | Exhaustion config | What happens |
+|---|---|---|
+| attempt limit set | `DeadLetterToStream` / `DeadLetterToQueue` | hand-off to the destination, then advance |
+| attempt limit set | `OnExhausted` callback | the callback owns the outcome (a declared destination is shadowed with a startup warning) |
+| attempt limit set | neither | hand-off to the derived destination: classic queue `{stream}_error` |
+| no attempt limit (default) | neither | retry forever; the partition waits |
+| no attempt limit | destination or callback | configuration error at startup — a hand-off needs an attempt limit |
+| `None()` | any | immediate hand-off or callback on first failure |
+
+Destinations are kind-split, and a second destination call on an endpoint
+throws at registration:
 
 ```csharp
-cfg.ReceiveEndpoint("orders", e =>
+e.DeadLetterToStream("orders-errors");                    // error stream
+e.DeadLetterToQueue("orders-errors", DeadLetterQueueType.QuorumQueue); // AMQP queue
+```
+
+- `DeadLetterToStream(name, spec?)` — an error **stream** with
+  error-envelope semantics, declared with the destination's `StreamOptions`
+  at startup.
+- `DeadLetterToQueue(name, type)` — a durable AMQP **queue** (classic or
+  quorum), broker-confirmed. The transport declares it; this is the only
+  place StreamBus uses AMQP.
+
+Both bound the hand-off publish so a lost confirmation can't wedge the
+partition: `e.ErrorPublishTimeout(...)` for streams, and the queue's
+`q => q.ConfirmTimeout(...)` (default 10s). A hand-off that fails
+transiently is retried without advancing — the message is never skipped.
+A fatal failure (latched connection state, protocol/SSL/auth errors,
+configuration errors) can't recover by retrying, so the partition is
+marked failed and recycled (redelivery, never a skip).
+
+### OnExhausted
+
+Take the outcome into your own hands:
+
+```csharp
+cfg.ReceiveEndpoint("payments", e =>
 {
-    e.Consumer<OrderConsumer>("billing");
-    e.UseRetry(r => r.Immediate(3)); // bounded
-    // No destination or callback: exhausted messages land in orders_error.
+    e.Consumer<PaymentsConsumer>("payments-ops");
+    e.UseRetry(r => r.Intervals(TimeSpan.FromMilliseconds(200)));
+    e.OnExhausted(async (ctx, ct) =>
+    {
+        var bus = ctx.GetService<IStreamBus>();
+        await bus.PublishRawAsync("payments-dlq", ctx.Body, new PublishOptions(), ct);
+    });
 });
 ```
 
-## Recovering from the error queue
+The callback runs with the full `ExhaustedContext`: stream, partition,
+offset, body, message and correlation ids, sent time, headers, attempts,
+exception, and services. Returning advances past the message; throwing
+recycles the attach (redelivery, never a skip).
 
-StreamBus's responsibility ends at the hand-off. The `orders_error`
-queue is a regular classic queue, so after deploying a fix you can drain
-it with any AMQP client and republish the bodies to the source stream
-yourself.
+## The error envelope
+
+Dead letters carry the original body plus `streambus.error.*` metadata:
+source stream, partition and offset, exception type, message, stack trace,
+timestamp, and the user's send-headers carried as plain keys next to the
+error metadata (nothing repackaged into a JSON blob). AMQP
+field-table typing round-trips, so any compatible client can drain the
+destination.
+
+StreamBus's responsibility ends at the hand-off: consuming from the error
+stream or queue, and moving messages back after a fix, is the application's
+job — republish recovered messages as new messages.
+
+## Exceptions
+
+Every StreamBus exception derives from `StreamBusException`, so one
+`catch` covers the whole library surface.
+
+| Exception | Meaning | Retry? |
+|---|---|---|
+| `StreamBusException` | Base of every StreamBus exception. | Catch-all only. |
+| `StreamBusConfigurationException` | Invalid or contradictory configuration. | No — fix the configuration. |
+| `StreamBusStreamConfigurationConflictException` | Existing broker topology disagrees with the declaration. | No — align the declaration or recreate the stream. |
+| `StreamBusStartupBlockedException` | A typed consumer could not attach during blocking startup. | No — fix the consumer first. |
+| `StreamBusFatalException` | The bus connection is fatal. | No — reconnect/operator action. |
+| `StreamBusNotReadyException` | The bus is not ready yet. | Yes — transient. |
+| `StreamBusStreamNotFoundException` | A referenced stream is missing. | Runtime: no. |
+| `StreamBusTimeoutException` | A budget expired; the outcome may be unknown. | Only when idempotent. |
+| `StreamBusPublishTransientException` | A publish failed transiently; the producer was discarded. | Yes — retry. |
+| `StreamBusPublishException` | A publish failed without a transient classification. | Not blindly. |
+| `StreamBusDeserializationException` | The payload doesn't match the consumer's type. | No — poison; route to the error destination. |

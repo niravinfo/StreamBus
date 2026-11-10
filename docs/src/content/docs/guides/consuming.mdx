@@ -1,60 +1,117 @@
 ---
 title: Consuming
-description: Endpoints, consumer groups, and offsets.
+description: Receive endpoints, consumer groups, scale-out, and filters.
 ---
 
-Endpoints consume from streams through `ReceiveEndpoint`. The consumer
-group is required and verbatim. On a super stream, one group distributes partitions across instances; different groups consume independently.
-
-<aside>
-Demo page — the full consume guide (SAC, offsets, store knobs, raw
-consume, middleware) will live here.
-</aside>
-
-## Register an endpoint
-
-```csharp
-builder.Services.AddStreamBus((_, cfg) =>
-{
-    cfg.ReceiveEndpoint("orders", e =>
-    {
-        e.Consumer<OrderConsumer>("billing");
-    });
-});
-```
-
-## Scale out
-
-Super streams distribute partitions, not individual messages. With one group,
-instances take ownership of different partitions (`SingleActiveConsumer`
-applies per partition), so adding instances reads more partitions in parallel.
-
-Plain streams are different: with the default `SingleActiveConsumer = true`,
-one instance owns the group's cursor and the others stand by for failover.
-They do not add throughput. Use a super stream when you need horizontal scale.
-
-A second endpoint with a different group reads the stream from its own offset.
-Delivery is at-least-once, so consumers must tolerate duplicates.
-
-## Independent consumers
-
-A second endpoint with a *different* group reads the same stream from
-its own offset, so billing and shipping each see every message:
+A receive endpoint binds a stream to exactly one consumer type and one
+consumer group. The group is the cursor identity — StreamBus never derives
+or defaults it.
 
 ```csharp
 cfg.ReceiveEndpoint("orders", e =>
 {
     e.Consumer<OrderConsumer>("billing");
 });
+```
 
+`Consumer<T>("group")` is required and may be called exactly once per
+endpoint. The group name is used verbatim: empty groups and groups over the
+broker's 255-byte limit are configuration errors. Two services sharing one
+consumer class must supply different groups.
+
+## Groups and scale-out
+
+- A **super stream** with one group distributes its partitions across
+  instances (single-active-consumer applies per partition), so adding
+  instances adds parallel partition readers.
+- A **plain stream** with the default `SingleActiveConsumer = true` has one
+  active consumer per group; other instances stand by for failover and do
+  not add throughput. Use a super stream when you need horizontal scale.
+- Different groups are independent cursors: each receives every message.
+- Delivery is at-least-once. Consumers must tolerate duplicates and own
+  their idempotency.
+
+Don't disable SAC across processes on one endpoint: two writers on one
+reference both receive deliveries (duplicates, never skips) and can regress
+the broker-side offset.
+
+## Options
+
+Defaults resume the group's stored offset, or start at the first offset
+for a fresh group. Pass these only when you need different behavior:
+
+```csharp
 cfg.ReceiveEndpoint("orders", e =>
 {
-    e.Consumer<OrderConsumer>("shipping");
+    e.Consumer<OrderConsumer>("billing");
+    e.SingleActiveConsumer(false);                 // competitor mode on a plain stream
+    e.StartOffset(StartOffset.AlwaysFirst);         // always read from the first offset
+    e.OffsetStore(new OffsetStoreOptions { StoreEveryMessages = 10 });
+    e.Readiness(ReadinessPolicy.UpTo(TimeSpan.FromSeconds(30)));
+    e.SuperStream();                                // expect a super stream
 });
 ```
 
-## Offsets
+- `StartOffset` — default `ResumeOrFirst`; `AlwaysFirst` always reads from
+  the stream's first offset.
+- `OffsetStore` — how often the group's cursor is persisted
+  (`StoreEveryMessages` messages or `MaxFlushInterval`, whichever first).
+- `SuperStream()` / `Partitions(n)` — expectation knobs that feed topology
+  derivation; see [Topology](../topology/).
+- Stream spec knobs (`MaxAge`, `MaxLengthBytes`, `MaxSegmentSizeBytes`,
+  `LeaderLocator`) live on the endpoint too and must agree with every other
+  reference to the stream.
 
-Consumers track their position in the stream. Streams are append-only
-and retain messages per the stream's retention policy, so a group can
-replay from any offset when it needs to.
+The endpoint adopts broker reality: a matching existing stream is consumed
+as-is, a kind mismatch is a conflict, and a missing stream is declared from
+the endpoint's and any publish registration's spec.
+
+## Raw consume and manual offsets
+
+For tailing or ops tooling, consume raw deliveries with the same group
+requirement:
+
+```csharp
+await using var sub = await bus.ConsumeAsync(
+    "audit",
+    new ConsumeOptions { ConsumerGroup = "ops-tail", Offset = StartOffset.AlwaysFirst },
+    ctx => bus.SetConsumerOffsetAsync(
+        "audit", "ops-tail", ctx.Partition, ctx.Offset, ctx.CancellationToken),
+    ct);
+
+var stored = await bus.GetConsumerOffsetAsync("audit", "ops-tail", partition: 0, ct);
+```
+
+A missing group throws `StreamBusConfigurationException` at attach instead
+of guessing.
+
+## Consume filters
+
+Consume middleware is ordered and scope-aware: one DI scope per delivered
+message, shared by the pipeline and the typed consumer. Bus-wide filters run
+first (outermost), then endpoint filters:
+
+```csharp
+cfg.UseConsumeFilter<TenantFilter>();
+cfg.ReceiveEndpoint("orders", e =>
+{
+    e.Consumer<OrderConsumer>("billing");
+    e.UseConsumeFilter<MetricsFilter>();
+});
+```
+
+Notes that matter:
+
+- Filters are singletons per bus; resolve scoped services from
+  `context.Services` on each delivery.
+- A normal filter may call `next` zero or one time — zero means the filter
+  handled the delivery, the consumer isn't invoked, and the offset still
+  advances. More than one call is retried and then exhausted.
+- `IStreamConsumeFilter<T>` attaches by message type; pin it at the call
+  site with `UseConsumeFilter<TFilter, TMessage>()` or let an open generic
+  (`typeof(TenantFilter<>)`) close per endpoint.
+- `context.SetPayload<T>` carries values between filters; headers written
+  through `context.SendHeaders` travel on the exhaustion envelope.
+
+Complete samples: `examples/StreamBus.Examples.Consumer/TenantFilter.cs` and
+`OrderEventFilter.cs`.
