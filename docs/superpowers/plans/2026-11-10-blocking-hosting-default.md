@@ -1,5 +1,8 @@
 # Default Blocking Hosting — Implementation Plan
 
+> **SUPERSEDED (Nov 11, 2026):** Replaced by `docs/superpowers/plans/2026-11-11-host-options.md`
+> (MassTransit-parity `StreamBusHostOptions`; default stays NON-blocking). Do not execute this plan.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** `AddStreamBus` alone makes startup block until the broker connection, topology, and consumers are ready (no timeout, indefinite wait); `AddStreamBusHosting` becomes an optional override, with `RunNonBlocking()` restoring the old behavior.
