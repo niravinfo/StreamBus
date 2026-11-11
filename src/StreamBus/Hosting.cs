@@ -728,13 +728,35 @@ internal sealed class StreamBusHostedService : IHostedService
         lock (_gate) _started.Add((vhost, supervisor));
     }
 
-    /// <summary>Disposes active consumers, cancels startup, then disposes every supervisor and the error-queue transports.</summary>
+    /// <summary>Disposes active consumers, cancels startup, then disposes every supervisor and the error-queue transports; each step is bounded by the stop budgets.</summary>
     public async Task StopAsync(CancellationToken cancellationToken)
     {
+        StreamBusHostOptions.ValidateStop(_hosting);
+        using var stopCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        if (_hosting.StopTimeout is { } stopBudget)
+            stopCts.CancelAfter(stopBudget);
         foreach (var consumer in _registry.ActiveConsumers)
         {
-            try { await consumer.DisposeAsync().ConfigureAwait(false); }
+            CancellationTokenSource? consumerCts = null;
+            try
+            {
+                var consumerToken = stopCts.Token;
+                if (_hosting.ConsumerStopTimeout is { } consumerBudget)
+                {
+                    consumerCts = CancellationTokenSource.CreateLinkedTokenSource(stopCts.Token);
+                    consumerCts.CancelAfter(consumerBudget);
+                    consumerToken = consumerCts.Token;
+                }
+                await consumer.DisposeAsync().AsTask().WaitAsync(consumerToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                // Budget expiry (overall or per-consumer), not host cancellation:
+                // abandon this consumer and keep stopping the rest.
+                _logger.LogWarning("Stop budget expired while disposing consumer {Consumer} on stream '{Stream}'; abandoning it and continuing shutdown.", consumer.GetType().FullName, consumer.Stream);
+            }
             catch (Exception ex) { _logger.LogWarning(ex, "Consumer dispose did not complete cleanly during StopAsync."); }
+            finally { consumerCts?.Dispose(); }
         }
         CancellationTokenSource? startupCts;
         lock (_gate)
@@ -755,13 +777,24 @@ internal sealed class StreamBusHostedService : IHostedService
         }
         foreach (var (vhost, supervisor) in copy)
         {
-            try { await supervisor.DisposeAsync().ConfigureAwait(false); }
+            try { await supervisor.DisposeAsync().AsTask().WaitAsync(stopCts.Token).ConfigureAwait(false); }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                // Budget expiry, not host cancellation: abandon this supervisor
+                // and keep stopping the rest.
+                _logger.LogWarning("Stop budget expired while disposing the supervisor for vhost '{Vhost}'; abandoning it and continuing shutdown.", vhost);
+            }
             catch (Exception ex) { _logger.LogWarning(ex, "Supervisor dispose did not complete cleanly during StopAsync for vhost '{Vhost}'.", vhost); }
             finally { _registry.RemoveSupervisor(vhost); }
         }
         // Error-queue transports own live AMQP connections; dispose them last,
         // after supervisors, so in-flight dead-letter hand-offs finish first.
-        await _registry.DisposeAsync().ConfigureAwait(false);
+        try { await _registry.DisposeAsync().AsTask().WaitAsync(stopCts.Token).ConfigureAwait(false); }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            // Budget expiry, not host cancellation: shutdown ends here.
+            _logger.LogWarning("Stop budget expired while disposing the registry's error-queue transports; abandoning them.");
+        }
     }
 }
 

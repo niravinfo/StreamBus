@@ -37,9 +37,10 @@ public sealed class StreamBusHostOptions
     }
 
     /// <summary>
-    /// Validates the stop-phase options: <see cref="StopTimeout"/> must be
-    /// positive when set, and <see cref="ConsumerStopTimeout"/>, when set,
-    /// must not exceed it (it may be set without <see cref="StopTimeout"/>).
+    /// Validates the stop-phase options: <see cref="StopTimeout"/> and
+    /// <see cref="ConsumerStopTimeout"/> must be positive when set, and
+    /// <see cref="ConsumerStopTimeout"/>, when set, must not exceed
+    /// <see cref="StopTimeout"/> (it may be set without it).
     /// Throws <see cref="StreamBusConfigurationException"/> otherwise.
     /// </summary>
     /// <param name="o">The options to validate; throws <see cref="ArgumentNullException"/> when null.</param>
@@ -48,7 +49,9 @@ public sealed class StreamBusHostOptions
         ArgumentNullException.ThrowIfNull(o);
         if (o.StopTimeout is { } stop && stop <= TimeSpan.Zero)
             throw new StreamBusConfigurationException("StopTimeout must be positive when set.");
-        if (o.ConsumerStopTimeout is { } consumer && o.StopTimeout is { } limit && consumer > limit)
+        if (o.ConsumerStopTimeout is { } consumer && consumer <= TimeSpan.Zero)
+            throw new StreamBusConfigurationException("ConsumerStopTimeout must be positive when set.");
+        if (o.ConsumerStopTimeout is { } consumerBudget && o.StopTimeout is { } limit && consumerBudget > limit)
             throw new StreamBusConfigurationException("ConsumerStopTimeout must not be greater than StopTimeout when both are set.");
     }
 }
