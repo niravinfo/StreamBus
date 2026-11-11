@@ -156,16 +156,16 @@ public interface IRetryConfigurator
 
     /// <summary>
     /// Retries with exponentially growing delays:
-    /// <paramref name="baseDelay"/> × <paramref name="multiplier"/>^(attempt − 1),
-    /// capped at <paramref name="maxDelay"/>, without jitter.
+    /// <paramref name="minDelay"/> × 2^(attempt − 1), capped at
+    /// <paramref name="maxDelay"/>, without jitter. Use
+    /// <see cref="Intervals"/> for custom growth factors.
     /// </summary>
     /// <param name="retryCount">Retry count after the first attempt; zero allows no retries.</param>
-    /// <param name="baseDelay">Delay before the first retry; must be positive.</param>
+    /// <param name="minDelay">Delay before the first retry; must be positive.</param>
     /// <param name="maxDelay">Upper bound for every delay; must be positive.</param>
-    /// <param name="multiplier">Per-attempt growth factor; a finite number ≥ 1.</param>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="retryCount"/> is negative.</exception>
-    /// <exception cref="StreamBusConfigurationException"><paramref name="baseDelay"/>, <paramref name="maxDelay"/>, or <paramref name="multiplier"/> is out of range.</exception>
-    void Exponential(int retryCount, TimeSpan baseDelay, TimeSpan maxDelay, double multiplier);
+    /// <exception cref="StreamBusConfigurationException"><paramref name="minDelay"/> or <paramref name="maxDelay"/> is not positive.</exception>
+    void Exponential(int retryCount, TimeSpan minDelay, TimeSpan maxDelay);
 
     /// <summary>Disables retry: the first failure exhausts the schedule (a single attempt).</summary>
     void None();
@@ -214,21 +214,19 @@ internal sealed class RetryConfigurator : IRetryConfigurator
         };
     }
 
-    public void Exponential(int retryCount, TimeSpan baseDelay, TimeSpan maxDelay, double multiplier)
+    public void Exponential(int retryCount, TimeSpan minDelay, TimeSpan maxDelay)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(retryCount);
-        if (baseDelay <= TimeSpan.Zero)
-            throw new StreamBusConfigurationException("Exponential baseDelay must be positive.");
+        if (minDelay <= TimeSpan.Zero)
+            throw new StreamBusConfigurationException("Exponential minDelay must be positive.");
         if (maxDelay <= TimeSpan.Zero)
             throw new StreamBusConfigurationException("Exponential maxDelay must be positive.");
-        if (multiplier < 1.0 || !double.IsFinite(multiplier))
-            throw new StreamBusConfigurationException("Exponential multiplier must be a finite number >= 1.");
         _pending = new RetryPolicy
         {
             MaxAttempts = retryCount + 1,
-            BaseDelay = baseDelay,
+            BaseDelay = minDelay,
             MaxDelay = maxDelay,
-            Multiplier = multiplier,
+            Multiplier = 2.0,
             MaxJitter = TimeSpan.Zero,
         };
     }

@@ -3,6 +3,14 @@ title: Changelog
 description: What changed in each StreamBus release.
 ---
 
+## Unreleased
+
+- **Breaking:** `Exponential` on the retry configurator is now
+  `Exponential(retryCount, minDelay, maxDelay)` — delays double each
+  attempt starting at `minDelay`, capped at `maxDelay`. The raw
+  `multiplier` parameter is gone; it matched no comparable library.
+  Rationale: matches MassTransit/Polly; use `Intervals` for custom growth.
+
 ## 0.2.0
 
 - Bounded retry schedules with exhaustion to a configured destination,
