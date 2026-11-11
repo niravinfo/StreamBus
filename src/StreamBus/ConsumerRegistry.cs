@@ -334,10 +334,6 @@ internal sealed class StreamConsumerRegistry
         {
             throw new StreamBusConfigurationException("ConsumeOptions.Retry.MaxDelay must be positive.");
         }
-        if (retry.Multiplier < 1.0 || !double.IsFinite(retry.Multiplier))
-        {
-            throw new StreamBusConfigurationException("ConsumeOptions.Retry.Multiplier must be a finite number >= 1.");
-        }
         if (retry.MaxJitter < TimeSpan.Zero)
         {
             throw new StreamBusConfigurationException("ConsumeOptions.Retry.MaxJitter must be non-negative.");

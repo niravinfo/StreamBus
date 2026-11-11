@@ -11,14 +11,13 @@ internal static class StreamBusDelays
         return grown + jitter;
     }
 
-    public static TimeSpan ExponentialCapped(int attempt, TimeSpan baseDelay, TimeSpan maxDelay, double multiplier, TimeSpan maxJitter)
+    public static TimeSpan ExponentialCapped(int attempt, TimeSpan baseDelay, TimeSpan maxDelay, TimeSpan maxJitter)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(attempt, 1);
-        ArgumentOutOfRangeException.ThrowIfLessThan(multiplier, 1.0); // multiplier < 1 rejected; == 1 allowed (constant delay)
-        // Overflow-proof: astronomical knobs (or a hostile direct call) clamp to maxDelay
-        // instead of throwing out of the dispatch loop. Registry validation rejects
-        // non-finite multipliers; this guards the computation itself.
-        var raw = baseDelay.TotalMilliseconds * Math.Pow(multiplier, Math.Min(attempt - 1, 16));
+        // Overflow-proof: astronomical knobs (or a hostile direct call) clamp to
+        // maxDelay instead of throwing out of the dispatch loop. Growth is fixed
+        // at ×2 per attempt; custom growth goes through RetryPolicy.DelayCalculator.
+        var raw = baseDelay.TotalMilliseconds * Math.Pow(2, Math.Min(attempt - 1, 16));
         var grown = double.IsNaN(raw) || raw <= 0
             ? TimeSpan.Zero
             : raw >= maxDelay.TotalMilliseconds
