@@ -226,7 +226,6 @@ internal sealed class RetryConfigurator : IRetryConfigurator
             MaxAttempts = retryCount + 1,
             BaseDelay = minDelay,
             MaxDelay = maxDelay,
-            Multiplier = 2.0,
             MaxJitter = TimeSpan.Zero,
         };
     }

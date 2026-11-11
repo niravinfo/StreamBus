@@ -22,11 +22,8 @@ public sealed record RetryPolicy
     /// </remarks>
     public int? MaxAttempts { get; init; }
 
-    /// <summary>Base delay for the exponential schedule.</summary>
+    /// <summary>Base delay for the exponential schedule; growth is fixed at ×2 per attempt.</summary>
     public TimeSpan BaseDelay { get; init; } = TimeSpan.FromMilliseconds(200);
-
-    /// <summary>Exponential backoff multiplier.</summary>
-    public double Multiplier { get; init; } = 2.0;
 
     /// <summary>Upper bound for a computed delay.</summary>
     public TimeSpan MaxDelay { get; init; } = TimeSpan.FromSeconds(30);
@@ -72,7 +69,7 @@ internal static class RetryDelays
             }
         }
         return StreamBusDelays.ExponentialCapped(
-            attempt, policy.BaseDelay, policy.MaxDelay, policy.Multiplier, policy.MaxJitter);
+            attempt, policy.BaseDelay, policy.MaxDelay, policy.MaxJitter);
     }
 
     public static bool ShouldLogRetryWarning(int attempt)

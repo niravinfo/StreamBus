@@ -10,6 +10,10 @@ description: What changed in each StreamBus release.
   attempt starting at `minDelay`, capped at `maxDelay`. The raw
   `multiplier` parameter is gone; it matched no comparable library.
   Rationale: matches MassTransit/Polly; use `Intervals` for custom growth.
+- **Breaking:** `RetryPolicy.Multiplier` is removed; exponential
+  growth is fixed at ×2 per attempt, like Polly. For custom growth,
+  set `RetryPolicy.DelayCalculator`, or use `Intervals` on the
+  fluent configurator.
 
 ## 0.2.0
 

@@ -196,7 +196,6 @@ public sealed class RetryConfigurationTests
         Assert.Equal(3, exponential.MaxAttempts);
         Assert.Equal(TimeSpan.FromMilliseconds(100), exponential.BaseDelay);
         Assert.Equal(TimeSpan.FromSeconds(10), exponential.MaxDelay);
-        Assert.Equal(2.0, exponential.Multiplier);
         Assert.Equal(TimeSpan.Zero, exponential.MaxJitter);
 
         var none = Schedule(r => r.None());
