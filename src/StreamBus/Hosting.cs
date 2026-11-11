@@ -751,9 +751,14 @@ internal sealed class StreamBusHostedService : IHostedService
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
-                // Budget expiry (overall or per-consumer), not host cancellation:
-                // abandon this consumer and keep stopping the rest.
-                _logger.LogWarning("Stop budget expired while disposing consumer {Consumer} on stream '{Stream}'; abandoning it and continuing shutdown.", consumer.GetType().FullName, consumer.Stream);
+                // Not host cancellation: either a stop budget actually
+                // expired (overall or per-consumer) or the consumer
+                // threw its own cancellation. Either way, abandon this
+                // consumer and keep stopping the rest.
+                if (stopCts.IsCancellationRequested || consumerCts?.IsCancellationRequested == true)
+                    _logger.LogWarning("Stop budget expired while disposing consumer {Consumer} on stream '{Stream}'; abandoning it and continuing shutdown.", consumer.GetType().FullName, consumer.Stream);
+                else
+                    _logger.LogWarning("Consumer {Consumer} on stream '{Stream}' was cancelled by its own token while disposing; abandoning it and continuing shutdown.", consumer.GetType().FullName, consumer.Stream);
             }
             catch (Exception ex) { _logger.LogWarning(ex, "Consumer dispose did not complete cleanly during StopAsync."); }
             finally { consumerCts?.Dispose(); }

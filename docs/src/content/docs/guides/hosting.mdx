@@ -61,7 +61,6 @@ builder.Services.AddOptions<StreamBusHostOptions>().Configure(o =>
 {
     o.WaitUntilStarted = true;
     o.StartTimeout = TimeSpan.FromSeconds(30);
-    o.WaitUntilConsumersAttached = true;
 });
 ```
 

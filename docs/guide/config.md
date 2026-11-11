@@ -100,23 +100,32 @@ Details:
 
 ## Startup hosting
 
-Blocking is service-level, not per-bus:
+Blocking is service-level, not per-bus, configured through
+`StreamBusHostOptions` (the standard options pattern):
 
 ```csharp
-services.AddStreamBusHosting(h => h.WaitUntilStarted(TimeSpan.FromSeconds(30)));
+services.AddOptions<StreamBusHostOptions>().Configure(o =>
+{
+    o.WaitUntilStarted = true;
+    o.StartTimeout = TimeSpan.FromSeconds(30);
+});
 ```
 
-A second `AddStreamBusHosting` call throws. Without it, startup is
-non-blocking: stream declarations and consumer attaches run in the
-background.
+By default (`WaitUntilStarted = false`), startup is non-blocking:
+stream declarations and consumer attaches run in the background.
+Configure the options as many times as you like or via
+`IConfigureOptions` - the last write wins, there is no at-most-once
+guard.
 
 Blocking startup waits for connections, topology declarations, and typed
-consumer attaches by default. Opt out of the consumer wait explicitly:
+consumer attaches by default (`WaitUntilConsumersAttached = true`,
+applies only when blocking). Opt out of the consumer wait explicitly:
 
 ```csharp
-services.AddStreamBusHosting(h =>
+services.AddOptions<StreamBusHostOptions>().Configure(o =>
 {
-    h.WaitUntilStarted(TimeSpan.FromSeconds(30));
-    h.WaitUntilConsumersAttached(false);
+    o.WaitUntilStarted = true;
+    o.StartTimeout = TimeSpan.FromSeconds(30);
+    o.WaitUntilConsumersAttached = false;
 });
 ```
