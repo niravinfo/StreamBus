@@ -57,12 +57,18 @@ builder.Services.AddStreamBus((_, cfg) =>
 });
 ```
 
-## Startup
+## Startup and shutdown
 
-`AddStreamBusHosting` controls startup behavior at the service level —
-block until ready, or start in the background:
+Host-level start/stop behavior is configured through the options
+pattern with `StreamBusHostOptions` — the default startup is
+non-blocking:
 
 ```csharp
-builder.Services.AddStreamBusHosting(h =>
-    h.WaitUntilStarted(TimeSpan.FromSeconds(30)));
+builder.Services.AddOptions<StreamBusHostOptions>().Configure(o =>
+{
+    o.WaitUntilStarted = true;
+    o.StartTimeout = TimeSpan.FromSeconds(30);
+});
 ```
+
+See the **Hosting** guide for all knobs, defaults, and validation rules.

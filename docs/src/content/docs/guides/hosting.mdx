@@ -1,0 +1,94 @@
+---
+title: Hosting
+description: Startup and shutdown behavior with StreamBusHostOptions.
+---
+
+StreamBus ships a hosted service that owns connections, topology
+declarations, and typed consumers. Its start/stop behavior is configured
+through the standard options pattern — mirroring MassTransit's
+`MassTransitHostOptions` — rather than a bespoke fluent extension:
+
+```csharp
+builder.Services.AddOptions<StreamBusHostOptions>().Configure(o =>
+{
+    o.WaitUntilStarted = true;
+    o.StartTimeout = TimeSpan.FromSeconds(30);
+});
+```
+
+`AddStreamBus` registers the options and the hosted service for you;
+there is nothing else to add.
+
+## Defaults
+
+```csharp
+public sealed class StreamBusHostOptions
+{
+    public bool WaitUntilStarted { get; set; }                   // false
+    public TimeSpan? StartTimeout { get; set; }                  // null = infinite
+    public bool WaitUntilConsumersAttached { get; set; } = true; // StreamBus extension
+    public TimeSpan? StopTimeout { get; set; }                   // null = infinite
+    public TimeSpan? ConsumerStopTimeout { get; set; }           // null = unbounded
+}
+```
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `WaitUntilStarted` | `false` | Startup does **not** block; the bus connects and declares topology in the background while the host starts. Permanent failures are logged critically. |
+| `StartTimeout` | `null` | Budget for a blocking start; `null` waits indefinitely (bounded only by host shutdown). |
+| `WaitUntilConsumersAttached` | `true` | When blocking, also wait until every typed consumer is attached. |
+| `StopTimeout` | `null` | Budget for the whole shutdown sequence; `null` waits indefinitely. |
+| `ConsumerStopTimeout` | `null` | Per-dispose budget for stopping consumers; may be set without `StopTimeout`. |
+
+## Why non-blocking by default
+
+This is deliberate parity with MassTransit: MassTransit flipped its
+default to non-blocking and leans on health checks while the bus
+connects. StreamBus does the same — `StreamBusHealthCheck` reports
+degraded while connections and topology are still coming up, so
+orchestrators (containers, Kubernetes) wait correctly without the
+process having to block its own startup.
+
+## Blocking start
+
+Set `WaitUntilStarted = true` to block host startup until connections
+are ready, topology is declared, and — with
+`WaitUntilConsumersAttached` (default `true`) — every typed consumer
+is attached:
+
+```csharp
+builder.Services.AddOptions<StreamBusHostOptions>().Configure(o =>
+{
+    o.WaitUntilStarted = true;
+    o.StartTimeout = TimeSpan.FromSeconds(30);
+    o.WaitUntilConsumersAttached = true;
+});
+```
+
+- `StartTimeout = null` waits indefinitely; host shutdown still unblocks
+  the wait (never a deadlock).
+- A set `StartTimeout` throws `StreamBusTimeoutException` on expiry.
+- A consumer that fails to attach **does not fail startup**: consumers
+  retry indefinitely, so the wait continues until they attach or the
+  timeout (or shutdown) fires.
+
+## Shutdown budgets
+
+`StopTimeout` puts a budget over the whole stop sequence; on expiry the
+remaining steps are abandoned with warnings, matching the host's own
+shutdown-timeout contract. `ConsumerStopTimeout` bounds each consumer
+`DisposeAsync` individually:
+
+```csharp
+builder.Services.AddOptions<StreamBusHostOptions>().Configure(o =>
+{
+    o.StopTimeout = TimeSpan.FromSeconds(30);
+    o.ConsumerStopTimeout = TimeSpan.FromSeconds(10);
+});
+```
+
+## Validation
+
+Every timeout must be positive when set, and `ConsumerStopTimeout`
+must not exceed `StopTimeout` when both are set. Violations throw
+`StreamBusConfigurationException` at start/stop of the hosted service.

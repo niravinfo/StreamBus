@@ -3,6 +3,52 @@ title: Changelog
 description: What changed in each StreamBus release.
 ---
 
+## 0.2.0
+
+### Breaking changes
+
+Hosting configuration moved from the bespoke fluent API to the standard
+options pattern with **`StreamBusHostOptions`**, mirroring MassTransit's
+`MassTransitHostOptions`. The default startup is now **non-blocking**
+(the bus connects and declares topology in the background; health checks
+report degraded while connecting). Blocking startup is opt-in.
+
+The following public API is **deleted**:
+
+- `AddStreamBusHosting` (extension method)
+- `StreamBusHostingOptionsBuilder`
+- `StreamBusHostingOptions`
+- `StreamBusHostingStore`
+- `StreamBusStartupBlockedException` (attach failures no longer abort
+  startup; blocking starts keep waiting)
+
+**Before:**
+
+```csharp
+builder.Services.AddStreamBusHosting(h =>
+    h.WaitUntilStarted(TimeSpan.FromSeconds(30)));
+```
+
+**After:**
+
+```csharp
+builder.Services.AddOptions<StreamBusHostOptions>().Configure(o =>
+{
+    o.WaitUntilStarted = true;
+    o.StartTimeout = TimeSpan.FromSeconds(30);
+});
+```
+
+New options: `WaitUntilStarted` (default `false`), `StartTimeout`
+(default `null` = infinite), `WaitUntilConsumersAttached` (default
+`true`), `StopTimeout` (default `null` = infinite), and
+`ConsumerStopTimeout` (default `null` = unbounded, may be set without
+`StopTimeout`). Timeouts must be positive when set, and
+`ConsumerStopTimeout` must not exceed `StopTimeout`; violations throw
+`StreamBusConfigurationException`. A set `StartTimeout` throws
+`StreamBusTimeoutException` on expiry, and host shutdown always unblocks
+a waiting start. See the **Hosting** guide for details.
+
 ## Initial
 
 - Initial release: buses, typed publish, consumer-group endpoints,
