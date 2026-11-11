@@ -106,17 +106,3 @@ public sealed class StreamBusStreamConfigurationConflictException : StreamBusExc
     public string Actual { get; }
 }
 
-/// <summary>
-/// A startup block that waited on a consumer registration which cannot attach.
-/// Fix the consumer or its dependency; retrying will not help.
-/// </summary>
-public sealed class StreamBusStartupBlockedException : StreamBusException
-{
-    /// <summary>
-    /// Initializes the exception with a message and optional inner exception.
-    /// </summary>
-    /// <param name="message">Description of the blocked startup.</param>
-    /// <param name="inner">The exception returned by the registration, if any.</param>
-    public StreamBusStartupBlockedException(string message, Exception? inner = null)
-        : base(message, inner) { }
-}

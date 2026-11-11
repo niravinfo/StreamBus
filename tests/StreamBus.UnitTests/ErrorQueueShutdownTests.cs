@@ -81,7 +81,7 @@ public sealed class ErrorQueueShutdownTests
             new StreamBusConsumerStore(),
             new StreamBusEndpointStore(),
             new StreamBusPublishStore(),
-            new StreamBusHostingStore(new StreamBusHostingOptions()));
+            new StreamBusHostOptions { WaitUntilStarted = false });
 
         await hosted.StopAsync(CancellationToken.None);
 

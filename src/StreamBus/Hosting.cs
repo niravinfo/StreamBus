@@ -7,6 +7,7 @@ using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 
 namespace StreamBus;
 
@@ -132,6 +133,7 @@ public static class ServiceCollectionExtensions
                 publishStore,
                 sp,
                 consumeFilterStore));
+        services.AddOptions<StreamBusHostOptions>();
         services.TryAddSingleton<IHostedService>(sp => StreamBusHostedService.Create(sp));
         services.TryAddSingleton<StreamBusHealthCheck>();
         services.TryAddSingleton<IHealthCheck>(sp => sp.GetRequiredService<StreamBusHealthCheck>());
@@ -197,90 +199,6 @@ public static class ServiceCollectionExtensions
         return created;
     }
 
-    /// <summary>
-    /// Configures startup blocking for StreamBus: whether host startup waits for
-    /// connections, topology, and typed consumers, and how long. Call at most
-    /// once per service (a second call throws
-    /// <see cref="StreamBusConfigurationException"/>); without it, startup does
-    /// not block and background failures are logged critically.
-    /// </summary>
-    /// <param name="services">The service collection.</param>
-    /// <param name="configure">Builder callback for the hosting options.</param>
-    /// <returns>The same collection, for chaining.</returns>
-    public static IServiceCollection AddStreamBusHosting(this IServiceCollection services, Action<StreamBusHostingOptionsBuilder> configure)
-    {
-        ArgumentNullException.ThrowIfNull(services);
-        ArgumentNullException.ThrowIfNull(configure);
-        if (services.Any(d => d.ServiceType == typeof(StreamBusHostingStore) && d.ImplementationInstance is StreamBusHostingStore))
-            throw new StreamBusConfigurationException("AddStreamBusHosting may be called at most once per service.");
-        var builder = new StreamBusHostingOptionsBuilder();
-        configure(builder);
-        services.AddSingleton(new StreamBusHostingStore(builder.Build()));
-        return services;
-    }
-}
-
-/// <summary>Startup behavior applied host-wide to every registered bus.</summary>
-public sealed record StreamBusHostingOptions
-{
-    /// <summary><see langword="true"/> when startup blocks until connections are ready and (configurable) consumers attach; enabled by <c>WaitUntilStarted</c>/<c>WaitUntilConsumersAttached</c>.</summary>
-    public bool WaitUntilStarted { get; init; }
-
-    /// <summary>When blocking, also block until every typed consumer is attached (or fail when one fails); default <see langword="true"/>.</summary>
-    public bool WaitUntilConsumersAttached { get; init; } = true;
-
-    /// <summary>Overall startup budget; when it expires before readiness/attach completes, startup throws <see cref="StreamBusTimeoutException"/>. Null waits indefinitely.</summary>
-    public TimeSpan? StartTimeout { get; init; }
-}
-
-/// <summary>DI-carried holder for the single <see cref="StreamBusHostingOptions"/> configured by <c>AddStreamBusHosting</c>.</summary>
-internal sealed class StreamBusHostingStore
-{
-    /// <summary>Stores the built options; a null options value throws.</summary>
-    internal StreamBusHostingStore(StreamBusHostingOptions options)
-    {
-        ArgumentNullException.ThrowIfNull(options);
-        Options = options;
-    }
-
-    /// <summary>The hosting options.</summary>
-    public StreamBusHostingOptions Options { get; }
-}
-
-/// <summary>Fluent builder consumed by <c>AddStreamBusHosting</c>; every knob defaults to non-blocking where noted.</summary>
-public sealed class StreamBusHostingOptionsBuilder
-{
-    private bool _block;
-    private bool _blockConsumers = true;
-    private TimeSpan? _timeout;
-
-    /// <summary>Blocks startup until connections are ready, bounded by <paramref name="timeout"/> (null waits indefinitely; a non-positive value throws).</summary>
-    /// <param name="timeout">Optional startup budget.</param>
-    /// <returns>This builder, for chaining.</returns>
-    public StreamBusHostingOptionsBuilder WaitUntilStarted(TimeSpan? timeout = null)
-    {
-        if (timeout is { } t && t <= TimeSpan.Zero)
-            throw new StreamBusConfigurationException("StartTimeout must be positive when set.");
-        _block = true; _timeout = timeout; return this;
-    }
-    /// <summary>Also blocks startup until every typed consumer is attached; implying ready-blocking when enabled.</summary>
-    /// <param name="enabled">Whether to block on consumer attach (default <see langword="true"/>).</param>
-    /// <returns>This builder, for chaining.</returns>
-    public StreamBusHostingOptionsBuilder WaitUntilConsumersAttached(bool enabled = true)
-    {
-        _blockConsumers = enabled;
-        if (enabled) _block = true;
-        return this;
-    }
-
-    /// <summary>Freezes the configured values into the hosting options.</summary>
-    /// <returns>The immutable hosting options.</returns>
-    public StreamBusHostingOptions Build() => new()
-    {
-        WaitUntilStarted = _block,
-        WaitUntilConsumersAttached = _blockConsumers,
-        StartTimeout = _timeout,
-    };
 }
 
 /// <summary>One typed (endpoint-configured) consumer to start when the host starts.</summary>
@@ -386,7 +304,7 @@ internal sealed class StreamBusHostedService : IHostedService
     private readonly StreamBusConsumerStore _consumers;
     private readonly StreamBusEndpointStore _endpoints;
     private readonly StreamBusPublishStore _publishes;
-    private readonly StreamBusHostingOptions _hosting;
+    private readonly StreamBusHostOptions _hosting;
     private CancellationTokenSource? _startupCts;
 
     internal StreamBusHostedService(
@@ -397,7 +315,7 @@ internal sealed class StreamBusHostedService : IHostedService
         StreamBusConsumerStore consumerStore,
         StreamBusEndpointStore endpointStore,
         StreamBusPublishStore publishStore,
-        StreamBusHostingStore hostingStore)
+        StreamBusHostOptions options)
     {
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(registry);
@@ -406,7 +324,7 @@ internal sealed class StreamBusHostedService : IHostedService
         ArgumentNullException.ThrowIfNull(consumerStore);
         ArgumentNullException.ThrowIfNull(endpointStore);
         ArgumentNullException.ThrowIfNull(publishStore);
-        ArgumentNullException.ThrowIfNull(hostingStore);
+        ArgumentNullException.ThrowIfNull(options);
         _store = store;
         _registry = registry;
         _logger = logger;
@@ -414,7 +332,7 @@ internal sealed class StreamBusHostedService : IHostedService
         _consumers = consumerStore;
         _endpoints = endpointStore;
         _publishes = publishStore;
-        _hosting = hostingStore.Options;
+        _hosting = options;
     }
 
     internal static StreamBusHostedService Create(IServiceProvider services)
@@ -428,12 +346,13 @@ internal sealed class StreamBusHostedService : IHostedService
             services.GetRequiredService<StreamBusConsumerStore>(),
             services.GetRequiredService<StreamBusEndpointStore>(),
             services.GetRequiredService<StreamBusPublishStore>(),
-            services.GetService<StreamBusHostingStore>() ?? new StreamBusHostingStore(new StreamBusHostingOptions()));
+            services.GetRequiredService<IOptions<StreamBusHostOptions>>().Value);
     }
 
     /// <summary>Starts every registered supervisor, declares derived topology and error queues, and starts typed consumers; blocking per hosting options.</summary>
     public async Task StartAsync(CancellationToken cancellationToken)
     {
+        StreamBusHostOptions.ValidateStart(_hosting);
         var starters = new List<(TypedConsumerRegistration Reg, string Vhost, IStreamSerializer Serializer)>();
         foreach (var reg in _consumers.Registrations)
         {
@@ -616,10 +535,6 @@ internal sealed class StreamBusHostedService : IHostedService
                     .SelectMany(v => _registry.HealthFor(v).Snapshot().Registrations)
                     .Where(r => r.Kind == "consumer")
                     .ToList();
-                var failed = rows.FirstOrDefault(r => r.State is BusRegistrationState.FailedRetrying or BusRegistrationState.Stopped);
-                if (failed is not null)
-                    throw new StreamBusStartupBlockedException(
-                        $"Typed consumer '{failed.Registration}' on vhost '{failed.Vhost}' is {failed.State}: {failed.Reason ?? "no reason recorded"}.");
                 if (rows.Count == 0 || rows.All(r => r.State == BusRegistrationState.Attached))
                     break;
                 try
