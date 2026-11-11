@@ -192,7 +192,7 @@ public sealed class TypedStartupIntegrationTests : IAsyncDisposable
             services.AddLogging();
             services.AddSingleton(new List<(string Who, int Seq)>());
             services.AddStreamBus((_, cfg) => cfg.Host(handle.Host, "/", h => { h.Credentials(handle.Username, handle.Password); h.StreamPort(handle.StreamPort); }));
-            services.AddStreamBusHosting(h => h.WaitUntilStarted(TimeSpan.FromSeconds(30)));
+            services.AddOptions<StreamBusHostOptions>().Configure(o => { o.WaitUntilStarted = true; o.StartTimeout = TimeSpan.FromSeconds(30); });
             await using var sp = services.BuildServiceProvider();
             sp.GetRequiredService<StreamBusConsumerStore>().Add(typeof(GhostBus), typeof(OrderEvent), typeof(OrderConsumer), stream, new ConsumeOptions { ConsumerGroup = "ghost-group" });
             var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();

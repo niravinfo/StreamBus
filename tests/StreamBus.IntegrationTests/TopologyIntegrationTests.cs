@@ -221,7 +221,7 @@ public sealed class TopologyIntegrationTests : IAsyncDisposable
             cfg.Publish<TopologyPlainEvent>(plain);
             cfg.PublishSuper<TopologySuperEvent>(super, s => s.Partitions(2));
         });
-        services.AddStreamBusHosting(h => h.WaitUntilStarted(TimeSpan.FromSeconds(30)));
+        services.AddOptions<StreamBusHostOptions>().Configure(o => { o.WaitUntilStarted = true; o.StartTimeout = TimeSpan.FromSeconds(30); });
         await using var sp = services.BuildServiceProvider();
         var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
         await hosted.StartAsync(ct);
@@ -255,7 +255,7 @@ public sealed class TopologyIntegrationTests : IAsyncDisposable
             cfg.Host(handle.Host, "/", h => { h.Credentials(handle.Username, handle.Password); h.StreamPort(handle.StreamPort); });
             cfg.PublishSuper<TopologySuperEvent>(super, s => s.Partitions(5));
         });
-        services.AddStreamBusHosting(h => h.WaitUntilStarted(TimeSpan.FromSeconds(30)));
+        services.AddOptions<StreamBusHostOptions>().Configure(o => { o.WaitUntilStarted = true; o.StartTimeout = TimeSpan.FromSeconds(30); });
         await using var sp = services.BuildServiceProvider();
         var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
         var ex = await Assert.ThrowsAsync<StreamBusStreamConfigurationConflictException>(() => hosted.StartAsync(ct));
