@@ -521,7 +521,7 @@ public sealed class PipelineSemanticsTests
                 MaxAttempts = null,
                 BaseDelay = TimeSpan.FromMilliseconds(1),
                 MaxDelay = TimeSpan.FromMilliseconds(2),
-                Multiplier = 1.0,
+                DelayCalculator = (_, _) => TimeSpan.FromMilliseconds(1),
                 MaxJitter = TimeSpan.Zero,
             }
             : new RetryPolicy
@@ -529,7 +529,7 @@ public sealed class PipelineSemanticsTests
                 MaxAttempts = maxAttempts,
                 BaseDelay = TimeSpan.FromMilliseconds(1),
                 MaxDelay = TimeSpan.FromMilliseconds(2),
-                Multiplier = 1.0,
+                DelayCalculator = (_, _) => TimeSpan.FromMilliseconds(1),
                 MaxJitter = TimeSpan.Zero,
             },
             ErrorStream = errorStream is null ? null : new ErrorStreamOptions { Stream = errorStream },

@@ -139,7 +139,7 @@ public sealed class ActivityTests
                 MaxAttempts = 1,
                 BaseDelay = TimeSpan.FromMilliseconds(1),
                 MaxDelay = TimeSpan.FromMilliseconds(2),
-                Multiplier = 1.0,
+                DelayCalculator = (_, _) => TimeSpan.FromMilliseconds(1),
                 MaxJitter = TimeSpan.Zero,
             },
             ErrorStream = new ErrorStreamOptions { Stream = "errors" },

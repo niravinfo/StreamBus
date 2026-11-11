@@ -50,7 +50,7 @@ services.AddStreamBus((context, cfg) =>
 ```
 
 Schedules: `Immediate(n)`, `Interval(n, delay)`, `Intervals(params)`,
-`Exponential(count, base, max, multiplier)`, `None()`. `UseRetry` accepts
+`Exponential(count, min, max)`, `None()`. `UseRetry` accepts
 either the fluent schedule callback or a raw `RetryPolicy` (the escape
 hatch for schedules the fluent configurator cannot express) on both levels.
 
