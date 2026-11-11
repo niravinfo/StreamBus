@@ -154,7 +154,11 @@ services.AddStreamBus((context, cfg) =>
         e.DeadLetterToQueue("orders-errors", DeadLetterQueueType.ClassicQueue);
     });
 });
-services.AddStreamBusHosting(h => h.WaitUntilStarted(TimeSpan.FromSeconds(30)));
+services.AddOptions<StreamBusHostOptions>().Configure(o =>
+{
+    o.WaitUntilStarted = true;
+    o.StartTimeout = TimeSpan.FromSeconds(30);
+});
 
 // ... poison message exhausts on first failure, lands in "orders-errors"
 // with full streambus.error.* headers, ready for manual recovery ...
@@ -171,11 +175,10 @@ type-specific:
 | `StreamBusException` | Abstract base for every StreamBus exception. | Catch-all only. |
 | `StreamBusConfigurationException` | Invalid or contradictory configuration. | No - fix the configuration. |
 | `StreamBusStreamConfigurationConflictException` | Existing broker topology disagrees with the declaration. | No - align the declaration or recreate the stream. |
-| `StreamBusStartupBlockedException` | A typed consumer could not attach during blocking startup. | No - fix the consumer or dependency first. |
 | `StreamBusFatalException` | The bus connection is fatal. | No - reconnect/operator action. |
 | `StreamBusNotReadyException` | The bus is not ready for the operation yet. | Yes - transient. |
 | `StreamBusStreamNotFoundException` | A referenced publish, consume, or error stream is missing. | No at runtime; a blocking startup attach may retry while declarations converge. |
-| `StreamBusTimeoutException` | A budget expired; the outcome may be unknown. | Only when the operation is safe/idempotent. |
+| `StreamBusTimeoutException` | A budget expired; the outcome may be unknown (a blocking-start `StartTimeout` expiry raises this; a consumer that cannot attach does not throw - it keeps the wait going). | Only when the operation is safe/idempotent. |
 | `StreamBusPublishTransientException` | A publish failed transiently and the producer was discarded. | Yes - retry. |
 | `StreamBusPublishException` | A publish was rejected, returned, or otherwise failed without a transient classification. | Do not blindly retry. |
 | `StreamBusDeserializationException` | The payload could not be deserialized as the consumer's message type. | No - treat as poison and route to the error destination. |

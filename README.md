@@ -61,7 +61,11 @@ builder.Services.AddStreamBus((_, cfg) =>
     });
 });
 
-builder.Services.AddStreamBusHosting(h => h.WaitUntilStarted(TimeSpan.FromSeconds(30)));
+builder.Services.AddOptions<StreamBusHostOptions>().Configure(o =>
+{
+    o.WaitUntilStarted = true;
+    o.StartTimeout = TimeSpan.FromSeconds(30);
+});
 
 await builder.Build().RunAsync();
 
@@ -105,7 +109,8 @@ Every capability points to its guide section:
 
 - **Bus registration** (`docs/guide/config.md`): one `AddStreamBus` per bus,
   `AddStreamBus<TBus>` per extra bus. `Host` exactly once; streams declared
-  up front; startup blocking is service-level via `AddStreamBusHosting`.
+  up front; startup blocking is configured service-level through
+  `StreamBusHostOptions`.
 - **Explicit configuration** (`docs/guide/config.md`): no configuration binder.
   Read environment variables or a vault in your own code if you want to, then
   pass the values to `Host`, `Publish`, `ReceiveEndpoint`, and the other

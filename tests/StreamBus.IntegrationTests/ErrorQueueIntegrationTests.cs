@@ -79,7 +79,7 @@ public sealed class ErrorQueueIntegrationTests : IAsyncDisposable
                 busConfigure?.Invoke(cfg);
             });
             if (blockTimeout is { } timeout)
-                services.AddStreamBusHosting(h => h.WaitUntilStarted(timeout));
+                services.AddOptions<StreamBusHostOptions>().Configure(o => { o.WaitUntilStarted = true; o.StartTimeout = timeout; });
             configure?.Invoke(services);
             var sp = services.BuildServiceProvider();
             var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();

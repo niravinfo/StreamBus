@@ -74,14 +74,15 @@
   (default 10s). A lost confirmation surfaces as a timeout/transient
   failure with an unknown outcome; the hand-off is retried without
   advancing.
-- Startup waiting is service-level:
-  `services.AddStreamBusHosting(h =>
-  h.WaitUntilStarted(timeout?))`, at most once; default is
-  non-blocking. Waiting startup waits for connections, topology, and
-  typed consumer attaches by default; `h.WaitUntilConsumersAttached(false)`
-  opts out of the consumer wait. A consumer that cannot attach raises
-  `StreamBusStartupBlockedException`; a budget expiry raises
-  `StreamBusTimeoutException`.
+- Startup waiting is service-level via the options pattern:
+  `services.AddOptions<StreamBusHostOptions>().Configure(o => {
+  ... })` (last-wins, no at-most-once guard); default is
+  non-blocking (`WaitUntilStarted = false`). `WaitUntilStarted = true`
+  waits for connections, topology, and typed consumer attaches
+  (`WaitUntilConsumersAttached = true` by default, applies only when
+  blocking; set it to `false` to opt out of the consumer wait); a
+  consumer that cannot attach keeps the wait going, and a
+  `StartTimeout` expiry raises `StreamBusTimeoutException`.
 - Health: the `streambus` check reports connection state under
   `{vhost}|{busType}` and per-registration rows under
   `{vhost}|{registration}` (`consumer:<state>` / `declare:<state>`,

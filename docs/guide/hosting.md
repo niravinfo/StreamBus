@@ -2,29 +2,41 @@
 
 ## Startup modes
 
-Default is non-blocking: `StartAsync` returns once connections start,
-while declarations and consumer attaches converge in the background
-(permanent failures surface as critical logs).
+Default is non-blocking (`WaitUntilStarted = false`): `StartAsync`
+returns once connections start, while declarations and consumer
+attaches converge in the background (permanent failures surface as
+critical logs).
+
+Blocking startup is opt-in through `StreamBusHostOptions` (the standard
+options pattern):
 
 ```csharp
-services.AddStreamBusHosting(h => h.WaitUntilStarted(TimeSpan.FromSeconds(30)));
+services.AddOptions<StreamBusHostOptions>().Configure(o =>
+{
+    o.WaitUntilStarted = true;
+    o.StartTimeout = TimeSpan.FromSeconds(30);
+});
 ```
 
 Blocking waits for connections, topology declarations (streams, super
 streams, error queues), and typed consumer attaches - then either returns
-or throws. A timeout raises `StreamBusTimeoutException`, a configuration
-or topology conflict raises immediately, and a consumer that cannot attach
-raises `StreamBusStartupBlockedException`. Omit the timeout to wait
-indefinitely.
+or throws. A `StartTimeout` expiry raises `StreamBusTimeoutException`,
+and a configuration or topology conflict raises immediately. Omit the
+timeout to wait indefinitely. A consumer that cannot attach keeps the
+wait going (consumers retry indefinitely); only the timeout or host
+shutdown ends it.
 
-Blocking startup waits for consumers by default. Disable that part when
-the host must come up before consumers can attach:
+Blocking startup waits for consumers by default
+(`WaitUntilConsumersAttached = true`, applies only when blocking).
+Disable that part when the host must come up before consumers can
+attach:
 
 ```csharp
-services.AddStreamBusHosting(h =>
+services.AddOptions<StreamBusHostOptions>().Configure(o =>
 {
-    h.WaitUntilStarted(TimeSpan.FromSeconds(30));
-    h.WaitUntilConsumersAttached(false);
+    o.WaitUntilStarted = true;
+    o.StartTimeout = TimeSpan.FromSeconds(30);
+    o.WaitUntilConsumersAttached = false;
 });
 ```
 

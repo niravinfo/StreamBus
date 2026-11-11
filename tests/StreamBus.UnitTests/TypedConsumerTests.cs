@@ -173,14 +173,7 @@ public sealed class TypedConsumerTests
             consumers,
             new StreamBusEndpointStore(),
             new StreamBusPublishStore(),
-            new StreamBusHostingStore(new StreamBusHostingOptions())));
+            new StreamBusHostOptions { WaitUntilStarted = false }));
         Assert.Equal("scopeFactory", ex.ParamName);
-    }
-
-    [Fact]
-    public void Non_positive_timeout_rejected_at_config()
-    {
-        Assert.Throws<StreamBusConfigurationException>(() => new StreamBusHostingOptionsBuilder().WaitUntilStarted(TimeSpan.Zero));
-        Assert.Throws<StreamBusConfigurationException>(() => new StreamBusHostingOptionsBuilder().WaitUntilStarted(TimeSpan.FromSeconds(-1)));
     }
 }

@@ -63,7 +63,13 @@ builder.Services.AddStreamBus((context, cfg) =>
     });
 });
 
-builder.Services.AddStreamBusHosting(h => h.WaitUntilStarted(TimeSpan.FromSeconds(30)));
+// The default startup is non-blocking; wait here so consumers are
+// attached before the host reports started.
+builder.Services.AddOptions<StreamBusHostOptions>().Configure(o =>
+{
+    o.WaitUntilStarted = true;
+    o.StartTimeout = TimeSpan.FromSeconds(30);
+});
 
 var app = builder.Build();
 await app.RunAsync(); // Runs until Ctrl+C.
