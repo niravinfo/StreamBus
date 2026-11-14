@@ -75,7 +75,7 @@ For more information, see the docs at **[niravinfo.github.io/StreamBus](https://
 - [Introduction](https://niravinfo.github.io/StreamBus/introduction/) — what StreamBus is, and when to use it
 - [Architecture](https://niravinfo.github.io/StreamBus/architecture/) — the RabbitMQ Streams model and how StreamBus is shaped by it
 - [Configuration](https://niravinfo.github.io/StreamBus/configuration/) — hosts, credentials, ports, TLS, serializers
-- [Publishing](https://niravinfo.github.io/StreamBus/publishing/) — publish .NET objects, super streams, raw messages, filters
+- [Publishers](https://niravinfo.github.io/StreamBus/publishers/) — publish .NET objects, super streams, raw messages, filters
 - [Consumers](https://niravinfo.github.io/StreamBus/consumers/) — consumer groups, scale-out, offsets
 - [Error handling](https://niravinfo.github.io/StreamBus/error-handling/) — retry schedules, exhaustion destinations, exceptions
 - [Topology](https://niravinfo.github.io/StreamBus/topology/) — who declares streams, agreement rules, runtime API

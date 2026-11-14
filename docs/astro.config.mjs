@@ -38,7 +38,7 @@ export default defineConfig({
         {
           label: 'Messaging',
           items: [
-            { slug: 'publishing' },
+            { slug: 'publishers' },
             { slug: 'consumers' },
             { slug: 'error-handling' },
           ],

@@ -47,7 +47,7 @@ also the duplication configuration:
   instances — single-active-consumer applies *per partition* — so
   adding instances adds parallel readers. This is the horizontal
   scaling path; it needs a routed publisher
-  ([Publishing](../publishing/#super-streams)).
+  ([Publishers](../publishers/#super-streams)).
 - A **plain stream** with the default `SingleActiveConsumer = true`
   has one active consumer per group: other instances stand by for
   failover and add no throughput.
