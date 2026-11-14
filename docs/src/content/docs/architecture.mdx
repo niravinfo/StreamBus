@@ -1,0 +1,149 @@
+---
+title: Architecture
+description: The RabbitMQ Streams model, and how StreamBus is shaped by it.
+---
+
+In this article, you learn the mental model everything else in these
+docs stands on: how a stream differs from a queue, what
+at-least-once really means, and how StreamBus maps that onto a
+handful of .NET types.
+
+Understanding this page makes the rest of the documentation — retry
+that "blocks" a partition, mandatory consumer groups, single-active
+consumer — read as deliberate design instead of quirk.
+
+## Streams are logs, not queues
+
+If you know classic RabbitMQ (AMQP queues), unlearn two things first:
+
+1. **A stream is an append-only log.** Producers append; the broker
+   never deletes a message on delivery. Retention is controlled by
+   stream age and size limits, not by consumption. A message at
+   offset 5 is still there an hour later, readable again by any other
+   consumer.
+2. **There is no per-message ack.** A consumer doesn't acknowledge
+   individual messages; it tells the broker its *offset* — "I have
+   read up to here" — periodically. Everything between the last
+   stored offset and the consumer's live position will be delivered
+   again if the consumer detaches before storing.
+
+Together those give the delivery guarantee you must design around:
+
+:::caution[Delivery is at-least-once]
+Because the cursor is stored *after* processing and only every so
+often, a consumer that detaches mid-flight gets the tail of its
+progress redelivered. Duplicates are a normal, expected event. Make
+consumers idempotent — or use the message id, which StreamBus stamps
+on every typed publish, to deduplicate.
+:::
+
+## Offsets and consumer groups
+
+The stored offset belongs to a **consumer group** on a stream (or on
+one partition of a super stream). The group is the cursor identity:
+
+- Two instances with the *same* group name share one cursor — that's
+  how you scale and fail over.
+- Two consumers with *different* group names are fully independent
+  readers — each receives every message.
+
+The ambiguity of "readers re-attach wherever" is exactly why StreamBus
+requires you to name the group at every endpoint: a declared cursor is
+a decision, a derived one is a time bomb.
+
+## What failure handling means on a log
+
+On a queue, a handler failure can dead-letter a single message and
+move on. On a stream, the next message only becomes "current" when the
+cursor advances — so StreamBus keeps the failed message as the head:
+
+- The endpoint's **retry schedule** runs against the message
+  (**[Error handling](../error-handling/)**): immediate, fixed or
+  growing delays, bounded or unbounded.
+- While it retries, later messages on that partition wait — that is
+  back-pressure by design.
+- When attempts run out, the message is **handed off** to an error
+  stream, an AMQP queue, or your callback — and only then does the
+  cursor advance.
+
+## How StreamBus is shaped
+
+Four pieces appear in every StreamBus application:
+
+```
+AddStreamBus((registration context, bus configurator) => ...)
+        │
+        ▼
+   One bus ──── Host(host, vhost ▸ credentials, ports, TLS, pooling)
+        │
+        ├── Publish registrations:  type → stream (+ stream spec)
+        ├── Receive endpoints:      stream ▸ consumer type + consumer group
+        └── (optional) global retry schedule, filters
+```
+
+- **Registration** — everything above happens inside one
+  `AddStreamBus` call and is validated eagerly, at registration time.
+  There is no binder and no runtime discovery: whatever is true about
+  your topology is visible in code.
+- **Bus (`IStreamBus`)** — the runtime surface: typed publish, raw
+  publish, typed consumers via endpoints, offset queries, topology.
+  The publish *route* comes from a registration; the bus resolves it,
+  never guesses.
+- **Connection supervision** — each bus owns a supervisor that holds
+  the broker connection and reports a live state: `Starting`, `Ready`,
+  `TransientFailure` (reconnecting with backoff), or `Fatal`
+  (no automatic retry — protocol, TLS, or authentication failures
+  need an operator).
+- **Endpoints** — the consume side. One endpoint binds a stream to
+  exactly one `IConsumer<T>` class and one consumer group; a hosted
+  service starts them at host start.
+
+## Startup, readiness, and what happens on a broker restart
+
+StreamBus starts when the host starts. By default startup does not
+block on the broker: connections, declarations, and consumer attaches
+proceed in the background while the app serves traffic, and the
+`streambus` health check reports `Degraded` until everything is
+attached — orchestrators and load balancers wait on that signal
+([Lifecycle](../lifecycle/)).
+
+Every call site that touches the wire can say how long it is willing
+to wait for readiness via a `ReadinessPolicy`:
+
+- `ReadinessPolicy.Default` — fail fast (the default for publish,
+  consume, and endpoint attach).
+- `ReadinessPolicy.UpTo(timeout)` — bounded wait.
+- `ReadinessPolicy.Forever` — wait until ready or cancelled.
+
+When the broker drops, the supervisor reconnects with backoff and the
+consumers reattach and resume from the group's stored offset —
+redelivering only the un-shot tail, per at-least-once above.
+
+## Super streams
+
+A **super stream** is a stream partitioned by routing key into a set
+of physical streams (`name-0`, `name-1`, ...). Publishers provide the
+routing key; the broker picks the partition. Consumers attached to
+the super stream read *all* its partitions, and a consumer group
+spreads partitions over the consumer instances: each partition has one
+active reader. Super streams are the horizontal-scaling answer when
+one partition's throughput isn't enough — see
+[Publishing](../publishing/) and [Consumers](../consumers/).
+
+Producers, however, add one more consideration:
+
+:::note[At-least-once also applies to publishes]
+StreamBus publishes with broker confirmation and never assigns a
+producer name, so the broker does not deduplicate re-published
+messages. If your code retries a failed publish (which it should, for
+transient failures), the destination may see the message twice.
+:::
+
+## Where to go next
+
+- [Configuration](../configuration/) — the registration surface piece
+  by piece.
+- [Topology](../topology/) — who declares what, and the rules when
+  two services disagree.
+- [Lifecycle](../lifecycle/) — hosting modes and reconnection
+  behavior in practice.

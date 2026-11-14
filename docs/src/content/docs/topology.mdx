@@ -1,0 +1,116 @@
+---
+title: Topology
+description: Stream declarations, agreement rules between services, and the runtime declaration API.
+---
+
+In this article, you learn who declares streams in StreamBus, how
+several services can reference one stream without conflicts, and how
+to make declarations at runtime.
+
+StreamBus declares topology from your registrations — there is no
+separate "create the streams" deployment step. Every stream's
+definition (stream spec) is carried by the registrations that
+reference it: publish registrations, consuming endpoints, and
+dead-letter stream destinations.
+
+## Stream specifications
+
+Retention and placement knobs are declared with the registration that
+owns the stream:
+
+```csharp
+cfg.Publish<InvoiceEvent>("invoices", s =>
+{
+    s.MaxAge(TimeSpan.FromDays(30));
+    s.MaxLengthBytes(1_000_000_000);
+    s.MaxSegmentSizeBytes(16_000_000);
+    s.LeaderLocator(StreamLeaderLocator.LeastLeaders);
+});
+
+cfg.Publish<AuditEvent>("audit"); // bare reference: declared with defaults
+
+cfg.PublishSuper<OrderPlaced>("orders-super", s => s.Partitions(3));
+```
+
+| Knob | Meaning |
+|---|---|
+| `MaxAge` | Segment retention time before truncation. |
+| `MaxLengthBytes` | Total size cap before the oldest segments are truncated. |
+| `MaxSegmentSizeBytes` | Size of one segment file on the broker. |
+| `LeaderLocator` | Where the broker places the stream's leader replica: `LeastLeaders` (default), `ClientLocal`, or `Random`. |
+| `Partitions` | Super-stream partition count. Existing only on the super-stream builder — a plain stream with partitions is not expressible. |
+
+Setters return void by design — one knob per statement, no fluent
+chaining: `s.Partitions(3).MaxAge(...)` does not compile.
+
+## Agreement rules
+
+The startup declaration set is the union of all registrations on one
+bus. Multiple references to the same stream must agree:
+
+- **Kind** — super vs plain must match across every reference; a
+  mismatch throws `StreamBusStreamConfigurationConflictException`
+  naming the stream and both references.
+- **Every knob** — where two references set the same knob, the values
+  must match; where only one sets it, its value fills the hole.
+- A `PublishSuper` registration with no partition count anywhere (its
+  own spec, or a consuming endpoint's `Partitions(n)`) fails at
+  startup, naming the type and stream.
+
+A declared partition count can still be moot: when a super stream
+already exists, the broker's actual partition count rules — a
+declaration then only verifies, never re-partitions.
+
+## The adopt rule
+
+A consuming endpoint adopts broker reality rather than assuming it owns
+the topology:
+
+- A matching existing stream is consumed **as-is** (with a startup
+  warning, because a plain stream's spec arguments are not readable
+  over the stream protocol — keep specs synchronized across services
+  that reference the stream).
+- A kind mismatch is a conflict, reported at startup.
+- A missing stream is declared from the endpoint's — or any
+  publish registration's — spec.
+
+```csharp
+// This service only consumes: it adopts "orders" if another service
+// created it; if nothing exists yet, this registration declares it.
+cfg.ReceiveEndpoint("orders", e => e.Consumer<OrderConsumer>("billing"));
+```
+
+Dead-letter **stream** destinations are declared by the service owning
+the endpoint; dead-letter **queues** are declared by StreamBus's AMQP
+transport — never through topology.
+
+## Runtime declarations
+
+For operator-driven or post-startup declarations, `bus.Topology`
+declares idempotently — repeated calls are verified from a cache, and
+kind or partition-count conflicts throw:
+
+```csharp
+await bus.Topology.EnsureStreamAsync(
+    new StreamDeclaration { Name = "audit", MaxAge = TimeSpan.FromDays(7) }, ct);
+
+await bus.Topology.EnsureSuperStreamAsync(
+    new SuperStreamDeclaration { Name = "orders-super", Partitions = 3 }, ct);
+```
+
+## Reading one partition
+
+A super stream's partitions are physical streams named
+`{super}-{index}`. Reading a single partition — for ops inspection,
+or replay — is a plain raw consume of that name, with no declaration
+of anything:
+
+```csharp
+await using var sub = await bus.ConsumeAsync(
+    "orders-super-0",
+    new ConsumeOptions { ConsumerGroup = "partition-inspector" },
+    handler,
+    ct);
+```
+
+See [Consumers](../consumers/) for the raw-consume API.

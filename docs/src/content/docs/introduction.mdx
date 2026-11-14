@@ -1,0 +1,69 @@
+---
+title: Introduction
+description: What StreamBus is, when to use it, and when to reach for something else.
+---
+
+StreamBus is a .NET client for **RabbitMQ Streams**. You register streams
+and consumer endpoints in code, publish plain objects, and consume them
+with typed handlers — retries, dead-lettering, offsets, and connection
+supervision are handled for you.
+
+It is built on `Microsoft.Extensions.Hosting` and dependency injection:
+one `AddStreamBus` call registers everything, a hosted service starts
+it, and the bus behaves like any other .NET background service you
+already know how to run and monitor.
+
+In this article, you learn what StreamBus is, what it gives you out of
+the box, and when a stream — and therefore StreamBus — is the wrong
+tool for the job.
+
+## Why StreamBus
+
+RabbitMQ Streams is a capable but low-level protocol: the official
+.NET client gives you raw producers, consumers, offsets, and message
+byte payloads. Building a reliable application on it means writing —
+and debugging — your own:
+
+- consumer-group offset tracking,
+- retry and failure handling (a stream has no per-message ack or nack),
+- stream and super-stream declarations,
+- connection supervision and reattachment,
+- serialization.
+
+StreamBus turns each of those into a configuration decision instead
+of a subsystem you own and maintain. It deliberately stays explicit —
+no attributes, no assembly scanning, no settings binder — so a reader
+of your code sees the entire message flow in the `AddStreamBus` block.
+
+## What you get
+
+- **Typed publish and consume** — register a message type against a
+  stream once; publish objects, consume them back as the same type.
+- **Consumer groups as a first-class concept** — every endpoint declares
+  its group; groups on a super stream spread partitions across
+  instances.
+- **Retry and dead-lettering** — global or per-endpoint schedules; when
+  attempts run out, the message is handed to an error stream, a queue,
+  or your own callback. Nothing is silently dropped.
+- **Declarative topology** — streams and super streams are declared from
+  your registrations, with conflict detection.
+- **Production behavior** — health checks, `System.Diagnostics.Metrics`
+  instruments, activity spans, TLS, and controlled startup/shutdown.
+
+## When *not* to use it
+
+RabbitMQ Streams is a high-throughput, append-only log with
+at-least-once delivery — that shaping fits large-volume event flows:
+telemetry, activity feeds, event-sourced state, integration pipelines.
+If your problem is command-and-reply messaging, per-message routing,
+RPC, or delayed scheduling, a classic queue-based tool (or an
+orchestration system) is a better fit than a stream — and therefore than
+StreamBus. [Architecture](../architecture/) explains the model in
+detail so you can make that call with confidence.
+
+## Where to go next
+
+- New here? Start with [Installation](../installation/) and the
+  [Quickstart](../quickstart/).
+- Want to understand how the library works before writing code? Read
+  [Architecture](../architecture/).

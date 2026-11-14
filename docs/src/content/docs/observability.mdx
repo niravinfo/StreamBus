@@ -1,0 +1,101 @@
+---
+title: Observability
+description: Health checks, metrics, activities, and what the logs tell you.
+---
+
+In this article, you learn the signals StreamBus emits — health
+checks, `System.Diagnostics.Metrics` instruments, activity spans, and
+log events — and how to read them. They are standard .NET primitives:
+wire them to OpenTelemetry or your host's dashboard with no extra
+packages.
+
+## Health checks
+
+`AddStreamBus` registers the `streambus` health check automatically.
+It reports one aggregate for every bus connection *and* every
+consumer/declaration registration:
+
+- **Healthy** — every registration attached and every connection
+  ready.
+- **Degraded** — starting or retrying (including when no buses are
+  registered at all).
+- **Unhealthy** — a fatal connection, a permanently failed
+  declaration, or all typed consumers failed.
+
+The data entries identify exactly what is in which state:
+
+- `bus:{vhost}|{busType}` — the live connection state for that bus,
+  e.g. `bus:/|StreamBus.DefaultBus`.
+- `reg:{vhost}|{registration}` — one row per consumer or declaration:
+  `endpoint:{busType}:{stream}` for typed receive endpoints,
+  `raw:{busType}:{stream}` for `ConsumeAsync` (with `:2`, `:3`, ...
+  on repeat consumes), `declare:{name}` for declarations. The value is
+  `consumer:<state>` or `declare:<state>`, plus the failure reason
+  and the `since` timestamp when present.
+
+```csharp
+// Inject HealthCheckService; with MapHealthChecks, the same data
+// surfaces at the /health endpoint, which is what orchestrators read.
+var report = await health.CheckHealthAsync(ct);
+var entry = report.Entries["streambus"];
+foreach (var (key, value) in entry.Data)
+{
+    Console.WriteLine($"{key} = {value}");
+}
+```
+
+The connection monitor runs at the supervisor's `MonitorInterval`
+(default 5 seconds), so a broker that disappears is detected on that
+cadence — a reconnecting bus reports `TransientFailure` in the
+meantime, not silence.
+
+## Metrics
+
+Meter name: `StreamBus`.
+
+| Instrument | Kind | Tags |
+|---|---|---|
+| `streambus_partition_backlog` | up-down counter | vhost, bus, stream, partition, consumerGroup |
+| `streambus_partition_inflight` | up-down counter | vhost, bus, stream, partition, consumerGroup |
+| `streambus_partition_retry_blocked` | up-down counter | vhost, bus, stream, partition, consumerGroup |
+| `streambus_connection_state` | up-down counter (int) | vhost, bus |
+| `streambus_offset_store_rejected_total` | counter | vhost, bus, stream, partition, consumerGroup |
+| `streambus_offset_regressed_total` | counter | vhost, bus, stream, partition, consumerGroup |
+| `streambus_offset_fallback_total` | counter | vhost, bus, stream, partition, consumerGroup, branch |
+| `streambus_pipeline_duration` | histogram (seconds) | kind = publish \| consume |
+
+Reading the gauges:
+
+- `partition_backlog` is the **consumer-held** unprocessed backlog
+  (delivered minus stored per partition) — not broker-total lag. A
+  growing stream that nobody consumes reports 0.
+- `partition_retry_blocked` is 1 while a message is holding its
+  partition inside a retry wait — the back-pressure signal from
+  [Architecture](../architecture/).
+- `connection_state` maps `BusConnectionState` numerically
+  (`Starting`..`Fatal` = 0..3); alert on a sustained non-zero value.
+
+## Activities
+
+`ActivitySource` name: `StreamBus`. It costs nothing when no listener
+samples it.
+
+| Span | Kind | Tags |
+|---|---|---|
+| `streambus.publish` | Producer | `streambus.stream`, `streambus.size`, `streambus.routing_key` (super streams) |
+| `streambus.consume` | Consumer | `streambus.stream`, `streambus.partition`, `streambus.offset` |
+
+Consume spans add an `exception` event when a delivery fails, and
+carry an `ActivityLink` when the AMQP `correlation-id` holds a valid
+W3C `traceparent` — ids produced by StreamBus are Guids, so the link
+applies to foreign producers only.
+
+## Logs
+
+Expect **warnings — not errors — for routine redelivery**: handler
+failures during retry, exhausted budgets naming stream, partition,
+offset, and attempts, error-destination hand-off retries, and
+`OnExhausted` faults noting the attach recycle. Shutdown races log at
+debug. Persistent `Critical` entries during a non-blocking startup
+mean a background declaration or consumer failed permanently — the
+health check's data entries name which one.

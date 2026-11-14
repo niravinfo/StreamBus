@@ -7,10 +7,10 @@ hero:
   actions:
     # NOTE: hero links are rendered verbatim, so the base path is hardcoded.
     - text: Get Started
-      link: /StreamBus/guides/getting-started/
+      link: /StreamBus/quickstart/
       icon: right-arrow
-    - text: View on GitHub
-      link: https://github.com/niravinfo/StreamBus
+    - text: How it works
+      link: /StreamBus/architecture/
       icon: external
 ---
 
@@ -20,14 +20,15 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
   <Card title="Message publishing" icon="paper-airplane">
     Publish plain objects without manual serialization. Super-stream routing keys are compile-time checked.
   </Card>
-  <Card title="Consumer Groups" icon="group">
-    `ReceiveEndpoint`s with first-class, required consumer-group identity — a super
-    stream's partitions scale across instances; different groups are independent.
+  <Card title="Consumer groups" icon="group">
+    Receive endpoints with first-class, required consumer-group identity — a super
+    stream's partitions scale across instances; different groups are independent cursors.
   </Card>
-  <Card title="Retry & Errors" icon="warning">
-    Global and per-endpoint retry, exhaustion destinations, and a per-stream classic `{stream}_error` queue.
+  <Card title="Retry & errors" icon="warning">
+    Global and per-endpoint retry schedules, and dead-letter destinations — an error
+    stream, an AMQP queue, or your own callback.
   </Card>
-  <Card title="Explicit Config" icon="settings">
+  <Card title="Explicit config" icon="settings">
     No binders, no JSON discovery. Every option is a configurator method, validated once at registration.
   </Card>
 </CardGrid>

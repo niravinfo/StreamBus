@@ -167,3 +167,77 @@ Still open (carry-over of the original phases):
   "Publishing raw messages", "Raw consume and manual offsets"→
   "Consuming raw messages"/"Manual offset control". Topology, Hosting,
   Observability kept.
+- 2026-11-14: Full review-and-rewrite pass executed against the actual
+  public API. Fixed in the pages: getting-started used the deleted
+  `AddStreamBusHosting` API (0.2.0 changelog documents its removal) —
+  replaced with the real options-pattern hosting; configuration stopped
+  repeating the quickstart; error-handling had the wrong `Exponential`
+  signature (`(count, base, max, multiplier)` → real
+  `(retryCount, minDelay, maxDelay)`) and referenced the deleted
+  `StreamBusStartupBlockedException`; observability health data keys were
+  missing the `bus:`/`reg:` prefixes. Verification method: every C#
+  snippet was lifted into a scratch project referencing src/StreamBus,
+  compiled (`dotnet build`), and executed at registration time (AddStreamBus
+  validates eagerly) — all pass. Remaining open: P6 (DocFX-generated API
+  reference from the now-written XML comments) and the changelog lacks
+  entries for releases after 0.2.0.
+
+## 10. 2026-11-14 restart: fresh page set (user-confirmed)
+
+User rejected patching the old flat `guides/` list; all Astro content
+files were deleted and the information architecture re-decided from the
+reader's perspective, phase by phase:
+
+```
+Home (splash)
+├── Get started
+│   ├── Introduction    — what/why/why-not; no code
+│   ├── Installation    — NuGet, prerequisites, local broker
+│   └── Quickstart      — one runnable program + what happens at startup
+├── Fundamentals
+│   ├── Architecture    — streams mental model + StreamBus's shape
+│   ├── Configuration   — AddStreamBus, Host, validation model, serializer
+│   ├── Topology        — declarations, agreement rules, adopt rule, runtime API
+│   └── Lifecycle       — hosting options + readiness + supervision, one story
+├── Messaging
+│   ├── Publishing      — typed publish, budgets, properties, super streams,
+│   │                     raw publish (section)
+│   ├── Consumers       — endpoints, groups, scale-out, raw consume (section)
+│   └── Error handling  — schedules, exhaustion, envelope, exceptions
+└── In production
+    ├── Transport security
+    ├── Observability
+    ├── Multiple buses
+    └── Middleware      — shared filter contract for both pipelines
+```
+
+Decisions made with the user (2026-11-14, second session):
+- Four-phase progressive structure approved (spec §3 sidebar superseded).
+- Tutorial page: dropped; Quickstart stays small, Messaging pages carry depth.
+- Streams mental model (offsets, groups, at-least-once) lives in
+  Fundamentals/Architecture, not in Introduction.
+- Raw publish/consume are sections inside Publishing/Consumers, not pages.
+- Changelog page dropped for now (only covers 0.2.0; package is 0.4.0-beta.1).
+- Middleware is one shared page; Publishing/Consumers keep short sections.
+- API reference: user wants it; plan is a generator script consuming the
+  compiled StreamBus.xml into Starlight pages (lightweight P6; DocFX not
+  adopted). Second phase, after the content pages.
+- Quality bar: every C# snippet must compile and pass AddStreamBus
+  registration validation against src/StreamBus (snippet harness method
+  retained from the first pass).
+- 2026-11-14 (third session): Implemented §10. All 15 pages written fresh:
+  index (splash), introduction, installation, quickstart, architecture,
+  configuration, topology, lifecycle, publishing, consumers, error-handling,
+  transport-security, observability, multiple-buses, middleware.
+  Changelog dropped per decision above; README links updated to new slugs.
+  Verification: quickstart Program.cs extracted verbatim from the page and
+  built as a real project (Build succeeded); every other C# snippet
+  compiles and passes AddStreamBus registration validation (harness:
+  ALL SNIPPET REGISTRATIONS VALID); all 60 distinct API calls in pages
+  exist in source; no broken relative links; Starlight builds 16 pages.
+  Corrections caught during writing: raw-consume offsets auto-store per
+  OffsetStore cadence (earlier draft wrongly said manual); rabbitmqadmin
+  AMQP publish into a stream was unverified guesswork and was removed —
+  quickstart is now fully self-contained (publish + consume in-process).
+  Still open: XML→Starlight API reference generator (two-phase plan
+  agreed), and a visual review pass in the browser.

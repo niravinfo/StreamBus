@@ -1,0 +1,92 @@
+---
+title: Configuration
+description: The AddStreamBus registration surface, connection options, and serializers.
+---
+
+In this article, you learn how a bus is registered, what each
+connection option means, and how serialization is selected.
+
+One `AddStreamBus` call registers a bus. Everything is code-first:
+no settings binder, no JSON discovery — read environment variables or
+a vault yourself, then pass the values to the configurators. Every
+option is validated once, eagerly: a bad value fails with a
+`StreamBusConfigurationException` at registration, not at runtime.
+
+## Register a bus
+
+```csharp
+builder.Services.AddStreamBus((_, cfg) =>
+{
+    cfg.Host("localhost", "/", h => h.Credentials("guest", "guest"));
+
+    cfg.Publish<OrderPlaced>("orders");
+
+    cfg.ReceiveEndpoint("orders", e =>
+    {
+        e.Consumer<OrderConsumer>("billing");
+        e.UseRetry(r => r.Immediate(3));
+    });
+});
+```
+
+`Host` is required exactly once per bus — a second call throws. The
+publish and endpoint registrations are covered with their features in
+[Publishing](../publishing/) and [Consumers](../consumers/); this page
+covers the connection knobs and the serializer.
+
+## Connection options
+
+The defaults match a standard RabbitMQ 4.x install; pass these only
+when yours differ.
+
+```csharp
+cfg.Host("rabbitmq.internal", "/", h =>
+{
+    h.Credentials("app", "s3cret");
+    h.StreamPort(5552);   // RabbitMQ stream protocol port
+    h.AmqpPort(5672);     // used only for AMQP dead-letter queues
+    h.Heartbeat(TimeSpan.FromSeconds(60));
+    h.MonitorInterval(TimeSpan.FromSeconds(5));
+    h.ProducersPerConnection(1);
+    h.ConsumersPerConnection(1);
+});
+```
+
+| Option | Default | Meaning |
+|---|---|---|
+| `Credentials(user, password)` | none | Broker credentials; both must be non-null. `guest`/`guest` works on a machine-local broker — remote deployments need a dedicated non-`guest` user. |
+| `StreamPort` | `5552` | Stream-protocol port. |
+| `AmqpPort` | `5672` | AMQP port, used only when an endpoint declares an [AMQP dead-letter queue](../error-handling/). No queue destination, no AMQP connection. |
+| `Heartbeat` | 60s | Requested heartbeat interval. |
+| `MonitorInterval` | 5s, max 60s | How often the connection supervisor checks the broker handle for closure. |
+| `ProducersPerConnection` / `ConsumersPerConnection` | 1 / 1 | Producers or consumers multiplexed per connection (1–255). |
+| `UseTls` | off | Enables TLS for both transports. See [Transport security](../transport-security/). |
+
+## Serialization
+
+Messages are JSON by default, using System.Text.Json. Adjust the
+options per bus:
+
+```csharp
+cfg.Serializer(json => json.PropertyNamingPolicy = JsonNamingPolicy.CamelCase);
+```
+
+Or replace the serializer entirely:
+
+```csharp
+cfg.Serializer(new MyCompactSerializer());
+```
+
+with `IStreamSerializer` — a small interface (`Serialize<T>`,
+`Deserialize<T>`, and a `ContentType` string) whose instance is used
+for typed publishes, consumer deserialization, and
+`Headers.GetJson<T>`. A failing deserialize surfaces as
+`StreamBusDeserializationException`, which — like every consumer
+failure — enters the endpoint's [retry schedule](../error-handling/).
+
+## More than one broker or vhost
+
+Each additional `AddStreamBus<TBus>` call registers another,
+independently configured bus, identified by a marker type. The rules
+(what must be unique, what may be shared) are on
+[Multiple buses](../multiple-buses/).

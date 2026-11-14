@@ -1,0 +1,47 @@
+---
+title: Installation
+description: Prerequisites, the NuGet package, and a local broker for development.
+---
+
+In this article, you install the StreamBus package and start a local
+development broker.
+
+## Prerequisites
+
+| Requirement | Notes |
+|---|---|
+| .NET 10 SDK | StreamBus targets `net10.0`. |
+| RabbitMQ 4.x | Streams are enabled out of the box on 4.x. |
+| Stream listener on port 5552 | The stream protocol port; `5672` (AMQP) is needed only for AMQP dead-letter queues. |
+| A non-`guest` user for remote brokers | RabbitMQ refuses `guest` from non-localhost connections. |
+
+## Install the package
+
+```xml
+<PackageReference Include="StreamBus" Version="0.4.0-beta.1" />
+```
+
+StreamBus depends on the extension packages you already use
+(`Microsoft.Extensions.Hosting`, `Microsoft.Extensions.Diagnostics.HealthChecks`)
+and the official `RabbitMQ.Stream.Client` for the wire protocol — you
+add one package.
+
+## Start a local broker
+
+If you don't have RabbitMQ 4.x handy, start one with Docker (streams
+are enabled out of the box; the management UI is on
+`http://localhost:15672`):
+
+```bash
+docker run -d --name rabbitmq -p 5552:5552 -p 5672:5672 -p 15672:15672 rabbitmq:4.2-management
+```
+
+The `guest` / `guest` credentials work against this machine-local
+broker. For integration tests, the StreamBus repository does the same
+thing automatically with Testcontainers — see
+`tests/StreamBus.IntegrationTests/TestBroker.cs`.
+
+## Next steps
+
+Head to the [Quickstart](../quickstart/) — your first published
+message is a few lines away.

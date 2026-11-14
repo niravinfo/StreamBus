@@ -1,0 +1,81 @@
+---
+title: Multiple buses
+description: Run independently configured buses with marker types.
+---
+
+In this article, you learn how one application runs several buses —
+different brokers, virtual hosts, or serializers — and the rules
+that keep them from colliding.
+
+## Marker types
+
+The non-generic `AddStreamBus` registers the **default bus**,
+resolvable as `IStreamBus`; it may be used at most once per
+application. Each additional bus needs an identity, and the identity
+is a marker type — any empty class you own:
+
+```csharp
+public sealed class OrdersBus;
+public sealed class BillingBus;
+```
+
+## Two buses, one application
+
+```csharp
+services.AddStreamBus<OrdersBus>((_, cfg) =>
+{
+    cfg.Host("localhost", "/orders", h => h.Credentials("app", "s3cret"));
+    cfg.Publish<OrderPlaced>("orders");
+    cfg.ReceiveEndpoint("orders", e => e.Consumer<OrdersConsumer>("orders-team"));
+});
+
+services.AddStreamBus<BillingBus>((_, cfg) =>
+{
+    cfg.Host("localhost", "/billing", h => h.Credentials("app", "s3cret"));
+    cfg.Publish<InvoiceEvent>("invoices", s => s.MaxAge(TimeSpan.FromDays(90)));
+    cfg.ReceiveEndpoint("invoices", e => e.Consumer<InvoicesConsumer>("billing-team"));
+});
+```
+
+Each `AddStreamBus<TBus>` may be used at most once per marker, and
+each bus is fully independent: its own host, vhost, serializer,
+publications, endpoints, retry schedule, and filters. Two buses may
+share one vhost **only if their connection settings agree** —
+credentials, host, ports, heartbeat, pooling, TLS; conflicting
+registrations for a vhost throw at registration, first one wins
+otherwise.
+
+## Using a specific bus
+
+Inject the bus by its marker:
+
+```csharp
+public sealed class CheckoutWorker(IStreamBus<OrdersBus> orders) : BackgroundService
+{
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        await orders.WaitUntilReadyAsync(ReadinessPolicy.Forever, stoppingToken);
+        await orders.PublishAsync(new OrderPlaced("o-1"), stoppingToken);
+    }
+}
+```
+
+Publish registrations are per bus: the same message type on two
+streams of *one* bus is an ambiguity error, while the same type on
+two *buses* resolves independently through each bus's route table.
+
+## Shared consumer classes
+
+A consumer class can serve two buses — but each endpoint still needs
+its own consumer group, and groups are per (stream, vhost):
+
+```csharp
+// OrdersBus
+cfg.ReceiveEndpoint("orders", e => e.Consumer<SharedConsumer>("orders-team"));
+// BillingBus
+cfg.ReceiveEndpoint("invoices", e => e.Consumer<SharedConsumer>("billing-team"));
+```
+
+Each bus keeps its own cursor, so the groups consume independently —
+and the [observability](../observability/) rows carry the bus type,
+so two buses on one vhost stay attributable in health data.

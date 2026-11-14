@@ -1,0 +1,132 @@
+---
+title: Middleware
+description: The filter pipelines for publishing and consuming — one contract, two directions.
+---
+
+In this article, you learn StreamBus's cross-cutting model: ordered
+filter pipelines that wrap every publish and every delivery. This
+page holds the shared contract once —
+[Publishing](../publishing/#publish-filters) and
+[Consumers](../consumers/#consume-filters) show only registration and
+link here.
+
+## Registration and ordering
+
+Filters register on the bus (every message) or on a single receive
+endpoint (that endpoint's deliveries only). For a delivery to a typed
+endpoint, bus-wide filters run first (outermost), then the endpoint's
+own:
+
+```csharp
+builder.Services.AddStreamBus((_, cfg) =>
+{
+    cfg.Host("localhost", "/", h => h.Credentials("guest", "guest"));
+
+    cfg.UsePublishFilter<TenantFilter>();          // every publish
+    cfg.UseConsumeFilter<MetricsFilter>();          // every delivery
+
+    cfg.ReceiveEndpoint("orders", e =>
+    {
+        e.Consumer<OrderConsumer>("billing");
+        e.UseConsumeFilter<EnrichmentFilter>();     // this endpoint only
+    });
+});
+```
+
+- Filters are singletons, resolved once per bus (or per endpoint) and
+  cached for its lifetime — they must be thread-safe. A scoped or
+  transient DI registration is rejected at attach.
+- Each message still gets its **own DI scope** — resolve scoped
+  services from `context.Services`, never from filter constructor
+  injection.
+- The same filter registered twice for the same message type throws
+  at registration — it would run twice.
+
+## The `next` contract
+
+A filter wraps the rest of the pipeline through the `next` delegate —
+and the two directions have deliberately different contracts.
+
+**Publish filters** run before serialization:
+
+```csharp
+public sealed class TenantFilter(TenantScope ambient) : IStreamPublishFilter
+{
+    public Task OnPublish(PublishContext context, PublishNext next)
+    {
+        context.Headers.Set("x-tenant", ambient.Tenant);   // outbound header
+        return next();                                      // hand to the wire
+    }
+}
+```
+
+`next` must be called **exactly once and awaited** before returning.
+Zero calls or double calls throw `StreamBusFilterContractException`
+raw from the pipeline — a filter bug must not be mistaken for a
+transport failure.
+
+**Consume filters** run before the consumer handler:
+
+```csharp
+public sealed class RetryHintFilter : IStreamConsumeFilter
+{
+    public async Task OnConsume(ConsumeContext context, ConsumeNext next)
+    {
+        if (context.Headers.GetInt("x-retry-hint") is 1)
+        {
+            return;   // legal: delivery handled, consumer skipped, offset advances
+        }
+        await next();
+    }
+}
+```
+
+`next` may be called **at most once** — and here, zero calls are a
+feature: a filter that returns without calling `next` filters the
+delivery out; the handler isn't invoked and the offset still
+advances. A second call is rejected at runtime, and returning before
+the awaited `next()` task completes throws
+`StreamBusFilterContractException`. When in doubt: `return await
+next()` — always safe, always explicit.
+
+## What a filter can change
+
+Publish context: `Headers` (writes win over call-site properties),
+and anything reachable from `Services`. The stream, routing key, and
+payload are fixed — routing is a registration decision in StreamBus,
+not a middleware decision.
+
+Consume context: `Headers`/`SendHeaders`, and `SetPayload<T>` /
+`GetPayload<T>` — the typed way to carry computed values between
+filters and into the consumer. Headers written through
+`context.SendHeaders` also travel on the [error
+envelope](../error-handling/#the-error-envelope) if the message
+eventually exhausts.
+
+## Typed vs universal filters
+
+Universal filters (`IStreamPublishFilter`, `IStreamConsumeFilter`)
+run for every message. Typed filters
+(`IStreamPublishFilter<TMessage>`, `IStreamConsumeFilter<TMessage>`)
+run only for their message type:
+
+```csharp
+cfg.UseConsumeFilter<OrderEventFilter, OrderPlaced>();
+```
+
+Prefer the explicitly-typed overload (`TFilter, TMessage`): it closes
+the generic adapter at the call site. The single-type-argument
+overload discovers typed interfaces with reflection at runtime, which
+adds trimming and NativeAOT hazards.
+
+On a receive endpoint, a typed filter must implement
+`IStreamConsumeFilter<T>` **for the endpoint's message type** — a
+mismatch is rejected at registration, before the app starts.
+
+## Where to look next
+
+Runnable, complete filters are in the repository examples:
+`examples/StreamBus.Examples.Producer/TenantFilter.cs`,
+`CorrelationIdFilter.cs`, `OrderPublishFilter.cs`, and
+`examples/StreamBus.Examples.Consumer/TenantFilter.cs`,
+`OrderEventFilter.cs`.

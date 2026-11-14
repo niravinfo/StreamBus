@@ -19,29 +19,39 @@ export default defineConfig({
       ],
       sidebar: [
         {
-          label: 'Getting Started',
-          items: [{ slug: 'guides/getting-started' }],
-        },
-        {
-          label: 'Core',
+          label: 'Get started',
           items: [
-            { slug: 'guides/configuration' },
-            { slug: 'guides/producers' },
-            { slug: 'guides/consumers' },
-            { slug: 'guides/error-handling' },
+            { slug: 'introduction' },
+            { slug: 'installation' },
+            { slug: 'quickstart' },
           ],
         },
         {
-          label: 'Advanced',
+          label: 'Fundamentals',
           items: [
-            { slug: 'guides/topology' },
-            { slug: 'guides/multiple-buses' },
-            { slug: 'guides/hosting' },
-            { slug: 'guides/observability' },
-            { slug: 'guides/transport-security' },
+            { slug: 'architecture' },
+            { slug: 'configuration' },
+            { slug: 'topology' },
+            { slug: 'lifecycle' },
           ],
         },
-        { slug: 'guides/changelog' },
+        {
+          label: 'Messaging',
+          items: [
+            { slug: 'publishing' },
+            { slug: 'consumers' },
+            { slug: 'error-handling' },
+          ],
+        },
+        {
+          label: 'In production',
+          items: [
+            { slug: 'transport-security' },
+            { slug: 'observability' },
+            { slug: 'multiple-buses' },
+            { slug: 'middleware' },
+          ],
+        },
       ],
     }),
   ],

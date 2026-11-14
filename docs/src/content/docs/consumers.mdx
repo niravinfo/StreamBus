@@ -1,0 +1,172 @@
+---
+title: Consumers
+description: Receive endpoints, consumer groups, scale-out, offsets, and raw consuming.
+---
+
+In this article, you learn how messages arrive: receive endpoints,
+what consumer groups really control, how to scale out, and how to
+consume raw bytes with manual offset control.
+
+A receive endpoint binds a stream to exactly one consumer type and
+one consumer group:
+
+```csharp
+cfg.ReceiveEndpoint("orders", e =>
+{
+    e.Consumer<OrderConsumer>("billing");
+});
+```
+
+- The group is the **cursor identity** — resume position, and the
+  unit of failover. StreamBus never derives or defaults it: an empty
+  group and a group over the broker's 255-byte limit are
+  configuration errors. Two services sharing one consumer class must
+  supply different groups; there is no default to collide on.
+- The consumer class implements `IConsumer<T>` for exactly one
+  message type and is resolved from a per-delivery DI scope shared by
+  the pipeline and the constructor:
+
+```csharp
+public sealed class OrderConsumer(ILogger<OrderConsumer> log) : IConsumer<OrderPlaced>
+{
+    public Task Consume(ConsumeContext<OrderPlaced> context)
+    {
+        log.LogInformation("Order {OrderId} at offset {Offset}", context.Message.OrderId, context.Offset);
+        return Task.CompletedTask;
+    }
+}
+```
+
+Throwing from `Consume` enters the endpoint's [retry schedule](../error-handling/);
+the offset advances only when the handler succeeds or the failure is
+handed off.
+
+## Scale-out: groups and single-active-consumer
+
+Delivery is at-least-once
+([Architecture](../architecture/)), so the group configuration is
+also the duplication configuration:
+
+- A **super stream** with one group distributes its partitions across
+  instances — single-active-consumer applies *per partition* — so
+  adding instances adds parallel readers. This is the horizontal
+  scaling path; it needs a routed publisher
+  ([Publishing](../publishing/#super-streams)).
+- A **plain stream** with the default `SingleActiveConsumer = true`
+  has one active consumer per group: other instances stand by for
+  failover and add no throughput.
+- **Different groups** are independent cursors: each receives every
+  message. That's how a billing service and an audit service both
+  read the same `orders` stream.
+
+:::warning[Don't disable SAC across processes]
+Two offset writers on one group both receive deliveries — duplicates,
+never skips — and can regress each other's stored offset. Disable
+single-active-consumer only when you know the grouping is
+single-process.
+:::
+
+## Endpoint options
+
+Defaults resume the group's stored offset, or start at the first
+offset for a fresh group:
+
+```csharp
+cfg.ReceiveEndpoint("audit", e =>
+{
+    e.Consumer<AuditConsumer>("audit-log");
+    e.SingleActiveConsumer(false);
+    e.StartOffset(StartOffset.AlwaysFirst);
+    e.OffsetStore(new OffsetStoreOptions { StoreEveryMessages = 100, MaxFlushInterval = TimeSpan.FromSeconds(5) });
+    e.Readiness(ReadinessPolicy.UpTo(TimeSpan.FromSeconds(30)));
+    e.UseConsumeFilter<MetricsFilter>();
+});
+```
+
+| Option | Default | Meaning |
+|---|---|---|
+| `SingleActiveConsumer` | `true` | One active instance per group; `false` fans out to every instance. |
+| `StartOffset` | `ResumeOrFirst` | Where a group with no stored offset starts: `ResumeOrNext`, `ResumeOrFail` (fail attach instead), `AlwaysFirst`, `AlwaysNext`. |
+| `OffsetStore` | every message | Broker-side cursor persistence cadence: every `StoreEveryMessages` deliveries, or at least every `MaxFlushInterval` — whichever comes first. Storing less often means more redelivery after a detach; that is the trade. |
+| `Readiness` | fail fast | The attach's wait policy for a ready connection ([Lifecycle](../lifecycle/)). |
+| `UseRetry` / `DeadLetterTo*` / `OnExhausted` | — | Failure behavior: [Error handling](../error-handling/). |
+| `Partitions(n)`, `MaxAge`, ... | — | Stream-spec knobs for the consumed stream: [Topology](../topology/). |
+
+## The delivery: `ConsumeContext<T>`
+
+The typed context carries the deserialized message plus everything
+about the delivery: coordinates (`Stream`, `Partition`, `Offset`,
+`RoutingKey`), identity (`MessageId`, `CorrelationId`, `SentTime`),
+the raw `Body`, the per-delivery DI scope (`Services`), and
+`CancellationToken`. Headers you or a filter wrote at publish time
+arrive as application properties, read with typed getters —
+`GetJson<T>` deserializes a JSON string header with the bus
+serializer:
+
+```csharp
+public sealed class TenantAwareConsumer : IConsumer<AuditEvent>
+{
+    public Task Consume(ConsumeContext<AuditEvent> context)
+    {
+        string? tenant = context.Headers.GetString("x-tenant");
+        int? attempt = context.Headers.GetInt("x-retry-hint");
+        Console.WriteLine($"{tenant} {attempt} {context.Message.Ref}");
+        return Task.CompletedTask;
+    }
+}
+```
+
+## Consuming raw messages and manual offset control
+
+For tailing scripts, replay tooling, or consumers of non-.NET
+producers, attach an untyped consumer with the same group requirement:
+
+```csharp
+await using var subscription = await bus.ConsumeAsync(
+    "audit",
+    new ConsumeOptions { ConsumerGroup = "ops-tail", StartOffset = StartOffset.AlwaysFirst },
+    ctx =>
+    {
+        Console.WriteLine($"{ctx.Stream}/{ctx.Partition}@{ctx.Offset}: {ctx.Headers.GetString("x-tenant")}");
+        return Task.CompletedTask;
+    },
+    ct);
+
+var stored = await bus.GetConsumerOffsetAsync("audit", "ops-tail", partition: 0, ct);
+```
+
+The handler receives the raw `ConsumeContext` — no deserialization
+happens unless you do it yourself (`ctx.Body`,
+`ErrorEnvelope.TryParse` for dead letters, or the bus serializer).
+Success still advances the group's stored offset automatically, on
+the same `OffsetStore` cadence as a typed endpoint.
+
+- A missing `ConsumerGroup` throws `StreamBusConfigurationException`
+  at attach instead of guessing.
+- Dispose the returned consumer to detach; the stored offset stays on
+  the broker.
+- `GetConsumerOffsetAsync` / `SetConsumerOffsetAsync` read or
+  overwrite a group's stored offset explicitly — the standard path
+  for rewinding a group to reprocess, or pre-seeding a new group's
+  start position.
+
+## Consume filters
+
+Consume middleware — metrics, enrichment, selective skipping —
+registers bus-wide or per endpoint:
+
+```csharp
+cfg.UseConsumeFilter<TenantFilter>();
+cfg.ReceiveEndpoint("orders", e =>
+{
+    e.Consumer<OrderConsumer>("billing");
+    e.UseConsumeFilter<MetricsFilter>();
+});
+```
+
+The shared contract — ordering, lifetimes, the `next` rules (very
+different from publish filters: a consume filter may legitimately
+*not* call `next`), typed vs universal registration — is covered once
+in [Middleware](../middleware/). Complete samples:
+`examples/StreamBus.Examples.Consumer/TenantFilter.cs` and
+`OrderEventFilter.cs`.

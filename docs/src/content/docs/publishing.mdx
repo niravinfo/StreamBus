@@ -1,0 +1,168 @@
+---
+title: Publishing
+description: Typed publishing, message properties, super streams, and raw bytes.
+---
+
+In this article, you learn every way to get a message onto a stream:
+typed publishing, per-call properties and headers, super-stream
+routing, and raw bytes.
+
+## Typed publish
+
+Register a message type against a stream once; publish without stream
+names or manual serialization.
+
+```csharp
+builder.Services.AddStreamBus((_, cfg) =>
+{
+    cfg.Host("localhost", "/", h => h.Credentials("guest", "guest"));
+    cfg.Publish<OrderPlaced>("orders");
+});
+
+await bus.PublishAsync(new OrderPlaced("o-1"), ct);
+```
+
+The stream and the serializer come from the registration. Registering
+one message type on two streams of one bus fails fast instead of
+picking a random destination. Kind must match too: calling
+`PublishAsync` on a `PublishSuper` registration (or the reverse)
+throws a `StreamBusConfigurationException` naming the method to use.
+
+Every publish is broker-confirmed: the returned task completes when
+the broker confirms the message.
+
+## Readiness and confirm budgets
+
+By default a publish fails fast when the connection isn't ready and
+waits indefinitely for the broker's confirmation. Both are adjustable
+per call:
+
+```csharp
+await bus.PublishAsync(new OrderPlaced("o-1"), new PublishOptions
+{
+    Readiness = ReadinessPolicy.UpTo(TimeSpan.FromSeconds(10)),
+    ConfirmTimeout = TimeSpan.FromSeconds(5),
+}, ct);
+```
+
+- `Readiness` bounds only the wait for a ready connection — the same
+  policy family as everywhere else ([Lifecycle](../lifecycle/)).
+- `ConfirmTimeout` bounds the broker-confirmation wait; `null` waits
+  indefinitely, with the caller's cancellation token as the only
+  bound. A timeout throws `StreamBusTimeoutException` with the
+  outcome *unknown*, so only retry when the publish is safe to
+  repeat.
+
+## Message properties and headers
+
+`MessageId` and `SentTime` are always populated before the publish
+pipeline runs — `MessageId` is generated when absent, `SentTime`
+defaults to UTC now. `CorrelationId` is never invented: it stays null
+unless you supply it. The content type is stamped from the configured
+serializer.
+
+```csharp
+await bus.PublishAsync(new OrderPlaced("o-1"), new PublishOptions
+{
+    Properties = new StreamMessageProperties
+    {
+        MessageId = Guid.NewGuid(),
+        CorrelationId = correlationId,
+        Headers = new Dictionary<string, object?>
+        {
+            ["x-tenant"] = "acme",
+            ["x-retry-hint"] = 3,
+        },
+    },
+}, ct);
+```
+
+Headers are written as AMQP application properties, so values must be
+`string`, `bool`, `int`, `long`, or `null`; other types throw at
+publish time. Keys colliding with the reserved `streambus.*` framework
+keys are rejected. When a publish filter also writes a header, the
+filter wins over values supplied here.
+
+## Super streams
+
+```csharp
+cfg.PublishSuper<OrderPlaced>("orders-super", s => s.Partitions(3));
+
+await bus.PublishSuperAsync(new OrderPlaced("o-1"), routingKey: "o-1", cancellationToken: ct);
+```
+
+The routing key is a required `PublishSuperAsync` parameter —
+forgetting it is a compile error, not a runtime surprise. The key
+selects the partition at the broker; the same key always lands on the
+same partition, which is what keeps per-entity order intact.
+
+A `PublishSuper` registration carries its own spec —
+`s.Partitions(n)` plus the same retention knobs as plain streams —
+or a consuming endpoint on the same stream can supply the count with
+`e.Partitions(n)`. With neither, startup fails naming the type and
+the stream. Partition counts and every agreement rule between
+publishers and consumers live in [Topology](../topology/).
+
+## Publishing from many instances
+
+StreamBus never assigns a producer name. RabbitMQ Streams only
+deduplicates published messages for a named producer, so with no name
+the broker filters nothing: any number of identical application
+instances can publish to the same stream or super stream. Delivery
+stays at-least-once; consumers own duplicate handling — the consumer
+side of that coin is in [Architecture](../architecture/#what-failure-handling-means-on-a-log).
+
+## Publishing raw messages
+
+For bytes you serialized yourself — records shared with non-.NET
+producers, or pre-encoded payloads — the raw publish sends them
+without touching the serializer or the publish pipeline:
+
+```csharp
+await bus.PublishRawAsync("orders", preSerializedBytes, new PublishOptions(), ct);
+```
+
+Explicit target streams are also available when one type needs to
+reach more than its registered stream:
+
+```csharp
+// Explicit plain-stream target: must exist (or be declared) — no auto-create.
+await bus.PublishAsync("orders-manual", new OrderPlaced("o-2"), ct);
+```
+
+An undeclared target surfaces `StreamBusStreamNotFoundException`,
+never an auto-create. Explicit targets keep the method-implied kind:
+use the explicit `PublishSuperAsync` overload for a super stream, with
+its required routing key.
+
+## Publish filters
+
+Cross-cutting publish logic (tenant stamping, correlation, audit) is
+an ordered filter pipeline, registered on the bus:
+
+```csharp
+builder.Services.AddStreamBus((_, cfg) =>
+{
+    cfg.Host("localhost", "/", h => h.Credentials("guest", "guest"));
+    cfg.Publish<OrderPlaced>("orders");
+
+    cfg.UsePublishFilter<TenantFilter>();   // bus-wide, every publish
+});
+```
+
+```csharp
+public sealed class TenantFilter(TenantScope ambient) : IStreamPublishFilter
+{
+    public Task OnPublish(PublishContext context, PublishNext next)
+    {
+        context.Headers.Set("x-tenant", ambient.Tenant);
+        return next();
+    }
+}
+```
+
+The shared contract — ordering, lifetimes, the `next` rules, typed vs
+universal filters — is covered once in
+[Middleware](../middleware/). Complete samples live in
+`examples/StreamBus.Examples.Producer/TenantFilter.cs`,
+`CorrelationIdFilter.cs`, and `OrderPublishFilter.cs`.
