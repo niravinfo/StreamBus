@@ -229,7 +229,9 @@ public static partial class XmlDocParser
 
         if (paramText.Length > 0)
         {
-            sb.Append(string.Join(", ", paramText.Split(',').Select(RenderTypeName)));
+            // Brace-aware split: a System.Func{A,B,C} parameter is one
+            // parameter, not three.
+            sb.Append(string.Join(", ", SplitTopLevel(paramText).Select(RenderTypeName)));
         }
 
         sb.Append(')');
@@ -240,51 +242,73 @@ public static partial class XmlDocParser
     {
         crefType = crefType.Trim();
 
+        // Byref parameters end in '@' (``0@, System.Int32@): there is no
+        // out/ref distinction in the XML, so all render as "out".
+        var byref = crefType.EndsWith('@');
+        if (byref)
+        {
+            crefType = crefType[..^1];
+        }
+
+        var prefix = byref ? "out " : string.Empty;
+
         // ``N : a type parameter of the method or the declaring type (the
         // generated XML uses the same form for both).
         if (crefType.StartsWith("``", StringComparison.Ordinal) && int.TryParse(crefType[2..], out var index))
         {
-            return TypeParamName(index);
+            return prefix + TypeParamName(index);
         }
 
         // `0-style references (type parameter of the declaring type).
         if (crefType.StartsWith('`') && int.TryParse(crefType[1..], out index))
         {
-            return TypeParamName(index);
+            return prefix + TypeParamName(index);
         }
 
         if (KeywordTypes.TryGetValue(crefType, out var keyword))
         {
-            return keyword;
+            return prefix + keyword;
         }
 
         // Generic instance types brace their arguments: List{System.String}.
         var genericArity = crefType.IndexOf('`');
-        if (genericArity > 0 && int.TryParse(crefType[(genericArity + 1)..], out var arity) && arity > 0)
+        if (genericArity > 0 && int.TryParse(crefType[(genericArity + 1)..].TrimEnd('@'), out var arity) && arity > 0)
         {
-            // Find the brace after the arity digits, if present.
-            var rest = crefType[(genericArity + 1)..];
-            var digitEnd = rest.TakeWhile(char.IsDigit).Count();
             var brace = crefType.IndexOf('{', genericArity);
             if (brace > 0)
             {
                 var inner = crefType[(brace + 1)..].TrimEnd('}');
                 var rendered = string.Join(", ", SplitTopLevel(inner).Select(RenderTypeName));
-                return DisplaySimpleName(crefType[..brace]) + "<" + rendered + ">";
+                return prefix + RenderClosedGeneric(crefType[..brace], rendered);
             }
 
-            _ = digitEnd;
-            return DisplaySimpleName(crefType[..genericArity]) + "<" + new string(',', arity - 1) + ">";
+            return prefix + DisplaySimpleName(crefType[..genericArity]) + "<" + new string(',', arity - 1) + ">";
         }
 
         var braceOpen = crefType.IndexOf('{');
         if (braceOpen >= 0)
         {
             var inner = crefType[(braceOpen + 1)..].TrimEnd('}');
-            return DisplaySimpleName(crefType[..braceOpen]) + "<" + string.Join(", ", SplitTopLevel(inner).Select(RenderTypeName)) + ">";
+            return prefix + RenderClosedGeneric(crefType[..braceOpen], string.Join(", ", SplitTopLevel(inner).Select(RenderTypeName)));
         }
 
-        return DisplaySimpleName(crefType);
+        return prefix + DisplaySimpleName(crefType);
+    }
+
+    /// <summary>
+    /// Renders a closed generic: the inner type arguments carry the
+    /// genericness, so the ``N arity suffix is dropped. System.Nullable is
+    /// rendered with the C# ? suffix.
+    /// </summary>
+    private static string RenderClosedGeneric(string genericName, string renderedArgs)
+    {
+        var display = DisplaySimpleName(genericName);
+        if (display == "Nullable")
+        {
+            return renderedArgs + "?";
+        }
+
+        return display + "<" + renderedArgs + ">";
     }
 
     private static IEnumerable<string> SplitTopLevel(string list)
@@ -328,12 +352,59 @@ public static partial class XmlDocParser
         }
 
         cref = NormalizeRoot(cref);
-        if (cref.StartsWith("System.", StringComparison.Ordinal))
+
+        // Namespace-qualified names read best as their leaf type: parameters
+        // render on the member's page, where "AsyncServiceScope" beats
+        // "Microsoft.Extensions.DependencyInjection.AsyncServiceScope".
+        var lastDot = cref.LastIndexOf('.');
+        if (lastDot >= 0 && !cref.Contains('{'))
         {
-            cref = cref["System.".Length..];
+            cref = cref[(lastDot + 1)..];
         }
 
-        return cref.Replace('`', '-');
+        // Arity backticks are dropped here: closed generics render their
+        // arguments in RenderTypeName, which carries the genericness.
+        var tick = cref.IndexOf('`');
+        if (tick > 0)
+        {
+            cref = cref[..tick];
+        }
+
+        return cref;
+    }
+
+    /// <summary>
+    /// Renders a method cref (e.g. from a &lt;see cref="M:..."/&gt;) as a
+    /// readable C# reference: declaring leaf + method name + type parameters
+    /// + rendered parameter list.
+    /// </summary>
+    private static string MethodCrefText(string raw)
+    {
+        var paren = raw.IndexOf('(');
+        var head = paren >= 0 ? raw[..paren] : raw;
+        var lastDot = head.LastIndexOf('.');
+        if (lastDot < 0)
+        {
+            return DisplaySimpleName(raw);
+        }
+
+        var methodName = head[(lastDot + 1)..];
+        var arity = 0;
+        var tick = methodName.LastIndexOf("``", StringComparison.Ordinal);
+        if (tick > 0 && int.TryParse(methodName[(tick + 2)..], out arity))
+        {
+            methodName = methodName[..tick];
+        }
+
+        var declaringLeaf = DisplaySimpleName(head[..lastDot]);
+        var generics = arity > 0
+            ? "<" + string.Join(", ", Enumerable.Range(0, arity).Select(TypeParamName)) + ">"
+            : string.Empty;
+        var parameters = paren >= 0 && raw.Length > paren + 1
+            ? "(" + string.Join(", ", SplitTopLevel(raw[(paren + 1)..].TrimEnd(')')).Select(RenderTypeName)) + ")"
+            : "()";
+
+        return declaringLeaf + "." + methodName + generics + parameters;
     }
 
     private static string NormalizeRoot(string name) =>
@@ -450,7 +521,10 @@ public static partial class XmlDocParser
                     sb.Append(text.Value);
                     break;
                 case XElement inline when inline.Name.LocalName is "see" or "seealso":
-                    sb.Append(DisplaySimpleName(inline.Attribute("cref")?.Value ?? inline.Attribute("langword")?.Value ?? string.Empty));
+                    var cref = inline.Attribute("cref")?.Value;
+                    sb.Append(cref is null
+                        ? inline.Attribute("langword")?.Value ?? string.Empty
+                        : cref.StartsWith("M:", StringComparison.Ordinal) ? MethodCrefText(cref[2..]) : DisplaySimpleName(cref));
                     break;
                 case XElement inline when inline.Name.LocalName is "paramref" or "typeparamref":
                     sb.Append(inline.Attribute("name")?.Value ?? string.Empty);

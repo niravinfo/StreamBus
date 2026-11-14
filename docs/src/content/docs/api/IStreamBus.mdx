@@ -15,7 +15,7 @@ public interface IStreamBus
 Attaches a raw (untyped) consumer to stream; dispose the returned consumer to detach.
 
 ```csharp
-ConsumeAsync(string, ConsumeOptions, Func<ConsumeContext>, Threading.Tasks.Task}, Threading.CancellationToken)
+ConsumeAsync(string, ConsumeOptions, Func<ConsumeContext, Task>, CancellationToken)
 ```
 
 ### GetConsumerOffsetAsync
@@ -23,7 +23,7 @@ ConsumeAsync(string, ConsumeOptions, Func<ConsumeContext>, Threading.Tasks.Task}
 Queries the stored broker-side offset for a consumer group on one partition.
 
 ```csharp
-GetConsumerOffsetAsync(string, string, int, Threading.CancellationToken)
+GetConsumerOffsetAsync(string, string, int, CancellationToken)
 ```
 
 ### PublishAsync
@@ -31,7 +31,7 @@ GetConsumerOffsetAsync(string, string, int, Threading.CancellationToken)
 Publishes to the stream registered for T, with options.
 
 ```csharp
-PublishAsync<T>(T, PublishOptions, Threading.CancellationToken)
+PublishAsync<T>(T, PublishOptions, CancellationToken)
 ```
 
 ### PublishAsync
@@ -39,7 +39,7 @@ PublishAsync<T>(T, PublishOptions, Threading.CancellationToken)
 Publishes to the stream registered for T.
 
 ```csharp
-PublishAsync<T>(T, Threading.CancellationToken)
+PublishAsync<T>(T, CancellationToken)
 ```
 
 ### PublishAsync
@@ -47,7 +47,7 @@ PublishAsync<T>(T, Threading.CancellationToken)
 Publishes to an explicitly named plain stream, with options. The target must be declared or StreamBusStreamNotFoundException surfaces.
 
 ```csharp
-PublishAsync<T>(string, T, PublishOptions, Threading.CancellationToken)
+PublishAsync<T>(string, T, PublishOptions, CancellationToken)
 ```
 
 ### PublishAsync
@@ -55,7 +55,7 @@ PublishAsync<T>(string, T, PublishOptions, Threading.CancellationToken)
 Publishes to an explicitly named plain stream.
 
 ```csharp
-PublishAsync<T>(string, T, Threading.CancellationToken)
+PublishAsync<T>(string, T, CancellationToken)
 ```
 
 ### PublishRawAsync
@@ -63,7 +63,7 @@ PublishAsync<T>(string, T, Threading.CancellationToken)
 Sends pre-serialized bytes to stream, bypassing serialization and the publish pipeline.
 
 ```csharp
-PublishRawAsync(string, ReadOnlyMemory<byte>, PublishOptions, Threading.CancellationToken)
+PublishRawAsync(string, ReadOnlyMemory<byte>, PublishOptions, CancellationToken)
 ```
 
 ### PublishSuperAsync
@@ -71,7 +71,7 @@ PublishRawAsync(string, ReadOnlyMemory<byte>, PublishOptions, Threading.Cancella
 Routed super-stream publish to the stream registered for T, with options.
 
 ```csharp
-PublishSuperAsync<T>(T, string, PublishOptions, Threading.CancellationToken)
+PublishSuperAsync<T>(T, string, PublishOptions, CancellationToken)
 ```
 
 ### PublishSuperAsync
@@ -79,7 +79,7 @@ PublishSuperAsync<T>(T, string, PublishOptions, Threading.CancellationToken)
 Routed super-stream publish to the stream registered for T.
 
 ```csharp
-PublishSuperAsync<T>(T, string, Threading.CancellationToken)
+PublishSuperAsync<T>(T, string, CancellationToken)
 ```
 
 ### PublishSuperAsync
@@ -87,7 +87,7 @@ PublishSuperAsync<T>(T, string, Threading.CancellationToken)
 Routed super-stream publish to an explicitly named super stream, with options.
 
 ```csharp
-PublishSuperAsync<T>(string, T, string, PublishOptions, Threading.CancellationToken)
+PublishSuperAsync<T>(string, T, string, PublishOptions, CancellationToken)
 ```
 
 ### PublishSuperAsync
@@ -95,7 +95,7 @@ PublishSuperAsync<T>(string, T, string, PublishOptions, Threading.CancellationTo
 Routed super-stream publish to an explicitly named super stream.
 
 ```csharp
-PublishSuperAsync<T>(string, T, string, Threading.CancellationToken)
+PublishSuperAsync<T>(string, T, string, CancellationToken)
 ```
 
 ### SetConsumerOffsetAsync
@@ -103,7 +103,7 @@ PublishSuperAsync<T>(string, T, string, Threading.CancellationToken)
 Stores the broker-side offset for a consumer group on one partition.
 
 ```csharp
-SetConsumerOffsetAsync(string, string, int, UInt64, Threading.CancellationToken)
+SetConsumerOffsetAsync(string, string, int, UInt64, CancellationToken)
 ```
 
 ### WaitUntilReadyAsync
@@ -111,7 +111,7 @@ SetConsumerOffsetAsync(string, string, int, UInt64, Threading.CancellationToken)
 Waits until the connection is ready, per policy.
 
 ```csharp
-WaitUntilReadyAsync(ReadinessPolicy, Threading.CancellationToken)
+WaitUntilReadyAsync(ReadinessPolicy, CancellationToken)
 ```
 
 ## Properties

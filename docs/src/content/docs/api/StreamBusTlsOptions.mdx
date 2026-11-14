@@ -12,7 +12,7 @@ public class StreamBusTlsOptions
 
 ### AcceptableCertificateErrors
 
-Certificate policy errors accepted despite failing validation; default Net.Security.SslPolicyErrors.None. Accepting Net.Security.SslPolicyErrors.RemoteCertificateNameMismatch or Net.Security.SslPolicyErrors.RemoteCertificateNotAvailable disables hostname verification (the TLS protection against man-in-the-middle attacks) and should not be used in production.
+Certificate policy errors accepted despite failing validation; default None. Accepting RemoteCertificateNameMismatch or RemoteCertificateNotAvailable disables hostname verification (the TLS protection against man-in-the-middle attacks) and should not be used in production.
 
 ```csharp
 AcceptableCertificateErrors
@@ -44,7 +44,7 @@ Enabled
 
 ### ProtocolVersion
 
-Allowed TLS protocol versions; the default Security.Authentication.SslProtocols.None means the operating system default. Versions below TLS 1.2 (Ssl2, Ssl3, Tls, Tls11) are rejected by validation.
+Allowed TLS protocol versions; the default None means the operating system default. Versions below TLS 1.2 (Ssl2, Ssl3, Tls, Tls11) are rejected by validation.
 
 ```csharp
 ProtocolVersion
@@ -52,7 +52,7 @@ ProtocolVersion
 
 ### ServerName
 
-Server name used for TLS certificate validation (SNI and name matching). When null, connectors fall back to StreamBusOptions.Host at connect time.
+Server name used for TLS certificate validation (SNI and name matching). When null, connectors fall back to Host at connect time.
 
 ```csharp
 ServerName

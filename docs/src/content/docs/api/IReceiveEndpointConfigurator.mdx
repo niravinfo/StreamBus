@@ -65,7 +65,7 @@ DeadLetterToStream(string, StreamOptions)
 Sets the timeout for the confirmed publish to the error stream hand-off. Null waits indefinitely; values below one second are raised to one second.
 
 ```csharp
-ErrorPublishTimeout(Nullable<TimeSpan>)
+ErrorPublishTimeout(TimeSpan?)
 ```
 
 - [StreamBusConfigurationException](StreamBusConfigurationException) — timeout is not positive.
@@ -115,7 +115,7 @@ OffsetStore(OffsetStoreOptions)
 Registers a callback that owns the outcome for messages whose retry schedule is exhausted. It shadows a declared dead-letter destination with a startup warning; returning advances past the message, throwing recycles the attach for redelivery. Last call wins.
 
 ```csharp
-OnExhausted(Func<ExhaustedContext>, Threading.CancellationToken, Threading.Tasks.Task})
+OnExhausted(Func<ExhaustedContext, CancellationToken, Task>)
 ```
 
 ### Partitions
@@ -160,7 +160,7 @@ SuperStream(bool)
 
 ### UseConsumeFilter
 
-Registers a consume filter on this endpoint and discovers its typed message interfaces at runtime. Use IReceiveEndpointConfigurator.UseConsumeFilter--2 to avoid closing the adapter at runtime. The filter type is registered as a singleton because consume filters are resolved once per bus and cached; register the type as a singleton yourself if you add it before this call.
+Registers a consume filter on this endpoint and discovers its typed message interfaces at runtime. Use IReceiveEndpointConfigurator.UseConsumeFilter&lt;T, T1&gt;() to avoid closing the adapter at runtime. The filter type is registered as a singleton because consume filters are resolved once per bus and cached; register the type as a singleton yourself if you add it before this call.
 
 ```csharp
 UseConsumeFilter<T>()
@@ -187,7 +187,7 @@ UseConsumeFilter(Type)
 Registers a consume filter on this endpoint created by factory. The factory runs once per bus; its result is cached for the bus lifetime.
 
 ```csharp
-UseConsumeFilter(Func<IServiceProvider>, IStreamConsumeFilter})
+UseConsumeFilter(Func<IServiceProvider, IStreamConsumeFilter>)
 ```
 
 ### UseConsumeFilter

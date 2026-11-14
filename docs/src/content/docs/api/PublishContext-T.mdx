@@ -20,7 +20,7 @@ Message
 
 ### TypedPayload
 
-The payload captured as T at construction, so PublishContext-1.Message does not re-cast (and re-unbox for value types) PublishContext.Payload on every access. Falls back to a cast when not set (e.g. contexts constructed in tests).
+The payload captured as T at construction, so Message does not re-cast (and re-unbox for value types) Payload on every access. Falls back to a cast when not set (e.g. contexts constructed in tests).
 
 ```csharp
 TypedPayload

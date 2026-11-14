@@ -10,5 +10,5 @@ public class RuntimeGeneric
 
 ## Remarks
 
-This is the single reflection-based closing point for the typed filter/context/consumer machinery. Registrations that pin their message type at the call site (UsePublishFilter&lt;TFilter, TMessage&gt; / UseConsumeFilter&lt;TFilter, TMessage&gt;) bypass it entirely. The remaining type-based and open-generic registrations cannot be statically preserved by a trimmer or NativeAOT, so the public entry points that opt into them carry Diagnostics.CodeAnalysis.RequiresUnreferencedCodeAttribute and Diagnostics.CodeAnalysis.RequiresDynamicCodeAttribute.
+This is the single reflection-based closing point for the typed filter/context/consumer machinery. Registrations that pin their message type at the call site (UsePublishFilter&lt;TFilter, TMessage&gt; / UseConsumeFilter&lt;TFilter, TMessage&gt;) bypass it entirely. The remaining type-based and open-generic registrations cannot be statically preserved by a trimmer or NativeAOT, so the public entry points that opt into them carry RequiresUnreferencedCodeAttribute and RequiresDynamicCodeAttribute.
 

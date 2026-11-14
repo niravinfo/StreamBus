@@ -10,7 +10,7 @@ public interface IStreamConsumeFilter
 
 ## Remarks
 
-Filter instances are resolved once when the consumer attaches and cached for the bus lifetime, so a filter must be thread-safe. Register filter types with a singleton lifetime: a scoped or transient registration is rejected when the consumer attaches. Scoped services are available through ConsumeContext.Services.
+Filter instances are resolved once when the consumer attaches and cached for the bus lifetime, so a filter must be thread-safe. Register filter types with a singleton lifetime: a scoped or transient registration is rejected when the consumer attaches. Scoped services are available through Services.
 
 ## Methods
 

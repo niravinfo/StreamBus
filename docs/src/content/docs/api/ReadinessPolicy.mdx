@@ -20,7 +20,7 @@ UpTo(TimeSpan)
 
 ### WaitUpTo.constructor
 
-Wait for readiness for at most ReadinessPolicy.WaitUpTo.Timeout, yielding BusReadiness.TimedOut when the budget expires.
+Wait for readiness for at most Timeout, yielding TimedOut when the budget expires.
 
 ```csharp
 WaitUpTo.constructor(TimeSpan)
@@ -30,7 +30,7 @@ WaitUpTo.constructor(TimeSpan)
 
 ### Default
 
-Shared ReadinessPolicy.FailFast instance, the default policy.
+Shared FailFast instance, the default policy.
 
 ```csharp
 Default
@@ -38,7 +38,7 @@ Default
 
 ### Forever
 
-Shared ReadinessPolicy.WaitIndefinitely instance.
+Shared WaitIndefinitely instance.
 
 ```csharp
 Forever
@@ -56,7 +56,7 @@ WaitUpTo.Timeout
 
 ### FailFast
 
-Do not wait: return immediately, yielding BusReadiness.TimedOut when the connection is not already ready.
+Do not wait: return immediately, yielding TimedOut when the connection is not already ready.
 
 ```csharp
 FailFast
@@ -72,7 +72,7 @@ WaitIndefinitely
 
 ### WaitUpTo
 
-Wait for readiness for at most ReadinessPolicy.WaitUpTo.Timeout, yielding BusReadiness.TimedOut when the budget expires.
+Wait for readiness for at most Timeout, yielding TimedOut when the budget expires.
 
 ```csharp
 WaitUpTo

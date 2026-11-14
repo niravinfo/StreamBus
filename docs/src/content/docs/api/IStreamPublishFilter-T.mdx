@@ -10,7 +10,7 @@ public interface IStreamPublishFilter<T>
 
 ## Remarks
 
-Filter instances are resolved once when the bus is built and cached for the bus lifetime, so a filter must be thread-safe. Register filter types with a singleton lifetime: a scoped or transient registration is rejected when the bus is built. Scoped services are available through PublishContext.Services.
+Filter instances are resolved once when the bus is built and cached for the bus lifetime, so a filter must be thread-safe. Register filter types with a singleton lifetime: a scoped or transient registration is rejected when the bus is built. Scoped services are available through Services.
 
 ## Methods
 

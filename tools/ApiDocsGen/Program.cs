@@ -16,6 +16,7 @@ public static class Program
         try
         {
             var types = XmlDocParser.Parse(xmlPath);
+            var knownTypeSlugs = types.Select(t => t.Slug).ToList();
 
             Directory.CreateDirectory(outputDir);
 
@@ -28,7 +29,7 @@ public static class Program
 
             foreach (var type in types)
             {
-                File.WriteAllText(Path.Combine(outputDir, type.Slug + ".mdx"), PageRenderer.Render(type));
+                File.WriteAllText(Path.Combine(outputDir, type.Slug + ".mdx"), PageRenderer.Render(type, knownTypeSlugs));
             }
 
             Console.WriteLine($"Generated {types.Count} pages");

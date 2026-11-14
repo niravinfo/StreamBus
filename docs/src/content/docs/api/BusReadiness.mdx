@@ -2,7 +2,7 @@
 title: BusReadiness
 ---
 
-Outcome of a readiness wait (IStreamBus.WaitUntilReadyAsync(StreamBus.ReadinessPolicy,System.Threading.CancellationToken)): the waiting policy either saw the connection become ready, gave up on its budget, or observed a fatal connection state.
+Outcome of a readiness wait (IStreamBus.WaitUntilReadyAsync(ReadinessPolicy, CancellationToken)): the waiting policy either saw the connection become ready, gave up on its budget, or observed a fatal connection state.
 
 ```csharp
 public enum BusReadiness

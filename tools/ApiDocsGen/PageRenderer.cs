@@ -5,7 +5,7 @@ namespace ApiDocsGen;
 /// <summary>Renders an <see cref="ApiType"/> model to a Starlight .mdx page.</summary>
 public static class PageRenderer
 {
-    public static string Render(ApiType type)
+    public static string Render(ApiType type, IReadOnlyCollection<string> knownTypeSlugs)
     {
         var sb = new StringBuilder();
 
@@ -19,15 +19,15 @@ public static class PageRenderer
             sb.Append("## Remarks\n\n").Append(EscapeBody(type.Remarks)).Append("\n\n");
         }
 
-        AppendSection(sb, "## Methods", type, ApiMemberKind.Method);
-        AppendSection(sb, "## Properties", type, ApiMemberKind.Property);
-        AppendSection(sb, "## Fields", type, ApiMemberKind.Field);
-        AppendSection(sb, "## Nested types", type, ApiMemberKind.NestedType);
+        AppendSection(sb, "## Methods", type, ApiMemberKind.Method, knownTypeSlugs);
+        AppendSection(sb, "## Properties", type, ApiMemberKind.Property, knownTypeSlugs);
+        AppendSection(sb, "## Fields", type, ApiMemberKind.Field, knownTypeSlugs);
+        AppendSection(sb, "## Nested types", type, ApiMemberKind.NestedType, knownTypeSlugs);
 
         return sb.ToString();
     }
 
-    private static void AppendSection(StringBuilder sb, string heading, ApiType type, ApiMemberKind kind)
+    private static void AppendSection(StringBuilder sb, string heading, ApiType type, ApiMemberKind kind, IReadOnlyCollection<string> knownTypeSlugs)
     {
         var members = type.Members
             .Where(m => m.Kind == kind)
@@ -55,8 +55,20 @@ public static class PageRenderer
             {
                 foreach (var exception in member.Exceptions)
                 {
-                    sb.Append("- [").Append(exception.TypeName).Append("](").Append(XmlDocParser.Slugify(exception.TypeName)).Append(") — ")
-                      .Append(EscapeBody(exception.Description)).Append('\n');
+                    var slug = XmlDocParser.Slugify(exception.TypeName);
+                    // Only the library's own types have generated pages; BCL
+                    // exceptions link nowhere, so they stay plain text.
+                    sb.Append("- ");
+                    if (knownTypeSlugs.Contains(slug))
+                    {
+                        sb.Append('[').Append(exception.TypeName).Append("](").Append(slug).Append(')');
+                    }
+                    else
+                    {
+                        sb.Append(exception.TypeName);
+                    }
+
+                    sb.Append(" — ").Append(EscapeBody(exception.Description)).Append('\n');
                 }
 
                 sb.Append('\n');

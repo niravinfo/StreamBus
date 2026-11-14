@@ -146,6 +146,105 @@ public class XmlDocParserTests
     }
 
     [Fact]
+    public void ParameterListSplitRespectsBraceDepth()
+    {
+        var xml = """
+            <?xml version="1.0"?>
+            <doc>
+              <assembly><name>StreamBus</name></assembly>
+              <members>
+                <member name="T:StreamBus.IStreamBus">
+                  <summary>Bus surface.</summary>
+                </member>
+                <member name="M:StreamBus.IStreamBus.ConsumeAsync(System.String,StreamBus.ConsumeOptions,System.Func{StreamBus.ConsumeContext,System.Threading.Tasks.Task})">
+                  <summary>Attaches a handler.</summary>
+                </member>
+              </members>
+            </doc>
+            """;
+        var types = XmlDocParser.Parse(FixturePath(xml));
+        var bus = Assert.Single(types, t => t.FullName == "IStreamBus");
+        var method = Assert.Single(bus.Members, m => m.Name == "ConsumeAsync");
+        Assert.Equal("ConsumeAsync(string, ConsumeOptions, Func<ConsumeContext, Task>)", method.Signature);
+    }
+
+    [Fact]
+    public void ByRefParameterRendersWithOutModifier()
+    {
+        var xml = """
+            <?xml version="1.0"?>
+            <doc>
+              <assembly><name>StreamBus</name></assembly>
+              <members>
+                <member name="T:StreamBus.ConsumeContext`1">
+                  <summary>Context.</summary>
+                </member>
+                <member name="M:StreamBus.ConsumeContext`1.TryGetPayload``1(``0@)">
+                  <summary>Tries to get a payload.</summary>
+                </member>
+              </members>
+            </doc>
+            """;
+        var types = XmlDocParser.Parse(FixturePath(xml));
+        var context = Assert.Single(types, t => t.FullName == "ConsumeContext`1");
+        var method = Assert.Single(context.Members, m => m.Name == "TryGetPayload");
+        Assert.Equal("TryGetPayload<T>(out T)", method.Signature);
+    }
+
+    [Fact]
+    public void LongNamespaceParameterRendersAsLeafType()
+    {
+        var xml = """
+            <?xml version="1.0"?>
+            <doc>
+              <assembly><name>StreamBus</name></assembly>
+              <members>
+                <member name="T:StreamBus.OptionalAsyncScope">
+                  <summary>Scope.</summary>
+                </member>
+                <member name="M:StreamBus.OptionalAsyncScope.constructor(System.Nullable{Microsoft.Extensions.DependencyInjection.AsyncServiceScope})">
+                  <summary>Creates the scope.</summary>
+                </member>
+              </members>
+            </doc>
+            """;
+        var types = XmlDocParser.Parse(FixturePath(xml));
+        var scope = Assert.Single(types, t => t.FullName == "OptionalAsyncScope");
+        var method = Assert.Single(scope.Members, m => m.Name == "constructor");
+        Assert.Equal("constructor(AsyncServiceScope?)", method.Signature);
+    }
+
+    [Fact]
+    public void MethodCrefRendersReadableName()
+    {
+        var xml = """
+            <?xml version="1.0"?>
+            <doc>
+              <assembly><name>StreamBus</name></assembly>
+              <members>
+                <member name="T:StreamBus.IReceiveEndpointConfigurator">
+                  <summary>Endpoint configuration. See <see cref="M:StreamBus.IStreamBusConfigurator.UseConsumeFilter``2(StreamBus.IStreamPlainProducerHandle{``0})"/>.</summary>
+                </member>
+                <member name="T:StreamBus.IHostConfigurator">
+                  <summary>Host configuration.</summary>
+                </member>
+                <member name="M:StreamBus.IHostConfigurator.SetPorts(System.Int32)">
+                  <summary>Like <see cref="M:StreamBus.IHostConfigurator.AmqpPort(System.Int32)"/>.</summary>
+                </member>
+              </members>
+            </doc>
+            """;
+        var types = XmlDocParser.Parse(FixturePath(xml));
+        var endpoint = Assert.Single(types, t => t.FullName == "IReceiveEndpointConfigurator");
+        Assert.Contains("UseConsumeFilter<T, T1>", endpoint.Summary);
+        Assert.DoesNotContain("--2", endpoint.Summary);
+        Assert.DoesNotContain("System.Func", endpoint.Summary);
+
+        var host = Assert.Single(types, t => t.FullName == "IHostConfigurator");
+        Assert.Contains("IHostConfigurator.AmqpPort(int)", host.Members.Single(m => m.Name == "SetPorts").Summary);
+    }
+
+    [Fact]
     public void SeeAndParamrefTagsRenderInline()
     {
         var xml = """

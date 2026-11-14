@@ -15,7 +15,7 @@ public interface ITlsConfigurator
 Sets certificate policy errors accepted despite failing validation.
 
 ```csharp
-AcceptableCertificateErrors(Net.Security.SslPolicyErrors)
+AcceptableCertificateErrors(SslPolicyErrors)
 ```
 
 ### ClientCertificate
@@ -28,10 +28,10 @@ ClientCertificate(string, string)
 
 ### ProtocolVersion
 
-Sets the allowed TLS protocol versions; Security.Authentication.SslProtocols.None means the operating system default. Versions below TLS 1.2 are rejected by validation.
+Sets the allowed TLS protocol versions; None means the operating system default. Versions below TLS 1.2 are rejected by validation.
 
 ```csharp
-ProtocolVersion(Security.Authentication.SslProtocols)
+ProtocolVersion(SslProtocols)
 ```
 
 ### ServerName

@@ -70,15 +70,15 @@ Serializer(IStreamSerializer)
 
 ### Serializer
 
-Replaces the message serializer with a System.Text.Json serializer built from a fresh Text.Json.JsonSerializerOptions configured by configure.
+Replaces the message serializer with a System.Text.Json serializer built from a fresh JsonSerializerOptions configured by configure.
 
 ```csharp
-Serializer(Action<Text.Json.JsonSerializerOptions>)
+Serializer(Action<JsonSerializerOptions>)
 ```
 
 ### UseConsumeFilter
 
-Registers a consume filter, discovering its typed message interfaces at runtime. Use IStreamBusConfigurator.UseConsumeFilter--2 to avoid closing the adapter at runtime. The filter type is registered as a singleton because consume filters are resolved once per bus and cached; register the type as a singleton yourself if you add it before this call.
+Registers a consume filter, discovering its typed message interfaces at runtime. Use IStreamBusConfigurator.UseConsumeFilter&lt;T, T1&gt;() to avoid closing the adapter at runtime. The filter type is registered as a singleton because consume filters are resolved once per bus and cached; register the type as a singleton yourself if you add it before this call.
 
 ```csharp
 UseConsumeFilter<T>()
@@ -86,7 +86,7 @@ UseConsumeFilter<T>()
 
 ### UseConsumeFilter
 
-Registers a typed consume filter whose endpoint message type is TMessage. Unlike IStreamBusConfigurator.UseConsumeFilter--1, this overload closes the typed adapter at the call site and needs no runtime generic closing. The filter type is registered as a singleton because consume filters are resolved once per bus and cached.
+Registers a typed consume filter whose endpoint message type is TMessage. Unlike IStreamBusConfigurator.UseConsumeFilter&lt;T&gt;(), this overload closes the typed adapter at the call site and needs no runtime generic closing. The filter type is registered as a singleton because consume filters are resolved once per bus and cached.
 
 ```csharp
 UseConsumeFilter<T, T1>()
@@ -105,7 +105,7 @@ UseConsumeFilter(Type)
 Registers a consume filter created by factory. The factory runs once per bus; its result is cached for the bus lifetime.
 
 ```csharp
-UseConsumeFilter(Func<IServiceProvider>, IStreamConsumeFilter})
+UseConsumeFilter(Func<IServiceProvider, IStreamConsumeFilter>)
 ```
 
 ### UseConsumeFilter
@@ -118,7 +118,7 @@ UseConsumeFilter(IStreamConsumeFilter)
 
 ### UsePublishFilter
 
-Registers a publish filter, discovering its typed message interfaces at runtime. Use IStreamBusConfigurator.UsePublishFilter--2 to avoid closing the adapter at runtime. The filter type is registered as a singleton because publish filters are resolved once per bus and cached; register the type as a singleton yourself if you add it before this call.
+Registers a publish filter, discovering its typed message interfaces at runtime. Use IStreamBusConfigurator.UsePublishFilter&lt;T, T1&gt;() to avoid closing the adapter at runtime. The filter type is registered as a singleton because publish filters are resolved once per bus and cached; register the type as a singleton yourself if you add it before this call.
 
 ```csharp
 UsePublishFilter<T>()
@@ -145,7 +145,7 @@ UsePublishFilter(Type)
 Registers a publish filter created by factory. The factory runs once per bus; its result is cached for the bus lifetime.
 
 ```csharp
-UsePublishFilter(Func<IServiceProvider>, IStreamPublishFilter})
+UsePublishFilter(Func<IServiceProvider, IStreamPublishFilter>)
 ```
 
 ### UsePublishFilter

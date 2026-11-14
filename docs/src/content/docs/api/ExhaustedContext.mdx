@@ -12,13 +12,13 @@ public class ExhaustedContext
 
 ### GetService
 
-Resolves a required service from the exhaustion scope. A missing registration is a runtime DI miss, not invalid bus configuration, so this surfaces the standard InvalidOperationException from Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.GetRequiredService--1(System.IServiceProvider).
+Resolves a required service from the exhaustion scope. A missing registration is a runtime DI miss, not invalid bus configuration, so this surfaces the standard InvalidOperationException from ServiceProviderServiceExtensions.GetRequiredService&lt;T&gt;(IServiceProvider).
 
 ```csharp
 GetService<T>()
 ```
 
-- [InvalidOperationException](InvalidOperationException) — No service of type T is registered.
+- InvalidOperationException — No service of type T is registered.
 
 ## Properties
 

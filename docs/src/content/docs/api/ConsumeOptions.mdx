@@ -28,7 +28,7 @@ ErrorPublishTimeout
 
 ### ErrorStream
 
-Error-stream destination for exhausted messages (an alternative to ConsumeOptions.OnExhausted, which it is mutually exclusive with). The stream is declared from the destination's stream spec; consuming or draining it afterwards is the application's responsibility.
+Error-stream destination for exhausted messages (an alternative to OnExhausted, which it is mutually exclusive with). The stream is declared from the destination's stream spec; consuming or draining it afterwards is the application's responsibility.
 
 ```csharp
 ErrorStream
@@ -52,7 +52,7 @@ OffsetStore
 
 ### OnExhausted
 
-Terminal handler for exhausted messages. The callback owns the outcome: it replaces any hand-off destination (on the raw ConsumeOptions path ConsumeOptions.ErrorStream and ConsumeOptions.OnExhausted are mutually exclusive). Returning advances past the message; throwing recycles the attach (redeliver, never skip). Resolve services from ExhaustedContext.Services; the endpoint configurator exposes the same callback as OnExhausted.
+Terminal handler for exhausted messages. The callback owns the outcome: it replaces any hand-off destination (on the raw ConsumeOptions path ErrorStream and OnExhausted are mutually exclusive). Returning advances past the message; throwing recycles the attach (redeliver, never skip). Resolve services from Services; the endpoint configurator exposes the same callback as OnExhausted.
 
 ```csharp
 OnExhausted
@@ -68,7 +68,7 @@ Readiness
 
 ### Retry
 
-Retry policy. The default sets no attempt limit: a failing handler is retried forever and its partition waits, so nothing is skipped. To cap attempts and hand the message off instead, set RetryPolicy.MaxAttempts and configure an error destination: ConsumeOptions.ErrorStream (an error stream) or ConsumeOptions.OnExhausted (a callback). The endpoint API also offers a dead-letter queue (DeadLetterToQueue).
+Retry policy. The default sets no attempt limit: a failing handler is retried forever and its partition waits, so nothing is skipped. To cap attempts and hand the message off instead, set MaxAttempts and configure an error destination: ErrorStream (an error stream) or OnExhausted (a callback). The endpoint API also offers a dead-letter queue (DeadLetterToQueue).
 
 ```csharp
 Retry

@@ -2,7 +2,7 @@
 title: ErrorQueueOptions
 ---
 
-AMQP error-queue options. ErrorQueueOptions.ConfirmTimeout is the single confirmation budget for a dead-letter publish; it is independent of the stream publish timeout because the two paths have different failure modes.
+AMQP error-queue options. ConfirmTimeout is the single confirmation budget for a dead-letter publish; it is independent of the stream publish timeout because the two paths have different failure modes.
 
 ```csharp
 public class ErrorQueueOptions

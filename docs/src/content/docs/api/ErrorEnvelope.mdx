@@ -28,7 +28,7 @@ EnvelopeApplicationProperties()
 
 ### ToApplicationProperties
 
-Flattens the envelope into the application properties for the error-destination publish: the streambus.error.* metadata, with the consume-pipeline ErrorEnvelope.SendHeaders and then the original ErrorEnvelope.UserHeaders merged on top as plain keys. Envelope fields win key collisions.
+Flattens the envelope into the application properties for the error-destination publish: the streambus.error.* metadata, with the consume-pipeline SendHeaders and then the original UserHeaders merged on top as plain keys. Envelope fields win key collisions.
 
 ```csharp
 ToApplicationProperties()
@@ -36,7 +36,7 @@ ToApplicationProperties()
 
 ### ToHeaders
 
-Flattens the envelope into a header map: the same content as ErrorEnvelope.ToApplicationProperties minus entries with null values.
+Flattens the envelope into a header map: the same content as ErrorEnvelope.ToApplicationProperties() minus entries with null values.
 
 ```csharp
 ToHeaders()
@@ -47,7 +47,7 @@ ToHeaders()
 Attempts to read an envelope from a delivery that carried the failure metadata as application properties (error-stream hand-off).
 
 ```csharp
-TryParse(string, Byte[], Collections.Generic.IReadOnlyDictionary<string>, Object}, ErrorEnvelope@)
+TryParse(string, Byte[], IReadOnlyDictionary<string, object>, out ErrorEnvelope)
 ```
 
 ### TryParseHeaders
@@ -55,7 +55,7 @@ TryParse(string, Byte[], Collections.Generic.IReadOnlyDictionary<string>, Object
 Attempts to read an envelope from a delivery that carried the failure metadata as AMQP message headers (queue hand-off).
 
 ```csharp
-TryParseHeaders(string, Byte[], Collections.Generic.IReadOnlyDictionary<string>, Object}, ErrorEnvelope@)
+TryParseHeaders(string, Byte[], IReadOnlyDictionary<string, object>, out ErrorEnvelope)
 ```
 
 ## Properties
@@ -182,7 +182,7 @@ SourcePartition
 
 ### SourcePartitionStream
 
-Physical partition stream the delivery failed on; equals ErrorEnvelope.SourceStream for a plain stream.
+Physical partition stream the delivery failed on; equals SourceStream for a plain stream.
 
 ```csharp
 SourcePartitionStream

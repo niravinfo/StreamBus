@@ -2,7 +2,7 @@
 title: SuperStreamRouting
 ---
 
-Per-handle routing table for the client's static Routing callback. The callback receives only the outgoing RabbitMQ.Stream.Client.Message, so the handle stamps the routing value immediately before send and removes it afterwards.
+Per-handle routing table for the client's static Routing callback. The callback receives only the outgoing Message, so the handle stamps the routing value immediately before send and removes it afterwards.
 
 ```csharp
 public class SuperStreamRouting
@@ -15,7 +15,7 @@ public class SuperStreamRouting
 Removes the stamp for message after send.
 
 ```csharp
-Remove(RabbitMQ.Stream.Client.Message)
+Remove(Message)
 ```
 
 ### Route
@@ -23,7 +23,7 @@ Remove(RabbitMQ.Stream.Client.Message)
 Routing callback for the client: returns the routing value stamped for message.
 
 ```csharp
-Route(RabbitMQ.Stream.Client.Message)
+Route(Message)
 ```
 
 ### Stamp
@@ -31,6 +31,6 @@ Route(RabbitMQ.Stream.Client.Message)
 Stamps the routing value to use for message just before send.
 
 ```csharp
-Stamp(RabbitMQ.Stream.Client.Message, string)
+Stamp(Message, string)
 ```
 

@@ -2,7 +2,7 @@
 title: RawConsumerCast
 ---
 
-Fail-fast guard for the StreamSystemHandle.CreateRawConsumerAsync(RabbitMQ.Stream.Client.RawConsumerConfig,System.Threading.CancellationToken) result: the client's RabbitMQ.Stream.Client.StreamSystem.CreateRawConsumer(RabbitMQ.Stream.Client.RawConsumerConfig,Microsoft.Extensions.Logging.ILogger) contract returns RabbitMQ.Stream.Client.IConsumer, but the partition loop requires the concrete RabbitMQ.Stream.Client.RawConsumer subclass (StoreOffset/Close). A client version returning a different concrete type must surface an actionable error here instead of an opaque InvalidCastException from inside the attach loop.
+Fail-fast guard for the StreamSystemHandle.CreateRawConsumerAsync(RawConsumerConfig, CancellationToken) result: the client's StreamSystem.CreateRawConsumer(RawConsumerConfig, ILogger) contract returns IConsumer, but the partition loop requires the concrete RawConsumer subclass (StoreOffset/Close). A client version returning a different concrete type must surface an actionable error here instead of an opaque InvalidCastException from inside the attach loop.
 
 ```csharp
 public class RawConsumerCast
@@ -12,9 +12,9 @@ public class RawConsumerCast
 
 ### Require
 
-Returns the consumer when it is the required RabbitMQ.Stream.Client.RawConsumer subclass.
+Returns the consumer when it is the required RawConsumer subclass.
 
 ```csharp
-Require(RabbitMQ.Stream.Client.IConsumer)
+Require(IConsumer)
 ```
 

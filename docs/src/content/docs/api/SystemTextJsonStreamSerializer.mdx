@@ -2,7 +2,7 @@
 title: SystemTextJsonStreamSerializer
 ---
 
-System.Text.Json serializer; SystemTextJsonStreamSerializer.ContentType is application/json. Construct with custom Text.Json.JsonSerializerOptions or use SystemTextJsonStreamSerializer.Default.
+System.Text.Json serializer; ContentType is application/json. Construct with custom JsonSerializerOptions or use Default.
 
 ```csharp
 public class SystemTextJsonStreamSerializer
@@ -12,7 +12,7 @@ public class SystemTextJsonStreamSerializer
 
 ### Deserialize
 
-Deserializes UTF-8 JSON into T; a null result throws Text.Json.JsonException.
+Deserializes UTF-8 JSON into T; a null result throws JsonException.
 
 ```csharp
 Deserialize<T>(ReadOnlyMemory<byte>)
@@ -31,7 +31,7 @@ Serialize<T>(T)
 Creates a serializer over the given options; null uses defaults.
 
 ```csharp
-constructor(Text.Json.JsonSerializerOptions)
+constructor(JsonSerializerOptions)
 ```
 
 ## Properties

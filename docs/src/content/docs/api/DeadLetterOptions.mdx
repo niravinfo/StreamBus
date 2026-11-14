@@ -2,7 +2,7 @@
 title: DeadLetterOptions
 ---
 
-Kind-based dead-letter destination. A stream destination sets DeadLetterOptions.StreamSpec (queue type unset); a queue destination sets DeadLetterOptions.QueueType (stream spec unset). Setting both is unrepresentable by construction — DeadLetterOptions.IsStream is DeadLetterOptions.QueueType being null.
+Kind-based dead-letter destination. A stream destination sets StreamSpec (queue type unset); a queue destination sets QueueType (stream spec unset). Setting both is unrepresentable by construction — IsStream is QueueType being null.
 
 ```csharp
 public class DeadLetterOptions

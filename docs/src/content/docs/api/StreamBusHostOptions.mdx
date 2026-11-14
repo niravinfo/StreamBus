@@ -2,7 +2,7 @@
 title: StreamBusHostOptions
 ---
 
-Host-wide start/stop behavior for StreamBus, mirroring MassTransit's BusOptions. Configured through the options pattern; validated by StreamBusHostOptions.ValidateStart(StreamBus.StreamBusHostOptions) / StreamBusHostOptions.ValidateStop(StreamBus.StreamBusHostOptions) before the hosted service uses the values.
+Host-wide start/stop behavior for StreamBus, mirroring MassTransit's BusOptions. Configured through the options pattern; validated by StreamBusHostOptions.ValidateStart(StreamBusHostOptions) / StreamBusHostOptions.ValidateStop(StreamBusHostOptions) before the hosted service uses the values.
 
 ```csharp
 public class StreamBusHostOptions
@@ -12,7 +12,7 @@ public class StreamBusHostOptions
 
 ### ValidateStart
 
-Validates the start-phase options: StreamBusHostOptions.StartTimeout must be positive when set. Throws StreamBusConfigurationException otherwise.
+Validates the start-phase options: StartTimeout must be positive when set. Throws StreamBusConfigurationException otherwise.
 
 ```csharp
 ValidateStart(StreamBusHostOptions)
@@ -20,7 +20,7 @@ ValidateStart(StreamBusHostOptions)
 
 ### ValidateStop
 
-Validates the stop-phase options: StreamBusHostOptions.StopTimeout and StreamBusHostOptions.ConsumerStopTimeout must be positive when set, and StreamBusHostOptions.ConsumerStopTimeout, when set, must not exceed StreamBusHostOptions.StopTimeout (it may be set without it). Throws StreamBusConfigurationException otherwise.
+Validates the stop-phase options: StopTimeout and ConsumerStopTimeout must be positive when set, and ConsumerStopTimeout, when set, must not exceed StopTimeout (it may be set without it). Throws StreamBusConfigurationException otherwise.
 
 ```csharp
 ValidateStop(StreamBusHostOptions)
@@ -30,7 +30,7 @@ ValidateStop(StreamBusHostOptions)
 
 ### ConsumerStopTimeout
 
-Budget for stopping consumers during shutdown; must not exceed StreamBusHostOptions.StopTimeout when both are set, and may be set on its own (default null waits indefinitely).
+Budget for stopping consumers during shutdown; must not exceed StopTimeout when both are set, and may be set on its own (default null waits indefinitely).
 
 ```csharp
 ConsumerStopTimeout

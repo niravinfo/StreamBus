@@ -15,7 +15,7 @@ public interface IStreamSystemHandle
 Creates a plain-stream producer.
 
 ```csharp
-CreatePlainProducerAsync(string, Threading.CancellationToken)
+CreatePlainProducerAsync(string, CancellationToken)
 ```
 
 ### CreateRawConsumerAsync
@@ -23,7 +23,7 @@ CreatePlainProducerAsync(string, Threading.CancellationToken)
 Creates a raw consumer for one stream partition from the given client config.
 
 ```csharp
-CreateRawConsumerAsync(RabbitMQ.Stream.Client.RawConsumerConfig, Threading.CancellationToken)
+CreateRawConsumerAsync(RawConsumerConfig, CancellationToken)
 ```
 
 ### CreateStreamAsync
@@ -31,7 +31,7 @@ CreateRawConsumerAsync(RabbitMQ.Stream.Client.RawConsumerConfig, Threading.Cance
 Creates a plain stream from a client stream spec (idempotency is the caller's).
 
 ```csharp
-CreateStreamAsync(RabbitMQ.Stream.Client.StreamSpec, Threading.CancellationToken)
+CreateStreamAsync(StreamSpec, CancellationToken)
 ```
 
 ### CreateSuperStreamAsync
@@ -39,7 +39,7 @@ CreateStreamAsync(RabbitMQ.Stream.Client.StreamSpec, Threading.CancellationToken
 Creates a super stream from a client super-stream spec.
 
 ```csharp
-CreateSuperStreamAsync(RabbitMQ.Stream.Client.PartitionsSuperStreamSpec, Threading.CancellationToken)
+CreateSuperStreamAsync(PartitionsSuperStreamSpec, CancellationToken)
 ```
 
 ### CreateSuperStreamProducerAsync
@@ -47,7 +47,7 @@ CreateSuperStreamAsync(RabbitMQ.Stream.Client.PartitionsSuperStreamSpec, Threadi
 Creates a super-stream producer; every send must carry a routing key.
 
 ```csharp
-CreateSuperStreamProducerAsync(string, Threading.CancellationToken)
+CreateSuperStreamProducerAsync(string, CancellationToken)
 ```
 
 ### QueryPartitionAsync
@@ -55,7 +55,7 @@ CreateSuperStreamProducerAsync(string, Threading.CancellationToken)
 Lists the partition stream names of a super stream.
 
 ```csharp
-QueryPartitionAsync(string, Threading.CancellationToken)
+QueryPartitionAsync(string, CancellationToken)
 ```
 
 ### StoreSystemOffsetAsync
@@ -63,7 +63,7 @@ QueryPartitionAsync(string, Threading.CancellationToken)
 Stores an offset for a consumerGroup on a stream (broker-side persistence).
 
 ```csharp
-StoreSystemOffsetAsync(string, string, UInt64, Threading.CancellationToken)
+StoreSystemOffsetAsync(string, string, UInt64, CancellationToken)
 ```
 
 ### StreamExistsAsync
@@ -71,7 +71,7 @@ StoreSystemOffsetAsync(string, string, UInt64, Threading.CancellationToken)
 true when a plain stream with this name exists.
 
 ```csharp
-StreamExistsAsync(string, Threading.CancellationToken)
+StreamExistsAsync(string, CancellationToken)
 ```
 
 ### SuperStreamExistsAsync
@@ -79,7 +79,7 @@ StreamExistsAsync(string, Threading.CancellationToken)
 true when a super stream with this name exists.
 
 ```csharp
-SuperStreamExistsAsync(string, Threading.CancellationToken)
+SuperStreamExistsAsync(string, CancellationToken)
 ```
 
 ### TryQueryOffsetAsync
@@ -87,7 +87,7 @@ SuperStreamExistsAsync(string, Threading.CancellationToken)
 Queries the stored offset for a consumerGroup on a stream without failing when absent.
 
 ```csharp
-TryQueryOffsetAsync(string, string, Threading.CancellationToken)
+TryQueryOffsetAsync(string, string, CancellationToken)
 ```
 
 ## Properties

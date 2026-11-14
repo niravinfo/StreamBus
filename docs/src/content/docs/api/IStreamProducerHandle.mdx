@@ -15,6 +15,6 @@ public interface IStreamProducerHandle
 Sends the body and awaits the broker confirmation; a non-Ok code throws StreamBusPublishException.
 
 ```csharp
-SendAsync(ReadOnlyMemory<byte>, PublishOptions, Threading.CancellationToken)
+SendAsync(ReadOnlyMemory<byte>, PublishOptions, CancellationToken)
 ```
 

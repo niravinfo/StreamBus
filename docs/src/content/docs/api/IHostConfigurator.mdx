@@ -74,5 +74,5 @@ Enables TLS for both the stream protocol and AMQP connections. Optional; off by 
 UseTls(Action<ITlsConfigurator>)
 ```
 
-Without explicit IHostConfigurator.StreamPort(System.Int32)/IHostConfigurator.AmqpPort(System.Int32) calls, enabling TLS switches the default ports to the conventional RabbitMQ TLS ports (5551 stream, 5671 AMQP). Explicit port calls always win, regardless of call order. Calling UseTls again replaces the previous TLS settings.
+Without explicit IHostConfigurator.StreamPort(int)/IHostConfigurator.AmqpPort(int) calls, enabling TLS switches the default ports to the conventional RabbitMQ TLS ports (5551 stream, 5671 AMQP). Explicit port calls always win, regardless of call order. Calling UseTls again replaces the previous TLS settings.
 
