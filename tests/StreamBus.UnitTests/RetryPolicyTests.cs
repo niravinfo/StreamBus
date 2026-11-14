@@ -119,43 +119,27 @@ public sealed class RetryPolicyTests
     }
 
     [Fact]
-    public async Task Sub_one_multiplier_throws()
-    {
-        await Assert.ThrowsAsync<StreamBusConfigurationException>(() =>
-            Consume(new ConsumeOptions { Retry = new RetryPolicy { Multiplier = 0.5 } }));
-    }
-
-    [Theory]
-    [InlineData(double.NaN)]
-    [InlineData(double.PositiveInfinity)]
-    [InlineData(double.NegativeInfinity)]
-    public async Task Non_finite_multiplier_throws(double multiplier)
-    {
-        var ex = await Assert.ThrowsAsync<StreamBusConfigurationException>(() =>
-            Consume(new ConsumeOptions { Retry = new RetryPolicy { Multiplier = multiplier } }));
-        Assert.Contains("finite", ex.Message);
-    }
-
-    [Fact]
-    public void Unit_multiplier_is_allowed_and_yields_a_constant_delay()
+    public void Custom_growth_is_expressible_via_delay_calculator()
     {
         var log = new ListLogger();
+        var baseMs = TimeSpan.FromMilliseconds(100).TotalMilliseconds;
         var policy = new RetryPolicy
         {
-            BaseDelay = TimeSpan.FromMilliseconds(25),
-            Multiplier = 1.0,
+            BaseDelay = TimeSpan.FromMilliseconds(100),
             MaxDelay = TimeSpan.FromSeconds(30),
             MaxJitter = TimeSpan.Zero,
+            DelayCalculator = (attempt, _) => TimeSpan.FromMilliseconds(baseMs * Math.Pow(1.5, attempt - 1)),
         };
-        Assert.Equal(TimeSpan.FromMilliseconds(25), RetryDelays.ResolveDelay(policy, 1, new InvalidOperationException(), log));
-        Assert.Equal(TimeSpan.FromMilliseconds(25), RetryDelays.ResolveDelay(policy, 5, new InvalidOperationException(), log));
+        Assert.Equal(TimeSpan.FromMilliseconds(100), RetryDelays.ResolveDelay(policy, 1, new InvalidOperationException(), log));
+        Assert.Equal(TimeSpan.FromMilliseconds(150), RetryDelays.ResolveDelay(policy, 2, new InvalidOperationException(), log));
+        Assert.Equal(TimeSpan.FromMilliseconds(225), RetryDelays.ResolveDelay(policy, 3, new InvalidOperationException(), log));
     }
 
     [Fact]
     public void Astronomical_base_delay_clamps_to_max_without_throwing()
     {
         var log = new ListLogger();
-        var policy = new RetryPolicy { BaseDelay = TimeSpan.MaxValue, Multiplier = 2.0, MaxDelay = TimeSpan.FromSeconds(30), MaxJitter = TimeSpan.Zero };
+        var policy = new RetryPolicy { BaseDelay = TimeSpan.MaxValue, MaxDelay = TimeSpan.FromSeconds(30), MaxJitter = TimeSpan.Zero };
         Assert.Equal(TimeSpan.FromSeconds(30), RetryDelays.ResolveDelay(policy, 100, new InvalidOperationException(), log));
     }
 
@@ -163,7 +147,7 @@ public sealed class RetryPolicyTests
     public void Attempt_1_resolves_to_base_delay_without_jitter()
     {
         var log = new ListLogger();
-        var policy = new RetryPolicy { BaseDelay = TimeSpan.FromMilliseconds(200), Multiplier = 2.0, MaxDelay = TimeSpan.FromSeconds(30), MaxJitter = TimeSpan.Zero };
+        var policy = new RetryPolicy { BaseDelay = TimeSpan.FromMilliseconds(200), MaxDelay = TimeSpan.FromSeconds(30), MaxJitter = TimeSpan.Zero };
         Assert.Equal(TimeSpan.FromMilliseconds(200), RetryDelays.ResolveDelay(policy, 1, new InvalidOperationException(), log));
         Assert.Equal(TimeSpan.FromMilliseconds(400), RetryDelays.ResolveDelay(policy, 2, new InvalidOperationException(), log));
         Assert.Equal(TimeSpan.FromMilliseconds(800), RetryDelays.ResolveDelay(policy, 3, new InvalidOperationException(), log));
@@ -172,13 +156,17 @@ public sealed class RetryPolicyTests
     [Fact]
     public void Delay_caps_at_max_delay_and_jitter_stays_bounded()
     {
+        // ×2 growth with jitter disabled: 1s, 2s, 4s, then capped at 5s.
         var log = new ListLogger();
-        var policy = new RetryPolicy { BaseDelay = TimeSpan.FromSeconds(1), Multiplier = 10.0, MaxDelay = TimeSpan.FromSeconds(5), MaxJitter = TimeSpan.FromSeconds(1) };
-        // Attempts 1-2 resolve below the cap by design (1s, 5s+jitter); from attempt 3
-        // growth saturates: grown capped to 5s plus at most 1s jitter.
-        for (var attempt = 3; attempt <= 6; attempt++)
+        var policy = new RetryPolicy { BaseDelay = TimeSpan.FromSeconds(1), MaxDelay = TimeSpan.FromSeconds(5), MaxJitter = TimeSpan.Zero };
+        Assert.Equal(TimeSpan.FromSeconds(1), RetryDelays.ResolveDelay(policy, 1, new InvalidOperationException(), log));
+        Assert.Equal(TimeSpan.FromSeconds(2), RetryDelays.ResolveDelay(policy, 2, new InvalidOperationException(), log));
+        Assert.Equal(TimeSpan.FromSeconds(4), RetryDelays.ResolveDelay(policy, 3, new InvalidOperationException(), log));
+        var bounded = new RetryPolicy { BaseDelay = TimeSpan.FromSeconds(1), MaxDelay = TimeSpan.FromSeconds(5), MaxJitter = TimeSpan.FromSeconds(1) };
+        // From attempt 4 growth saturates: capped to 5s plus at most 1s jitter.
+        for (var attempt = 4; attempt <= 8; attempt++)
         {
-            var delay = RetryDelays.ResolveDelay(policy, attempt, new InvalidOperationException(), log);
+            var delay = RetryDelays.ResolveDelay(bounded, attempt, new InvalidOperationException(), log);
             Assert.True(delay >= TimeSpan.FromSeconds(5) && delay <= TimeSpan.FromSeconds(6));
         }
     }
@@ -201,7 +189,6 @@ public sealed class RetryPolicyTests
         var policy = new RetryPolicy
         {
             BaseDelay = TimeSpan.FromMilliseconds(200),
-            Multiplier = 2.0,
             MaxDelay = TimeSpan.FromSeconds(30),
             MaxJitter = TimeSpan.Zero,
             DelayCalculator = (_, _) => throw new InvalidOperationException("boom"),

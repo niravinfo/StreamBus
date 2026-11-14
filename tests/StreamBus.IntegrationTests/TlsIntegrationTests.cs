@@ -122,7 +122,7 @@ public sealed class TlsIntegrationTests : IAsyncDisposable
                 busConfigure?.Invoke(cfg);
             });
             configureServices?.Invoke(services);
-            services.AddStreamBusHosting(h => h.WaitUntilStarted(TimeSpan.FromSeconds(60)));
+            services.AddOptions<StreamBusHostOptions>().Configure(o => { o.WaitUntilStarted = true; o.StartTimeout = TimeSpan.FromSeconds(60); });
             var sp = services.BuildServiceProvider();
             var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
             await hosted.StartAsync(TestContext.Current.CancellationToken);

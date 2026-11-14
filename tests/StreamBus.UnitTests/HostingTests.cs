@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using RabbitMQ.Stream.Client;
 
 namespace StreamBus.UnitTests;
@@ -108,27 +109,44 @@ public sealed class HostingTests
         var services = new ServiceCollection();
         services.AddStreamBus((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("app", "secret")));
         services.AddStreamBus<OrdersBus>((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("app", "secret")));
-        services.AddStreamBusHosting(h => h.WaitUntilStarted(TimeSpan.FromSeconds(5)));
+        services.AddOptions<StreamBusHostOptions>().Configure(o => { o.WaitUntilStarted = true; o.StartTimeout = TimeSpan.FromSeconds(5); });
         var sp = services.BuildServiceProvider();
         Assert.Equal("secret", sp.GetRequiredService<StreamBusConfigStore>().ForVhost("/").Password);
-        Assert.Equal(TimeSpan.FromSeconds(5), sp.GetRequiredService<StreamBusHostingStore>().Options.StartTimeout);
+        Assert.Equal(TimeSpan.FromSeconds(5), sp.GetRequiredService<IOptions<StreamBusHostOptions>>().Value.StartTimeout);
     }
 
     [Fact]
-    public void AddStreamBusHosting_second_call_throws()
+    public void Options_configured_twice_last_wins()
     {
         var services = new ServiceCollection();
-        services.AddStreamBusHosting(h => h.WaitUntilStarted(TimeSpan.FromSeconds(5)));
-        Assert.Throws<StreamBusConfigurationException>(() =>
-            services.AddStreamBusHosting(h => h.WaitUntilStarted(TimeSpan.FromSeconds(5))));
+        services.AddOptions<StreamBusHostOptions>().Configure(o => { o.WaitUntilStarted = true; o.StartTimeout = TimeSpan.FromSeconds(5); });
+        services.AddOptions<StreamBusHostOptions>().Configure(o => o.WaitUntilStarted = false);
+        var sp = services.BuildServiceProvider();
+        var options = sp.GetRequiredService<IOptions<StreamBusHostOptions>>().Value;
+        Assert.False(options.WaitUntilStarted);
+        Assert.Equal(TimeSpan.FromSeconds(5), options.StartTimeout);
     }
 
     [Fact]
-    public void AddStreamBusHosting_null_arguments_throw()
+    public async Task No_options_registration_still_non_blocking()
     {
         var services = new ServiceCollection();
-        Assert.Throws<ArgumentNullException>(() => ((IServiceCollection)null!).AddStreamBusHosting(h => h.WaitUntilStarted()));
-        Assert.Throws<ArgumentNullException>(() => services.AddStreamBusHosting(null!));
+        services.AddLogging();
+        services.AddStreamBus((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("app", "secret")));
+        services.AddSingleton<IStreamSystemConnector>(new NeverReadyConnector());
+        await using var sp = services.BuildServiceProvider();
+        var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
+        var sw = Stopwatch.StartNew();
+        await hosted.StartAsync(TestContext.Current.CancellationToken);
+        try
+        {
+            Assert.True(sw.Elapsed < TimeSpan.FromSeconds(2), $"StartAsync took {sw.Elapsed}.");
+            Assert.False(sp.GetRequiredService<IOptions<StreamBusHostOptions>>().Value.WaitUntilStarted);
+        }
+        finally
+        {
+            await hosted.StopAsync(CancellationToken.None);
+        }
     }
 
     [Fact]
@@ -259,25 +277,6 @@ public sealed class HostingTests
     }
 
     [Fact]
-    public void BlockUntilConsumersAttached_defaults_true_and_can_be_disabled()
-    {
-        var defaults = new StreamBusHostingOptionsBuilder().Build();
-        Assert.True(defaults.WaitUntilConsumersAttached);
-        Assert.False(defaults.WaitUntilStarted);
-
-        var enabled = new StreamBusHostingOptionsBuilder().WaitUntilConsumersAttached().Build();
-        Assert.True(enabled.WaitUntilConsumersAttached);
-        Assert.True(enabled.WaitUntilStarted);
-
-        var disabled = new StreamBusHostingOptionsBuilder()
-            .WaitUntilStarted()
-            .WaitUntilConsumersAttached(false)
-            .Build();
-        Assert.False(disabled.WaitUntilConsumersAttached);
-        Assert.True(disabled.WaitUntilStarted);
-    }
-
-    [Fact]
     public async Task Empty_registry_reports_degraded_with_hint()
     {
         var registry = new StreamBusRegistry(
@@ -337,7 +336,7 @@ public sealed class HostingTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddStreamBus((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("app", "secret")));
-        services.AddStreamBusHosting(h => h.WaitUntilStarted(TimeSpan.FromSeconds(5)));
+        services.AddOptions<StreamBusHostOptions>().Configure(o => { o.WaitUntilStarted = true; o.StartTimeout = TimeSpan.FromSeconds(5); });
         services.AddSingleton<IStreamSystemConnector>(new SuccessConnector());
         await using var sp = services.BuildServiceProvider();
         var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
@@ -360,7 +359,7 @@ public sealed class HostingTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddStreamBus((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("app", "secret")));
-        services.AddStreamBusHosting(h => h.WaitUntilStarted(timeout));
+        services.AddOptions<StreamBusHostOptions>().Configure(o => { o.WaitUntilStarted = true; o.StartTimeout = timeout; });
         services.AddSingleton<IStreamSystemConnector>(new NeverReadyConnector());
         await using var sp = services.BuildServiceProvider();
         var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
@@ -399,13 +398,88 @@ public sealed class HostingTests
             => Task.FromResult(Array.Empty<string>());
     }
 
+    // Reports the super stream as present but with zero partitions, so the
+    // hosted consumer-start task finishes with no partition attach: tests use
+    // it to reach the attach-wait loop with rows that never become Attached.
+    private sealed class ZeroPartitionHandle : ScriptedSystemHandle
+    {
+        public ZeroPartitionHandle() => SuperStreamExistsFunc = (_, _) => Task.FromResult(true);
+        public override Task<string[]> QueryPartitionAsync(string superStream, CancellationToken ct)
+            => Task.FromResult(Array.Empty<string>());
+    }
+
+    [Fact]
+    public async Task Attach_failure_keeps_waiting()
+    {
+        var ct = TestContext.Current.CancellationToken;
+
+        // No startup budget: a typed consumer row parked in FailedRetrying must
+        // keep the blocking start waiting (it used to throw
+        // StreamBusStartupBlockedException); only shutdown ends it.
+        {
+            var services = new ServiceCollection();
+            services.AddLogging();
+            services.AddStreamBus<OrdersBus>((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("app", "secret")));
+            services.AddOptions<StreamBusHostOptions>().Configure(o => o.WaitUntilStarted = true);
+            services.AddSingleton<IStreamSystemConnector>(new SuccessConnector(new ZeroPartitionHandle()));
+            await using var sp = services.BuildServiceProvider();
+            sp.GetRequiredService<StreamBusConsumerStore>().Add(
+                typeof(OrdersBus), typeof(PinEvent), typeof(PinConsumer), "orders",
+                new ConsumeOptions { ConsumerGroup = "pin-group", IsSuperStream = true });
+            var registry = sp.GetRequiredService<IStreamBusRegistry>();
+            // The super stream reports zero partitions, so the consumer-start task
+            // finishes with nothing attached; park a broken row the loop must wait on.
+            registry.HealthFor("/").UpsertRegistration("/", "pin-failed", "consumer", BusRegistrationState.FailedRetrying, "parked for test");
+            var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
+            using var startCts = new CancellationTokenSource();
+            var startTask = hosted.StartAsync(startCts.Token);
+            try
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(500), ct);
+                Assert.False(startTask.IsCompleted, "StartAsync must keep waiting while a consumer row is FailedRetrying and no budget is set.");
+            }
+            finally
+            {
+                await startCts.CancelAsync();
+                try { await startTask; }
+                catch (OperationCanceledException) { }
+                await hosted.StopAsync(CancellationToken.None);
+            }
+        }
+
+        // With a budget, the very same parked row trips StreamBusTimeoutException.
+        {
+            var services = new ServiceCollection();
+            services.AddLogging();
+            services.AddStreamBus<OrdersBus>((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("app", "secret")));
+            services.AddOptions<StreamBusHostOptions>().Configure(o => { o.WaitUntilStarted = true; o.StartTimeout = TimeSpan.FromMilliseconds(200); });
+            services.AddSingleton<IStreamSystemConnector>(new SuccessConnector(new ZeroPartitionHandle()));
+            await using var sp = services.BuildServiceProvider();
+            sp.GetRequiredService<StreamBusConsumerStore>().Add(
+                typeof(OrdersBus), typeof(PinEvent), typeof(PinConsumer), "orders",
+                new ConsumeOptions { ConsumerGroup = "pin-group", IsSuperStream = true });
+            var registry = sp.GetRequiredService<IStreamBusRegistry>();
+            registry.HealthFor("/").UpsertRegistration("/", "pin-failed", "consumer", BusRegistrationState.FailedRetrying, "parked for test");
+            var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
+            try
+            {
+                var ex = await Assert.ThrowsAsync<StreamBusTimeoutException>(() => hosted.StartAsync(ct));
+                Assert.Contains("typed consumers", ex.Message, StringComparison.Ordinal);
+            }
+            finally
+            {
+                await hosted.StopAsync(CancellationToken.None);
+            }
+        }
+    }
+
     [Fact]
     public async Task Blocking_startup_times_out_while_a_typed_consumer_is_unattached()
     {
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddStreamBus<OrdersBus>((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("app", "secret")));
-        services.AddStreamBusHosting(h => h.WaitUntilStarted(TimeSpan.FromSeconds(1)));
+        services.AddOptions<StreamBusHostOptions>().Configure(o => { o.WaitUntilStarted = true; o.StartTimeout = TimeSpan.FromSeconds(1); });
         services.AddSingleton<IStreamSystemConnector>(new SuccessConnector(new NeverAttachingHandle()));
         await using var sp = services.BuildServiceProvider();
         sp.GetRequiredService<StreamBusConsumerStore>().Add(
@@ -447,7 +521,7 @@ public sealed class HostingTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddStreamBus((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("app", "secret")));
-        services.AddStreamBusHosting(h => h.WaitUntilStarted(TimeSpan.FromSeconds(5)));
+        services.AddOptions<StreamBusHostOptions>().Configure(o => { o.WaitUntilStarted = true; o.StartTimeout = TimeSpan.FromSeconds(5); });
         services.AddSingleton<IStreamSystemConnector>(new SuccessConnector());
         await using var sp = services.BuildServiceProvider();
         var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
@@ -500,7 +574,7 @@ public sealed class HostingTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddStreamBus((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("app", "secret")));
-        services.AddStreamBusHosting(h => h.WaitUntilStarted(TimeSpan.FromSeconds(30)));
+        services.AddOptions<StreamBusHostOptions>().Configure(o => { o.WaitUntilStarted = true; o.StartTimeout = TimeSpan.FromSeconds(30); });
         services.AddSingleton<IStreamSystemConnector>(new NeverReadyConnector());
         await using var sp = services.BuildServiceProvider();
         var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
@@ -521,7 +595,7 @@ public sealed class HostingTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddStreamBus((_, cfg) => cfg.Host("localhost", "/", h => h.Credentials("app", "secret")));
-        services.AddStreamBusHosting(h => h.WaitUntilStarted(TimeSpan.FromSeconds(30)));
+        services.AddOptions<StreamBusHostOptions>().Configure(o => { o.WaitUntilStarted = true; o.StartTimeout = TimeSpan.FromSeconds(30); });
         services.AddSingleton<IStreamSystemConnector>(new NeverReadyConnector());
         await using var sp = services.BuildServiceProvider();
         var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
@@ -840,7 +914,7 @@ public sealed class HostingTests
             cfg.Host("localhost", "/", h => h.Credentials("app", "secret"));
             cfg.Publish<DerivedEvent>("hung-stream");
         });
-        services.AddStreamBusHosting(h => h.WaitUntilStarted(TimeSpan.FromMilliseconds(200)));
+        services.AddOptions<StreamBusHostOptions>().Configure(o => { o.WaitUntilStarted = true; o.StartTimeout = TimeSpan.FromMilliseconds(200); });
         services.AddSingleton<IStreamSystemConnector>(new SuccessConnector(handle));
         await using var sp = services.BuildServiceProvider();
         var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
@@ -1038,7 +1112,7 @@ public sealed class HostingTests
                 e.SuperStream();
             });
         });
-        services.AddStreamBusHosting(h => h.WaitUntilStarted(TimeSpan.FromSeconds(30)));
+        services.AddOptions<StreamBusHostOptions>().Configure(o => { o.WaitUntilStarted = true; o.StartTimeout = TimeSpan.FromSeconds(30); });
         services.AddSingleton<IStreamSystemConnector>(new SuccessConnector(handle));
         await using var sp = services.BuildServiceProvider();
         var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
@@ -1072,7 +1146,7 @@ public sealed class HostingTests
                 e.Partitions(3);
             });
         });
-        services.AddStreamBusHosting(h => h.WaitUntilStarted(TimeSpan.FromSeconds(30)));
+        services.AddOptions<StreamBusHostOptions>().Configure(o => { o.WaitUntilStarted = true; o.StartTimeout = TimeSpan.FromSeconds(30); });
         services.AddSingleton<IStreamSystemConnector>(new SuccessConnector(handle));
         await using var sp = services.BuildServiceProvider();
         var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();
@@ -1103,7 +1177,7 @@ public sealed class HostingTests
                 e.SuperStream();
             });
         });
-        services.AddStreamBusHosting(h => h.WaitUntilStarted(TimeSpan.FromSeconds(5)));
+        services.AddOptions<StreamBusHostOptions>().Configure(o => { o.WaitUntilStarted = true; o.StartTimeout = TimeSpan.FromSeconds(5); });
         services.AddSingleton<IStreamSystemConnector>(new SuccessConnector(handle));
         await using var sp = services.BuildServiceProvider();
         var hosted = sp.GetServices<IHostedService>().OfType<StreamBusHostedService>().Single();

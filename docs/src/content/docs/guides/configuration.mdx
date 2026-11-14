@@ -75,15 +75,18 @@ cfg.Serializer(json => json.PropertyNamingPolicy = JsonNamingPolicy.CamelCase);
 One application can run independent buses — different brokers, vhosts, or
 serializers — each identified by a marker type. See
 [Multiple buses](../multiple-buses/) for marker types and shared consumer classes.
+## Startup and shutdown
 
-## Startup
-
-Blocking startup is a service-level opt-in on top of the default
-non-blocking start:
+Host-level start/stop behavior is configured through the options
+pattern with `StreamBusHostOptions` — the default startup is
+non-blocking:
 
 ```csharp
-builder.Services.AddStreamBusHosting(h => h.WaitUntilStarted(TimeSpan.FromSeconds(30)));
+builder.Services.AddOptions<StreamBusHostOptions>().Configure(o =>
+{
+    o.WaitUntilStarted = true;
+    o.StartTimeout = TimeSpan.FromSeconds(30);
+});
 ```
 
-See [Hosting](../hosting/) for blocking vs non-blocking startup, readiness
-waits, and health checks.
+See the **Hosting** guide for all knobs, defaults, and validation rules.

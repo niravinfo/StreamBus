@@ -192,15 +192,42 @@ public sealed class RetryConfigurationTests
         Assert.Equal(TimeSpan.FromMilliseconds(200), DelayFor(intervals, 2));
         Assert.Equal(TimeSpan.FromMilliseconds(200), DelayFor(intervals, 9));
 
-        var exponential = Schedule(r => r.Exponential(2, TimeSpan.FromMilliseconds(100), TimeSpan.FromSeconds(10), 2.0));
+        var exponential = Schedule(r => r.Exponential(2, TimeSpan.FromMilliseconds(100), TimeSpan.FromSeconds(10)));
         Assert.Equal(3, exponential.MaxAttempts);
         Assert.Equal(TimeSpan.FromMilliseconds(100), exponential.BaseDelay);
         Assert.Equal(TimeSpan.FromSeconds(10), exponential.MaxDelay);
-        Assert.Equal(2.0, exponential.Multiplier);
         Assert.Equal(TimeSpan.Zero, exponential.MaxJitter);
 
         var none = Schedule(r => r.None());
         Assert.Equal(1, none.MaxAttempts);
+    }
+
+    [Fact]
+    public void Exponential_caps_delays_at_maxDelay()
+    {
+        var policy = Schedule(r => r.Exponential(10, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(30)));
+        Assert.Equal(11, policy.MaxAttempts);
+        Assert.Equal(TimeSpan.FromSeconds(1), DelayFor(policy, 1));
+        Assert.Equal(TimeSpan.FromSeconds(2), DelayFor(policy, 2));
+        Assert.Equal(TimeSpan.FromSeconds(4), DelayFor(policy, 3));
+        Assert.Equal(TimeSpan.FromSeconds(8), DelayFor(policy, 4));
+        Assert.Equal(TimeSpan.FromSeconds(16), DelayFor(policy, 5));
+        Assert.Equal(TimeSpan.FromSeconds(30), DelayFor(policy, 6));
+        Assert.Equal(TimeSpan.FromSeconds(30), DelayFor(policy, 7));
+        Assert.Equal(TimeSpan.FromSeconds(30), DelayFor(policy, 10));
+    }
+
+    [Fact]
+    public void Exponential_rejects_invalid_arguments()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => Schedule(r => r.Exponential(-1, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(30))));
+        StreamBusConfigurationException ex;
+
+        ex = Assert.Throws<StreamBusConfigurationException>(() => Schedule(r => r.Exponential(2, TimeSpan.Zero, TimeSpan.FromSeconds(30))));
+        Assert.Contains("minDelay", ex.Message, StringComparison.OrdinalIgnoreCase);
+
+        ex = Assert.Throws<StreamBusConfigurationException>(() => Schedule(r => r.Exponential(2, TimeSpan.FromSeconds(1), TimeSpan.Zero)));
+        Assert.Contains("maxDelay", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

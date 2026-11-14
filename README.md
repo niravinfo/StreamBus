@@ -45,7 +45,11 @@ builder.Services.AddStreamBus((_, cfg) =>
     });
 });
 
-builder.Services.AddStreamBusHosting(h => h.WaitUntilStarted(TimeSpan.FromSeconds(30)));
+builder.Services.AddOptions<StreamBusHostOptions>().Configure(o =>
+{
+    o.WaitUntilStarted = true;
+    o.StartTimeout = TimeSpan.FromSeconds(30);
+});
 
 await builder.Build().RunAsync();
 

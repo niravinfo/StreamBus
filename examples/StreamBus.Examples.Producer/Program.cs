@@ -57,8 +57,13 @@ builder.Services.AddStreamBus((context, cfg) =>
     });
 });
 
-// Blocking startup waits for connections and topology declarations first.
-builder.Services.AddStreamBusHosting(h => h.WaitUntilStarted(TimeSpan.FromSeconds(30)));
+// The default startup is non-blocking; this app opts into waiting (with a
+// 30s budget) so topology is declared before the SeedWorker publishes.
+builder.Services.AddOptions<StreamBusHostOptions>().Configure(o =>
+{
+    o.WaitUntilStarted = true;
+    o.StartTimeout = TimeSpan.FromSeconds(30);
+});
 builder.Services.AddHostedService<SeedWorker>();
 
 var app = builder.Build();
