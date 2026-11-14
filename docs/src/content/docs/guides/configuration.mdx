@@ -59,7 +59,7 @@ cfg.Host("rabbitmq.internal", "/", h =>
 - `ProducersPerConnection` / `ConsumersPerConnection` (default 1/1) —
   connection pool sizes.
 
-For secure connections, see [TLS](../tls/) — TLS is off by default
+For secure connections, see [Transport security](../transport-security/) — TLS is off by default
 and enabled with `h.UseTls(...)`.
 
 ## Serializer
@@ -74,7 +74,7 @@ cfg.Serializer(json => json.PropertyNamingPolicy = JsonNamingPolicy.CamelCase);
 
 One application can run independent buses — different brokers, vhosts, or
 serializers — each identified by a marker type. See
-[Multi-bus](../multi-bus/) for marker types and shared consumer classes.
+[Multiple buses](../multiple-buses/) for marker types and shared consumer classes.
 
 ## Startup
 

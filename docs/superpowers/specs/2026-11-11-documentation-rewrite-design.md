@@ -157,3 +157,13 @@ Still open (carry-over of the original phases):
   (HEAD `a0a952f`). Remaining: API reference from XML comments (P6),
   verifying site CI/deploy, and a fresh-eyes review pass for
   zero-knowledge-reader tone.
+- 2026-11-14: User rejected internal/jargon wording ("Typed Publish",
+  "Escape hatches") and bare gerund menu names ("Publishing", "Consuming").
+  Navigation must use standard concept-noun naming (MassTransit/NServiceBus/
+  MS Learn prior art). **Adopted Option A (concept-noun scheme):** sidebar and
+  page renames — Publishing→Producers, Consuming→Consumers, Errors &
+  Retry→Error handling, Multi-bus→Multiple buses, TLS→Transport security;
+  in-page: "Typed Publish" card→"Message publishing", "Escape hatches"→
+  "Publishing raw messages", "Raw consume and manual offsets"→
+  "Consuming raw messages"/"Manual offset control". Topology, Hosting,
+  Observability kept.

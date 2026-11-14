@@ -1,6 +1,6 @@
 ---
-title: Publishing
-description: Typed publish, super streams, message properties, and filters.
+title: Producers
+description: Publish messages, super streams, message properties, raw message publishing, and filters.
 ---
 
 Register a message type against a stream once; publish without stream names
@@ -68,12 +68,13 @@ deduplicates published messages for a named producer, so with no name the
 broker filters nothing: any number of identical application instances can
 publish to the same stream or super stream. Delivery stays at-least-once;
 consumers own duplicate handling and idempotency. See
-[Consuming](../consuming/).
+[Consumers](../consumers/).
 
-## Escape hatches
+## Publishing raw messages
 
-Explicit-stream targets, for when one type must reach more than the
-registered stream:
+For special cases — one type reaching more than its registered stream, or
+bytes you serialized yourself — StreamBus exposes explicit-stream and raw
+publish methods:
 
 ```csharp
 await bus.PublishAsync("orders-manual", new OrderPlaced("o-2"), ct);

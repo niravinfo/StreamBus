@@ -1,6 +1,6 @@
 ---
-title: Consuming
-description: Receive endpoints, consumer groups, scale-out, and filters.
+title: Consumers
+description: Receive endpoints, consumer groups, scale-out, raw message consumption, and filters.
 ---
 
 A receive endpoint binds a stream to exactly one consumer type and one
@@ -66,7 +66,7 @@ The endpoint adopts broker reality: a matching existing stream is consumed
 as-is, a kind mismatch is a conflict, and a missing stream is declared from
 the endpoint's and any publish registration's spec.
 
-## Raw consume and manual offsets
+## Consuming raw messages and controlling offsets
 
 For tailing or ops tooling, consume raw deliveries with the same group
 requirement:

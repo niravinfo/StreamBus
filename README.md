@@ -69,14 +69,14 @@ For more information, see the docs at **[niravinfo.github.io/StreamBus](https://
 
 - [Getting Started](https://niravinfo.github.io/StreamBus/guides/getting-started/)
 - [Configuration](https://niravinfo.github.io/StreamBus/guides/configuration/) — hosts, credentials, ports, TLS, serializers
-- [Publishing](https://niravinfo.github.io/StreamBus/guides/publishing/) — typed publish, super streams, filters
-- [Consuming](https://niravinfo.github.io/StreamBus/guides/consuming/) — consumer groups, scale-out, offsets
-- [Errors & Retry](https://niravinfo.github.io/StreamBus/guides/errors/) — schedules, dead-lettering, exceptions
+- [Producers](https://niravinfo.github.io/StreamBus/guides/producers/) — publish .NET objects, super streams, raw messages, filters
+- [Consumers](https://niravinfo.github.io/StreamBus/guides/consumers/) — consumer groups, scale-out, offsets
+- [Error handling](https://niravinfo.github.io/StreamBus/guides/error-handling/) — retry schedules, dead-lettering, exceptions
 - [Topology](https://niravinfo.github.io/StreamBus/guides/topology/) — declarations, agreement rules, runtime API
-- [Multi-bus](https://niravinfo.github.io/StreamBus/guides/multi-bus/) — marker buses, shared consumers
+- [Multiple buses](https://niravinfo.github.io/StreamBus/guides/multiple-buses/) — marker buses, shared consumers
 - [Hosting](https://niravinfo.github.io/StreamBus/guides/hosting/) — startup modes, readiness, health checks
 - [Observability](https://niravinfo.github.io/StreamBus/guides/observability/) — health data, metrics, logs
-- [TLS](https://niravinfo.github.io/StreamBus/guides/tls/) — secure connections
+- [Transport security](https://niravinfo.github.io/StreamBus/guides/transport-security/) — secure connections with TLS
 - [Changelog](https://niravinfo.github.io/StreamBus/guides/changelog/)
 
 Runnable examples live in [`examples/`](examples/).
