@@ -3,14 +3,12 @@ title: Quickstart
 description: Publish and consume your first typed message in minutes.
 ---
 
-In this article, you build a complete, runnable StreamBus program that
-publishes and consumes: register a bus, publish typed messages from a
-worker, and consume them with a consumer group. You need a local broker
-as described in [Installation](../installation/).
+## Build the app
 
-## The program
-
-Create a console app, and make its `Program.cs` exactly this:
+This is a complete, runnable console app: a bus registration, a
+publisher worker, and a consumer — in about 40 lines. Your broker needs
+the stream plugin enabled, as described in
+[Installation](../installation/).
 
 ```csharp
 using Microsoft.Extensions.DependencyInjection;
@@ -20,7 +18,7 @@ using StreamBus;
 
 var builder = Host.CreateApplicationBuilder(args);
 
-builder.Services.AddStreamBus((_, cfg) =>
+builder.Services.AddStreamBus((context, cfg) =>
 {
     cfg.Host("localhost", "/", h => h.Credentials("guest", "guest"));
 

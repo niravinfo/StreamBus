@@ -3,11 +3,6 @@ title: Lifecycle
 description: Startup modes, shutdown budgets, readiness policies, and connection supervision.
 ---
 
-In this article, you learn what happens between `RunAsync` and the
-first delivered message: how startup can block or stay backgrounded,
-what happens when the broker disappears, and how each call site
-states its patience.
-
 `AddStreamBus` registers a hosted service — there is nothing else to
 add, and no separate "start the bus" call. Startup and shutdown
 behavior is configured through the standard options pattern:

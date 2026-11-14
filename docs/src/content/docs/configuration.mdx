@@ -3,9 +3,6 @@ title: Configuration
 description: The AddStreamBus registration surface, connection options, and serializers.
 ---
 
-In this article, you learn how a bus is registered, what each
-connection option means, and how serialization is selected.
-
 One `AddStreamBus` call registers a bus. Everything is code-first:
 no settings binder, no JSON discovery — read environment variables or
 a vault yourself, then pass the values to the configurators. Every
@@ -15,7 +12,7 @@ option is validated once, eagerly: a bad value fails with a
 ## Register a bus
 
 ```csharp
-builder.Services.AddStreamBus((_, cfg) =>
+builder.Services.AddStreamBus((context, cfg) =>
 {
     cfg.Host("localhost", "/", h => h.Credentials("guest", "guest"));
 
@@ -40,9 +37,9 @@ The defaults match a standard RabbitMQ 4.x install; pass these only
 when yours differ.
 
 ```csharp
-cfg.Host("rabbitmq.internal", "/", h =>
+cfg.Host("localhost", "/", h =>
 {
-    h.Credentials("app", "s3cret");
+    h.Credentials("guest", "guest");
     h.StreamPort(5552);   // RabbitMQ stream protocol port
     h.AmqpPort(5672);     // used only for AMQP dead-letter queues
     h.Heartbeat(TimeSpan.FromSeconds(60));

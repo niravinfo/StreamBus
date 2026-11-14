@@ -3,14 +3,11 @@ title: Architecture
 description: The RabbitMQ Streams model, and how StreamBus is shaped by it.
 ---
 
-In this article, you learn the mental model everything else in these
-docs stands on: how a stream differs from a queue, what
-at-least-once really means, and how StreamBus maps that onto a
-handful of .NET types.
-
-Understanding this page makes the rest of the documentation — retry
-that "blocks" a partition, mandatory consumer groups, single-active
-consumer — read as deliberate design instead of quirk.
+How RabbitMQ Streams differs from queues, and how StreamBus maps
+that onto a handful of .NET types — the model the rest of these docs
+assume. Understanding it makes retry that "blocks" a partition,
+mandatory consumer groups, and single-active consumer read as
+deliberate design instead of quirk.
 
 ## Streams are logs, not queues
 

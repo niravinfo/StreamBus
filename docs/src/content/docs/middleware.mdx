@@ -3,12 +3,10 @@ title: Middleware
 description: The filter pipelines for publishing and consuming — one contract, two directions.
 ---
 
-In this article, you learn StreamBus's cross-cutting model: ordered
-filter pipelines that wrap every publish and every delivery. This
-page holds the shared contract once —
-[Publishing](../publishing/#publish-filters) and
-[Consumers](../consumers/#consume-filters) show only registration and
-link here.
+Cross-cutting concerns — tenant stamping, metrics, selective skipping —
+run as an ordered filter pipeline around every publish and delivery.
+This page holds the shared contract once: [Publishing](../publishing/)
+and [Consumers](../consumers/) show only registration and link here.
 
 ## Registration and ordering
 
@@ -18,7 +16,7 @@ endpoint, bus-wide filters run first (outermost), then the endpoint's
 own:
 
 ```csharp
-builder.Services.AddStreamBus((_, cfg) =>
+builder.Services.AddStreamBus((context, cfg) =>
 {
     cfg.Host("localhost", "/", h => h.Credentials("guest", "guest"));
 

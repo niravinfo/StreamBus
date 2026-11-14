@@ -241,3 +241,17 @@ Decisions made with the user (2026-11-14, second session):
   quickstart is now fully self-contained (publish + consume in-process).
   Still open: XML→Starlight API reference generator (two-phase plan
   agreed), and a visual review pass in the browser.
+- 2026-11-14 (review round): Style corrections per user feedback: (1) all
+  "In this article, you learn..." blog-style openers removed — pages open
+  with substance; (2) Quickstart heading "The program" → "Build the app";
+  (3) Installation no longer tells users how to run a broker — it documents
+  enabling the stream plugins (`rabbitmq_stream`, `rabbitmq_stream_management`)
+  with Linux/Windows Tabs (Starlight supports them; verified in the build);
+  the prior "streams are enabled out of the box" claim was wrong and is gone
+  (ground truth: tests/StreamBus.IntegrationTests/TestBroker.cs + RabbitMQ docs);
+  (4) lambda signature is consistently `(context, cfg)` everywhere — never
+  the `_` discard; (5) `rabbitmq.internal` examples replaced with
+  `localhost` everywhere. Re-verified after each change: snippet harness
+  (ALL SNIPPET REGISTRATIONS VALID), verbatim quickstart build
+  (succeeded), API-existence scan (60 calls, none unknown), Starlight
+  build (tabs render, no intros).

@@ -3,9 +3,9 @@ title: Multiple buses
 description: Run independently configured buses with marker types.
 ---
 
-In this article, you learn how one application runs several buses —
-different brokers, virtual hosts, or serializers — and the rules
-that keep them from colliding.
+Several independently configured buses — different brokers, virtual
+hosts, or serializers — run in one application, each identified by a
+marker type.
 
 ## Marker types
 
@@ -22,16 +22,16 @@ public sealed class BillingBus;
 ## Two buses, one application
 
 ```csharp
-services.AddStreamBus<OrdersBus>((_, cfg) =>
+services.AddStreamBus<OrdersBus>((context, cfg) =>
 {
-    cfg.Host("localhost", "/orders", h => h.Credentials("app", "s3cret"));
+    cfg.Host("localhost", "/orders", h => h.Credentials("guest", "guest"));
     cfg.Publish<OrderPlaced>("orders");
     cfg.ReceiveEndpoint("orders", e => e.Consumer<OrdersConsumer>("orders-team"));
 });
 
-services.AddStreamBus<BillingBus>((_, cfg) =>
+services.AddStreamBus<BillingBus>((context, cfg) =>
 {
-    cfg.Host("localhost", "/billing", h => h.Credentials("app", "s3cret"));
+    cfg.Host("localhost", "/billing", h => h.Credentials("guest", "guest"));
     cfg.Publish<InvoiceEvent>("invoices", s => s.MaxAge(TimeSpan.FromDays(90)));
     cfg.ReceiveEndpoint("invoices", e => e.Consumer<InvoicesConsumer>("billing-team"));
 });

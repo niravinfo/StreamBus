@@ -3,9 +3,9 @@ title: Publishing
 description: Typed publishing, message properties, super streams, and raw bytes.
 ---
 
-In this article, you learn every way to get a message onto a stream:
-typed publishing, per-call properties and headers, super-stream
-routing, and raw bytes.
+Register a message type against a stream once; publish without stream
+names or manual serialization — or reach for properties, routing, and
+raw bytes when you need them.
 
 ## Typed publish
 
@@ -13,7 +13,7 @@ Register a message type against a stream once; publish without stream
 names or manual serialization.
 
 ```csharp
-builder.Services.AddStreamBus((_, cfg) =>
+builder.Services.AddStreamBus((context, cfg) =>
 {
     cfg.Host("localhost", "/", h => h.Credentials("guest", "guest"));
     cfg.Publish<OrderPlaced>("orders");
@@ -141,7 +141,7 @@ Cross-cutting publish logic (tenant stamping, correlation, audit) is
 an ordered filter pipeline, registered on the bus:
 
 ```csharp
-builder.Services.AddStreamBus((_, cfg) =>
+builder.Services.AddStreamBus((context, cfg) =>
 {
     cfg.Host("localhost", "/", h => h.Credentials("guest", "guest"));
     cfg.Publish<OrderPlaced>("orders");

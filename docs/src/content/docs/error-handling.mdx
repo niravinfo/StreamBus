@@ -3,11 +3,6 @@ title: Error handling
 description: Retry schedules, exhaustion destinations, the error envelope, and the exception reference.
 ---
 
-In this article, you learn the full failure path of a message: the
-retry schedule that runs when a consumer throws, the destinations a
-message lands in when retries run out, and every exception the library
-raises.
-
 On a stream there is no per-message dead-letter queue to fall back on
 — [Architecture](../architecture/) explains why — so StreamBus owns
 failure handling explicitly: the failed message stays at the head of
@@ -21,7 +16,7 @@ override per endpoint. Every endpoint inherits the bus-wide schedule
 unless it sets its own.
 
 ```csharp
-builder.Services.AddStreamBus((_, cfg) =>
+builder.Services.AddStreamBus((context, cfg) =>
 {
     cfg.Host("localhost", "/", h => h.Credentials("guest", "guest"));
 

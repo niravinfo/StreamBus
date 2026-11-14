@@ -3,9 +3,6 @@ title: Transport security
 description: Secure connections to RabbitMQ with TLS.
 ---
 
-In this article, you learn how to enable TLS for both StreamBus
-transports, and what each TLS option controls.
-
 TLS is off by default: with no `UseTls` call, both transports — the
 stream protocol, and the AMQP connection used only for
 [dead-letter queues](../error-handling/) — speak plain TCP.
@@ -13,9 +10,9 @@ stream protocol, and the AMQP connection used only for
 ## Enable TLS
 
 ```csharp
-cfg.Host("rabbitmq.internal", "/", h =>
+cfg.Host("localhost", "/", h =>
 {
-    h.Credentials("app", "s3cret");
+    h.Credentials("guest", "guest");
     h.UseTls();
 });
 ```
@@ -29,12 +26,12 @@ regardless of call order.
 ## Options
 
 ```csharp
-cfg.Host("rabbitmq.internal", "/", h =>
+cfg.Host("localhost", "/", h =>
 {
-    h.Credentials("app", "s3cret");
+    h.Credentials("guest", "guest");
     h.UseTls(tls =>
     {
-        tls.ServerName("rabbitmq.internal");
+        tls.ServerName("localhost");
         tls.ClientCertificate("./certs/client.pfx", "pw");
         tls.AcceptableCertificateErrors(SslPolicyErrors.None);
         tls.ProtocolVersion(SslProtocols.Tls13);
