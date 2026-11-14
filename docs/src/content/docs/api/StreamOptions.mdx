@@ -1,0 +1,52 @@
+---
+title: StreamOptions
+---
+
+Broker-side stream specification carried by the registration that references the stream. All members are optional; unset members are filled by other references to the same stream (per-knob agreement enforced at startup) or fall back to declare-time defaults.
+
+```csharp
+public class StreamOptions
+```
+
+## Properties
+
+### LeaderLocator
+
+Leader placement rule; unset uses the broker default at declare time.
+
+```csharp
+LeaderLocator
+```
+
+### MaxAge
+
+Retention bound after which older segments are truncated; unset uses the broker default at declare time.
+
+```csharp
+MaxAge
+```
+
+### MaxLengthBytes
+
+Total stream size bound in bytes; unset uses the broker default at declare time.
+
+```csharp
+MaxLengthBytes
+```
+
+### MaxSegmentSizeBytes
+
+Size of a single segment file in bytes; unset uses the broker default at declare time.
+
+```csharp
+MaxSegmentSizeBytes
+```
+
+### Partitions
+
+Partition count for a super-stream consumerGroup; null on plain streams. Must be &gt;= 1 when set.
+
+```csharp
+Partitions
+```
+

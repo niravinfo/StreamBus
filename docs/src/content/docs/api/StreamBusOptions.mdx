@@ -1,0 +1,102 @@
+---
+title: StreamBusOptions
+---
+
+Connection settings for a StreamBus bus; credentials, host, ports, and serializer.
+
+```csharp
+public class StreamBusOptions
+```
+
+## Methods
+
+### Validate
+
+The single validation boundary for connection options. Configurators, the supervisor, and the connector all delegate here instead of re-implementing range or member checks.
+
+```csharp
+Validate()
+```
+
+## Properties
+
+### AmqpPort
+
+AMQP port used for dead-letter queues and topology; 1..65535.
+
+```csharp
+AmqpPort
+```
+
+### Connection
+
+Per-connection pool sizing and supervision timing.
+
+```csharp
+Connection
+```
+
+### Heartbeat
+
+Requested heartbeat interval; must be positive.
+
+```csharp
+Heartbeat
+```
+
+### Host
+
+Broker host name or address.
+
+```csharp
+Host
+```
+
+### Password
+
+Broker password.
+
+```csharp
+Password
+```
+
+### Serializer
+
+Message serializer used by typed publish and consume.
+
+```csharp
+Serializer
+```
+
+### StreamPort
+
+Stream protocol port; 1..65535.
+
+```csharp
+StreamPort
+```
+
+### Tls
+
+TLS settings for both the stream protocol and AMQP connections; null means plain TCP (TLS off, the default).
+
+```csharp
+Tls
+```
+
+### UserName
+
+Broker user name.
+
+```csharp
+UserName
+```
+
+### Vhost
+
+RabbitMQ virtual host to open.
+
+```csharp
+Vhost
+```
+

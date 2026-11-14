@@ -1,0 +1,206 @@
+---
+title: ErrorEnvelope
+---
+
+The envelope of one failed delivery as it travels to an error destination: the original body plus the failure metadata carried as streambus.error.* application properties, so the destination alone explains what happened. Consuming or draining the destination afterwards is the application's job.
+
+```csharp
+public class ErrorEnvelope
+```
+
+## Methods
+
+### CaptureUserHeaders
+
+Captures the original user headers of a delivery for the error envelope: framework keys (any streambus.* key, which covers the envelope's own fields), null values (AMQP application properties cannot carry them; a null header is treated as absent), and values a republish could not legally carry (anything but string, bool, int, long) are dropped. Returns null when the delivery carried no user headers.
+
+```csharp
+CaptureUserHeaders(IStreamHeaders)
+```
+
+### EnvelopeApplicationProperties
+
+Serializes the envelope's own metadata as the flat streambus.error.* application-property map that travels with the failed body.
+
+```csharp
+EnvelopeApplicationProperties()
+```
+
+### ToApplicationProperties
+
+Flattens the envelope into the application properties for the error-destination publish: the streambus.error.* metadata, with the consume-pipeline ErrorEnvelope.SendHeaders and then the original ErrorEnvelope.UserHeaders merged on top as plain keys. Envelope fields win key collisions.
+
+```csharp
+ToApplicationProperties()
+```
+
+### ToHeaders
+
+Flattens the envelope into a header map: the same content as ErrorEnvelope.ToApplicationProperties minus entries with null values.
+
+```csharp
+ToHeaders()
+```
+
+### TryParse
+
+Attempts to read an envelope from a delivery that carried the failure metadata as application properties (error-stream hand-off).
+
+```csharp
+TryParse(string, Byte[], Collections.Generic.IReadOnlyDictionary<string>, Object}, ErrorEnvelope@)
+```
+
+### TryParseHeaders
+
+Attempts to read an envelope from a delivery that carried the failure metadata as AMQP message headers (queue hand-off).
+
+```csharp
+TryParseHeaders(string, Byte[], Collections.Generic.IReadOnlyDictionary<string>, Object}, ErrorEnvelope@)
+```
+
+## Properties
+
+### Attempts
+
+Total attempts made, counting the first delivery.
+
+```csharp
+Attempts
+```
+
+### Body
+
+Body of the failed delivery, as received.
+
+```csharp
+Body
+```
+
+### ContentType
+
+Content type of the failed delivery, as it arrived from the broker's AMQP content-type property.
+
+```csharp
+ContentType
+```
+
+### CorrelationId
+
+AMQP correlation-id of the failed delivery; null when absent.
+
+```csharp
+CorrelationId
+```
+
+### ErrorStream
+
+Error destination the failed delivery was routed to: an error stream name, or an AMQP queue name.
+
+```csharp
+ErrorStream
+```
+
+### ExceptionMessage
+
+Message of the exception that exhausted the retries.
+
+```csharp
+ExceptionMessage
+```
+
+### ExceptionStack
+
+Stack trace of the exception that exhausted the retries.
+
+```csharp
+ExceptionStack
+```
+
+### ExceptionType
+
+Type name of the exception that exhausted the retries.
+
+```csharp
+ExceptionType
+```
+
+### FailedAt
+
+When the delivery exhausted its retries (UTC).
+
+```csharp
+FailedAt
+```
+
+### MessageId
+
+AMQP message-id of the failed delivery; null when absent or not a Guid.
+
+```csharp
+MessageId
+```
+
+### RoutingKey
+
+Routing value of the original super-stream publish; null for a plain stream.
+
+```csharp
+RoutingKey
+```
+
+### SendHeaders
+
+Headers added by the consume pipeline for the failed delivery. They are forwarded on top of the envelope's own fields; envelope fields win when a key collides.
+
+```csharp
+SendHeaders
+```
+
+### SentTime
+
+AMQP creation-time of the failed delivery, UTC; null when absent.
+
+```csharp
+SentTime
+```
+
+### SourceOffset
+
+Offset of the failed delivery within its source partition stream.
+
+```csharp
+SourceOffset
+```
+
+### SourcePartition
+
+Source partition index; 0 for a plain stream.
+
+```csharp
+SourcePartition
+```
+
+### SourcePartitionStream
+
+Physical partition stream the delivery failed on; equals ErrorEnvelope.SourceStream for a plain stream.
+
+```csharp
+SourcePartitionStream
+```
+
+### SourceStream
+
+Logical source stream the delivery failed on; the super-stream name when the source is partitioned.
+
+```csharp
+SourceStream
+```
+
+### UserHeaders
+
+Original user headers of the failed delivery; framework keys (streambus.*) and values with unsupported types are excluded.
+
+```csharp
+UserHeaders
+```
+

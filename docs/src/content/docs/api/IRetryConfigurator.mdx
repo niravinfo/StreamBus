@@ -1,0 +1,63 @@
+---
+title: IRetryConfigurator
+---
+
+Configures a retry schedule. A schedule sets a total attempt limit (RetryPolicy.MaxAttempts includes the first attempt), which a dead-letter destination or OnExhausted callback requires; without one the endpoint retries forever. Schedule methods overwrite each other; the last call wins.
+
+```csharp
+public interface IRetryConfigurator
+```
+
+## Methods
+
+### Exponential
+
+Retries with exponentially growing delays: minDelay × 2^(attempt − 1), capped at maxDelay, without jitter. Use IRetryConfigurator.Intervals(System.TimeSpan[]) for custom growth factors.
+
+```csharp
+Exponential(int, TimeSpan, TimeSpan)
+```
+
+- [ArgumentOutOfRangeException](ArgumentOutOfRangeException) — retryCount is negative.
+- [StreamBusConfigurationException](StreamBusConfigurationException) — minDelay or maxDelay is not positive.
+
+### Immediate
+
+Retries retries times with no delay between attempts.
+
+```csharp
+Immediate(int)
+```
+
+- [ArgumentOutOfRangeException](ArgumentOutOfRangeException) — retries is negative.
+
+### Interval
+
+Retries retries times, waiting delay between attempts.
+
+```csharp
+Interval(int, TimeSpan)
+```
+
+- [ArgumentOutOfRangeException](ArgumentOutOfRangeException) — retries is negative.
+- [StreamBusConfigurationException](StreamBusConfigurationException) — delay is negative.
+
+### Intervals
+
+Retries once per delay in delays, waiting delays[i] before retry i + 1.
+
+```csharp
+Intervals(TimeSpan[])
+```
+
+- [ArgumentNullException](ArgumentNullException) — delays is null.
+- [StreamBusConfigurationException](StreamBusConfigurationException) — delays is empty or contains a negative value.
+
+### None
+
+Disables retry: the first failure exhausts the schedule (a single attempt).
+
+```csharp
+None()
+```
+

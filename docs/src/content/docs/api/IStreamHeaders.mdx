@@ -1,0 +1,70 @@
+---
+title: IStreamHeaders
+---
+
+Read-only access to the application properties of a delivery.
+
+```csharp
+public interface IStreamHeaders
+```
+
+## Methods
+
+### GetBool
+
+Gets a header value as a Boolean.
+
+```csharp
+GetBool(string)
+```
+
+### GetInt
+
+Gets a header value as an Int32.
+
+```csharp
+GetInt(string)
+```
+
+### GetJson
+
+Deserializes a JSON string header with the bus serializer.
+
+```csharp
+GetJson<T>(string)
+```
+
+### GetLong
+
+Gets a header value as a Int64.
+
+```csharp
+GetLong(string)
+```
+
+### GetString
+
+Gets a header value as a string.
+
+```csharp
+GetString(string)
+```
+
+### TryGet
+
+Gets a header value by key.
+
+```csharp
+TryGet(string, Object@)
+```
+
+## Properties
+
+### All
+
+Every header, framework keys included.
+
+```csharp
+All
+```
+

@@ -1,0 +1,56 @@
+---
+title: SystemTextJsonStreamSerializer
+---
+
+System.Text.Json serializer; SystemTextJsonStreamSerializer.ContentType is application/json. Construct with custom Text.Json.JsonSerializerOptions or use SystemTextJsonStreamSerializer.Default.
+
+```csharp
+public class SystemTextJsonStreamSerializer
+```
+
+## Methods
+
+### Deserialize
+
+Deserializes UTF-8 JSON into T; a null result throws Text.Json.JsonException.
+
+```csharp
+Deserialize<T>(ReadOnlyMemory<byte>)
+```
+
+### Serialize
+
+Serializes message as UTF-8 JSON.
+
+```csharp
+Serialize<T>(T)
+```
+
+### constructor
+
+Creates a serializer over the given options; null uses defaults.
+
+```csharp
+constructor(Text.Json.JsonSerializerOptions)
+```
+
+## Properties
+
+### ContentType
+
+Media type written to the AMQP content-type property.
+
+```csharp
+ContentType
+```
+
+## Fields
+
+### Default
+
+Shared instance with default options.
+
+```csharp
+Default
+```
+

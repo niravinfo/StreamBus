@@ -1,0 +1,20 @@
+---
+title: StreamBusErrorClassification
+---
+
+Classifies exceptions that cannot recover by retrying, so retry loops and hand-off paths surface them immediately instead of retrying forever.
+
+```csharp
+public class StreamBusErrorClassification
+```
+
+## Methods
+
+### IsFatal
+
+Determines whether the exception is fatal: a protocol error, an SSL error, an unsupported authentication mechanism, or an authentication failure (including one nested in an inner chain).
+
+```csharp
+IsFatal(Exception)
+```
+

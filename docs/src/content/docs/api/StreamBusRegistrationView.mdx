@@ -1,0 +1,60 @@
+---
+title: StreamBusRegistrationView
+---
+
+Credential-free projection of one bus registration for health/status and diagnostics. The live StreamBusOptions stays internal to the store so a password can never leak through a public read accessor.
+
+```csharp
+public class StreamBusRegistrationView
+```
+
+## Properties
+
+### AmqpPort
+
+AMQP protocol port.
+
+```csharp
+AmqpPort
+```
+
+### Heartbeat
+
+Configured connection heartbeat interval.
+
+```csharp
+Heartbeat
+```
+
+### Host
+
+RabbitMQ host name.
+
+```csharp
+Host
+```
+
+### StreamPort
+
+Stream protocol port.
+
+```csharp
+StreamPort
+```
+
+### TlsEnabled
+
+Whether TLS is enabled for this registration's connections.
+
+```csharp
+TlsEnabled
+```
+
+### Vhost
+
+Virtual host for the registration.
+
+```csharp
+Vhost
+```
+

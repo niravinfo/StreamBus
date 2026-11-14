@@ -255,3 +255,17 @@ Decisions made with the user (2026-11-14, second session):
   (ALL SNIPPET REGISTRATIONS VALID), verbatim quickstart build
   (succeeded), API-existence scan (60 calls, none unknown), Starlight
   build (tabs render, no intros).
+- 2026-11-14 (P6 shipped): API reference implemented as a lightweight
+  generator (DocFX rejected: it builds a second, unstyled site next to
+  Starlight and its pipeline buys nothing at 86 types). Tool:
+  `tools/ApiDocsGen` (zero-dependency .NET console app; xUnit tests in
+  `tools/ApiDocsGen.Tests`), parses the compiled `src/StreamBus` XML doc
+  file and writes one Starlight .mdx page per public top-level type (83
+  pages; nested types like `ReadinessPolicy.WaitUpTo` are sections on
+  their parent's page) into `docs/src/content/docs/api/`, sidebar via
+  Starlight `autogenerate` ("API reference" group). Output is committed
+  and deterministic; CI regenerates and diffs it as a freshness check.
+  All 515 documented members render (MDX-hazard escaping for `<T>`
+  generics and `{stream}` braces); Starlight builds 99 pages. Remaining
+  open: visual browser review of the whole site (including new API pages).
+

@@ -1,0 +1,52 @@
+---
+title: PublishOptions
+---
+
+Per-call options for a raw publish. Defaults mirror the typed publish path: fail-fast readiness, plain stream, no routing key, no confirm timeout (waits indefinitely for the broker confirm), and no message properties.
+
+```csharp
+public class PublishOptions
+```
+
+## Properties
+
+### ConfirmTimeout
+
+Timeout for the broker confirm; null waits indefinitely (the caller's cancellation token is the only bound). A timeout leaves the outcome unknown.
+
+```csharp
+ConfirmTimeout
+```
+
+### IsSuperStream
+
+Whether the target is a super stream (publish routes to one partition per routing key).
+
+```csharp
+IsSuperStream
+```
+
+### Properties
+
+AMQP message properties (ids, sent time, content type, headers) for this publish; null sends a body with no properties.
+
+```csharp
+Properties
+```
+
+### Readiness
+
+How the publish waits for a ready connection; bounds only the readiness wait, not the confirm.
+
+```csharp
+Readiness
+```
+
+### RoutingKey
+
+Routing key for a super-stream publish; ignored for a plain stream.
+
+```csharp
+RoutingKey
+```
+

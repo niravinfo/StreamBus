@@ -1,0 +1,44 @@
+---
+title: BusConnectionState
+---
+
+Latched connection state of a bus, reported by the supervisor and surfaced through health checks.
+
+```csharp
+public enum BusConnectionState
+```
+
+## Fields
+
+### Fatal
+
+An unrecoverable error (e.g. protocol/SSL/auth failure); no automatic retry.
+
+```csharp
+Fatal
+```
+
+### Ready
+
+Connected and ready for work.
+
+```csharp
+Ready
+```
+
+### Starting
+
+Initial state while the first connection attempt is in flight.
+
+```csharp
+Starting
+```
+
+### TransientFailure
+
+A transient failure occurred; reconnecting with backoff.
+
+```csharp
+TransientFailure
+```
+

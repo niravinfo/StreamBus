@@ -1,0 +1,48 @@
+---
+title: StreamMessageProperties
+---
+
+AMQP message properties applied to a publish. Set on PublishOptions.Properties to control identity, timing, and application headers on the wire.
+
+```csharp
+public class StreamMessageProperties
+```
+
+## Remarks
+
+Values map to AMQP message properties: , , and become the AMQP , , and . The media type is not set here; StreamBus stamps it from the configured serializer. are written as AMQP application properties, which restricts values to , , , and (or ) — other types throw at publish time. Keys colliding with reserved framework keys are rejected. When a publish filter also writes a header, the filter wins over values supplied here.
+
+## Properties
+
+### CorrelationId
+
+AMQP correlation-id; never invented by StreamBus.
+
+```csharp
+CorrelationId
+```
+
+### Headers
+
+Application properties written as AMQP headers on the message. Values must be string, bool, int, long, or null; keys must not collide with reserved streambus.* framework keys.
+
+```csharp
+Headers
+```
+
+### MessageId
+
+AMQP message-id; null leaves it unset on the wire.
+
+```csharp
+MessageId
+```
+
+### SentTime
+
+AMQP creation-time; normalized to UTC, millisecond precision.
+
+```csharp
+SentTime
+```
+

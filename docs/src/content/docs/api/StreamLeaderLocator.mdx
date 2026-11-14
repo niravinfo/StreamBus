@@ -1,0 +1,36 @@
+---
+title: StreamLeaderLocator
+---
+
+Broker rule for placing the leader replica of a stream; applied at declare time only.
+
+```csharp
+public enum StreamLeaderLocator
+```
+
+## Fields
+
+### ClientLocal
+
+Leader goes to the node the client is connected to, when possible.
+
+```csharp
+ClientLocal
+```
+
+### LeastLeaders
+
+Leader goes to the node currently hosting the fewest leaders.
+
+```csharp
+LeastLeaders
+```
+
+### Random
+
+Leader is placed on a random node.
+
+```csharp
+Random
+```
+

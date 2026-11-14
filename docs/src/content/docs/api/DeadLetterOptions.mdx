@@ -1,0 +1,52 @@
+---
+title: DeadLetterOptions
+---
+
+Kind-based dead-letter destination. A stream destination sets DeadLetterOptions.StreamSpec (queue type unset); a queue destination sets DeadLetterOptions.QueueType (stream spec unset). Setting both is unrepresentable by construction — DeadLetterOptions.IsStream is DeadLetterOptions.QueueType being null.
+
+```csharp
+public class DeadLetterOptions
+```
+
+## Properties
+
+### IsStream
+
+true when the destination is a stream (no queue type set).
+
+```csharp
+IsStream
+```
+
+### Name
+
+Dead-letter destination name: a stream or queue name.
+
+```csharp
+Name
+```
+
+### QueueOptions
+
+Options for a queue destination; ignored for stream destinations.
+
+```csharp
+QueueOptions
+```
+
+### QueueType
+
+Queue type when the destination is a queue; null for a stream destination.
+
+```csharp
+QueueType
+```
+
+### StreamSpec
+
+Stream declaration spec when the destination is a stream; null for a queue destination.
+
+```csharp
+StreamSpec
+```
+

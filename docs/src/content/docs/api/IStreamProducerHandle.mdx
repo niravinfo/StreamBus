@@ -1,0 +1,20 @@
+---
+title: IStreamProducerHandle
+---
+
+Common producer surface: every transport can send a message and await its broker confirmation. The plain/super split below keeps transport-specific members off the wrong surface instead of silently ignoring or throwing.
+
+```csharp
+public interface IStreamProducerHandle
+```
+
+## Methods
+
+### SendAsync
+
+Sends the body and awaits the broker confirmation; a non-Ok code throws StreamBusPublishException.
+
+```csharp
+SendAsync(ReadOnlyMemory<byte>, PublishOptions, Threading.CancellationToken)
+```
+

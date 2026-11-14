@@ -1,0 +1,44 @@
+---
+title: IStreamTopology
+---
+
+Entry point for idempotent stream and super-stream declarations on one vhost. Startup declarations come from registrations; this API covers runtime, operator-driven declarations.
+
+```csharp
+public interface IStreamTopology
+```
+
+## Methods
+
+### EnsureStreamAsync
+
+Declares a plain stream idempotently: creates it when absent, re-verifies repeated calls from the cache, and throws StreamBusStreamConfigurationConflictException on kind conflicts. An existing plain stream is adopted with a warning because its arguments are not readable via the stream protocol.
+
+```csharp
+EnsureStreamAsync(StreamDeclaration, Threading.CancellationToken)
+```
+
+- [StreamBusConfigurationException](StreamBusConfigurationException) — The declaration is invalid.
+- [StreamBusStreamConfigurationConflictException](StreamBusStreamConfigurationConflictException) — The existing broker topology disagrees with the declaration.
+
+### EnsureSuperStreamAsync
+
+Declares a super stream with the given number of partitions idempotently: creates it when absent, re-verifies repeated calls from the cache, and throws StreamBusStreamConfigurationConflictException on kind conflicts or partition-count mismatches.
+
+```csharp
+EnsureSuperStreamAsync(SuperStreamDeclaration, Threading.CancellationToken)
+```
+
+- [StreamBusConfigurationException](StreamBusConfigurationException) — The declaration is invalid.
+- [StreamBusStreamConfigurationConflictException](StreamBusStreamConfigurationConflictException) — The existing broker topology disagrees with the declaration.
+
+## Properties
+
+### Vhost
+
+Vhost the declarations are sent to.
+
+```csharp
+Vhost
+```
+

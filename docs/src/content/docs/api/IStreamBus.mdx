@@ -1,0 +1,142 @@
+---
+title: IStreamBus
+---
+
+Publish/consume surface for one bus. A message type resolves its target stream from the publish registration unless an explicit stream name overrides it; wrong-kind calls (plain vs super) throw StreamBusConfigurationException naming the method to use.
+
+```csharp
+public interface IStreamBus
+```
+
+## Methods
+
+### ConsumeAsync
+
+Attaches a raw (untyped) consumer to stream; dispose the returned consumer to detach.
+
+```csharp
+ConsumeAsync(string, ConsumeOptions, Func<ConsumeContext>, Threading.Tasks.Task}, Threading.CancellationToken)
+```
+
+### GetConsumerOffsetAsync
+
+Queries the stored broker-side offset for a consumer group on one partition.
+
+```csharp
+GetConsumerOffsetAsync(string, string, int, Threading.CancellationToken)
+```
+
+### PublishAsync
+
+Publishes to the stream registered for T, with options.
+
+```csharp
+PublishAsync<T>(T, PublishOptions, Threading.CancellationToken)
+```
+
+### PublishAsync
+
+Publishes to the stream registered for T.
+
+```csharp
+PublishAsync<T>(T, Threading.CancellationToken)
+```
+
+### PublishAsync
+
+Publishes to an explicitly named plain stream, with options. The target must be declared or StreamBusStreamNotFoundException surfaces.
+
+```csharp
+PublishAsync<T>(string, T, PublishOptions, Threading.CancellationToken)
+```
+
+### PublishAsync
+
+Publishes to an explicitly named plain stream.
+
+```csharp
+PublishAsync<T>(string, T, Threading.CancellationToken)
+```
+
+### PublishRawAsync
+
+Sends pre-serialized bytes to stream, bypassing serialization and the publish pipeline.
+
+```csharp
+PublishRawAsync(string, ReadOnlyMemory<byte>, PublishOptions, Threading.CancellationToken)
+```
+
+### PublishSuperAsync
+
+Routed super-stream publish to the stream registered for T, with options.
+
+```csharp
+PublishSuperAsync<T>(T, string, PublishOptions, Threading.CancellationToken)
+```
+
+### PublishSuperAsync
+
+Routed super-stream publish to the stream registered for T.
+
+```csharp
+PublishSuperAsync<T>(T, string, Threading.CancellationToken)
+```
+
+### PublishSuperAsync
+
+Routed super-stream publish to an explicitly named super stream, with options.
+
+```csharp
+PublishSuperAsync<T>(string, T, string, PublishOptions, Threading.CancellationToken)
+```
+
+### PublishSuperAsync
+
+Routed super-stream publish to an explicitly named super stream.
+
+```csharp
+PublishSuperAsync<T>(string, T, string, Threading.CancellationToken)
+```
+
+### SetConsumerOffsetAsync
+
+Stores the broker-side offset for a consumer group on one partition.
+
+```csharp
+SetConsumerOffsetAsync(string, string, int, UInt64, Threading.CancellationToken)
+```
+
+### WaitUntilReadyAsync
+
+Waits until the connection is ready, per policy.
+
+```csharp
+WaitUntilReadyAsync(ReadinessPolicy, Threading.CancellationToken)
+```
+
+## Properties
+
+### State
+
+Live connection state of the underlying supervisor.
+
+```csharp
+State
+```
+
+### Topology
+
+Idempotent topology declaration surface. Startup declarations configured via topology are declared automatically when the bus starts; use this property for explicit or operator-driven declaration at any time.
+
+```csharp
+Topology
+```
+
+### Vhost
+
+Virtual host this bus is registered against.
+
+```csharp
+Vhost
+```
+

@@ -1,0 +1,14 @@
+---
+title: ConsumerHealthNames
+---
+
+Builds the per-registration identity shown by the health check.
+
+```csharp
+public class ConsumerHealthNames
+```
+
+## Remarks
+
+Every consumer row carries the bus type name because a vhost is shared by all buses connected to it. Without it, two buses consuming the same stream on one vhost collapse into a single row and overwrite each other's state.
+

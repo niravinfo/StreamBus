@@ -1,0 +1,10 @@
+---
+title: ConsumerTeardown
+---
+
+Single owner of consumer teardown: cancel the groupCts, drain the run tasks, dispose the partition loops, scopes, and cancellation source, then run the stopped/deregistered hooks. Shared by the registration's StreamConsumerRegistration.DisposeAsync and the failed-start cleanup in StreamConsumerRegistry.ConsumeAsync(System.Type,System.String,StreamBus.ConsumeOptions,System.Func&#123;StreamBus.ConsumeContext,System.Threading.Tasks.Task&#125;,System.Threading.CancellationToken,StreamBus.IStreamSerializer).
+
+```csharp
+public class ConsumerTeardown
+```
+

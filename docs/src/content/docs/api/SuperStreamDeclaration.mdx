@@ -1,0 +1,60 @@
+---
+title: SuperStreamDeclaration
+---
+
+An explicit declaration of a super stream, passed to IStreamTopology.EnsureSuperStreamAsync(StreamBus.SuperStreamDeclaration,System.Threading.CancellationToken).
+
+```csharp
+public class SuperStreamDeclaration
+```
+
+## Properties
+
+### LeaderLocator
+
+Leader placement rule applied at declare time.
+
+```csharp
+LeaderLocator
+```
+
+### MaxAge
+
+Retention bound after which older segments are truncated; unset uses the broker default.
+
+```csharp
+MaxAge
+```
+
+### MaxLengthBytes
+
+Total stream size bound in bytes; unset uses the broker default.
+
+```csharp
+MaxLengthBytes
+```
+
+### MaxSegmentSizeBytes
+
+Size of a single segment file in bytes; unset uses the broker default.
+
+```csharp
+MaxSegmentSizeBytes
+```
+
+### Name
+
+Super-stream name; partitions are named &#123;name&#125;-&#123;index&#125;.
+
+```csharp
+Name
+```
+
+### Partitions
+
+Number of partitions to create.
+
+```csharp
+Partitions
+```
+

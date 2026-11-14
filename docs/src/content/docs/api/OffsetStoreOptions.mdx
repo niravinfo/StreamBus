@@ -1,0 +1,28 @@
+---
+title: OffsetStoreOptions
+---
+
+Broker-side offset persistence cadence for a consumer group.
+
+```csharp
+public class OffsetStoreOptions
+```
+
+## Properties
+
+### MaxFlushInterval
+
+Also flush the stored offset at least every this often; null disables the time-based flush.
+
+```csharp
+MaxFlushInterval
+```
+
+### StoreEveryMessages
+
+Store the offset after this many messages; 1 stores every delivery (default).
+
+```csharp
+StoreEveryMessages
+```
+

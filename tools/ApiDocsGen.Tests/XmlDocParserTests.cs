@@ -108,4 +108,66 @@ public class XmlDocParserTests
         var method = Assert.Single(bus.Members, m => m.Name == "Empty");
         Assert.Equal(string.Empty, method.Summary);
     }
+
+    [Fact]
+    public void ParameterlessMethodRendersWithEmptyParameterList()
+    {
+        var xml = """
+            <?xml version="1.0"?>
+            <doc>
+              <assembly><name>StreamBus</name></assembly>
+              <members>
+                <member name="T:StreamBus.IRetryConfigurator">
+                  <summary>Retry configuration.</summary>
+                </member>
+                <member name="M:StreamBus.IRetryConfigurator.None">
+                  <summary>Disables retry.</summary>
+                </member>
+                <member name="M:StreamBus.IRetryConfigurator.GetService``1">
+                  <summary>Resolves a service.</summary>
+                </member>
+                <member name="M:StreamBus.IRetryConfigurator.#ctor">
+                  <summary>Creates the configurator.</summary>
+                </member>
+              </members>
+            </doc>
+            """;
+        var types = XmlDocParser.Parse(FixturePath(xml));
+        var retry = Assert.Single(types, t => t.FullName == "IRetryConfigurator");
+
+        var none = Assert.Single(retry.Members, m => m.Name == "None");
+        Assert.Equal("None()", none.Signature);
+
+        var getService = Assert.Single(retry.Members, m => m.Name == "GetService");
+        Assert.Equal("GetService<T>()", getService.Signature);
+
+        var ctor = Assert.Single(retry.Members, m => m.Name == "constructor");
+        Assert.Equal("constructor()", ctor.Signature);
+    }
+
+    [Fact]
+    public void SeeAndParamrefTagsRenderInline()
+    {
+        var xml = """
+            <?xml version="1.0"?>
+            <doc>
+              <assembly><name>StreamBus</name></assembly>
+              <members>
+                <member name="T:StreamBus.IStreamBus">
+                  <summary>A bus surface like <see cref="T:StreamBus.Bus"/> with marker <paramref name="T"/> types.</summary>
+                </member>
+                <member name="M:StreamBus.IStreamBus.Wait(System.TimeSpan)">
+                  <summary>Waits with <paramref name="budget"/>.</summary>
+                </member>
+              </members>
+            </doc>
+            """;
+        var types = XmlDocParser.Parse(FixturePath(xml));
+        var bus = Assert.Single(types, t => t.FullName == "IStreamBus");
+        Assert.Contains("like Bus with", bus.Summary);
+        Assert.Contains("marker T types", bus.Summary);
+        var wait = Assert.Single(bus.Members, m => m.Name == "Wait");
+        Assert.Contains("Waits with budget.", wait.Summary);
+        Assert.Equal("Wait(TimeSpan)", wait.Signature);
+    }
 }

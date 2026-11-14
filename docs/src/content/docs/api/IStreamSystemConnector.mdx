@@ -1,0 +1,20 @@
+---
+title: IStreamSystemConnector
+---
+
+Opens a client StreamSystem for one StreamBusOptions (host/port, credentials, heartbeat, connection pool) and returns the resulting IStreamSystemHandle.
+
+```csharp
+public interface IStreamSystemConnector
+```
+
+## Methods
+
+### ConnectAsync
+
+Validates options and connects to the broker.
+
+```csharp
+ConnectAsync(StreamBusOptions, Threading.CancellationToken)
+```
+

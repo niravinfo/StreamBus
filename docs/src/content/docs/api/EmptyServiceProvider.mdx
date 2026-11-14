@@ -1,0 +1,10 @@
+---
+title: EmptyServiceProvider
+---
+
+Null-object IServiceProvider used as the ConsumeContext.Services value for deliveries that create no DI scope: untyped endpoints with no filters and no message type, or buses constructed without dependency injection. Resolving any service returns null, the provider contract's "no such service" answer — the GetRequiredService extension on it therefore throws the standard missing-service exception. Filter pipelines never observe it: a consumer with filters but no scope factory fails at construction instead.
+
+```csharp
+public class EmptyServiceProvider
+```
+

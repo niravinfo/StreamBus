@@ -1,0 +1,30 @@
+---
+title: OptionalAsyncScope
+---
+
+An optional per-delivery DI scope, disposable asynchronously. Wraps a nullable Microsoft.Extensions.DependencyInjection.AsyncServiceScope so consume paths that only sometimes need a scope can use await using uniformly: scoped services implementing IAsyncDisposable (e.g. a DbContext) are disposed asynchronously instead of synchronously on the dispatch thread.
+
+```csharp
+public class OptionalAsyncScope
+```
+
+## Methods
+
+### constructor
+
+An optional per-delivery DI scope, disposable asynchronously. Wraps a nullable Microsoft.Extensions.DependencyInjection.AsyncServiceScope so consume paths that only sometimes need a scope can use await using uniformly: scoped services implementing IAsyncDisposable (e.g. a DbContext) are disposed asynchronously instead of synchronously on the dispatch thread.
+
+```csharp
+constructor(Nullable<Microsoft.Extensions.DependencyInjection.AsyncServiceScope>)
+```
+
+## Properties
+
+### Services
+
+The scope's service provider, or null when no scope was created.
+
+```csharp
+Services
+```
+

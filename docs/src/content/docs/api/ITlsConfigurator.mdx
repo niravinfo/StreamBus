@@ -1,0 +1,44 @@
+---
+title: ITlsConfigurator
+---
+
+Configures TLS settings inside UseTls.
+
+```csharp
+public interface ITlsConfigurator
+```
+
+## Methods
+
+### AcceptableCertificateErrors
+
+Sets certificate policy errors accepted despite failing validation.
+
+```csharp
+AcceptableCertificateErrors(Net.Security.SslPolicyErrors)
+```
+
+### ClientCertificate
+
+Sets a PFX client certificate file presented to the broker.
+
+```csharp
+ClientCertificate(string, string)
+```
+
+### ProtocolVersion
+
+Sets the allowed TLS protocol versions; Security.Authentication.SslProtocols.None means the operating system default. Versions below TLS 1.2 are rejected by validation.
+
+```csharp
+ProtocolVersion(Security.Authentication.SslProtocols)
+```
+
+### ServerName
+
+Sets the server name used for TLS certificate validation (SNI and name matching); null falls back to the host name.
+
+```csharp
+ServerName(string)
+```
+

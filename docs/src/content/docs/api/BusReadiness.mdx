@@ -1,0 +1,36 @@
+---
+title: BusReadiness
+---
+
+Outcome of a readiness wait (IStreamBus.WaitUntilReadyAsync(StreamBus.ReadinessPolicy,System.Threading.CancellationToken)): the waiting policy either saw the connection become ready, gave up on its budget, or observed a fatal connection state.
+
+```csharp
+public enum BusReadiness
+```
+
+## Fields
+
+### Fatal
+
+The connection is in a fatal state; the operation is refused until reconnect or operator action.
+
+```csharp
+Fatal
+```
+
+### Ready
+
+The bus connection is ready for the operation.
+
+```csharp
+Ready
+```
+
+### TimedOut
+
+The wait budget expired (fail-fast or bounded wait) without reaching Ready; the operation was not attempted. The connection keeps retrying in the background.
+
+```csharp
+TimedOut
+```
+

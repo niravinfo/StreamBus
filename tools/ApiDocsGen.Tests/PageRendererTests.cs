@@ -82,6 +82,38 @@ public class PageRendererTests
     }
 
     [Fact]
+    public void AngleBracketsInBodyTextAreEscaped()
+    {
+        var type = Fixture() with
+        {
+            FullName = "RetryConfig",
+            Name = "RetryConfig",
+            Slug = "RetryConfig",
+            Kind = ApiTypeKind.Class,
+            Summary = "The consumer class must implement IConsumer<T> for one message type.",
+        };
+        var output = PageRenderer.Render(type);
+        Assert.Contains("IConsumer&lt;T&gt;", output);
+        Assert.DoesNotContain("IConsumer<T>", output);
+    }
+
+    [Fact]
+    public void CurlyBracesInBodyTextAreEscaped()
+    {
+        var type = Fixture() with
+        {
+            FullName = "RetryConfig",
+            Name = "RetryConfig",
+            Slug = "RetryConfig",
+            Kind = ApiTypeKind.Class,
+            Summary = "Dead letters go to {stream}_error by default.",
+        };
+        var output = PageRenderer.Render(type);
+        Assert.Contains("&#123;stream&#125;_error", output);
+        Assert.DoesNotContain("{stream}", output);
+    }
+
+    [Fact]
     public void TitleIsSanitizedForYaml()
     {
         var weird = Fixture() with { Name = "A|B:C" };

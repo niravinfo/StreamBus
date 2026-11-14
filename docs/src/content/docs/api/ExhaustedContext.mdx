@@ -1,0 +1,120 @@
+---
+title: ExhaustedContext
+---
+
+The failure handed to an OnExhausted callback after the retry schedule is exhausted. Returning from the callback advances past the message; throwing recycles the attach for redelivery.
+
+```csharp
+public class ExhaustedContext
+```
+
+## Methods
+
+### GetService
+
+Resolves a required service from the exhaustion scope. A missing registration is a runtime DI miss, not invalid bus configuration, so this surfaces the standard InvalidOperationException from Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.GetRequiredService--1(System.IServiceProvider).
+
+```csharp
+GetService<T>()
+```
+
+- [InvalidOperationException](InvalidOperationException) — No service of type T is registered.
+
+## Properties
+
+### Attempts
+
+Total delivery attempts, including the first.
+
+```csharp
+Attempts
+```
+
+### Body
+
+Serialized message body.
+
+```csharp
+Body
+```
+
+### CorrelationId
+
+AMQP correlation-id; null when absent.
+
+```csharp
+CorrelationId
+```
+
+### Exception
+
+The exception that exhausted the schedule.
+
+```csharp
+Exception
+```
+
+### FailedAt
+
+When the schedule was exhausted, UTC.
+
+```csharp
+FailedAt
+```
+
+### Headers
+
+Application properties of the failed delivery.
+
+```csharp
+Headers
+```
+
+### MessageId
+
+AMQP message-id; null when absent or not a Guid.
+
+```csharp
+MessageId
+```
+
+### Offset
+
+Source offset for this delivery.
+
+```csharp
+Offset
+```
+
+### Partition
+
+Source partition index.
+
+```csharp
+Partition
+```
+
+### SentTime
+
+AMQP creation-time of the original message, UTC.
+
+```csharp
+SentTime
+```
+
+### Services
+
+Per-delivery service scope shared with the typed consumer.
+
+```csharp
+Services
+```
+
+### Stream
+
+Source stream name.
+
+```csharp
+Stream
+```
+

@@ -160,11 +160,28 @@ public static partial class XmlDocParser
             .Select(ex => new ApiExceptionRef(DisplaySimpleName(ex.Attribute("cref")?.Value ?? string.Empty), InnerText(ex)))
             .ToList();
 
+        var kind = ToKind(kindChar);
+
+        // Display name: strip method generic arity backticks, and show
+        // constructors as "constructor".
+        if (kind == ApiMemberKind.Method)
+        {
+            var arityTick = memberName.LastIndexOf("``", StringComparison.Ordinal);
+            if (arityTick > 0)
+            {
+                memberName = memberName[..arityTick];
+            }
+
+            if (memberName.EndsWith("#ctor", StringComparison.Ordinal))
+            {
+                memberName = memberName[..^"#ctor".Length] + "constructor";
+            }
+        }
+
         var signature = kindChar == 'M'
-            ? RenderMethodSignature(memberName, rawName, types, declaringPath)
+            ? RenderMethodSignature(memberName, rawName)
             : memberName;
 
-        var kind = ToKind(kindChar);
         target.Members.Add(new ApiMember(memberName, signature, kind, summary, remarks, exceptions));
         target.OnlyFields &= kind == ApiMemberKind.Field;
     }
@@ -176,19 +193,19 @@ public static partial class XmlDocParser
         _ => ApiMemberKind.Field,
     };
 
-    private static string RenderMethodSignature(string memberName, string rawName, Dictionary<string, Builder> types, string declaringPath)
+    private static string RenderMethodSignature(string memberName, string rawName)
     {
-        var head = rawName[..rawName.IndexOf('(')];
+        // Method-level generic arity lives on the raw XML name
+        // (e.g. "GetService``1"), before display normalization strips it.
         var openParen = rawName.IndexOf('(');
         var paramText = openParen >= 0 ? rawName[(openParen + 1)..].TrimEnd(')') : string.Empty;
-
-        // Method-level generic arity: trailing ``N on the method name.
+        var head = openParen >= 0 ? rawName[..openParen] : rawName;
+        var rawLeaf = head[(head.LastIndexOf('.') + 1)..];
         var arity = 0;
-        var plainName = memberName;
-        var tick = memberName.LastIndexOf("``", StringComparison.Ordinal);
-        if (tick > 0 && int.TryParse(memberName[(tick + 2)..], out arity))
+        var tick = rawLeaf.LastIndexOf("``", StringComparison.Ordinal);
+        if (tick > 0)
         {
-            plainName = memberName[..tick];
+            _ = int.TryParse(rawLeaf[(tick + 2)..], out arity);
         }
 
         var sb = new StringBuilder();
@@ -199,7 +216,7 @@ public static partial class XmlDocParser
         }
         else
         {
-            sb.Append(plainName);
+            sb.Append(memberName);
             if (arity > 0)
             {
                 sb.Append('<');
@@ -311,6 +328,11 @@ public static partial class XmlDocParser
         }
 
         cref = NormalizeRoot(cref);
+        if (cref.StartsWith("System.", StringComparison.Ordinal))
+        {
+            cref = cref["System.".Length..];
+        }
+
         return cref.Replace('`', '-');
     }
 
@@ -408,8 +430,43 @@ public static partial class XmlDocParser
 
     private static string InnerText(XElement element)
     {
-        var text = string.Concat(element.Nodes().OfType<XText>().Select(t => t.Value)).Trim();
+        var text = RenderNodes(element).Trim();
         return WhitespaceRegex().Replace(text, " ");
+    }
+
+    /// <summary>
+    /// Renders documentation children inline: text nodes pass through, while
+    /// see/paramref/typeparamref references are replaced by their simple
+    /// names so no cref markup leaks into the page text.
+    /// </summary>
+    private static string RenderNodes(XElement element)
+    {
+        var sb = new StringBuilder();
+        foreach (var node in element.Nodes())
+        {
+            switch (node)
+            {
+                case XText text:
+                    sb.Append(text.Value);
+                    break;
+                case XElement inline when inline.Name.LocalName is "see" or "seealso":
+                    sb.Append(DisplaySimpleName(inline.Attribute("cref")?.Value ?? inline.Attribute("langword")?.Value ?? string.Empty));
+                    break;
+                case XElement inline when inline.Name.LocalName is "paramref" or "typeparamref":
+                    sb.Append(inline.Attribute("name")?.Value ?? string.Empty);
+                    break;
+                case XElement inline when inline.Name.LocalName == "c":
+                    sb.Append(inline.Value);
+                    break;
+                case XElement nested:
+                    sb.Append(string.Concat(nested.Nodes().OfType<XText>().Select(t => t.Value)));
+                    break;
+                default:
+                    break;
+            }
+        }
+
+        return sb.ToString();
     }
 
     [System.Text.RegularExpressions.GeneratedRegex(@"\s+")]
@@ -446,10 +503,9 @@ public static partial class XmlDocParser
                 return ApiTypeKind.Enum;
             }
 
-            if (Members.Exists(m => m.Kind is ApiMemberKind.Method or ApiMemberKind.Property)
-                && DeclaredName.Length > 1
-                && DeclaredName[0] == 'I'
-                && char.IsUpper(DeclaredName[1]))
+            // The XML carries no interface flag; the codebase's interface
+            // convention is the I-prefixed name.
+            if (DeclaredName.Length > 1 && DeclaredName[0] == 'I' && char.IsUpper(DeclaredName[1]))
             {
                 return ApiTypeKind.Interface;
             }

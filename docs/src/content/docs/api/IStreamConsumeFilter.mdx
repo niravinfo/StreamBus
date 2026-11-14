@@ -1,0 +1,24 @@
+---
+title: IStreamConsumeFilter
+---
+
+Universal consume filter that runs for every delivery on the bus.
+
+```csharp
+public interface IStreamConsumeFilter
+```
+
+## Remarks
+
+Filter instances are resolved once when the consumer attaches and cached for the bus lifetime, so a filter must be thread-safe. Register filter types with a singleton lifetime: a scoped or transient registration is rejected when the consumer attaches. Scoped services are available through ConsumeContext.Services.
+
+## Methods
+
+### OnConsume
+
+Runs before the consumer handler. Call next to handle the message, or return without calling it to filter the delivery.
+
+```csharp
+OnConsume(ConsumeContext, ConsumeNext)
+```
+

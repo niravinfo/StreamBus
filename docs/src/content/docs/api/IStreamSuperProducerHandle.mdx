@@ -1,0 +1,10 @@
+---
+title: IStreamSuperProducerHandle
+---
+
+Super-stream producer surface. Every send on a super stream must carry a routing key (the broker routes each message to one partition), so the envelope send — which has no routing key — is deliberately absent here and lives only on IStreamPlainProducerHandle. Calling code that tries it simply does not compile.
+
+```csharp
+public interface IStreamSuperProducerHandle
+```
+

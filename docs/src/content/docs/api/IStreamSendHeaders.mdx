@@ -1,0 +1,28 @@
+---
+title: IStreamSendHeaders
+---
+
+Writable headers carried on a publish or on a consume result.
+
+```csharp
+public interface IStreamSendHeaders
+```
+
+## Methods
+
+### Remove
+
+Removes a header value; returns whether it was present. Any non-blank key is accepted, so removing a framework key is a no-op. Removal takes precedence over values supplied at the call site.
+
+```csharp
+Remove(string)
+```
+
+### Set
+
+Sets a header value. Filter mutations take precedence over values supplied at the call site: IStreamSendHeaders.Set(System.String,System.Object) overwrites a call-site value for the same key.
+
+```csharp
+Set(string, object)
+```
+

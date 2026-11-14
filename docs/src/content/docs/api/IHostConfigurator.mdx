@@ -1,0 +1,78 @@
+---
+title: IHostConfigurator
+---
+
+Configures broker connection settings inside Host.
+
+```csharp
+public interface IHostConfigurator
+```
+
+## Methods
+
+### AmqpPort
+
+Sets the AMQP port used for dead-letter queues and topology.
+
+```csharp
+AmqpPort(int)
+```
+
+### ConsumersPerConnection
+
+Sets consumers multiplexed per connection.
+
+```csharp
+ConsumersPerConnection(int)
+```
+
+### Credentials
+
+Sets the broker credentials.
+
+```csharp
+Credentials(string, string)
+```
+
+### Heartbeat
+
+Sets the requested heartbeat interval.
+
+```csharp
+Heartbeat(TimeSpan)
+```
+
+### MonitorInterval
+
+Sets the connection monitor interval.
+
+```csharp
+MonitorInterval(TimeSpan)
+```
+
+### ProducersPerConnection
+
+Sets producers multiplexed per connection.
+
+```csharp
+ProducersPerConnection(int)
+```
+
+### StreamPort
+
+Sets the stream protocol port.
+
+```csharp
+StreamPort(int)
+```
+
+### UseTls
+
+Enables TLS for both the stream protocol and AMQP connections. Optional; off by default.
+
+```csharp
+UseTls(Action<ITlsConfigurator>)
+```
+
+Without explicit IHostConfigurator.StreamPort(System.Int32)/IHostConfigurator.AmqpPort(System.Int32) calls, enabling TLS switches the default ports to the conventional RabbitMQ TLS ports (5551 stream, 5671 AMQP). Explicit port calls always win, regardless of call order. Calling UseTls again replaces the previous TLS settings.
+

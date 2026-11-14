@@ -1,0 +1,54 @@
+---
+title: StreamBusDeserializationException
+---
+
+Thrown when a delivered body cannot be deserialized as the endpoint's message type.
+
+```csharp
+public class StreamBusDeserializationException
+```
+
+## Methods
+
+### constructor
+
+Builds the exception with the failed delivery's coordinates.
+
+```csharp
+constructor(string, int, UInt64, Type, Exception)
+```
+
+## Properties
+
+### MessageType
+
+Message type the body failed to deserialize as.
+
+```csharp
+MessageType
+```
+
+### Offset
+
+Offset of the failed delivery.
+
+```csharp
+Offset
+```
+
+### Partition
+
+Partition the delivery came from.
+
+```csharp
+Partition
+```
+
+### Stream
+
+Stream the delivery came from.
+
+```csharp
+Stream
+```
+

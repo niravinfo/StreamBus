@@ -1,0 +1,28 @@
+---
+title: StreamBusFilterContractException
+---
+
+A publish filter violated the filter contract by calling (or not calling) next() exactly once. It surfaces raw from the publish pipeline so a filter bug is not mistaken for a configuration error or retried as transient.
+
+```csharp
+public class StreamBusFilterContractException
+```
+
+## Methods
+
+### constructor
+
+A publish filter violated the filter contract by calling (or not calling) next() exactly once. It surfaces raw from the publish pipeline so a filter bug is not mistaken for a configuration error or retried as transient.
+
+```csharp
+constructor(string, Exception)
+```
+
+### constructor
+
+Initializes the exception with a message.
+
+```csharp
+constructor(string)
+```
+

@@ -1,0 +1,102 @@
+---
+title: IStreamSystemHandle
+---
+
+Live connection to one broker: the surface the rest of StreamBus uses for producers, consumers, offsets, and topology queries/implementations over a single connected StreamSystem. Dispose closes the system.
+
+```csharp
+public interface IStreamSystemHandle
+```
+
+## Methods
+
+### CreatePlainProducerAsync
+
+Creates a plain-stream producer.
+
+```csharp
+CreatePlainProducerAsync(string, Threading.CancellationToken)
+```
+
+### CreateRawConsumerAsync
+
+Creates a raw consumer for one stream partition from the given client config.
+
+```csharp
+CreateRawConsumerAsync(RabbitMQ.Stream.Client.RawConsumerConfig, Threading.CancellationToken)
+```
+
+### CreateStreamAsync
+
+Creates a plain stream from a client stream spec (idempotency is the caller's).
+
+```csharp
+CreateStreamAsync(RabbitMQ.Stream.Client.StreamSpec, Threading.CancellationToken)
+```
+
+### CreateSuperStreamAsync
+
+Creates a super stream from a client super-stream spec.
+
+```csharp
+CreateSuperStreamAsync(RabbitMQ.Stream.Client.PartitionsSuperStreamSpec, Threading.CancellationToken)
+```
+
+### CreateSuperStreamProducerAsync
+
+Creates a super-stream producer; every send must carry a routing key.
+
+```csharp
+CreateSuperStreamProducerAsync(string, Threading.CancellationToken)
+```
+
+### QueryPartitionAsync
+
+Lists the partition stream names of a super stream.
+
+```csharp
+QueryPartitionAsync(string, Threading.CancellationToken)
+```
+
+### StoreSystemOffsetAsync
+
+Stores an offset for a consumerGroup on a stream (broker-side persistence).
+
+```csharp
+StoreSystemOffsetAsync(string, string, UInt64, Threading.CancellationToken)
+```
+
+### StreamExistsAsync
+
+true when a plain stream with this name exists.
+
+```csharp
+StreamExistsAsync(string, Threading.CancellationToken)
+```
+
+### SuperStreamExistsAsync
+
+true when a super stream with this name exists.
+
+```csharp
+SuperStreamExistsAsync(string, Threading.CancellationToken)
+```
+
+### TryQueryOffsetAsync
+
+Queries the stored offset for a consumerGroup on a stream without failing when absent.
+
+```csharp
+TryQueryOffsetAsync(string, string, Threading.CancellationToken)
+```
+
+## Properties
+
+### IsClosed
+
+true once the underlying system has been closed or lost.
+
+```csharp
+IsClosed
+```
+

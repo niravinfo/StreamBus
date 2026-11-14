@@ -1,0 +1,28 @@
+---
+title: IStreamConsumer
+---
+
+A live consumer subscription returned by a consume call. Dispose it to stop the partitions; consumers resubscribe on connection loss, so this is the only way to stop.
+
+```csharp
+public interface IStreamConsumer
+```
+
+## Properties
+
+### ConsumerGroup
+
+Consumer-group consumerGroup that owns the stored offsets.
+
+```csharp
+ConsumerGroup
+```
+
+### Stream
+
+Logical stream name the subscription was started for (the super-stream name for a partitioned source).
+
+```csharp
+Stream
+```
+

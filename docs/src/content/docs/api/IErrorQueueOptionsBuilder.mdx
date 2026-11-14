@@ -1,0 +1,22 @@
+---
+title: IErrorQueueOptionsBuilder
+---
+
+Builds AMQP error-queue options inside a dead-letter-to-queue declaration.
+
+```csharp
+public interface IErrorQueueOptionsBuilder
+```
+
+## Methods
+
+### ConfirmTimeout
+
+Sets the broker-confirmation budget for a dead-letter publish.
+
+```csharp
+ConfirmTimeout(TimeSpan)
+```
+
+- [StreamBusConfigurationException](StreamBusConfigurationException) — timeout is not positive.
+

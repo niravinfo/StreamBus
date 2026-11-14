@@ -1,0 +1,80 @@
+---
+title: ReadinessPolicy
+---
+
+How a publish, consume, or readiness call waits for the connection to become ready. Selectable per call site; only the readiness wait is bounded by this policy — the publish confirm timeout is separate.
+
+```csharp
+public class ReadinessPolicy
+```
+
+## Methods
+
+### UpTo
+
+Creates a bounded wait policy.
+
+```csharp
+UpTo(TimeSpan)
+```
+
+### WaitUpTo.constructor
+
+Wait for readiness for at most ReadinessPolicy.WaitUpTo.Timeout, yielding BusReadiness.TimedOut when the budget expires.
+
+```csharp
+WaitUpTo.constructor(TimeSpan)
+```
+
+## Properties
+
+### Default
+
+Shared ReadinessPolicy.FailFast instance, the default policy.
+
+```csharp
+Default
+```
+
+### Forever
+
+Shared ReadinessPolicy.WaitIndefinitely instance.
+
+```csharp
+Forever
+```
+
+### WaitUpTo.Timeout
+
+Maximum time to wait for readiness.
+
+```csharp
+WaitUpTo.Timeout
+```
+
+## Nested types
+
+### FailFast
+
+Do not wait: return immediately, yielding BusReadiness.TimedOut when the connection is not already ready.
+
+```csharp
+FailFast
+```
+
+### WaitIndefinitely
+
+Wait until the connection becomes ready, with no time bound; only cancellation stops the wait.
+
+```csharp
+WaitIndefinitely
+```
+
+### WaitUpTo
+
+Wait for readiness for at most ReadinessPolicy.WaitUpTo.Timeout, yielding BusReadiness.TimedOut when the budget expires.
+
+```csharp
+WaitUpTo
+```
+
