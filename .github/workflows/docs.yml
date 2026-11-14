@@ -24,6 +24,19 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.1
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Build library XML docs
+        run: dotnet build src/StreamBus -v q
+      # The generated API reference pages are committed; regenerating them in
+      # CI and failing on any diff keeps the checked-in pages from drifting
+      # from the source XML doc comments.
+      - name: Generate API reference
+        run: dotnet run --project tools/ApiDocsGen -- src/StreamBus/bin/Debug/net10.0/StreamBus.xml docs/src/content/docs/api
+      - name: Check API reference freshness
+        run: git diff --exit-code -- docs/src/content/docs/api
       - name: Setup pnpm
         uses: pnpm/action-setup@v6.1.1
         with:
