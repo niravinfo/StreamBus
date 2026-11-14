@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>ApiDocsGen</RootNamespace>
+    <!-- Documentation generation is a build tool: analyzer pedantry beyond this
+         would fight string-formatting code without protecting users. -->
+    <NoWarn>$(NoWarn);CA1848;CA1873;CA1305;CA1310;CA1861</NoWarn>
+  </PropertyGroup>
+</Project>
