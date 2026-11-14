@@ -52,10 +52,6 @@ export default defineConfig({
             { slug: 'middleware' },
           ],
         },
-        {
-          label: 'API reference',
-          items: [{ autogenerate: { directory: 'api' } }],
-        },
       ],
     }),
   ],

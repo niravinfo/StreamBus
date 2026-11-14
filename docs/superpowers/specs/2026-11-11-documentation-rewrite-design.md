@@ -268,4 +268,11 @@ Decisions made with the user (2026-11-14, second session):
   All 515 documented members render (MDX-hazard escaping for `<T>`
   generics and `{stream}` braces); Starlight builds 99 pages. Remaining
   open: visual browser review of the whole site (including new API pages).
+- 2026-11-14 (P6 reversal, user decision): the generated API reference
+  section was removed at the user's request ("I don't like it at all").
+  Removed: `tools/ApiDocsGen` (+ tests), `docs/src/content/docs/api/`
+  (83 generated pages), the "API reference" sidebar group, and the CI
+  generate/freshness steps in `docs.yml`. The site returns to 16 pages.
+  Prior implementation lives in git history
+  (`235d1c8`..`95e8fe3`) if an API reference is ever revisited.
 
