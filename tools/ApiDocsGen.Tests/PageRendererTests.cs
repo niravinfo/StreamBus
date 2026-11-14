@@ -1,0 +1,92 @@
+namespace ApiDocsGen.Tests;
+
+public class PageRendererTests
+{
+    private static ApiType Fixture() => new(
+        FullName: "IConsumer`1",
+        Name: "IConsumer<T>",
+        Slug: "IConsumer-T",
+        Kind: ApiTypeKind.Interface,
+        Summary: "Consumes messages of type TMessage.",
+        Remarks: "One consumer instance per message type.",
+        Members:
+        [
+            new ApiMember("ConsumeAsync", "ConsumeAsync(ConsumeContext<T> context)", ApiMemberKind.Method,
+                "Handles one message.", "", [new ApiExceptionRef("StreamBusException", "Thrown when the pipeline fails.")]),
+            new ApiMember("MaxAge", "MaxAge", ApiMemberKind.Property,
+                "Retention age.", "Optional.", []),
+            new ApiMember("Connected", "Connected", ApiMemberKind.Field,
+                "", "", []),
+        ]);
+
+    [Fact]
+    public void PageStartsWithFrontmatterTitle()
+    {
+        var output = PageRenderer.Render(Fixture());
+        Assert.StartsWith("---\ntitle: IConsumer<T>\n---\n", output);
+    }
+
+    [Fact]
+    public void GenericAngleBracketsOnlyAppearInsideCodeFences()
+    {
+        var output = PageRenderer.Render(Fixture());
+        var inFence = false;
+        var frontmatterDelimiters = 0;
+        foreach (var line in output.Split('\n'))
+        {
+            if (frontmatterDelimiters < 2)
+            {
+                if (line.TrimEnd().StartsWith("---", StringComparison.Ordinal))
+                {
+                    frontmatterDelimiters++;
+                }
+
+                continue;
+            }
+
+            if (line.TrimStart().StartsWith("```", StringComparison.Ordinal))
+            {
+                inFence = !inFence;
+                continue;
+            }
+
+            if (!inFence)
+            {
+                Assert.DoesNotContain("<", line);
+            }
+        }
+    }
+
+    [Fact]
+    public void MembersGroupUnderKindHeadingsWithFencedSignatures()
+    {
+        var output = PageRenderer.Render(Fixture());
+        Assert.Contains("\n## Methods\n", output);
+        Assert.Contains("\n## Properties\n", output);
+        Assert.Contains("\n## Fields\n", output);
+        Assert.Contains("```csharp\nConsumeAsync(ConsumeContext<T> context)\n```", output);
+    }
+
+    [Fact]
+    public void ExceptionsRenderAsBulletedList()
+    {
+        var output = PageRenderer.Render(Fixture());
+        Assert.Contains("- [StreamBusException](StreamBusException) — Thrown when the pipeline fails.", output);
+    }
+
+    [Fact]
+    public void EmptySummaryRendersFallback()
+    {
+        var output = PageRenderer.Render(Fixture());
+        Assert.Contains("No description.", output);
+    }
+
+    [Fact]
+    public void TitleIsSanitizedForYaml()
+    {
+        var weird = Fixture() with { Name = "A|B:C" };
+        var output = PageRenderer.Render(weird);
+        Assert.StartsWith("---\ntitle: A", output);
+        Assert.DoesNotContain("|", output[..output.IndexOf('\n', 5)]);
+    }
+}
