@@ -16,7 +16,7 @@ StreamBus emits standard .NET observability signals — a health check, `System.
 The data entries identify exactly what is in which state:
 
 - `bus:{vhost}|{busType}` — the live connection state for that bus, e.g. `bus:/|StreamBus.DefaultBus`.
-- `reg:{vhost}|{registration}` — one row per consumer or declaration: `endpoint:{busType}:{stream}` for typed receive endpoints, `raw:{busType}:{stream}` for `ConsumeAsync` (with `:2`, `:3`, ... on repeat consumes), `declare:{name}` for declarations. The value is `consumer:<state>` or `declare:<state>`, plus the failure reason and the `since` timestamp when present.
+- `reg:{vhost}|{registration}` — one row per consumer or declaration: `endpoint:{busType}:{stream}` for typed receive endpoints, `raw:{busType}:{stream}` for `ConsumeAsync` (with `:2`, `:3`, ... on repeat consumes), `declare:{name}` for declarations. The value is `consumer:<state>` or `declare:<state>`, plus the failure reason when one exists; the human-facing detail line also carries a `since` timestamp.
 
 ```csharp
 // Inject HealthCheckService; with MapHealthChecks, the same data
@@ -50,7 +50,7 @@ Reading the gauges:
 
 - `partition_backlog` is the **consumer-held** unprocessed backlog (delivered minus stored per partition) — not broker-total lag. A growing stream that nobody consumes reports 0.
 - `partition_retry_blocked` is 1 while a message is holding its partition inside a retry wait — the back-pressure signal described in [Handle failures](/guides/handle-failures/).
-- `connection_state` maps `BusConnectionState` numerically (`Starting`..`Fatal` = 0..3); alert on a sustained non-zero value.
+- `connection_state` maps `BusConnectionState` numerically (`Starting`/`Ready`/`TransientFailure`/`Fatal` = 0..3); alert on a sustained value other than `Ready` (1) — a bus stuck at 0 or ≥ 2.
 
 ## Activities
 
