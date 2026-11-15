@@ -326,6 +326,39 @@ private static void VerifyScaleOut() => RegisterAndValidate(services =>
                 e.Consumer<UseMultipleBusesSample.SharedConsumer>("billing-orders"));
         });
     });
+
+    /// <summary>
+    /// Guides/Replay a stream — the page's registration-level snippets: the
+    /// typed temporary replay endpoint (own group "billing-replay-2026-11",
+    /// StartOffset.AlwaysFirst, bounded retry, dead-letter destination) that
+    /// powers both "Replay into a new group" (typed variant) and "Replay with
+    /// the failure pipeline". The raw ConsumeAsync replay loop, the
+    /// Get/SetConsumerOffsetAsync offset surgery, and the ad-hoc
+    /// bus.Topology.Ensure*Async declaration are runtime broker operations —
+    /// they live in <see cref="ReplayAStreamSample"/> compile-only; the page
+    /// snippets are fragment-grade, and invoking ConsumeAsync here would
+    /// throw without a broker, so only AddStreamBus-side registration is
+    /// exercised.
+    /// </summary>
+    private static void VerifyReplayAStream() => RegisterAndValidate(services =>
+        services.AddStreamBus((_, cfg) =>
+        {
+            cfg.Host("localhost", "/", h => h.Credentials("guest", "guest"));
+
+            cfg.Publish<ReplayAStreamSample.OrderPlaced>("orders");
+
+            // From "Replay into a new group" (typed) / "Replay with the
+            // failure pipeline": fresh group, AlwaysFirst, bounded schedule,
+            // named error destination.
+            cfg.ReceiveEndpoint("orders", e =>
+            {
+                e.Consumer<ReplayAStreamSample.ReplayConsumer>("billing-replay-2026-11");
+                e.StartOffset(StartOffset.AlwaysFirst);
+                e.UseRetry(r => r.Exponential(4,
+                    TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(30)));
+                e.DeadLetterToStream("orders-errors", s => s.MaxAge(TimeSpan.FromDays(30)));
+            });
+        }));
 }
 
 /// <summary>
@@ -659,4 +692,62 @@ internal static class HandleFailuresSample
             },
             cancellationToken);
     }
+}
+
+/// <summary>
+/// Types and compile-only call shapes from Guides/Replay a stream. The
+/// fresh-group replay loop, the Get/SetConsumerOffsetAsync pair, and the
+/// ad-hoc EnsureStreamAsync declaration reproduce the page's snippets
+/// verbatim in form; none is invoked — all three need a live broker, and the
+/// harness only asserts registration-time validation.
+/// </summary>
+internal static class ReplayAStreamSample
+{
+    public sealed record OrderPlaced(string OrderId);
+
+    public sealed class ReplayConsumer(ILogger<ReplayConsumer> log) : IConsumer<OrderPlaced>
+    {
+        public Task Consume(ConsumeContext<OrderPlaced> context)
+        {
+            log.LogInformation("Replaying order {OrderId} at offset {Offset}",
+                context.Message.OrderId, context.Offset);
+            return Task.CompletedTask;
+        }
+    }
+
+    // Compile-only stand-ins; never invoked.
+    private static IStreamBus bus = null!;
+    private static CancellationToken ct = CancellationToken.None;
+    private static ulong targetOffset = 5; // the chosen rewind point
+
+    // From "Replay into a new group": throwaway group, AlwaysFirst, raw
+    // untyped read of history the group never consumed.
+    internal static async Task ReplayIntoNewGroup(CancellationToken cancellationToken)
+    {
+        await using var replayer = await bus.ConsumeAsync(
+            "orders",
+            new ConsumeOptions { ConsumerGroup = "billing-replay-2026-11", StartOffset = StartOffset.AlwaysFirst },
+            ctx =>
+            {
+                Console.WriteLine($"offset {ctx.Offset}: {ctx.MessageId}");
+                return Task.CompletedTask;
+            },
+            cancellationToken);
+    }
+
+    // From "Rewind an existing group": read the cursor, then move it; the
+    // group resumes AFTER the stored offset.
+    internal static async Task RewindExistingGroup(CancellationToken cancellationToken)
+    {
+        ulong? current = await bus.GetConsumerOffsetAsync("orders", "billing", 0, cancellationToken);
+        await bus.SetConsumerOffsetAsync("orders", "billing", 0, targetOffset, cancellationToken);
+    }
+
+    // From "Ad-hoc declarations": idempotent operator-driven topology.
+    internal static Task EnsureAuditStream(CancellationToken cancellationToken)
+        => bus.Topology.EnsureStreamAsync(new StreamDeclaration
+        {
+            Name = "orders-replay-audit",
+            MaxAge = TimeSpan.FromDays(30),
+        }, cancellationToken);
 }

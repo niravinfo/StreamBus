@@ -1,0 +1,222 @@
+---
+title: Replay a stream
+description: Reprocess a stream's history — a fresh consumer group for verification-style replays, offset surgery to rewind a live group, the failure pipeline applied to replay, and ad-hoc topology declarations.
+---
+
+The billing bug is fixed. Now last week's `orders` events need to be
+reprocessed — every `OrderPlaced` the broken consumer mishandled, plus
+the tail it never reached. Because a stream is an append-only log,
+the history is still there, untouched by the reading: replay is not a
+recovery feature bolted on top, it's just *consuming again from where
+you choose*. Today that knowledge is scattered across three pages (raw
+consumption, runtime topology, partition reads); this guide gives it
+one home: the why and when of replay, and the two offsets APIs that
+make it surgical.
+
+The safe shape and the surgical shape differ in one question: **whose
+cursor are you willing to move?**
+
+## Replay into a new group
+
+The safest replay borrows a fact from
+[Consumer groups](/concepts/streams/): every group is an independent
+cursor. A group that has never read `orders` has no stored offset —
+and with `StartOffset.AlwaysFirst` it starts at the very first
+message, reading history that was published long before the group
+existed. The live `billing` group is not touched at all; it costs the
+replay group nothing but broker reads.
+
+This is the verification-style replay: a throwaway group, the raw
+untyped `ConsumeAsync`, and a handler that inspects rather than acts:
+
+```csharp
+await using var replayer = await bus.ConsumeAsync(
+    "orders",
+    new ConsumeOptions { ConsumerGroup = "billing-replay-2026-11", StartOffset = StartOffset.AlwaysFirst },
+    ctx =>
+    {
+        Console.WriteLine($"offset {ctx.Offset}: {ctx.MessageId}");
+        // inspect, count, verify — or actually reprocess
+        return Task.CompletedTask;
+    },
+    ct);
+```
+
+The group name is the tool: make it obviously disposable
+(`billing-replay-2026-11`, not `billing`) so nobody mistakes the
+replay cursor for the live one, and never reuse a throwaway group for
+a second replay — a stored offset from last time means
+`AlwaysFirst`'s cousin `ResumeOrFirst` would silently skip, and even
+here the reminder is worth stating: `AlwaysFirst` ignores any stored
+offset, so a reused group name still replays from the top, but the
+broker remembers the group forever. Deleting the throwaway group's
+stored offset when you're done is pure hygiene.
+
+When the replay should *do real work* with the typed pipeline — scoped
+services, retry, filters — don't hand-roll it in the handler: register
+a temporary endpoint with its own group and
+`StartOffset.AlwaysFirst`:
+
+```csharp
+cfg.ReceiveEndpoint("orders", e =>
+{
+    e.Consumer<ReplayConsumer>("billing-replay-2026-11");
+    e.StartOffset(StartOffset.AlwaysFirst);
+});
+```
+
+Deploy it, let it drain the history, then remove the registration —
+the group name again being the thing that kept it from colliding
+with `billing`.
+
+## Rewind an existing group
+
+A new group replays *everything*. When you need the live group itself
+to go back — a bug consumed a range wrongly and you want the *same*
+group to redo exactly that range with its normal endpoint and normal
+handler — you move its stored offset with the offset-surgery pair:
+
+```csharp
+// Where is the group now?
+ulong? current = await bus.GetConsumerOffsetAsync("orders", "billing", 0, ct);
+
+// Send it back to a chosen point; the group resumes AFTER this offset.
+await bus.SetConsumerOffsetAsync("orders", "billing", 0, targetOffset, ct);
+```
+
+`GetConsumerOffsetAsync` returns the stored offset, or `null` when
+the group has none yet (nothing stored, nothing resumed). The partition
+argument is `0` for a plain stream; a super stream stores one cursor
+per partition, so rewind each partition deliberately.
+
+Choosing `targetOffset` is your job, and the log itself is the
+evidence: a failing message's offset appears in delivery logs via
+`context.Offset`, and in the error pipeline it's stamped
+`streambus.error.source-offset` on the dead-letter envelope — so "the
+first bad message" names the offset to rewind *to*.
+
+:::caution[The rewind hazard]
+Rewinding is not a scoped operation. `SetConsumerOffsetAsync` moves
+the **whole group's** cursor on that partition, and the group then
+re-delivers **everything after the target** — not just the bad range.
+Two consequences, accepted up front or engineered around:
+
+- Every instance in the group redelivers from the new position, so any
+  message that *was* processed correctly gets processed again. At-least-once
+  means duplicates are a fact of life the handlers must already
+  tolerate ([Consume events](/guides/consume-events/)), but a rewind is
+  a bulk duplicate generator and worth designing for.
+- Do the rewind with the consumer **paused** (instances stopped, or the
+  endpoint not yet deployed) so no reader races the store, then start
+  from the new position deterministically. Rewinding under live
+  readers works, but the redelivered tail arrives interleaved with new
+  traffic — same hazard, less control.
+:::
+
+## Replay with the failure pipeline
+
+A replay re-runs the code that just failed, on data that already broke
+it once. The unbounded default retry policy (`MaxAttempts` unset,
+retry forever, partition waits) is exactly what you *don't* want in a
+replay: one poison message freezes the entire replay behind it, and
+the "retry forever" safety that's virtuous in live consumption becomes
+a stalled reprocessing job. Give the replay a **bounded** schedule and
+a hand-off destination, per the doctrine in
+[Handle failures](/guides/handle-failures/):
+
+```csharp
+cfg.ReceiveEndpoint("orders", e =>
+{
+    e.Consumer<ReplayConsumer>("billing-replay-2026-11");
+    e.StartOffset(StartOffset.AlwaysFirst);
+    e.UseRetry(r => r.Exponential(4,
+        TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(30)));
+    e.DeadLetterToStream("orders-errors", s => s.MaxAge(TimeSpan.FromDays(30)));
+});
+```
+
+Now a message that still fails after four attempts is handed to the
+error stream and the replay continues — and the hand-off is doubly
+useful here, because the dead-letter envelope's
+`streambus.error.source-offset` tells you exactly which offsets still
+need attention after the replay finishes.
+
+## Read partitions directly
+
+Everything above works on a super stream unchanged: a fresh group
+with `AlwaysFirst` replays every partition, and a rewind needs one
+`SetConsumerOffsetAsync` per partition. But sometimes the unit of
+replay is *one partition* — an inspection or a slice on
+`orders-super-1` specifically, without touching its siblings or the
+live groups. Partition streams are plain streams with composed names,
+readable exactly like any other; the worked example of that read —
+the raw `ConsumeAsync` with a throwaway group — lives in
+[Partition a stream](/guides/partition-a-stream/). The same why/when
+applies here: you're using the physical name because *you* chose the
+slice, and the throwaway group keeps `billing`'s per-partition cursors
+untouched.
+
+## Ad-hoc declarations
+
+Replay tools tend to need a stream that no registration declares —
+an `orders-errors` drain stream, a `orders-replay-audit` target. The
+registrations in `AddStreamBus` declare their own topology at startup,
+but `bus.Topology` is the **operator's** surface: an idempotent
+declaration you can call at any time, after startup included:
+
+```csharp
+await bus.Topology.EnsureStreamAsync(new StreamDeclaration
+{
+    Name = "orders-replay-audit",
+    MaxAge = TimeSpan.FromDays(30),
+}, ct);
+```
+
+`EnsureStreamAsync` / `EnsureSuperStreamAsync` are safe to call
+repeatedly: the first call creates the stream, later calls verify
+against a cached fingerprint and do nothing when the broker's stream
+already matches. A conflict — the stream exists with different
+retention, or a super-stream declaration meets a plain stream — throws
+naming both sides, the same never-guess reconciliation as startup
+([Partition a stream](/guides/partition-a-stream/) covers the rules).
+
+## FAQ
+
+### Is a replay safe to run while live consumers are running?
+
+Yes — if you used a new group. Groups are independent cursors, so
+`billing-replay-2026-11` reading the full history costs `billing`
+nothing but broker I/O; the live group's offsets are untouched and
+it keeps running in parallel. The only replay that disturbs live
+consumers is a **rewind** of a group that is itself live — and that's
+the rewind hazard above, not a fact about replay in general.
+
+### Why did some messages come through twice?
+
+That's at-least-once doing what at-least-once does. Offsets are stored
+after delivery, so a crash between "handled" and "stored" re-delivers,
+and any replay multiplies the effect. Duplicates are *expected*, not
+a replay bug — handlers dedup by `MessageId`
+([Consume events](/guides/consume-events/)) or accept the double
+work, and a rewind job should lean on whichever the handlers already
+do.
+
+### How do I replay only the messages that failed?
+
+Re-range, don't re-everything. The error pipeline stamps each
+dead-letter envelope with `streambus.error.source-stream`,
+`source-partition`, and `source-offset`
+([Handle failures](/guides/handle-failures/)), so a drain of the error
+stream yields the exact coordinates of every failed message. Use
+those to choose a `targetOffset` for a rewind, or — for scattered
+failures — read the error stream in a throwaway group and republish
+each envelope's original body to the live stream or a reprocess
+stream. The stream keeps everything; the error stream keeps the
+*index* of what went wrong.
+
+## Next
+
+Replay touches every message a stream holds — which makes it the
+moment cross-cutting concerns (a tenant id on every republished
+message, metrics on the reprocessing traffic) stop being
+copy-pasteable: [Add cross-cutting logic](/guides/add-cross-cutting-logic/).
