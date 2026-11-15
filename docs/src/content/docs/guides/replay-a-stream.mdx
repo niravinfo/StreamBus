@@ -44,13 +44,15 @@ await using var replayer = await bus.ConsumeAsync(
 
 The group name is the tool: make it obviously disposable
 (`billing-replay-2026-11`, not `billing`) so nobody mistakes the
-replay cursor for the live one, and never reuse a throwaway group for
-a second replay — a stored offset from last time means
-`AlwaysFirst`'s cousin `ResumeOrFirst` would silently skip, and even
-here the reminder is worth stating: `AlwaysFirst` ignores any stored
-offset, so a reused group name still replays from the top, but the
-broker remembers the group forever. Deleting the throwaway group's
-stored offset when you're done is pure hygiene.
+replay cursor for the live one. Reusing a name is only dangerous under
+the resume start modes — with `ResumeOrFirst` or `ResumeOrNext`, a
+stored offset from last time makes the group silently resume at its
+old position instead of the top, and the replay you expected never
+happens. `AlwaysFirst` is safe by design: it ignores any stored
+offset, so a reused name still replays from the very first message.
+The real cost of reusing the name in either case: the broker
+remembers the group's offset store forever. Deleting the throwaway
+group's stored offset when you're done is pure hygiene.
 
 When the replay should *do real work* with the typed pipeline — scoped
 services, retry, filters — don't hand-roll it in the handler: register
