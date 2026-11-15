@@ -71,19 +71,20 @@ Need a local broker? `docker run -d --name rabbitmq -p 5552:5552 -p 5672:5672 -p
 
 For more information, see the docs at **[niravinfo.github.io/StreamBus](https://niravinfo.github.io/StreamBus)**:
 
-- [Quickstart](https://niravinfo.github.io/StreamBus/quickstart/) — a runnable publish-and-consume program
-- [Introduction](https://niravinfo.github.io/StreamBus/introduction/) — what StreamBus is, and when to use it
-- [Architecture](https://niravinfo.github.io/StreamBus/architecture/) — the RabbitMQ Streams model and how StreamBus is shaped by it
-- [Configuration](https://niravinfo.github.io/StreamBus/configuration/) — hosts, credentials, ports, TLS, serializers
-- [Publishers](https://niravinfo.github.io/StreamBus/publishers/) — publish .NET objects, super streams, raw messages, filters
-- [Consumers](https://niravinfo.github.io/StreamBus/consumers/) — consumer groups, scale-out, offsets
-- [Error handling](https://niravinfo.github.io/StreamBus/error-handling/) — retry schedules, exhaustion destinations, exceptions
-- [Topology](https://niravinfo.github.io/StreamBus/topology/) — who declares streams, agreement rules, runtime API
-- [Multiple buses](https://niravinfo.github.io/StreamBus/multiple-buses/) — marker buses, shared consumer classes
-- [Lifecycle](https://niravinfo.github.io/StreamBus/lifecycle/) — startup modes, readiness, connection supervision, shutdown
-- [Observability](https://niravinfo.github.io/StreamBus/observability/) — health data, metrics, logs
-- [Transport security](https://niravinfo.github.io/StreamBus/transport-security/) — secure connections with TLS
-- [Middleware](https://niravinfo.github.io/StreamBus/middleware/) — publish and consume filters
+- [Concepts: introduction](https://niravinfo.github.io/StreamBus/concepts/introduction/) - what StreamBus is, and when to use it
+- [Get started guide](https://niravinfo.github.io/StreamBus/guides/get-started/) - a runnable publish-and-consume program
+- [Streams & messages](https://niravinfo.github.io/StreamBus/concepts/streams/) - the RabbitMQ Streams model and how StreamBus is shaped by it
+- [Host & connections](https://niravinfo.github.io/StreamBus/configuration/host-and-connections/) - hosts, credentials, ports, TLS
+- [Publish an event](https://niravinfo.github.io/StreamBus/guides/publish-an-event/) - publish .NET objects, super streams, routing keys
+- [Consume events](https://niravinfo.github.io/StreamBus/guides/consume-events/) - consumer groups, scale-out, offsets
+- [Handle failures](https://niravinfo.github.io/StreamBus/guides/handle-failures/) - retry schedules, exhaustion destinations, exceptions
+- [Partition a stream](https://niravinfo.github.io/StreamBus/guides/partition-a-stream/) - super-stream partitioning
+- [Use multiple buses](https://niravinfo.github.io/StreamBus/guides/use-multiple-buses/) - marker buses, shared consumer classes
+- [Add cross-cutting logic](https://niravinfo.github.io/StreamBus/guides/add-cross-cutting-logic/) - publish and consume filters
+- [Endpoint options](https://niravinfo.github.io/StreamBus/configuration/endpoint-options/) - every per-endpoint knob
+- [Retry & dead letters](https://niravinfo.github.io/StreamBus/configuration/retry-and-dead-letters/) - retry and dead-letter configuration
+- [Observability](https://niravinfo.github.io/StreamBus/configuration/observability/) - health data, metrics, logs
+- [Transport security](https://niravinfo.github.io/StreamBus/configuration/transport-security/) - secure connections with TLS
 - [Releases](https://github.com/niravinfo/StreamBus/releases)
 
 Runnable examples live in [`examples/`](examples/).

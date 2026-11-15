@@ -5,30 +5,32 @@ template: splash
 hero:
   tagline: A modern .NET client for RabbitMQ Streams. Publish and consume typed messages, with retries and dead-lettering built in.
   actions:
-    # NOTE: hero links are rendered verbatim, so the base path is hardcoded.
+    # NOTE: the starlight-base-path plugin prefixes these with the site base at build time.
     - text: Get Started
-      link: /StreamBus/quickstart/
+      link: /concepts/introduction/
       icon: right-arrow
-    - text: How it works
-      link: /StreamBus/architecture/
+    - text: Build the app
+      link: /guides/get-started/
       icon: external
 ---
 
 import { Card, CardGrid } from '@astrojs/starlight/components';
 
 <CardGrid>
-  <Card title="Message publishing" icon="paper-airplane">
-    Publish plain objects without manual serialization. Super-stream routing keys are compile-time checked.
+  <Card title="Concepts" icon="open-book" href="/concepts/streams/">
+    Start with the RabbitMQ Streams model — super streams, partitions, and the
+    message lifecycle that shapes everything StreamBus does.
   </Card>
-  <Card title="Consumer groups" icon="group">
-    Receive endpoints with first-class, required consumer-group identity — a super
-    stream's partitions scale across instances; different groups are independent cursors.
+  <Card title="Guides" icon="rocket" href="/guides/get-started/">
+    Hands-on walkthroughs: publish your first event, consume with a typed
+    handler, and scale out across instances.
   </Card>
-  <Card title="Retry & errors" icon="warning">
-    Global and per-endpoint retry schedules, and dead-letter destinations — an error
-    stream, an AMQP queue, or your own callback.
+  <Card title="Handle failures" icon="warning" href="/guides/handle-failures/">
+    Configure retry schedules and dead-letter destinations so a bad message
+    never stalls your consumers.
   </Card>
-  <Card title="Explicit config" icon="settings">
-    No binders, no JSON discovery. Every option is a configurator method, validated once at registration.
+  <Card title="Configuration" icon="settings" href="/configuration/observability/">
+    Health data, metrics, logs, TLS, and per-endpoint options — every setting
+    is explicit, validated code.
   </Card>
 </CardGrid>
