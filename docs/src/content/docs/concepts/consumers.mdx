@@ -1,0 +1,64 @@
+---
+title: Consumers
+description: What a consumer actually is here — a typed handler plus a group name that owns the cursor — and the lifecycle that replaces the per-message ack you may be expecting.
+---
+
+A consumer reads a stream, one message type at a time, at the position its group last stored. That is the whole noun: a registered handler, bound to a record like `OrderPlaced`, attached to a stream like `orders` under a group name like `billing`, reading forward from wherever that group's cursor sits. It does not receive dispatches from a queue — it holds a position in a log and advances it.
+
+If you are coming from a queue-based toolkit, the lifecycle you are expecting — message arrives, you take a lock, you ack, the message goes away — does not exist here. There is no per-message ack and no lock on a stream. This page replaces that model with the one StreamBus actually runs.
+
+## Groups are cursors, not labels
+
+A consumer group is not a tag you attach for observability — it **is the cursor identity**. The broker stores one offset per group, and that offset is the only record of "how far this consumer has gotten." Everything about a consumer's position, its failover behavior, and its duplicate behavior is decided by the group name.
+
+This is why StreamBus requires the name and never derives or defaults one. A derived default — say, the consumer class name — would work in a single-service demo and then quietly become a time bomb: two services sharing one consumer class would share one cursor without anyone writing a shared-cursor line of code, each one stealing the other's position and each one skipping messages the other already consumed. Instead, an endpoint that supplies an empty group, or one longer than the broker's 255-byte limit, is a configuration error that throws at registration. Two services that share a consumer class must each name their own group in their own registration, out loud, where a reader can see it.
+
+The same truth, stated from the other end: two instances running with the *same* group name are one logical consumer — they share the cursor, one is active while the other stands by for failover. Two consumers with *different* group names are fully independent readers — each receives every message, at its own pace. That is how a billing service and an audit service can both tail the same `orders` stream without knowing about each other.
+
+## The delivery lifecycle, without the ack
+
+Here is what actually happens for one delivered message, and where the checkpoint lives:
+
+For each delivery, StreamBus opens a fresh dependency-injection scope, resolves your consumer from it, deserializes the message, and calls `Consume`. If the call completes without throwing, the delivery counts as done, and the group's offset is stored on a cadence — not per message. If the call throws, the offset does not move: the message is retried on the endpoint's schedule, and only when the failure is finally handed off (a dead letter, an error stream, an `OnExhausted` callback) does the consumer move past it. **The offset store is the checkpoint** — that is the entire role the per-message ack plays in a queue, collapsed into "where was this group's cursor last saved."
+
+Every consequence you care about follows from that collapse:
+
+- **Success means "the handler returned," not "the broker recorded it."** Between the handler completing and the offset being stored, a crash or detach loses nothing durable — everything since the last stored offset is redelivered. Duplicates are the normal outcome of that gap, which is why handlers must be idempotent ([Streams](/concepts/streams/) teaches the at-least-once doctrine and [Messages](/concepts/messages/) the `MessageId` dedup).
+- **Failure means "park," not "lose."** A throwing handler does not nack the message back to some DLQ machinery the way a queue would — the delivery is held in the client, retried on your schedule, until it succeeds or is explicitly handed off. What throwing from `Consume` triggers, in detail — the retry schedule, exhaustion, and the hand-off modes — is the [Exceptions](/concepts/exceptions/) page's job.
+- **Order is the offset's job, so a blocked message blocks its partition.** Because reading forward and progress are the same act, a message that never resolves never lets its partition move on. There is no "skip and continue"; skipping happens only by configuring a hand-off.
+
+## Single-active consumer and scale
+
+How instances add up depends on which plane you scale on, and the honest answer differs:
+
+- **A plain stream does not give you throughput by adding instances.** With single-active consumer — the default — one member of the group is active and the rest stand by; that second instance buys you failover, not parallelism. That is a property of the stream itself: a single log has one read position per group.
+- **A super stream does.** Its partitions are spread across the group's instances, with single-active consumer applied *per partition*, so each instance actively works its own partitions. Adding instances adds parallel readers up to the partition count. This is the horizontal scaling path; building it is the [Scale out](/guides/scale-out/) guide's job.
+
+:::warning[Do not disable single-active consumer across processes]
+Two active instances in one group on the same stream both receive deliveries — duplicates, never skips — and can overwrite each other's stored offset, regressing the cursor. Turning single-active consumer off is only safe when you know the whole group lives in one process. The option and its knobs are tabulated in [Endpoint options](/configuration/endpoint-options/).
+:::
+
+## The contract: `IConsumer<T>`
+
+A consumer class implements `IConsumer<T>` for exactly one message type — one class, one record, enforced at registration. The interface is one method:
+
+```csharp
+public sealed class OrderConsumer(ILogger<OrderConsumer> log) : IConsumer<OrderPlaced>
+{
+    public Task Consume(ConsumeContext<OrderPlaced> context)
+    {
+        log.LogInformation("Billing order {OrderId} at offset {Offset}", context.Message.OrderId, context.Offset);
+        return Task.CompletedTask;
+    }
+}
+```
+
+The `ConsumeContext<OrderPlaced>` carries the deserialized message plus everything about the delivery: the stream, partition, and offset it arrived on, identity headers like `MessageId`, whatever filters attached along the way, and the cancellation token. A billing consumer for `OrderPlaced` is registered against the `orders` stream with a group such as `"billing"`; that registration walkthrough — along with every endpoint option — belongs to the guides and the configuration tier, not this page.
+
+## One scope per delivery
+
+The consumer is resolved from a dependency-injection scope created for that delivery and disposed when it finishes — the same scope the consume pipeline runs in. With no scope there is no unit of work; with a per-delivery scope the pattern you already write falls out naturally: constructor-inject singletons like `ILogger<T>`, but scoped services like a `DbContext` are created and disposed per message, so a handler that talks to a database gets a fresh context and a natural transaction boundary. The only thing to internalize is that the scope covers the *delivery*, not the retry — attempts within the endpoint's retry schedule share the scope, so a retried message is re-resolved as a new delivery only after the schedule hands it off.
+
+## What runs before your handler
+
+Between the broker delivering bytes and your `Consume` firing, the delivery passes through stages: the message arrives, consume filters run, the message is deserialized, and only then is the handler invoked. That is one sentence of timeline and all this page needs — what a filter is, what it may change, and the very different contract a consume filter has about calling `next` is the next concept: continue with [Middleware](/concepts/middleware/).
