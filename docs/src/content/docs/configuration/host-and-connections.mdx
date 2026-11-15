@@ -97,6 +97,16 @@ Validation: every timeout must be positive when set, and
 `ConsumerStopTimeout` must not exceed `StopTimeout` when both are set —
 violations throw `StreamBusConfigurationException` at host start/stop.
 
+What stops looks like: consumers are disposed first, each bounded by
+`ConsumerStopTimeout` (and the overall `StopTimeout`) — on expiry that
+consumer is abandoned with a warning and shutdown continues past it. A
+consumer's dispose waits for the delivery currently in flight (a hung
+handler blocks its own dispose by design), but anything interrupted
+before its offset was stored is not on record anywhere, so it is
+redelivered from the stored offset on the next start. Shutdown is
+at-least-once for the same reason a detach is —
+see [Streams](/concepts/streams/).
+
 ## Readiness policies
 
 Readiness answers "how long does this call wait for the broker to be

@@ -11,7 +11,7 @@ That is the whole mental shift. If you have only used queue-based brokers, every
 
 Concretely, a stream is a sequence of messages kept in broker-side storage, each identified by its **offset** — its position from the start of the log. Three properties matter:
 
-- **Retention is by age and size, not by consumption.** A stream keeps messages until configured age or size limits truncate the oldest ones. Reading does not delete anything: a message at offset 5 is still there an hour later, readable again by any other consumer.
+- **Retention is by age and size, not by consumption.** A stream keeps messages until configured age or size limits truncate the oldest ones. Reading does not delete anything: a message at offset 5 is still there an hour later, readable again by any other consumer. When a declared stream sets no retention knobs, StreamBus passes no limits at declare time, so retention falls to the broker's declare-time defaults — segment files are kept until age or size limits are set or the stream is deleted. Bound it with `MaxAge` or `MaxLengthBytes` on the registration ([endpoint options](/configuration/endpoint-options/)).
 - **Reads are non-destructive and repeatable.** Any number of consumers can read the same history from the beginning, or from wherever they last got to. Replaying a stream is a normal operation, not an incident.
 - **Position is tracked by offset.** A consumer does not "receive" message 512 — it reads *up to* offset 512, and remembers that. The act of reading and the act of tracking progress are separate, which is why they can fail separately.
 

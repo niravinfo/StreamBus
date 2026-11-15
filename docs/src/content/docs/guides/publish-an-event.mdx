@@ -116,6 +116,15 @@ So set `ConfirmTimeout` for latency discipline, not as a retry trigger: only
 retry a timed-out publish when appending the fact twice is safe for your
 domain.
 
+One more pairing to internalize: with the default non-blocking start, your
+first publishes race the background connect, and the default fail-fast
+readiness means a publish before the bus is ready throws
+`StreamBusNotReadyException` — nothing was sent. The remedies are the
+bounded policy above (`ReadinessPolicy.UpTo(...)` per call) or removing the
+race: `WaitUntilStarted = true` to block host startup, or an explicit
+`WaitUntilReadyAsync` before you publish
+([host and connections](/configuration/host-and-connections/)).
+
 ## When the consumer isn't .NET
 
 A stream is on the broker, not in your process — readers can be anything
