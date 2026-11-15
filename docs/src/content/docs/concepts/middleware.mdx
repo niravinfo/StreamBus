@@ -1,15 +1,15 @@
 ---
 title: Middleware
-description: What a filter is, where it runs in both pipelines, the `next` contract on each side, and what middleware may change — with routing and destinations firmly off the table.
+description: What a filter is, where it runs in both pipelines, the `next` contract on each side, and what middleware may change, with routing and destinations firmly off the table.
 ---
 
-Some behavior belongs around *every* message, not inside any one handler or call site: stamping a tenant id, recording metrics, skipping messages that are not for this service. StreamBus gives that behavior a home with **filters** — the same idea as ASP.NET Core middleware, applied in two directions. A filter is a class that wraps the pipeline for a publish or a delivery, does its work, and hands control to the rest of the chain through a `next` delegate. You compose them; StreamBus runs them in a fixed order, before and after your code.
+Some behavior belongs around *every* message, not inside any one handler or call site: stamping a tenant id, recording metrics, skipping messages that are not for this service. StreamBus gives that behavior a home with **filters**, the same idea as ASP.NET Core middleware, applied in two directions. A filter is a class that wraps the pipeline for a publish or a delivery, does its work, and hands control to the rest of the chain through a `next` delegate. You compose them; StreamBus runs them in a fixed order, before and after your code.
 
 This page owns the model: where filters run, what contract each direction imposes, and what a filter may and may not touch. The step-by-step of writing and registering one belongs to the [Add cross-cutting logic](/guides/add-cross-cutting-logic/) guide.
 
 ## The built-in pipelines come first
 
-You never build a pipeline from scratch — you add filters *into* one that already exists, so the stock stages are the mental model to start from. The two directions are deliberately different:
+You never build a pipeline from scratch; you add filters *into* one that already exists, so the stock stages are the mental model to start from. The two directions are deliberately different:
 
 | Direction | Stages, in order |
 | --- | --- |
@@ -19,11 +19,11 @@ You never build a pipeline from scratch — you add filters *into* one that alre
 Two asymmetries deserve attention:
 
 - **Publish filters run before serialization.** Your filter sees the typed message object and mutates headers; only after the last filter calls `next` is the message serialized and sent. Whatever a publish filter writes into `context.Headers` is what goes on the wire.
-- **Consume filters run after deserialization.** The bytes are turned into a typed message *before* your filters see it, so every filter and the handler work on the same materialized instance. A message that cannot be deserialized never reaches a filter or a handler at all — and because the same bytes would fail identically every time, a deserialization failure never burns the retry budget: it hands off immediately with `attempts = 1` when a hand-off is configured, or visibly fails the attach and recycles (redelivery, never a silent skip) when it is not. Retries, exhausted attempts, and the hand-off live one level up — inside the endpoint, wrapping everything in the consume pipeline — which is the [Exceptions](/concepts/exceptions/) page's story.
+- **Consume filters run after deserialization.** The bytes are turned into a typed message *before* your filters see it, so every filter and the handler work on the same materialized instance. A message that cannot be deserialized never reaches a filter or a handler at all, and because the same bytes would fail identically every time, a deserialization failure never burns the retry budget: it hands off immediately with `attempts = 1` when a hand-off is configured, or visibly fails the attach and recycles (redelivery, never a silent skip) when it is not. Retries, exhausted attempts, and the hand-off live one level up, inside the endpoint, wrapping everything in the consume pipeline; that is the [Exceptions](/concepts/exceptions/) page's story.
 
 ### Where your filters sit
 
-Filters register in two scopes: on the bus — they run for every message in that direction — or on a single receive endpoint — they run for that endpoint's deliveries only. Bus-wide filters run first (outermost), then the endpoint's own:
+Filters register in two scopes: on the bus, where they run for every message in that direction, or on a single receive endpoint, where they run for that endpoint's deliveries only. Bus-wide filters run first (outermost), then the endpoint's own:
 
 ```csharp
 builder.Services.AddStreamBus((context, cfg) =>
@@ -41,13 +41,13 @@ builder.Services.AddStreamBus((context, cfg) =>
 });
 ```
 
-Publish filters run in registration order before the wire; for a delivery to a typed endpoint, bus-wide consume filters run, then the endpoint's. A mid-pipeline filter sees everything its predecessors stamped — that is the whole point of the ordering.
+Publish filters run in registration order before the wire; for a delivery to a typed endpoint, bus-wide consume filters run, then the endpoint's. A mid-pipeline filter sees everything its predecessors stamped; that is the whole point of the ordering.
 
 Three registration facts hold in both directions, and each is enforced loudly:
 
-- **Filters are singletons.** A filter is resolved once from the root provider and cached for the bus's (or endpoint's) lifetime, so it must be thread-safe. A scoped or transient registration is rejected when the bus is built or the endpoint attaches — it would silently become a captive dependency.
+- **Filters are singletons.** A filter is resolved once from the root provider and cached for the bus's (or endpoint's) lifetime, so it must be thread-safe. A scoped or transient registration is rejected when the bus is built or the endpoint attaches, because it would silently become a captive dependency.
 - **Each message still gets its own DI scope.** Do not inject scoped services into a filter's constructor; resolve them per message from `context.Services`, the same per-delivery scope the handler runs in.
-- **The same filter registered twice in one scope throws at registration.** A duplicate would run twice per pipeline, so it is a configuration error naming the filter — never a quiet double-execution. The check is per scope: bus-wide filters and one endpoint's filters are checked separately, so a filter registered bus-wide *and* on an endpoint is not an error — it runs twice for that endpoint's deliveries, so register each filter in the one scope that fits it.
+- **The same filter registered twice in one scope throws at registration.** A duplicate would run twice per pipeline, so it is a configuration error naming the filter, never a quiet double-execution. The check is per scope: bus-wide filters and one endpoint's filters are checked separately, so a filter registered bus-wide *and* on an endpoint is not an error: it runs twice for that endpoint's deliveries, so register each filter in the one scope that fits it.
 
 ## What is a filter?
 
@@ -64,15 +64,15 @@ public sealed class TenantFilter(TenantScope ambient) : IStreamPublishFilter
 }
 ```
 
-There are universal filters (`IStreamPublishFilter`, `IStreamConsumeFilter` — run for every message) and typed filters (`IStreamPublishFilter<TMessage>`, `IStreamConsumeFilter<TMessage>` — run only for their message type; on a typed receive endpoint a mismatch with the endpoint's message type is rejected at registration). The typing and registration overloads are catalogued in the [guide](/guides/add-cross-cutting-logic/); what follows is the part every filter author must internalize first.
+There are universal filters (`IStreamPublishFilter`, `IStreamConsumeFilter`, which run for every message) and typed filters (`IStreamPublishFilter<TMessage>`, `IStreamConsumeFilter<TMessage>`, which run only for their message type; on a typed receive endpoint a mismatch with the endpoint's message type is rejected at registration). The typing and registration overloads are catalogued in the [guide](/guides/add-cross-cutting-logic/); what follows is the part every filter author must internalize first.
 
-## The `next` contract — and why the two directions differ
+## The `next` contract, and why the two directions differ
 
 A filter wraps the rest of the pipeline through the `next` delegate. The contracts are deliberately different because the failure modes are. On the publish side, dropping a message would be a silent data loss; on the consume side, deciding *not to* handle a delivery is a legitimate feature.
 
-**Publish filters must call `next` exactly once and await it.** Zero calls would drop the message on the floor; two calls would send it twice; returning before the continuation completes would report a publish as finished while it is still in flight. All three throw `StreamBusFilterContractException` — raw from the pipeline, so a filter bug is never mistaken for a transport failure. There is no legal way for a publish filter to skip or fork a message.
+**Publish filters must call `next` exactly once and await it.** Zero calls would drop the message on the floor; two calls would send it twice; returning before the continuation completes would report a publish as finished while it is still in flight. All three throw `StreamBusFilterContractException` raw from the pipeline, so a filter bug is never mistaken for a transport failure. There is no legal way for a publish filter to skip or fork a message.
 
-**Consume filters may call `next` at most once — and zero calls are a feature.** A filter that returns without calling `next` decides the delivery is done: the handler is not invoked, and the offset still advances, so the group moves past the message. That is the one stream-native superpower of a consume filter — selective skipping without touching the retry machinery. A second call is rejected at runtime, and returning before the awaited `next()` task completes throws `StreamBusFilterContractException`. The shape in use:
+**Consume filters may call `next` at most once, and zero calls are a feature.** A filter that returns without calling `next` decides the delivery is done: the handler is not invoked, and the offset still advances, so the group moves past the message. That is the one stream-native superpower of a consume filter: selective skipping without touching the retry machinery. A second call is rejected at runtime, and returning before the awaited `next()` task completes throws `StreamBusFilterContractException`. The shape in use:
 
 ```csharp
 public sealed class RetryHintFilter : IStreamConsumeFilter
@@ -88,23 +88,23 @@ public sealed class RetryHintFilter : IStreamConsumeFilter
 }
 ```
 
-One doctrine covers both directions: **when in doubt, `return await next()`** — always safe, always explicit, no contract to reason about.
+One doctrine covers both directions: **when in doubt, `return await next()`**: always safe, always explicit, no contract to reason about.
 
-## What a filter can change — and what it never can
+## What a filter can change, and what it never can
 
-A publish filter can write **headers** (`context.Headers` — filter writes win over options set at the call site) and, on the consume side, filters can adjust `Headers`/`SendHeaders` and carry computed values. Everything else was decided before the pipeline ran: **the stream, the routing, and the destination are fixed.** They are resolved from the registration — the route table — before your filter sees the context, and mutable properties simply do not exist on the context objects. That is doctrine, not a limitation to work around: *routing is a registration decision, not a middleware decision.* A reader of your code learns where a fact goes from the registration block; if a filter could rewrite it, that guarantee would be gone. The same reasoning is why publishing has no "to many streams" operator — see [Producers](/concepts/producers/).
+A publish filter can write **headers** (`context.Headers`; filter writes win over options set at the call site) and, on the consume side, filters can adjust `Headers`/`SendHeaders` and carry computed values. Everything else was decided before the pipeline ran: **the stream, the routing, and the destination are fixed.** They are resolved from the registration, the route table, before your filter sees the context, and mutable properties simply do not exist on the context objects. That is doctrine, not a limitation to work around: *routing is a registration decision, not a middleware decision.* A reader of your code learns where a fact goes from the registration block; if a filter could rewrite it, that guarantee would be gone. The same reasoning is why publishing has no "to many streams" operator (see [Producers](/concepts/producers/)).
 
-To move values between filters — and from filter into the handler — use typed payloads instead of overloading headers:
+To move values between filters, and from filters into handlers, use typed payloads instead of overloading headers:
 
 ```csharp
 context.SetPayload(new TenantInfo(tenantId));          // in an early filter
 var tenant = context.GetPayload<TenantInfo>();        // in a later filter or the consumer
 ```
 
-A payload travels within the delivery: filters see what earlier filters stored, and the consumer reads it from its `ConsumeContext<T>`. It never leaves the process, and it is cleared when a delivery is retried — every retry attempt starts from a clean payload set.
+A payload travels within the delivery: filters see what earlier filters stored, and the consumer reads it from its `ConsumeContext<T>`. It never leaves the process, and it is cleared when a delivery is retried, so every retry attempt starts from a clean payload set.
 
 ## When you reach for one
 
-The pattern earns its keep on the classic cross-cutting list: tenant and correlation stamping on publishes, metrics and tracing around both directions, selective skipping on consume, enrichment that several consumers would otherwise copy-paste. What it must not become is a second routing layer or a home for business logic — if a filter is deciding what a message *means*, that belongs in a consumer.
+The pattern earns its keep on the classic cross-cutting list: tenant and correlation stamping on publishes, metrics and tracing around both directions, selective skipping on consume, enrichment that several consumers would otherwise copy-paste. What it must not become is a second routing layer or a home for business logic; if a filter is deciding what a message *means*, that belongs in a consumer.
 
-Writing one — the classes, the registration overloads, the typed-vs-universal choices, complete runnable examples — is the [Add cross-cutting logic](/guides/add-cross-cutting-logic/) guide's job. When things go wrong inside the pipeline, the next concept takes over: what a throwing handler and a failing filter mean for a group reading a log — continue with [Exceptions](/concepts/exceptions/).
+Writing one (the classes, the registration overloads, the typed-vs-universal choices, complete runnable examples) is the [Add cross-cutting logic](/guides/add-cross-cutting-logic/) guide's job. When things go wrong inside the pipeline, the next concept takes over: what a throwing handler and a failing filter mean for a group reading a log. Continue with [Exceptions](/concepts/exceptions/).

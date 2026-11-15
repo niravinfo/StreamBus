@@ -7,15 +7,15 @@ This page is the reference for everything between your application and the
 broker process: the connection knobs inside `Host`, the serializer switch,
 the `StreamBusHostOptions` start/stop budgets, and the readiness and
 connection-state types that govern how the bus waits for and reports on the
-broker. How hosting works — why `AddStreamBus` registers a hosted service
-and what that buys you — is covered in
+broker. How hosting works, why `AddStreamBus` registers a hosted service
+and what that buys you, is covered in
 [Concepts: Introduction](/concepts/introduction/); why the connection keeps
 supervising and resuming consumers after an outage is covered in
 [Concepts: Streams](/concepts/streams/).
 
 ## Connection options
 
-`Host` is required exactly once per bus — a second call throws at
+`Host` is required exactly once per bus; a second call throws at
 registration. Its callback configures the connection; the defaults match a
 standard RabbitMQ 4.x install, so pass these only when yours differ:
 
@@ -34,7 +34,7 @@ cfg.Host("localhost", "/", h =>
 
 | Option | Default | Meaning |
 |---|---|---|
-| `Credentials(user, password)` | none | Broker credentials; both must be non-null. `guest`/`guest` works only on a machine-local broker — remote deployments need a dedicated non-`guest` user. |
+| `Credentials(user, password)` | none | Broker credentials; both must be non-null. `guest`/`guest` works only on a machine-local broker, so remote deployments need a dedicated non-`guest` user. |
 | `StreamPort` | `5552` | Stream-protocol port. |
 | `AmqpPort` | `5672` | AMQP port, used only when an endpoint declares an AMQP dead-letter queue. No queue destination, no AMQP connection. |
 | `Heartbeat` | 60s | Requested heartbeat interval; must be positive. |
@@ -52,7 +52,7 @@ Messages are JSON by default (`System.Text.Json`, content type
 cfg.Serializer(json => json.PropertyNamingPolicy = JsonNamingPolicy.CamelCase);
 ```
 
-Or replace the serializer entirely with any `IStreamSerializer` — three
+Or replace the serializer entirely with any `IStreamSerializer`: three
 members: `Serialize<T>`, `Deserialize<T>`, and a `ContentType` string that
 is stamped on every published message:
 
@@ -62,8 +62,8 @@ cfg.Serializer(new MyCompactSerializer());
 
 Behavior notes: one serializer per bus, used for typed publishes, consumer
 deserialization, and `Headers.GetJson<T>`. A body that fails to
-deserialize surfaces as `StreamBusDeserializationException`, which — like
-every consumer failure — enters the endpoint's retry schedule.
+deserialize surfaces as `StreamBusDeserializationException`, which, like
+every consumer failure, enters the endpoint's retry schedule.
 
 ## Startup and shutdown budgets
 
@@ -94,23 +94,23 @@ All five options of `StreamBusHostOptions`:
 | `ConsumerStopTimeout` | `null` | Per-consumer stop budget during shutdown; may be set on its own. |
 
 Validation: every timeout must be positive when set, and
-`ConsumerStopTimeout` must not exceed `StopTimeout` when both are set —
+`ConsumerStopTimeout` must not exceed `StopTimeout` when both are set;
 violations throw `StreamBusConfigurationException` at host start/stop.
 
 What stops looks like: consumers are disposed first, each bounded by
-`ConsumerStopTimeout` (and the overall `StopTimeout`) — on expiry that
+`ConsumerStopTimeout` (and the overall `StopTimeout`). On expiry that
 consumer is abandoned with a warning and shutdown continues past it. A
 consumer's dispose waits for the delivery currently in flight (a hung
 handler blocks its own dispose by design), but anything interrupted
 before its offset was stored is not on record anywhere, so it is
 redelivered from the stored offset on the next start. Shutdown is
-at-least-once for the same reason a detach is —
+at-least-once for the same reason a detach is;
 see [Streams](/concepts/streams/).
 
 ## Readiness policies
 
 Readiness answers "how long does this call wait for the broker to be
-ready?" — per call site, independently of hosting. Every wire-touching
+ready?" per call site, independently of hosting. Every wire-touching
 operation takes a `ReadinessPolicy`:
 
 | Policy | Meaning |
@@ -123,7 +123,7 @@ Where each applies: publishes take one via `PublishOptions.Readiness`
 (default `ReadinessPolicy.Default`), receive endpoints take one via
 `e.Readiness(...)` for their attach (default the same), and
 `bus.WaitUntilReadyAsync(policy, ct)` lets code gate itself explicitly.
-The policy bounds the readiness wait only — the broker-confirmation wait
+The policy bounds the readiness wait only; the broker-confirmation wait
 on a publish is the separate `ConfirmTimeout`.
 
 ## Connection states
@@ -137,10 +137,10 @@ latches a state, visible on `IStreamBus.State` and on the
 | `Starting` | First connection attempt in flight. |
 | `Ready` | Connected; producers and consumers operate. |
 | `TransientFailure` | A transient failure occurred; reconnecting with backoff. Publishes surface `StreamBusPublishTransientException`; endpoints detach and re-attach. |
-| `Fatal` | Unrecoverable — protocol, TLS, or authentication failure. No automatic retry; operator action required. |
+| `Fatal` | Unrecoverable: protocol, TLS, or authentication failure. No automatic retry; operator action required. |
 
 After a reconnect, consumers resume from their consumer group's stored
-offset — plus the redelivered tail explained in
+offset, plus the redelivered tail explained in
 [Concepts: Streams](/concepts/streams/).
 
 ## Next

@@ -16,15 +16,15 @@ hero:
 
 import { CardGrid, LinkCard } from '@astrojs/starlight/components';
 
-{/* LinkCard hrefs are JSX attributes — the plugin does not rewrite them, so the base path is hardcoded. */}
+{/* LinkCard hrefs are JSX attributes; the plugin does not rewrite them, so the base path is hardcoded. */}
 
 <CardGrid>
   <LinkCard title="Concepts" icon="open-book" href="/StreamBus/concepts/streams/"
-    description="Start with the RabbitMQ Streams model — super streams, partitions, and the message lifecycle that shapes everything StreamBus does." />
+    description="Start with the RabbitMQ Streams model: super streams, partitions, and the message lifecycle that shapes everything StreamBus does." />
   <LinkCard title="Guides" icon="rocket" href="/StreamBus/guides/get-started/"
     description="Hands-on walkthroughs: publish your first event, consume with a typed handler, and scale out across instances." />
   <LinkCard title="Handle failures" icon="warning" href="/StreamBus/guides/handle-failures/"
     description="Configure retry schedules and dead-letter destinations so a bad message never stalls your consumers." />
   <LinkCard title="Configuration" icon="settings" href="/StreamBus/configuration/observability/"
-    description="Health data, metrics, logs, TLS, and per-endpoint options — every setting is explicit, validated code." />
+    description="Health data, metrics, logs, TLS, and per-endpoint options; every setting is explicit, validated code." />
 </CardGrid>

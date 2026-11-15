@@ -3,9 +3,9 @@ title: Transport security
 description: Enable TLS for the stream and AMQP connections and tune certificate validation.
 ---
 
-TLS is off by default: with no `UseTls` call, both transports — the
+TLS is off by default: with no `UseTls` call, both transports (the
 stream protocol, and the AMQP connection used only for
-[dead-letter queues](/configuration/retry-and-dead-letters/) — speak
+[dead-letter queues](/configuration/retry-and-dead-letters/)) speak
 plain TCP.
 
 ## Enable TLS
@@ -18,8 +18,8 @@ cfg.Host("localhost", "/", h =>
 });
 ```
 
-Enabling TLS switches both transports at once — there is no
-per-transport toggle — and, unless you set ports explicitly, moves
+Enabling TLS switches both transports at once; there is no
+per-transport toggle, and unless you set ports explicitly it moves
 the defaults to the conventional RabbitMQ TLS ports (stream `5551`,
 AMQP `5671`). Explicit `StreamPort`/`AmqpPort` calls always win,
 regardless of call order (the ports themselves live on
@@ -50,8 +50,8 @@ cfg.Host("localhost", "/", h =>
 
 :::warning[Hostname verification is the TLS attack surface]
 Accepting `RemoteCertificateNameMismatch` or
-`RemoteCertificateNotAvailable` disables hostname verification — the
-protection against man-in-the-middle attacks — and should not be
+`RemoteCertificateNotAvailable` disables hostname verification, the
+protection against man-in-the-middle attacks, and should not be
 used in production.
 :::
 
@@ -59,13 +59,13 @@ Calling `UseTls` again replaces the previous TLS settings (last call
 wins).
 
 On the broker side, a TLS listener must be configured. A working
-reference setup — mounted certificate plus the configuration fragment
-— lives in the repository's integration tests:
+reference setup (mounted certificate plus the configuration fragment)
+lives in the repository's integration tests:
 `tests/StreamBus.IntegrationTests/TlsBroker.cs`.
 
 ## Next
 
 That completes the configuration reference. Every option tabulated in
 this tier plugs into the same `AddStreamBus` registration you started
-with — if you want to see them assembled end to end, go back to
+with. If you want to see them assembled end to end, go back to
 [Get started](/guides/get-started/) and build something.

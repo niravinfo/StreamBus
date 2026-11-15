@@ -1,15 +1,15 @@
 ---
 title: Messages
-description: What a good stream message looks like — past-tense facts that carry state, and the envelope of ids and headers every published message carries.
+description: "What a good stream message looks like: past-tense facts that carry state, plus the envelope of ids and headers every published message carries."
 ---
 
-A message is something that happened. An order was placed, a payment was billed, a shipment left the warehouse — the fact exists whether or not anyone is listening. That framing matters more on a stream than on a queue: a stream is an append-only log, so a message is not a request dispatched to a handler, it is a *fact appended to a history*. It will be read by consumers you have not written yet, replayed after bugs you have not hit yet, and outlive the service that published it.
+A message is something that happened. An order was placed, a payment was billed, a shipment left the warehouse. The fact exists whether or not anyone is listening. That framing matters more on a stream than on a queue: a stream is an append-only log, so a message is not a request dispatched to a handler, it is a *fact appended to a history*. It will be read by consumers you have not written yet, replayed after bugs you have not hit yet, and outlive the service that published it.
 
-Two consequences follow, and they organize this page. First, the name and the shape of a message are its contract — everyone sharing the stream has to agree on them, so they deserve deliberate design. Second, the message travels inside an envelope of metadata — identity, timestamps, correlation — that is stamped for you, and one property of it (`MessageId`) is your tool for surviving at-least-once delivery.
+Two consequences follow, and they organize this page. First, the name and the shape of a message are its contract; everyone sharing the stream has to agree on them, so they deserve deliberate design. Second, the message travels inside an envelope of metadata (identity, timestamps, correlation) that is stamped for you, and one property of it (`MessageId`) is your tool for surviving at-least-once delivery.
 
 ## Naming
 
-Because a stream holds facts, name them as facts: **events are past tense**. `OrderPlaced`, not `PlaceOrder` — on the log, the thing has already happened by the time it is written, and the name should say so. A reader scanning a consumer or a dead letter should be able to tell whether they are looking at history ("this happened") or at a command somebody wants performed ("do this"). Streams favor history.
+Because a stream holds facts, name them as facts: **events are past tense**. `OrderPlaced`, not `PlaceOrder`: on the log, the thing has already happened by the time it is written, and the name should say so. A reader scanning a consumer or a dead letter should be able to tell whether they are looking at history ("this happened") or at a command somebody wants performed ("do this"). Streams favor history.
 
 The names also express the lifecycle your domain actually has. An order's life is a sequence of recorded facts:
 
@@ -17,13 +17,13 @@ The names also express the lifecycle your domain actually has. An order's life i
 OrderPlaced -> OrderBilled -> OrderShipped
 ```
 
-A consumer on the billing side reads `OrderPlaced` events from a stream; a consumer on the shipping side reads `OrderBilled` events from the same history. Name the stream for the shared domain it records — `orders`, or `order-lifecycle` — not for the service that happens to publish first, and not for one consumer's view of it.
+A consumer on the billing side reads `OrderPlaced` events from a stream; a consumer on the shipping side reads `OrderBilled` events from the same history. Name the stream for the shared domain it records (`orders`, or `order-lifecycle`), not for the service that happens to publish first, and not for one consumer's view of it.
 
 One caution: on a stream, sequence in the *log* is not sequence in the *domain*. Per-entity order comes from publishing with a consistent routing key (see [Producers](/concepts/producers/)); do not encode ordering into the message names or shape.
 
 ## Design
 
-A message carries **state, not behavior**. When it is serialized onto the wire and read by another service — possibly another team, possibly years later, possibly replayed from a cold log — all that arrives is the data you put in it. Methods stay home. The natural C# shape is a simple, immutable record:
+A message carries **state, not behavior**. When it is serialized onto the wire and read by another service, possibly another team, possibly years later, possibly replayed from a cold log, all that arrives is the data you put in it. Methods stay home. The natural C# shape is a simple, immutable record:
 
 ```csharp
 public sealed record OrderPlaced
@@ -37,9 +37,9 @@ public sealed record OrderPlaced
 
 `get; init;` (or `required`) makes the contract explicit: a message cannot be mutated in flight by a well-meaning handler, and what was appended is what gets replayed. Keep every property serializable primitive or another such record.
 
-**Resist inheritance.** The classic messaging trick — a `BaseEvent` with `OrderPlaced`, `OrderBilled` subclasses hanging off it, published as the base type — does not work here, and you should say no to it even where it might. A StreamBus consumer endpoint binds exactly one message type, so base-class polymorphism does not route anything: consumers do not subscribe to hierarchies, they subscribe to concrete records. If two facts share a shape, share the shape (a smaller record, or shared sub-records) rather than a parent.
+**Resist inheritance.** The classic messaging trick (a `BaseEvent` with `OrderPlaced`, `OrderBilled` subclasses hanging off it, published as the base type) does not work here, and you should say no to it even where it might. A StreamBus consumer endpoint binds exactly one message type, so base-class polymorphism does not route anything: consumers do not subscribe to hierarchies, they subscribe to concrete records. If two facts share a shape, share the shape (a smaller record, or shared sub-records) rather than a parent.
 
-**The shape is a contract.** Messages are serialized by the bus's JSON serializer and deserialized by every consumer — including ones that are not yours. Fields cannot be quietly renamed: an old consumer replaying old offsets will deserialize old messages, serialized under the old shape. Agree the message shape across every service reading the stream before the first publish, and evolve it additively (new properties optional, nothing removed or repurposed). This agreement is between teams, not between classes: the wire body is plain JSON carrying no type name of yours, and each endpoint deserializes it into its own declared message type — so nothing about your CLR types travels, and the shared shape is the only thing binding the two sides.
+**The shape is a contract.** Messages are serialized by the bus's JSON serializer and deserialized by every consumer, including ones that are not yours. Fields cannot be quietly renamed: an old consumer replaying old offsets will deserialize old messages, serialized under the old shape. Agree the message shape across every service reading the stream before the first publish, and evolve it additively (new properties optional, nothing removed or repurposed). This agreement is between teams, not between classes: the wire body is plain JSON carrying no type name of yours, and each endpoint deserializes it into its own declared message type, so nothing about your CLR types travels, and the shared shape is the only thing binding the two sides.
 
 ## The envelope and headers
 
@@ -47,27 +47,27 @@ Alongside your payload, every published message carries a small envelope of AMQP
 
 | Property | Stamped by | Meaning |
 | --- | --- | --- |
-| `MessageId` | Always. If you do not supply one, StreamBus generates a fresh `Guid` before the publish pipeline runs. | The message's stable identity on a redelivery — the key to deduplicating under at-least-once. |
-| `SentTime` | Always, unless you supply one. Defaults to UTC now, normalized to UTC millisecond precision. | When the fact was appended — remember offsets in a log do not carry clock meaning. |
-| `CorrelationId` | Never. StreamBus does not invent one; it is null unless you supply it. | Ties a message to the work it belongs to — useful for tracing a fact back to the request or replay that produced it. |
+| `MessageId` | Always. If you do not supply one, StreamBus generates a fresh `Guid` before the publish pipeline runs. | The message's stable identity on a redelivery: the key to deduplicating under at-least-once. |
+| `SentTime` | Always, unless you supply one. Defaults to UTC now, normalized to UTC millisecond precision. | When the fact was appended (and remember: offsets in a log do not carry clock meaning). |
+| `CorrelationId` | Never. StreamBus does not invent one; it is null unless you supply it. | Ties a message to the work it belongs to, useful for tracing a fact back to the request or replay that produced it. |
 | `ContentType` | Always, by the configured serializer (e.g. `application/json`). Cannot be set per message. | Tells consumers what the body is. Switching serializers is a host-level decision ([Configuration](/configuration/host-and-connections/)). |
-| User headers | You, or a publish filter. Written as AMQP application properties, so values must be `string`, `bool`, `int`, `long`, or `null` — anything else throws at publish time. Keys must not collide with the reserved `streambus.*` framework keys. | Cross-cutting context that does not belong in the payload — tenant ids, idempotency hints, feature flags every consumer wants. Writing header syntax is covered in the [publish guide](/guides/publish-an-event/). |
+| User headers | You, or a publish filter. Written as AMQP application properties, so values must be `string`, `bool`, `int`, `long`, or `null`; anything else throws at publish time. Keys must not collide with the reserved `streambus.*` framework keys. | Cross-cutting context that does not belong in the payload: tenant ids, idempotency hints, feature flags every consumer wants. Writing header syntax is covered in the [publish guide](/guides/publish-an-event/). |
 
-One precedence rule worth remembering: when a publish filter writes a header, the filter's value wins over one supplied at the call site — filters are the last writer on the send pipeline.
+One precedence rule worth remembering: when a publish filter writes a header, the filter's value wins over one supplied at the call site, because filters are the last writer on the send pipeline.
 
 ## Deduplicating under at-least-once
 
-As the [caution on delivery](/concepts/streams/#offsets-and-consumer-groups) explains, a consumer that detaches before storing its offset gets its recent tail redelivered — including messages it already processed. It is not a bug. Publishing is at-least-once too: a retry after an ambiguous confirm can append the same fact twice. So the same logical message can reach your handler more than once, and your handler must be safe to run twice on the same fact.
+As the [caution on delivery](/concepts/streams/#offsets-and-consumer-groups) explains, a consumer that detaches before storing its offset gets its recent tail redelivered, including messages it already processed. It is not a bug. Publishing is at-least-once too: a retry after an ambiguous confirm can append the same fact twice. So the same logical message can reach your handler more than once, and your handler must be safe to run twice on the same fact.
 
-This is exactly why `MessageId` is always stamped: it gives every message a stable, process-independent identity that survives redelivery unchanged. Make handler logic idempotent where it can — "set status to Billed" is naturally idempotent, "add one to the ledger" is not. When it cannot be, deduplicate explicitly: keep a short-lived cache (a dedup window) of recently seen `MessageId`s and skip the work for a repeat. The window only needs to span the redelivery tail; a cache of the last few moments is usually enough.
+This is exactly why `MessageId` is always stamped: it gives every message a stable, process-independent identity that survives redelivery unchanged. Make handler logic idempotent where it can ("set status to Billed" is naturally idempotent; "add one to the ledger" is not). When it cannot be, deduplicate explicitly: keep a short-lived cache (a dedup window) of recently seen `MessageId`s and skip the work for a repeat. The window only needs to span the redelivery tail; a cache of the last few moments is usually enough.
 
 ## Guidance
 
-- **Name events in the past tense** — `OrderPlaced`, `OrderBilled`, `OrderShipped` — and name the stream after the shared domain (`orders`), not after a producer or consumer.
+- **Name events in the past tense** (`OrderPlaced`, `OrderBilled`, `OrderShipped`) and name the stream after the shared domain (`orders`), not after a producer or consumer.
 - **Carry state, not behavior.** Plain records with `get; init;` properties; every property survives a round trip.
-- **Do not use inheritance for messages.** Endpoints bind one concrete message type; share shapes, not base classes.
+- Do not use inheritance for messages: endpoints bind one concrete message type, so share shapes, not base classes.
 - **Treat the shape as a contract across services.** Evolve additively; old consumers will replay old messages.
 - **Never rely on delivery being exactly once.** `MessageId` is always stamped; use it to deduplicate effects that must happen once.
-- **Put cross-cutting context in headers** (string/bool/int/long/null only), not in every payload — and leave the reserved `streambus.*` keys alone.
+- **Put cross-cutting context in headers** (string/bool/int/long/null only), not in every payload, and leave the reserved `streambus.*` keys alone.
 
-A well-named, immutable, contract-shaped fact is only half the story — the next concept is what it means to *publish* one: continue with [Producers](/concepts/producers/).
+A well-named, immutable, contract-shaped fact is only half the story; the next concept is what it means to *publish* one: continue with [Producers](/concepts/producers/).

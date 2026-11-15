@@ -1,26 +1,26 @@
 ---
 title: Streams
-description: What a RabbitMQ stream actually is — an append-only log — and how that one fact reshapes offsets, consumer groups, delivery guarantees, and the decision to use a stream at all.
+description: What a RabbitMQ stream actually is (an append-only log) and how that one fact reshapes offsets, consumer groups, delivery guarantees, and the decision to use a stream at all.
 ---
 
-A stream is an **append-only log**. Producers append messages to the end; the broker never removes a message when someone reads it; each consumer keeps its own position in the log and reads forward from there. Nothing is dispatched *to* anyone. A message is written once, stays where it was written, and anybody with a position may come and read it — today, tomorrow, or an hour after two other services already did.
+A stream is an **append-only log**. Producers append messages to the end; the broker never removes a message when someone reads it; each consumer keeps its own position in the log and reads forward from there. Nothing is dispatched *to* anyone. A message is written once, stays where it was written, and anybody with a position may come and read it: today, tomorrow, or an hour after two other services already did.
 
 That is the whole mental shift. If you have only used queue-based brokers, everything downstream follows from unlearning dispatch: retention that ignores consumption, cursors instead of acknowledgements, duplicates instead of exactly-once. This page is the foundation the rest of the documentation stands on.
 
 ## What a stream is
 
-Concretely, a stream is a sequence of messages kept in broker-side storage, each identified by its **offset** — its position from the start of the log. Three properties matter:
+Concretely, a stream is a sequence of messages kept in broker-side storage, each identified by its **offset**, its position from the start of the log. Three properties matter:
 
-- **Retention is by age and size, not by consumption.** A stream keeps messages until configured age or size limits truncate the oldest ones. Reading does not delete anything: a message at offset 5 is still there an hour later, readable again by any other consumer. When a declared stream sets no retention knobs, StreamBus passes no limits at declare time, so retention falls to the broker's declare-time defaults — segment files are kept until age or size limits are set or the stream is deleted. Bound it with `MaxAge` or `MaxLengthBytes` on the registration ([endpoint options](/configuration/endpoint-options/)).
-- **Reads are non-destructive and repeatable.** Any number of consumers can read the same history from the beginning, or from wherever they last got to. Replaying a stream is a normal operation, not an incident.
-- **Position is tracked by offset.** A consumer does not "receive" message 512 — it reads *up to* offset 512, and remembers that. The act of reading and the act of tracking progress are separate, which is why they can fail separately.
+- **Retention is by age and size, not by consumption.** A stream keeps messages until configured age or size limits truncate the oldest ones. Reading does not delete anything: a message at offset 5 is still there an hour later, readable again by any other consumer. When a declared stream sets no retention knobs, StreamBus passes no limits at declare time, so retention falls to the broker's declare-time defaults: segment files are kept until age or size limits are set or the stream is deleted. Bound it with `MaxAge` or `MaxLengthBytes` on the registration ([endpoint options](/configuration/endpoint-options/)).
+- Any number of consumers can read the same history from the beginning, or from wherever they last got to; replaying a stream is a normal operation, not an incident.
+- **Position is tracked by offset.** A consumer does not "receive" message 512; it reads *up to* offset 512, and remembers that. The act of reading and the act of tracking progress are separate, which is why they can fail separately.
 
 ## Streams vs queues
 
-If you know classic RabbitMQ — AMQP exchanges and queues — unlearn two things first:
+If you know classic RabbitMQ (AMQP exchanges and queues), unlearn two things first:
 
 1. **A stream is not removed-on-read.** Queues delete (or ack away) messages as consumers take them; the queue empties. A stream does not. Retention is controlled by stream age and size limits, not by consumption.
-2. **There is no per-message ack.** A consumer does not acknowledge individual messages; it periodically tells the broker its *offset* — "I have read up to here." Everything between the last stored offset and the consumer's live position will be delivered again if the consumer detaches before storing.
+2. **There is no per-message ack.** A consumer does not acknowledge individual messages; it periodically tells the broker its *offset*: "I have read up to here." Everything between the last stored offset and the consumer's live position will be delivered again if the consumer detaches before storing.
 
 | Aspect | Queue | Stream |
 | --- | --- | --- |
@@ -49,27 +49,27 @@ If you know classic RabbitMQ — AMQP exchanges and queues — unlearn two thing
 
 The stored offset belongs to a **consumer group** on a stream (or on one partition of a super stream). The group *is* the cursor identity:
 
-- Two instances with the *same* group name share one cursor — that is how you scale out and fail over: the work is split between them, and whichever survives resumes from the shared position.
-- Two consumers with *different* group names are fully independent readers — each receives every message, at its own pace, without affecting the others.
+- Two instances with the *same* group name share one cursor, and that is how you scale out and fail over: the work is split between them, and whichever survives resumes from the shared position.
+- Two consumers with *different* group names are fully independent readers, each receiving every message at its own pace, without affecting the others.
 
-The offset is stored on the broker side *after* processing — by default after every message, and only batched (every N messages, or every so often) if you configure a sparser cadence. Whatever the cadence, a delivery that is in flight or handled-but-not-yet-stored is not on record anywhere, and that gap between "handled" and "recorded" is why a detached consumer gets its tail redelivered — not a defect, but the one consequence you must design for.
+The offset is stored on the broker side *after* processing: by default after every message, and only batched (every N messages, or every so often) if you configure a sparser cadence. Whatever the cadence, a delivery that is in flight or handled-but-not-yet-stored is not on record anywhere, and that gap between "handled" and "recorded" is why a detached consumer gets its tail redelivered. That is not a defect; it is the one consequence you must design for.
 
 :::caution[Delivery is at-least-once]
-Because the cursor is only ever stored after processing (and, if you batch the stores, only every so often), a consumer that detaches mid-flight gets the tail of its progress redelivered. Duplicates are a normal, expected event — not a bug, not a misconfiguration. Handlers must be idempotent, or deduplicate using the message's `MessageId` (see [Messages](/concepts/messages/)).
+Because the cursor is only ever stored after processing (and, if you batch the stores, only every so often), a consumer that detaches mid-flight gets the tail of its progress redelivered. Duplicates are a normal, expected event, not a bug or a misconfiguration. Handlers must be idempotent, or deduplicate using the message's `MessageId` (see [Messages](/concepts/messages/)).
 :::
 
 ## Super streams
 
-A **super stream** is a single logical stream partitioned into several physical streams, typically by a routing key: messages with the same key land on the same partition, in the same order. Consumers attach to the super stream and each member works one partition, so a consumer group scales across partitions the same way it scales across members. That is all this page needs to say — creating, publishing to, and balancing a super stream is covered in the [partitioning guide](/guides/partition-a-stream/).
+A **super stream** is a single logical stream partitioned into several physical streams, typically by a routing key: messages with the same key land on the same partition, in the same order. Consumers attach to the super stream and each member works one partition, so a consumer group scales across partitions the same way it scales across members. That is all this page needs to say; creating, publishing to, and balancing a super stream is covered in the [partitioning guide](/guides/partition-a-stream/).
 
 ## When you should not use a stream
 
 A stream is not the right tool for every job, and pretending otherwise costs you a weekend:
 
 - **Request/reply.** A log has no reply address and no per-message destination; nothing is ever "delivered to the requester." Use a queue-based tool.
-- **Work distribution where the message must be done by exactly one worker and then forgotten.** That is a queue's native shape; forcing it onto a stream means fighting retention and cursors for no benefit.
+- Work distribution where the message must be done by exactly one worker and then forgotten is a queue's native shape; forcing it onto a stream means fighting retention and cursors for no benefit.
 - **Delayed or scheduled delivery.** Streams append and read forward; they do not hold a message until a due time.
 
-If your workload is "these are facts that happened; several consumers care about them, in order, possibly after the fact" — use a stream. If it is "do this specific thing, now, for me" — do not.
+If your workload is "these are facts that happened; several consumers care about them, in order, possibly after the fact", use a stream. If it is "do this specific thing, now, for me", do not.
 
 With the stream itself understood, the next concept is what you put in it: continue with [Messages](/concepts/messages/).

@@ -1,58 +1,58 @@
 ---
 title: Exceptions
-description: What happens when a handler throws on a log — the default retry-to-hands-off flow, transient-vs-poison doctrine, the error envelope, and the exception hierarchy.
+description: "What happens when a handler throws on a log: the default retry-to-hands-off flow, transient-vs-poison doctrine, the error envelope, and the exception hierarchy."
 ---
 
-Your handler will throw. A database deadlocks, a downstream service is down for thirty seconds, a payload has a field you did not expect. On a queue-based broker that is routine: the message is nack'd, the broker parks it in a dead-letter queue, and the rest of the stream of traffic flows on. On a stream there is no such machinery — an append-only log does not care that your handler failed. It does not remove the message, it does not hold it aside, it does nothing but keep delivering forward. So StreamBus owns failure explicitly: a throwing handler *schedules* the message for retry, and the group's cursor does not move past it until the failure is resolved or handed off.
+Your handler will throw. A database deadlocks, a downstream service is down for thirty seconds, a payload has a field you did not expect. On a queue-based broker that is routine: the message is nack'd, the broker parks it in a dead-letter queue, and the rest of the stream of traffic flows on. On a stream there is no such machinery: an append-only log does not care that your handler failed. It does not remove the message, it does not hold it aside, it does nothing but keep delivering forward. So StreamBus owns failure explicitly: a throwing handler *schedules* the message for retry, and the group's cursor does not move past it until the failure is resolved or handed off.
 
-That is the last concept in the tier, and it follows directly from the other two: [Consumers](/concepts/consumers/) showed that the stored offset — not a per-message ack — is the checkpoint, and that a blocked message blocks its partition; [Middleware](/concepts/middleware/) showed that the retry machinery sits inside the endpoint, wrapping the pipeline. This page puts the two together and answers the only question left: what actually happens to a failed delivery.
+That is the last concept in the tier, and it follows directly from the other two: [Consumers](/concepts/consumers/) showed that the stored offset, not a per-message ack, is the checkpoint, and that a blocked message blocks its partition; [Middleware](/concepts/middleware/) showed that the retry machinery sits inside the endpoint, wrapping the pipeline. This page puts the two together and answers the only question left: what actually happens to a failed delivery.
 
 ## What happens by default
 
 One delivery, one failure. The flow, in order:
 
 1. Your `Consume` throws (or a consume filter throws through to it).
-2. The exception enters the endpoint's **retry schedule** and the delivery is retried in place — the partition waits, order intact.
+2. The exception enters the endpoint's **retry schedule** and the delivery is retried in place; the partition waits, order intact.
 3. If the schedule is bounded, the attempts eventually run out: the message is **exhausted**.
-4. An exhausted message is **handed off** — to a dead-letter queue, an error stream, or an `OnExhausted` callback — carrying an error envelope describing the failure.
+4. An exhausted message is **handed off** to a dead-letter queue, an error stream, or an `OnExhausted` callback, carrying an error envelope describing the failure.
 5. Only then does the **offset advance** and the partition move on.
 
-The catch is in step 3, and it is the single most important fact on this page: **the default schedule is unbounded.** Every thrown exception is retried — there is no exception-type filtering, no attempt limit unless you set one — and with no attempt limit there is no exhaustion, so no hand-off ever fires and the offset never moves. A poison exception retried forever parks a partition; a parked partition parks every message behind it, because order is the offset's job. The default is honest at-least-once, but you must not leave it bare: **bind your schedules.**
+The catch is in step 3, and it is the single most important fact on this page: **the default schedule is unbounded.** Every thrown exception is retried; there is no exception-type filtering, no attempt limit unless you set one. And with no attempt limit there is no exhaustion, so no hand-off ever fires and the offset never moves. A poison exception retried forever parks a partition; a parked partition parks every message behind it, because order is the offset's job. The default is honest at-least-once, but you must not leave it bare: **bind your schedules.**
 
 ## Transient versus poison
 
 Which failures deserve retries? The doctrine is old and reliable:
 
-- **Transient failures deserve retries.** A deadlock, a dropped connection, a downstream service that is briefly busy — these clear on their own, and a second or third attempt succeeds. Retry is exactly the right tool.
-- **Poison failures never fix themselves.** A validation failure, a `NullReferenceException` from a bug, an unrecognized enum value in the payload — the same message will fail identically on every attempt, forever. Retrying it is not patience; it is a parked partition wearing a busy light.
+- **Transient failures deserve retries.** A deadlock, a dropped connection, a downstream service that is briefly busy. These clear on their own, and a second or third attempt succeeds. Retry is exactly the right tool.
+- **Poison failures never fix themselves.** A validation failure, a `NullReferenceException` from a bug, an unrecognized enum value in the payload: the same message will fail identically on every attempt, forever. Retrying it is not patience; it is a parked partition wearing a busy light.
 
-Today, StreamBus retries every exception type through the same schedule, so the difference between the two is yours to act on. The mitigation available now: give the endpoint a **bounded schedule plus a hand-off** so poison fails fast, lands somewhere inspectable, and stops blocking the line — the how-to is the [Handle failures](/guides/handle-failures/) guide, and the option tables live in [Retry & dead letters](/configuration/retry-and-dead-letters/).
+Today, StreamBus retries every exception type through the same schedule, so the difference between the two is yours to act on. The mitigation available now: give the endpoint a **bounded schedule plus a hand-off** so poison fails fast, lands somewhere inspectable, and stops blocking the line. The how-to is the [Handle failures](/guides/handle-failures/) guide, and the option tables live in [Retry & dead letters](/configuration/retry-and-dead-letters/).
 
-:::note[Planned — exception filtering]
-**Planned — exception filtering.** A future release adds `Handle<TException>` / `Ignore<TException>` on the retry configurator so a schedule can retry transient exceptions while immediately handing off poison ones. Semantics (intended): a handled type retries; an ignored type exhausts on first failure and goes to the configured hand-off; with none configured, today's behavior (all exceptions retry) continues.
+:::note[Planned: exception filtering]
+**Planned: exception filtering.** A future release adds `Handle<TException>` / `Ignore<TException>` on the retry configurator so a schedule can retry transient exceptions while immediately handing off poison ones. Semantics (intended): a handled type retries; an ignored type exhausts on first failure and goes to the configured hand-off; with none configured, today's behavior (all exceptions retry) continues.
 :::
 
 ## The pieces of the machinery
 
 Three linked mechanisms make up the flow above, each with a page of its own downstream. This is the vocabulary; the building is elsewhere.
 
-**Schedules.** One bus-wide default, one optional override per endpoint; a configurator picks exactly one policy — immediate, fixed interval, a sequence of intervals, exponential backoff, or none. Attempts are totals including the first delivery. The full syntax and the per-schedule tables belong to the guides and configuration tier: see [Handle failures](/guides/handle-failures/) for the walkthrough and [Retry & dead letters](/configuration/retry-and-dead-letters/) for the reference.
+**Schedules.** One bus-wide default, one optional override per endpoint; a configurator picks exactly one policy: immediate, fixed interval, a sequence of intervals, exponential backoff, or none. Attempts are totals including the first delivery. The full syntax and the per-schedule tables belong to the guides and configuration tier: see [Handle failures](/guides/handle-failures/) for the walkthrough and [Retry & dead letters](/configuration/retry-and-dead-letters/) for the reference.
 
-**Exhaustion and hand-off.** When the attempt limit runs out, the endpoint hands the message over: to a dead-letter **queue** (visible and drainable in the RabbitMQ management UI), an **error stream** (if the failures feed a replay pipeline), or an `OnExhausted` callback that takes the outcome into your own code. A hand-off requires an attempt limit — a destination or callback declared against an unbounded schedule is a configuration error at registration, because it would never fire. The exhaustion matrix and destination options are tabulated in [Retry & dead letters](/configuration/retry-and-dead-letters/).
+**Exhaustion and hand-off.** When the attempt limit runs out, the endpoint hands the message over: to a dead-letter **queue** (visible and drainable in the RabbitMQ management UI), an **error stream** (if the failures feed a replay pipeline), or an `OnExhausted` callback that takes the outcome into your own code. A hand-off requires an attempt limit: a destination or callback declared against an unbounded schedule is a configuration error at registration, because it would never fire. The exhaustion matrix and destination options are tabulated in [Retry & dead letters](/configuration/retry-and-dead-letters/).
 
-**OnExhausted.** The escape hatch when none of the stock destinations fits: a callback receiving the whole failed delivery — source stream, partition, and offset; the raw body; message and correlation ids; headers; the attempt count; the exception; and the per-delivery DI scope. Returning from it advances past the message; throwing recycles for redelivery — a message is never silently skipped. Writing one is part of the [Handle failures](/guides/handle-failures/) guide.
+**OnExhausted.** The escape hatch when none of the stock destinations fits. It is a callback receiving the whole failed delivery: source stream, partition, and offset; the raw body; message and correlation ids; headers; the attempt count; the exception; and the per-delivery DI scope. Returning from it advances past the message; throwing recycles for redelivery, so a message is never silently skipped. Writing one is part of the [Handle failures](/guides/handle-failures/) guide.
 
 ## The error envelope
 
-A dead letter is not an opaque blob. The hand-off publishes the **original body unchanged**, plus failure metadata under `streambus.error.*` headers: the source stream, partition, and offset it failed at; the exception's type, message, and stack trace; the attempt count; and the timestamp. The sender's own application headers travel alongside as plain keys, exactly as they arrived — nothing is repackaged into a JSON envelope, so any AMQP-compatible client can drain the destination and read both the message and its failure story without knowing StreamBus at all.
+A dead letter is not an opaque blob. The hand-off publishes the **original body unchanged**, plus failure metadata under `streambus.error.*` headers: the source stream, partition, and offset it failed at; the exception's type, message, and stack trace; the attempt count; and the timestamp. The sender's own application headers travel alongside as plain keys, exactly as they arrived. Nothing is repackaged into a JSON envelope, so any AMQP-compatible client can drain the destination and read both the message and its failure story without knowing StreamBus at all.
 
-Parsing the envelope from code — via the `ErrorEnvelope` reader StreamBus ships — is a guide task with a runnable reading snippet: [Handle failures](/guides/handle-failures/) shows it.
+Parsing the envelope from code (via the `ErrorEnvelope` reader StreamBus ships) is a guide task with a runnable reading snippet: [Handle failures](/guides/handle-failures/) shows it.
 
 ## Operating on failures
 
-Where dead letters land matters more than people expect. A dead-letter **queue** is the operator-friendly choice: it shows up in the RabbitMQ management UI, ops can watch it grow, drain it, and tell you the deployment wedged at 2am. An **error stream** is the pipeline-friendly choice: failures stay in an append-only log that other services can tail and react to. Pick by who acts on the failures — humans drain queues, services tail streams. The destination options are tabulated in [Retry & dead letters](/configuration/retry-and-dead-letters/).
+Where dead letters land matters more than people expect. A dead-letter **queue** is the operator-friendly choice: it shows up in the RabbitMQ management UI, ops can watch it grow, drain it, and tell you the deployment wedged at 2am. An **error stream** is the pipeline-friendly choice: failures stay in an append-only log that other services can tail and react to. Pick by who acts on the failures: humans drain queues, services tail streams. The destination options are tabulated in [Retry & dead letters](/configuration/retry-and-dead-letters/).
 
-Recovery is the same either way: fix the cause, drain the destination, and **re-publish the recovered messages as new messages with fresh ids** — never resurrect the old `MessageId`, because at-least-once dedup machinery would treat a replay as the duplicate it looks like. And here the responsibility boundary is sharp: **StreamBus's job ends at the hand-off.** Consuming from the error destination, diagnosing, and republishing is your application's job — the library guarantees the failure lands somewhere inspectable with its context intact, and nothing more.
+Recovery is the same either way: fix the cause, drain the destination, and **re-publish the recovered messages as new messages with fresh ids**; never resurrect the old `MessageId`, because at-least-once dedup machinery would treat a replay as the duplicate it looks like. And here the responsibility boundary is sharp: **StreamBus's job ends at the hand-off.** Consuming from the error destination, diagnosing, and republishing is your application's job; the library guarantees the failure lands somewhere inspectable with its context intact, and nothing more.
 
 ## The exception hierarchy
 
@@ -74,4 +74,4 @@ When StreamBus itself throws, every public exception type derives from `StreamBu
 
 ## Where to go from here
 
-That is the last of the concepts: the log, the message, the producer, the consumer group, the pipeline, and now the failure story. The model is behind you — time to build something with it. The [Get started](/guides/get-started/) guide takes you from an empty project to a running publish-and-consume app, and from there the guides go topic by topic — [Handle failures](/guides/handle-failures/) is the natural next stop after this page.
+That is the last of the concepts: the log, the message, the producer, the consumer group, the pipeline, and now the failure story. The model is behind you; time to build something with it. The [Get started](/guides/get-started/) guide takes you from an empty project to a running publish-and-consume app, and from there the guides go topic by topic; [Handle failures](/guides/handle-failures/) is the natural next stop after this page.

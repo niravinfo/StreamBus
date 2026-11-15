@@ -3,7 +3,7 @@ title: Retry & dead letters
 description: Reference for retry schedule methods, the RetryPolicy record, the exhaustion configuration matrix, dead-letter destination options, and the exception hierarchy.
 ---
 
-This page tabulates the retry schedule methods, the raw `RetryPolicy` record, the exhaustion configuration matrix, the dead-letter destination options, and the exception hierarchy. The prose how-to — bounding a schedule, choosing a destination, and the never-skip hand-off contract — lives in [Handle failures](/guides/handle-failures/); the doctrine behind failed-delivery handling lives in [Concepts: Exceptions](/concepts/exceptions/).
+This page tabulates the retry schedule methods, the raw `RetryPolicy` record, the exhaustion configuration matrix, the dead-letter destination options, and the exception hierarchy. The prose how-to, bounding a schedule, choosing a destination, and the never-skip hand-off contract, lives in [Handle failures](/guides/handle-failures/); the doctrine behind failed-delivery handling lives in [Concepts: Exceptions](/concepts/exceptions/).
 
 Schedules exist at two levels: one bus-wide default via `cfg.UseRetry(...)`, and one optional override per endpoint via `e.UseRetry(...)`. Every endpoint inherits the bus-wide schedule unless it sets its own. A retry configurator callback must set exactly one schedule; schedule methods overwrite each other, the last call wins, and a callback that sets none throws at registration.
 
@@ -17,7 +17,7 @@ Schedules exist at two levels: one bus-wide default via `cfg.UseRetry(...)`, and
 | `Exponential(retryCount, minDelay, maxDelay)` | `retryCount + 1` total | `minDelay` doubled per attempt, capped at `maxDelay`, no jitter |
 | `None()` | `1` | the first failure exhausts immediately |
 
-Attempt counts are **totals including the first delivery**: `Immediate(5)` is six attempts — one delivery plus five retries. Validation: `retries`/`retryCount` must be non-negative, `Interval` delay non-negative, `Intervals` requires at least one non-negative delay, and `Exponential` delays must be positive.
+Attempt counts are **totals including the first delivery**: `Immediate(5)` is six attempts, one delivery plus five retries. Validation: `retries`/`retryCount` must be non-negative, `Interval` delay non-negative, `Intervals` requires at least one non-negative delay, and `Exponential` delays must be positive.
 
 ## RetryPolicy record
 
@@ -46,20 +46,20 @@ Note that `Exponential(...)` on the configurator differs from the raw record's d
 
 ## Exhaustion matrix
 
-When the attempt limit runs out, StreamBus hands the message over. The outcome depends only on what the endpoint configured — the configuration matrix:
+When the attempt limit runs out, StreamBus hands the message over. The outcome depends only on what the endpoint configured:
 
 | Attempt limit | Exhaustion config | Outcome |
 |---|---|---|
 | set | `DeadLetterToStream` / `DeadLetterToQueue` | hand-off to the destination, then advance |
 | set | `OnExhausted` callback | the callback owns the outcome; a declared destination is shadowed, with a startup warning; returning advances, throwing recycles the attach (redeliver, never skip) |
 | set | neither | hand-off to the derived destination: durable classic queue `{stream}_error` |
-| unset (default) | neither | retry forever — the message stays at the head of its partition |
-| unset | destination or callback | configuration error at registration — a hand-off needs an attempt limit |
+| unset (default) | neither | retry forever: the message stays at the head of its partition |
+| unset | destination or callback | configuration error at registration: a hand-off needs an attempt limit |
 | `None()` | any | immediate hand-off or callback on the first failure |
 
 ## Dead-letter destinations
 
-A destination is declared at most once per endpoint — a second `DeadLetterTo*` call throws at registration. The shapes:
+A destination is declared at most once per endpoint; a second `DeadLetterTo*` call throws at registration. The shapes:
 
 ```csharp
 cfg.ReceiveEndpoint("payments", e =>
@@ -73,16 +73,16 @@ cfg.ReceiveEndpoint("payments", e =>
 
 | Option | Default | Meaning |
 |---|---|---|
-| `DeadLetterToStream(name, spec?)` | none | An error **stream** destination, declared at startup with the destination's `StreamOptions` — the same stream-spec knobs as any other registration (`MaxAge`, `MaxLengthBytes`, `MaxSegmentSizeBytes`, `LeaderLocator` on [Endpoint options](/configuration/endpoint-options/)). Partitions are not allowed on an error-stream destination. |
-| `DeadLetterToQueue(name, type, spec?)` | none | A durable AMQP **queue** destination (classic or quorum via `DeadLetterQueueType`), declared over AMQP at startup — the only place StreamBus opens an AMQP connection. |
+| `DeadLetterToStream(name, spec?)` | none | An error **stream** destination, declared at startup with the destination's `StreamOptions`, the same stream-spec knobs as any other registration (`MaxAge`, `MaxLengthBytes`, `MaxSegmentSizeBytes`, `LeaderLocator` on [Endpoint options](/configuration/endpoint-options/)). Partitions are not allowed on an error-stream destination. |
+| `DeadLetterToQueue(name, type, spec?)` | none | A durable AMQP **queue** destination (classic or quorum via `DeadLetterQueueType`), declared over AMQP at startup: the only place StreamBus opens an AMQP connection. |
 | `ErrorPublishTimeout(timeout)` | `null` | Timeout for the confirmed publish to an error-stream hand-off; `null` waits indefinitely, values below one second are raised to one second. |
 | queue `ConfirmTimeout(timeout)` | `10 s` | Confirmation budget for a queue hand-off (`IErrorQueueOptionsBuilder`); must be positive, independent of the stream publish timeout. |
 
-With no destination declared, a bounded schedule derives one: the durable classic queue `{stream}_error`. Both hand-off paths bound the publish so a lost confirmation cannot wedge the partition, and a fatal failure recycles the attach for redelivery — the message is never skipped.
+With no destination declared, a bounded schedule derives one: the durable classic queue `{stream}_error`. Both hand-off paths bound the publish so a lost confirmation cannot wedge the partition, and a fatal failure recycles the attach for redelivery: the message is never skipped.
 
 ## Exception hierarchy
 
-Every StreamBus exception derives from the abstract `StreamBusException`, so one `catch` covers the whole library surface. Doctrine — which failures are transient, which are poison, and what the runtime does with each — lives in [Concepts: Exceptions](/concepts/exceptions/).
+Every StreamBus exception derives from the abstract `StreamBusException`, so one `catch` covers the whole library surface. Doctrine, which failures are transient, which are poison, and what the runtime does with each, lives in [Concepts: Exceptions](/concepts/exceptions/).
 
 | Exception | Meaning |
 |---|---|

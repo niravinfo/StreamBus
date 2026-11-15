@@ -68,7 +68,7 @@ internal static class Program
             cfg.Host("localhost", "/", h => h.Credentials("guest", "guest"))));
 
     /// <summary>
-    /// Guides/Get started — the page's registration block (Host + Publish +
+    /// Guides/Get started - the page's registration block (Host + Publish +
     /// ReceiveEndpoint + UseRetry) plus the blocking-start host options.
     /// </summary>
     /// <remarks>
@@ -102,7 +102,7 @@ internal static class Program
     });
 
     /// <summary>
-    /// Guides/Publish an event — the declare-route registration block.
+    /// Guides/Publish an event - the declare-route registration block.
     /// The publish call snippets (basic pair, Properties/Headers,
     /// Readiness/ConfirmTimeout budgets, PublishRawAsync, explicit-target
     /// PublishAsync) are reproduced in <see cref="PublishAnEventSample"/>
@@ -121,7 +121,7 @@ internal static class Program
         }));
 
     /// <summary>
-    /// Guides/Consume events — the page's two endpoint registrations: the
+    /// Guides/Consume events - the page's two endpoint registrations: the
     /// billing endpoint (group "billing") and the audit endpoint (group
     /// "audit") on the SAME "orders" stream, proving the two-endpoint
     /// pattern validates. The consumer classes and the ConsumeContext tour
@@ -147,7 +147,7 @@ internal static class Program
             });
 
             // Audit's endpoint from "A second team wants the same events":
-            // same stream, different group — an independent cursor.
+            // same stream, different group - an independent cursor.
             cfg.ReceiveEndpoint("orders", e =>
             {
                 e.Consumer<ConsumeEventsSample.AuditConsumer>("audit");
@@ -156,7 +156,7 @@ internal static class Program
     });
 
     /// <summary>
-    /// Concepts/Middleware — the composed registration sample that teaches
+    /// Concepts/Middleware - the composed registration sample that teaches
     /// scoping and ordering: bus-wide publish/consume filters plus one
     /// endpoint-scoped consume filter. The filter classes and message types
     /// live in this namespace so the snippet shape matches the page while
@@ -181,12 +181,12 @@ internal static class Program
         }));
 
 /// <summary>
-/// Guides/Handle failures — the page's registration snippets: the bounded
+/// Guides/Handle failures - the page's registration snippets: the bounded
 /// schedules (Exponential on billing, Immediate on payments), the explicit
 /// stream dead-letter destination with MaxAge, and the OnExhausted
 /// callback publishing the raw body to its target stream. The commented
 /// queue alternative (QuorumQueue + ConfirmTimeout) on the page is
-/// replaced here with the stream call the later sections build on — the
+/// replaced here with the stream call the later sections build on - the
 /// page presents the two as either/or because a second DeadLetterTo* call
 /// on one endpoint throws. The ErrorEnvelope drain loop and the
 /// PaymentsConsumer live in <see cref="HandleFailuresSample"/> so their
@@ -235,11 +235,11 @@ private static void VerifyHandleFailures() => RegisterAndValidate(services =>
     }));
 
 /// <summary>
-/// Guides/Scale out — the page's single code block: the billing endpoint
+/// Guides/Scale out - the page's single code block: the billing endpoint
 /// registration that deploys byte-identical in every instance (same
 /// stream, same consumer class, same group). That is the whole page-point:
 /// scale-out changes topology, not API, so there is nothing else to
-/// register — the SAC warning knob (SingleActiveConsumer) is deliberately
+/// register - the SAC warning knob (SingleActiveConsumer) is deliberately
 /// NOT exercised here, because the page's doctrine is to leave it at its
 /// default (true), which this registration does implicitly.
 /// </summary>
@@ -250,7 +250,7 @@ private static void VerifyScaleOut() => RegisterAndValidate(services =>
 
         cfg.Publish<ScaleOutSample.OrderPlaced>("orders");
 
-        // From "Nothing in your code changes" — identical in every
+        // From "Nothing in your code changes" - identical in every
         // instance; the group "billing" is the consumer's identity.
         cfg.ReceiveEndpoint("orders", e =>
         {
@@ -259,7 +259,7 @@ private static void VerifyScaleOut() => RegisterAndValidate(services =>
     }));
 
     /// <summary>
-    /// Guides/Partition a stream — the page's two registration blocks: the
+    /// Guides/Partition a stream - the page's two registration blocks: the
     /// PublishSuper route declaring s.Partitions(3) on "orders-super", and the
     /// billing endpoint attached to the SAME super stream (e.Partitions(3)
     /// agrees with the publish spec, exercising the same-value agreement).
@@ -289,7 +289,7 @@ private static void VerifyScaleOut() => RegisterAndValidate(services =>
         }));
 
     /// <summary>
-    /// Guides/Use multiple buses — the page's two-bus registration block:
+    /// Guides/Use multiple buses - the page's two-bus registration block:
     /// two AddStreamBus&lt;TBus&gt; calls on different vhosts (/orders,
     /// /billing), each with its own publish route and receive endpoint.
     /// The marker classes live in <see cref="UseMultipleBusesSample"/>
@@ -298,7 +298,7 @@ private static void VerifyScaleOut() => RegisterAndValidate(services =>
     /// because they need a built host. Registration-time validation
     /// covers the once-per-marker rule, the per-bus route tables, and
     /// the endpoint/group checks; no vhost sharing occurs here (the
-    /// page's shared-vhost and failure-mode sections have no snippet —
+    /// page's shared-vhost and failure-mode sections have no snippet -
     /// those throw, and the harness only asserts the passing shapes).
     /// </summary>
     private static void VerifyUseMultipleBuses() => RegisterAndValidate(services =>
@@ -321,7 +321,7 @@ private static void VerifyScaleOut() => RegisterAndValidate(services =>
                 e.Consumer<UseMultipleBusesSample.InvoicesConsumer>("billing"));
 
             // From "Consumers and health, per bus": the same SharedConsumer
-            // class on a mirrored "orders" stream on billing's vhost — the
+            // class on a mirrored "orders" stream on billing's vhost - the
             // one-message-type rule means "shared" shares the type, with
             // distinct groups keeping the cursors separate.
             cfg.ReceiveEndpoint("orders", e =>
@@ -330,7 +330,7 @@ private static void VerifyScaleOut() => RegisterAndValidate(services =>
     });
 
     /// <summary>
-    /// Guides/Add cross-cutting logic — the page's registration blocks: the
+    /// Guides/Add cross-cutting logic - the page's registration blocks: the
     /// publish filter END TO END with its singleton DI wiring (TenantFilter +
     /// TenantScope, the AddSingleton pairing the concept page elides), the
     /// bus-wide consume enrichment filter, and the two-type-argument typed
@@ -368,13 +368,13 @@ private static void VerifyScaleOut() => RegisterAndValidate(services =>
     });
 
     /// <summary>
-    /// Guides/Replay a stream — the page's registration-level snippets: the
+    /// Guides/Replay a stream - the page's registration-level snippets: the
     /// typed temporary replay endpoint (own group "billing-replay-2026-11",
     /// StartOffset.AlwaysFirst, bounded retry, dead-letter destination) that
     /// powers both "Replay into a new group" (typed variant) and "Replay with
     /// the failure pipeline". The raw ConsumeAsync replay loop, the
     /// Get/SetConsumerOffsetAsync offset surgery, and the ad-hoc
-    /// bus.Topology.Ensure*Async declaration are runtime broker operations —
+    /// bus.Topology.Ensure*Async declaration are runtime broker operations -
     /// they live in <see cref="ReplayAStreamSample"/> compile-only; the page
     /// snippets are fragment-grade, and invoking ConsumeAsync here would
     /// throw without a broker, so only AddStreamBus-side registration is
@@ -401,7 +401,7 @@ private static void VerifyScaleOut() => RegisterAndValidate(services =>
         }));
 
     /// <summary>
-    /// Configuration/Host &amp; connections — the page's complete snippets:
+    /// Configuration/Host &amp; connections - the page's complete snippets:
     /// the connection-options Host block (every knob on
     /// <c>IHostConfigurator</c> exercised with non-default values plus a
     /// JSON <c>Serializer</c> adjustment) and, on a second marker bus, the
@@ -443,7 +443,7 @@ private static void VerifyScaleOut() => RegisterAndValidate(services =>
         });
 
         // From "Startup and shutdown budgets": the options pattern block;
-        // registration only — validation runs at host start/stop.
+        // registration only - validation runs at host start/stop.
         services.AddOptions<StreamBusHostOptions>().Configure(o =>
         {
             o.WaitUntilStarted = true;
@@ -453,7 +453,7 @@ private static void VerifyScaleOut() => RegisterAndValidate(services =>
         });
     });
     /// <summary>
-    /// Configuration/Endpoint options — this page is tables, so the harness
+    /// Configuration/Endpoint options - this page is tables, so the harness
     /// exercises one registration that tours the exotic endpoint knobs
     /// with non-default values: a super endpoint with a matching routed
     /// publish (StartOffset, offset-store cadence, attach readiness,
@@ -494,7 +494,7 @@ private static void VerifyScaleOut() => RegisterAndValidate(services =>
                 e.Readiness(ReadinessPolicy.UpTo(TimeSpan.FromSeconds(10)));
             });
 
-            // From "Endpoint options": the exhaustion-pointer knobs — a
+            // From "Endpoint options": the exhaustion-pointer knobs - a
             // stream destination with a spec knob plus the publish timeout.
             cfg.ReceiveEndpoint("payments", e =>
             {
@@ -507,14 +507,14 @@ private static void VerifyScaleOut() => RegisterAndValidate(services =>
     });
 
     /// <summary>
-    /// Configuration/Transport security — the page's two registration
+    /// Configuration/Transport security - the page's two registration
     /// snippets in one bus: the bare <c>UseTls()</c> (its port-switching
     /// behavior is configuration, not a distinct shape) and the full
     /// options block (<c>ServerName</c>, <c>ClientCertificate</c>,
     /// <c>AcceptableCertificateErrors</c>, <c>ProtocolVersion</c>), plus an
     /// explicit <c>StreamPort</c> proving the explicit-ports-always-win
     /// rule. The client certificate file is checked at connect time, so
-    /// the path is never validated here — the harness never connects.
+    /// the path is never validated here - the harness never connects.
     /// </summary>
     private static void VerifyTransportSecurity() => RegisterAndValidate(services =>
         services.AddStreamBus((_, cfg) =>
@@ -537,9 +537,9 @@ private static void VerifyScaleOut() => RegisterAndValidate(services =>
         }));
 
     /// <summary>
-    /// Configuration/Retry &amp; dead letters — the page's two registration
+    /// Configuration/Retry &amp; dead letters - the page's two registration
     /// shapes in one bus: the raw <c>RetryPolicy</c> record at bus level
-    /// (bounded — the raw-record snippet), and the endpoint carrying the
+    /// (bounded - the raw-record snippet), and the endpoint carrying the
     /// dead-letter-queue snippet shape (<c>Immediate</c> schedule, one
     /// <c>DeadLetterToQueue</c> destination with quorum type and a non-default
     /// <c>ConfirmTimeout</c>). Schedule-method and exhaustion-matrix rows are
@@ -594,7 +594,7 @@ internal static class RetryAndDeadLettersSample
 /// <summary>
 /// Types and compile-only call shapes from Guides/Partition a stream. The
 /// routed publish (required routing key) and the one-partition raw read
-/// reproduce the page's snippets verbatim in form; neither is invoked —
+/// reproduce the page's snippets verbatim in form; neither is invoked -
 /// both need a live broker.
 /// </summary>
 internal static class PartitionAStreamSample
@@ -620,7 +620,7 @@ internal static class PartitionAStreamSample
     internal static void RoutedPublish()
         => bus.PublishSuperAsync(new OrderPlaced(OrderId: "o-1"), "o-1", ct);
 
-    // From "Reading one partition": the ONE ops snippet on the page —
+    // From "Reading one partition": the ONE ops snippet on the page -
     // physical partition name, raw ConsumeAsync, its own throwaway group.
     internal static async Task ReadOnePartition(CancellationToken cancellationToken)
     {
@@ -674,7 +674,7 @@ internal static class UseMultipleBusesSample
 
     public sealed record InvoiceIssued(string InvoiceId);
 
-    // One consumer class serving both buses — compiled, never constructed.
+    // One consumer class serving both buses - compiled, never constructed.
     // A consumer class handles exactly one message type, so "shared" means
     // the same message type on both buses (the page's mirrored-orders case).
     public sealed class SharedConsumer : IConsumer<OrderPlaced>
@@ -687,7 +687,7 @@ internal static class UseMultipleBusesSample
         public Task Consume(ConsumeContext<InvoiceIssued> context) => Task.CompletedTask;
     }
 
-    // From "Injecting a bus": the checkout worker on the orders bus —
+    // From "Injecting a bus": the checkout worker on the orders bus -
     // compile-only; running it needs a live host.
     public sealed class CheckoutWorker(IStreamBus<OrdersBus> orders) : BackgroundService
     {
@@ -748,7 +748,7 @@ internal static class GetStartedSample
 /// Types and compile-only call shapes from Guides/Publish an event. The
 /// methods reproduce the page's publish-call snippets verbatim in form so
 /// their syntax and option/property names compile against src/StreamBus, but
-/// nothing is invoked — publishing needs a live broker.
+/// nothing is invoked - publishing needs a live broker.
 /// </summary>
 internal static class PublishAnEventSample
 {
@@ -830,7 +830,7 @@ internal static class ConsumeEventsSample
         var firstTime = _seen.Add(context.MessageId ?? Guid.Empty);
         if (!firstTime)
         {
-            return Task.CompletedTask; // duplicate delivery — skip
+            return Task.CompletedTask; // duplicate delivery, skip it
         }
         return Task.CompletedTask;
     }
@@ -1016,7 +1016,7 @@ internal static class AddCrossCuttingLogicSample
 /// Types and compile-only call shapes from Guides/Replay a stream. The
 /// fresh-group replay loop, the Get/SetConsumerOffsetAsync pair, and the
 /// ad-hoc EnsureStreamAsync declaration reproduce the page's snippets
-/// verbatim in form; none is invoked — all three need a live broker, and the
+/// verbatim in form; none is invoked - all three need a live broker, and the
 /// harness only asserts registration-time validation.
 /// </summary>
 internal static class ReplayAStreamSample

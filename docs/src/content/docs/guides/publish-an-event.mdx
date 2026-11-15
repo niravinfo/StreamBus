@@ -1,20 +1,20 @@
 ---
 title: Publish an event
-description: Get a fact onto a stream — declare the route, publish, stamp tenant and correlation context, bound your readiness and confirm budgets, and reach non-.NET participants with raw and explicit-target publishes.
+description: Get a fact onto a stream - declare the route, publish, stamp tenant and correlation context, bound your readiness and confirm budgets, and reach non-.NET participants with raw and explicit-target publishes.
 ---
 
-Your checkout service just recorded an `OrderPlaced`. Other teams — billing,
-shipping, analytics — will consume it, but none of them exist yet and none of
+Your checkout service just recorded an `OrderPlaced`. Other teams (billing,
+shipping, analytics) will consume it, but none of them exist yet and none of
 them will ever be named by the publisher. This page is the how-to for that
 moment: declare where the fact lives, put it on the stream, add the context
 the readers will need, and keep the call within your latency and reliability
-budgets. What publishing *means* on a stream — one verb, routes as a
-registration decision, broker-confirmed appends — is covered once in
+budgets. What publishing *means* on a stream (one verb, routes as a
+registration decision, broker-confirmed appends) is covered once in
 [Producers](/concepts/producers/); here we just do it.
 
 :::note[Super streams]
 This page covers plain streams. If `OrderPlaced` needs per-entity ordering
-across partitions, that's a super stream — see
+across partitions, that's a super stream; see
 [Partition a stream](/guides/partition-a-stream/).
 :::
 
@@ -32,15 +32,15 @@ builder.Services.AddStreamBus((context, cfg) =>
 });
 ```
 
-Then publish it from anywhere that has the bus injected — a controller, a
-worker, a handler:
+Then publish it from anywhere that has the bus injected, be it a controller, a
+worker, or a handler:
 
 ```csharp
 await bus.PublishAsync(new OrderPlaced(OrderId: "o-1"), ct);
 ```
 
 That's the whole basic pair. The returned task completes when the broker
-confirms the append — awaiting it is the point where the fact is durably in
+confirms the append; awaiting it is the point where the fact is durably in
 the log, not just handed to a socket. The `orders` stream is declared at
 startup if it doesn't exist; your team's contract is now the registration
 block plus the message shape, nothing else.
@@ -69,20 +69,20 @@ await bus.PublishAsync(new OrderPlaced(OrderId: "o-1"), new PublishOptions
 
 What you get to control, and what the framework owns:
 
-- `MessageId` — always populated: you can supply it, otherwise a GUID is
+- `MessageId` is always populated. You can supply it; otherwise a GUID is
   generated. It's the anchor consumers use to deduplicate under
   at-least-once.
-- `CorrelationId` — never invented. If you don't have one, it stays unset.
-- `SentTime` — normalized to UTC; defaults to now when you omit it.
-- `Headers` — free-form application properties; the one place you can
+- `CorrelationId` is never invented. If you don't have one, it stays unset.
+- `SentTime` is normalized to UTC and defaults to now when you omit it.
+- `Headers` are free-form application properties, the one place you can
   invent keys.
 
 Headers are written as AMQP application properties, so their values must be
-`string`, `bool`, `int`, `long`, or `null` — other types throw at publish
+`string`, `bool`, `int`, `long`, or `null`; other types throw at publish
 time, before anything reaches the broker. Keys colliding with the reserved
 `streambus.*` framework keys are rejected. And if a publish filter writes
-the same header, the filter wins over the value you supplied here —
-filters are the cross-cutting tool (see
+the same header, the filter wins over the value you supplied here.
+Filters are the cross-cutting tool (see
 [Middleware](/concepts/middleware/)), so a per-message value is the wrong
 place to fight one.
 
@@ -101,15 +101,15 @@ await bus.PublishAsync(new OrderPlaced(OrderId: "o-1"), new PublishOptions
 }, ct);
 ```
 
-- `Readiness` bounds only the wait for a ready connection — the same
+- `Readiness` bounds only the wait for a ready connection, using the same
   policy family used everywhere else in StreamBus.
 - `ConfirmTimeout` bounds the broker-confirmation wait; `null` (the
   default) waits indefinitely, with your cancellation token as the only
   bound.
 
-The caution worth internalizing: a readiness miss means nothing was sent —
+The caution worth internalizing: a readiness miss means nothing was sent, so
 retrying is free. A `ConfirmTimeout` miss throws
-`StreamBusTimeoutException` with the **outcome unknown** — the broker may
+`StreamBusTimeoutException` with the **outcome unknown**: the broker may
 already have appended the message, and retrying publishes the same fact
 twice. Publishing is at-least-once; consumers deduplicate with `MessageId`.
 So set `ConfirmTimeout` for latency discipline, not as a retry trigger: only
@@ -119,7 +119,7 @@ domain.
 One more pairing to internalize: with the default non-blocking start, your
 first publishes race the background connect, and the default fail-fast
 readiness means a publish before the bus is ready throws
-`StreamBusNotReadyException` — nothing was sent. The remedies are the
+`StreamBusNotReadyException`, and nothing was sent. The remedies are the
 bounded policy above (`ReadinessPolicy.UpTo(...)` per call) or removing the
 race: `WaitUntilStarted = true` to block host startup, or an explicit
 `WaitUntilReadyAsync` before you publish
@@ -127,28 +127,28 @@ race: `WaitUntilStarted = true` to block host startup, or an explicit
 
 ## When the consumer isn't .NET
 
-A stream is on the broker, not in your process — readers can be anything
+A stream is on the broker, not in your process, so readers can be anything
 that speaks the stream protocol. Two escape hatches serve the cases where
 your side of the wire isn't the only side.
 
 **Bytes you serialized yourself.** Records shared with non-.NET producers,
 pre-encoded payloads, or messages republished from a dead-letter drain go
-out untouched — no serializer, no publish pipeline:
+out untouched: no serializer, no publish pipeline:
 
 ```csharp
 await bus.PublishRawAsync("orders", preSerializedBytes, new PublishOptions(), ct);
 ```
 
 **One type, several target streams.** Routing is a registration decision,
-but occasionally a fact legitimately belongs on a second, existing stream —
-an audit copy, an operator-created feed. The explicit-target overload
+but occasionally a fact legitimately belongs on a second, existing stream,
+say an audit copy or an operator-created feed. The explicit-target overload
 publishes without consulting the route table:
 
 ```csharp
 await bus.PublishAsync("orders-audit", new OrderPlaced(OrderId: "o-1"), ct);
 ```
 
-The named stream must already exist — StreamBus never auto-creates it for
+The named stream must already exist; StreamBus never auto-creates it for
 you. An undeclared target surfaces `StreamBusStreamNotFoundException`
 immediately (declare it in the topology or via
 `bus.Topology.EnsureStreamAsync` first), because guessing the difference
@@ -161,25 +161,25 @@ library doesn't do. If the target stream is a
 
 ### What happens to messages published before any consumer exists?
 
-Good news — this is where the log model pays off. On a queue, publishing
+Good news: this is where the log model pays off. On a queue, publishing
 before the queue exists is a lost message. On a stream, the append is
 permanent and retention (not consumers) decides how far back reading goes:
-publish today, and a consumer that appears next week — in a fresh group —
+publish today, and a consumer that appears next week (in a fresh group)
 reads from the first offset and gets everything, without the publisher
 having coordinated with anyone. Waiting is harmless; the ordering constraint
 "consumer created before producer sends" simply doesn't exist here.
 
 ### When do I need `ConfirmTimeout`?
 
-When the publishing call sits on a path with a latency budget — a request
-handler, a UI action — and "wait however long the broker takes" is not an
+When the publishing call sits on a path with a latency budget (a request
+handler, a UI action) and "wait however long the broker takes" is not an
 acceptable answer. Leave it unset for background workers where
 uncooperative waits are merely inefficient. Whichever you choose, remember
 the timeout's outcome is *unknown*, not *failed*.
 
 ### Why isn't there a publish-to-many-streams operator?
 
-Because routing is a registration decision, not a call-site argument —
+Because routing is a registration decision, not a call-site argument.
 `Publish` fan-out would just be a hidden route table, invisible in the
 registration block that is your declaration of truth. Deliberate
 multi-stream publishes exist (the explicit-target overload above), named
@@ -187,6 +187,6 @@ at the call site where a reader can see them; accidental ones don't.
 
 ## Next
 
-The other half of the story is reading events back — registering an
+The other half of the story is reading events back: registering an
 endpoint, naming a group, and receiving the facts you just appended:
 [Consume events](/guides/consume-events/).

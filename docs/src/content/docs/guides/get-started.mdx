@@ -1,6 +1,6 @@
 ---
 title: Get started
-description: A complete runnable app — install StreamBus, enable the stream plugins on your broker, and publish and consume your first typed message.
+description: A complete runnable app - install StreamBus, enable the stream plugins on your broker, and publish and consume your first typed message.
 ---
 
 import { Tabs, TabItem } from '@astrojs/starlight/components';
@@ -18,9 +18,9 @@ import { Tabs, TabItem } from '@astrojs/starlight/components';
 RabbitMQ Streams is served by a plugin; a stock broker does not listen
 on the stream port until it is enabled. Enable both plugins:
 
-- **`rabbitmq_stream`** — the stream protocol itself; listens on port
+- **`rabbitmq_stream`** is the stream protocol itself; it listens on port
   `5552` by default.
-- **`rabbitmq_stream_management`** — the `api/stream/*` endpoints in
+- The **`rabbitmq_stream_management`** plugin adds the `api/stream/*` endpoints in
   the management UI, for inspecting and killing stream connections.
 
 <Tabs>
@@ -53,13 +53,13 @@ connects to whatever the broker advertises.
 
 StreamBus depends on the extension packages you already use
 (`Microsoft.Extensions.Hosting`, `Microsoft.Extensions.Diagnostics.HealthChecks`)
-and the official `RabbitMQ.Stream.Client` for the wire protocol — you
-add one package.
+and the official `RabbitMQ.Stream.Client` for the wire protocol, so
+you add one package.
 
 ## Build the app
 
 This is a complete, runnable console app: a bus registration, a
-publisher worker, and a consumer — in about 40 lines. If the log
+publisher worker, and a consumer, all in about 40 lines. If the log
 vs queue model is new to you, read [Streams](/concepts/streams/)
 first; this page stays on the code side of it.
 
@@ -135,28 +135,28 @@ info: OrderConsumer[0] Order 4f2c... at offset 1
 Stop it with `Ctrl+C`, run it again, and the offsets continue where
 the `billing` group left off: the broker stores the group's cursor.
 That resume is [the consumer group](/concepts/consumers/) doing its
-job — the one idea worth understanding before you scale past a
+job, and it is the one idea worth understanding before you scale past a
 single instance.
 
 ## How the pieces line up
 
 Read the registration the way the library does:
 
-- `cfg.Host("localhost", "/", ...)` — connect to this broker and
-  virtual host. Exactly one host per bus.
-- `cfg.Publish<OrderPlaced>("orders")` — "messages of type
-  `OrderPlaced` live in the stream `orders`", and declare that stream
+- `cfg.Host("localhost", "/", ...)` connects to this broker and
+  virtual host, exactly one host per bus.
+- `cfg.Publish<OrderPlaced>("orders")` says "messages of type
+  `OrderPlaced` live in the stream `orders`", and declares that stream
   at startup if it's missing. That registration is what makes
-  publishing possible without naming the stream again — the route is
+  publishing possible without naming the stream again: the route is
   a registration decision, not something the message carries.
-- `cfg.ReceiveEndpoint("orders", e => ...)` — an endpoint on the same
-  stream: a consumer class, a consumer group, and its failure
+- `cfg.ReceiveEndpoint("orders", e => ...)`: an endpoint on the same
+  stream, holding a consumer class, a consumer group, and its failure
   behavior. The group (`"billing"`) is the offset cursor identity;
-  naming it is required — StreamBus never guesses one for you.
-- `e.UseRetry(r => r.Immediate(3))` — if `Consume` throws, retry
+  naming it is required, because StreamBus never guesses one for you.
+- If `Consume` throws, `e.UseRetry(r => r.Immediate(3))` retries
   immediately up to three times. What happens after the retries run
   out is covered in [Exceptions](/concepts/exceptions/).
-- The `AddOptions<StreamBusHostOptions>` block — opt into a blocking
+- The `AddOptions<StreamBusHostOptions>` block opts into a blocking
   start: the host waits (up to 30 seconds) until the connection and
   consumer are attached before `RunAsync` finishes starting. The
   default is non-blocking.
@@ -174,12 +174,12 @@ any other service.
    where it last left off, or reads the stream from the first offset
    on a fresh group. Each distinct group name is an independent
    cursor.
-4. With `WaitUntilStarted = true`, the host waits for all of that —
+4. With `WaitUntilStarted = true`, the host waits for all of that,
    bounded by `StartTimeout`.
 
 ## FAQ
 
-### The client cannot connect — nothing listens on port 5552. What first?
+### The client cannot connect: nothing listens on port 5552. What first?
 
 Enable the plugins (above) and check the broker log: enablement is
 asynchronous, so the stream listener accepts connections a few seconds
@@ -194,17 +194,17 @@ machine (see the prerequisites table).
 
 ### Is the `WaitUntilStarted` block required?
 
-No. It opts you into a blocking start — `RunAsync` waits until the
+No. It opts you into a blocking start: `RunAsync` waits until the
 connection, stream declaration, and consumer attach finish (bounded
 by `StartTimeout`). The default is a non-blocking start; this page
 uses the blocking form only so the console app's first publish is
 guaranteed a ready bus.
 
-### I stopped and restarted the app — why did consuming resume where it left off?
+### I stopped and restarted the app: why did consuming resume where it left off?
 
 The `"billing"` group is a broker-side cursor: the broker stores the
 group's offset, and restart resumes after it. Each distinct group
-name is an independent cursor — see [Consumers](/concepts/consumers/).
+name is an independent cursor; see [Consumers](/concepts/consumers/).
 
 ## Where to go next
 

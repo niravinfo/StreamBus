@@ -1,16 +1,16 @@
 ---
 title: Consume events
-description: Subscribe your service to a stream — register a receive endpoint, name its group, read everything the delivery carries, and let a second team consume the same events without touching your code.
+description: Subscribe your service to a stream - register a receive endpoint, name its group, read everything the delivery carries, and let a second team consume the same events without touching your code.
 ---
 
 Your billing service needs to react to every order: the checkout team is
 already appending `OrderPlaced` facts to the `orders` stream, and nobody
 there is going to call your API. This page is the how-to for the reading
 side: register an endpoint with a group name, write the consumer, work
-with what the delivery carries — and later, when a second team wants the
+with what the delivery carries. Later, when a second team wants the
 same events, add them without a single change on your side. What a
-consumer *is* — groups as cursors, the lifecycle that replaces the
-per-message ack — is covered once in [Consumers](/concepts/consumers/);
+consumer *is* (groups as cursors, the lifecycle that replaces the
+per-message ack) is covered once in [Consumers](/concepts/consumers/);
 here we just do it.
 
 ## Register an endpoint and its group
@@ -34,7 +34,7 @@ builder.Services.AddStreamBus((context, cfg) =>
 ```
 
 The consumer is one class implementing `IConsumer<T>` for exactly one
-message type — the same `OrderPlaced` contract the publisher registered,
+message type, the same `OrderPlaced` contract the publisher registered,
 shape and namespace agreed across teams:
 
 ```csharp
@@ -49,8 +49,8 @@ public sealed class OrderConsumer(ILogger<OrderConsumer> log) : IConsumer<OrderP
 }
 ```
 
-That's the whole subscription. It runs from startup — no consumer class
-to register separately, no "start listening" call — because
+That's the whole subscription. It runs from startup, with no consumer class
+to register separately and no "start listening" call, because
 `AddStreamBus` registers a hosted service that attaches the endpoint when
 the host starts (see [Get started](/guides/get-started/) for the full
 application).
@@ -58,16 +58,16 @@ application).
 **Name the group after your service, not after the stream.** The group
 (`"billing"`) is the cursor identity: the broker stores one offset per
 group, and everything about resume, failover, and duplicates hangs off
-that name. StreamBus requires it and never derives one — so the only
+that name. StreamBus requires it and never derives one, so the only
 question is what *you* name it. The doctrine: `"billing"`, `"audit"`,
-`"shipping-analytics"` — each group is one service's reading position,
+`"shipping-analytics"`. Each group is one service's reading position,
 and it stays correct for the life of that service. The anti-pattern is
 naming it after the data (`"orders-readers"`, `"orders-group"`): the name
 then looks shareable, and one day a second service copies your
 registration, shares your cursor, and both services silently skip
 messages the other already consumed. If the name answers "who reads?",
 nobody borrows it by accident. (Two instances of the *same* service
-sharing one group is a different, legitimate case —
+sharing one group is a different, legitimate case;
 [Scale out](/guides/scale-out/) owns it.)
 
 ## The delivery, close-up
@@ -75,9 +75,9 @@ sharing one group is a different, legitimate case —
 The `ConsumeContext<OrderPlaced>` your `Consume` method receives is the
 entire delivery: the typed message, plus everything about where it came
 from and what was attached along the way. You will not need most of it
-most of the time — these are the parts that earn their keep.
+most of the time; these are the parts that earn their keep.
 
-**Where the message came from.** Every delivery carries its coordinates —
+**Where the message came from.** Every delivery carries its coordinates:
 which log, which slice of it, and how far in:
 
 ```csharp
@@ -85,7 +85,7 @@ log.LogInformation("Stream {Stream} partition {Partition} offset {Offset}",
     context.Stream, context.Partition, context.Offset);
 ```
 
-The offset is the cursor position this delivery occupies — useful for
+The offset is the cursor position this delivery occupies, useful for
 logging, and the number you will reach for when a replay ever needs to
 target "back to there" ([Replay a stream](/guides/replay-a-stream/)).
 `RoutingKey` is `null` on a plain stream; it is set only when the
@@ -94,7 +94,7 @@ publisher routed the message into a super stream partition
 
 **Who sent it, and when.** The identity properties come straight from
 the AMQP envelope. `MessageId` is always stamped by the publisher (a
-GUID when not supplied) — it's the anchor for deduplicating under
+GUID when not supplied); it's the anchor for deduplicating under
 [at-least-once](/concepts/streams/#at-least-once). `CorrelationId` is
 never invented; `SentTime` is UTC, normalized by the publisher:
 
@@ -102,12 +102,12 @@ never invented; `SentTime` is UTC, normalized by the publisher:
 var firstTime = _seen.Add(context.MessageId ?? Guid.Empty);
 if (!firstTime)
 {
-    return Task.CompletedTask; // duplicate delivery — skip
+    return Task.CompletedTask; // duplicate delivery, skip it
 }
 ```
 
 **The context publishers attach.** Headers arrive exactly as they were
-published — your application properties plus any a publish filter
+published: your application properties plus any a publish filter
 stamped ([Publish an event](/guides/publish-an-event/) covers the
 writing side). Read them with the typed getters; `GetJson<T>` uses the
 bus serializer when a header carries a small object as JSON:
@@ -127,12 +127,12 @@ public sealed class TenantAwareConsumer : IConsumer<OrderPlaced>
 ```
 
 `GetString`, `GetInt`, `GetLong`, and `GetBool` return `null` when the
-key is absent — a missing header is a normal condition to handle, not an
+key is absent. A missing header is a normal condition to handle, not an
 error.
 
 **Services scoped to this delivery.** Each delivery runs in a fresh
 dependency-injection scope, and `context.Services` is it. Prefer
-constructor injection on the consumer class — that is the same scope —
+constructor injection on the consumer class (that is the same scope);
 but for a mid-method resolve, or inside a class that can't take
 constructor dependencies, the scope is there:
 
@@ -141,17 +141,17 @@ var invoicer = context.Services.GetRequiredService<IInvoicer>();
 ```
 
 A scoped service, like a `DbContext`, is created for this delivery and
-disposed with it — a natural unit of work per message.
+disposed with it: a natural unit of work per message.
 
 **Cancellation.** `context.CancellationToken` covers this delivery: it
 fires when the endpoint is stopping or the delivery is being abandoned.
 Pass it into every async call you make inside `Consume`, the same way
-you would in any hosted code — a handler that ignores cancellation
+you would in any hosted code. A handler that ignores cancellation
 delays shutdown.
 
 ## A second team wants the same events
 
-Six months in, the audit team needs every order too — their own storage,
+Six months in, the audit team needs every order too: their own storage,
 their own pace, no dependency on billing's progress. On a queue this
 would be a topology negotiation. On a stream it is one endpoint, because
 **different groups are independent readers**: each has its own cursor
@@ -165,33 +165,33 @@ cfg.ReceiveEndpoint("orders", e =>
 });
 ```
 
-Same `orders` stream, same `OrderPlaced` contract — but the group is
+Same `orders` stream, same `OrderPlaced` contract, but the group is
 `"audit"`, so the cursor is theirs. Nothing about billing changed:
 no code, no offset, no coordination. The audit service's group starts at
-the stream's first offset (a fresh group reads from the beginning — see
+the stream's first offset (a fresh group reads from the beginning; see
 the FAQ below), so they get the full history immediately, and from then
 on the two groups advance independently. If audit's service is down for
 an hour, *audit's* cursor waits; billing never notices. That is the
 "different groups = independent feeds" doctrine from
-[Consumers](/concepts/consumers/) doing real work — and the reason the
+[Consumers](/concepts/consumers/) doing real work, and the reason the
 group name doctrine above matters: `"audit"` is self-describing in a way
 `"orders-2"` never would be.
 
 ## Throwing means scheduling
 
-When `Consume` throws, the message is not lost and not skipped — the
+When `Consume` throws, the message is not lost and not skipped. The
 delivery is held and retried on the endpoint's retry schedule, and only
 when attempts run out does the failure get handed off (a dead letter, an
 error stream, an `OnExhausted` callback), letting the cursor move past
-it. There is no try/catch to write here: configuring that schedule — and
-choosing what happens when it gives up — is its own guide:
+it. There is no try/catch to write here: configuring that schedule, and
+choosing what happens when it gives up, is its own guide:
 [Handle failures](/guides/handle-failures/).
 
 ## FAQ
 
 ### Can two instances of my service share the group?
 
-Yes — that is exactly what the group is *for*, with one caveat that
+Yes, that is exactly what the group is *for*, with one caveat that
 depends on which kind of stream you are reading. Two instances of
 billing running with group `"billing"` are one logical consumer: on a
 plain stream they are failover (one active, one standing by, no extra
@@ -204,7 +204,7 @@ single-active-consumer, live in [Scale out](/guides/scale-out/).
 The tail is redelivered. Delivery is at-least-once: the group's offset
 is stored after your handler completes (by default after every message),
 so a crash or detach means everything since the last *stored* offset is
-delivered again on restart. Duplicates are the normal outcome — make
+delivered again on restart. Duplicates are the normal outcome, so make
 handlers idempotent and deduplicate with `MessageId`
 ([Streams](/concepts/streams/) teaches why). Storing less often trades
 fewer offset writes for a longer redelivered tail; the
@@ -226,6 +226,6 @@ table: [Endpoint options](/configuration/endpoint-options/).
 
 ## Next
 
-A consumer that throws is a consumer whose schedule you own — retries,
+A consumer that throws is a consumer whose schedule you own: retries,
 exhaustion, and where failed messages land:
 [Handle failures](/guides/handle-failures/).

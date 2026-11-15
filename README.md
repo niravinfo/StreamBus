@@ -10,9 +10,9 @@
 
 A modern .NET client for RabbitMQ Streams. Publish and consume typed messages, with retries and dead-lettering built in.
 
-- **Consumer groups built in** — each endpoint has a first-class group; on a super stream, partitions spread across instances.
-- **Retries and dead-lettering** — global or per-endpoint retry schedules; exhausted messages land in an error stream, a queue, or a default `{stream}_error` queue.
-- **Code-only configuration** — every option is a validated configurator call; no settings binder, no JSON discovery.
+- Every receive endpoint declares its consumer group, so a super stream's partitions spread across instances.
+- Retries and dead-lettering are configuration: global or per-endpoint retry schedules, exhausted messages go to an error stream, a queue, or a default `{stream}_error` queue.
+- Configuration is code only. Every option is a validated configurator call, with no settings binder and no JSON discovery.
 
 ## Install
 
@@ -65,8 +65,6 @@ public sealed class OrderConsumer(ILogger<OrderConsumer> log) : IConsumer<OrderP
 }
 ```
 
-Need a local broker? `docker run -d --name rabbitmq -p 5552:5552 -p 5672:5672 -p 15672:15672 rabbitmq:4.2-management`
-
 ## Documentation
 
 For more information, see the docs at **[niravinfo.github.io/StreamBus](https://niravinfo.github.io/StreamBus)**:
@@ -91,8 +89,8 @@ Runnable examples live in [`examples/`](examples/).
 
 ## Contributing
 
-Issues and pull requests are welcome. The integration tests need only
-Docker — they start their own RabbitMQ (4.2, via Testcontainers).
+Issues and pull requests are welcome. The integration tests run against
+RabbitMQ 4.x with the stream plugins enabled.
 
 ## License
 
