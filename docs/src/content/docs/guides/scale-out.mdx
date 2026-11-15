@@ -85,12 +85,15 @@ A partition's messages are delivered serially, so one partition can
 never go faster than one instance processing one message at a time.
 Measure how many messages per second a single billing instance
 sustains (with its real handler and real dependencies), measure (or
-budget) the stream's peak rate, and divide — with headroom for a
-deploy, a failover, or a slow Tuesday. If one instance handles 30
-orders/second and the peak is 400, four partitions means one instance
-can die at full load and the survivors still clear the queue: six
-partitions (or four with a bit of margin) is the honest answer, and it
-is better found by arithmetic than by vibes.
+budget) the stream's peak rate, and divide. If one instance handles 70
+orders/second and the peak is 400, then 400 / 70 ≈ 5.7, so **six
+partitions**: six × 70 = 420 messages/second of partition capacity,
+comfortably over the peak. The failover margin is not in the partition
+count — six is what the *peak* needs — but in how many instances you
+run: seven instances against six partitions means one can die at full
+load and each survivor still owns one serial partition at its full 70,
+so the system keeps its 420 and the queue stays clear. Division first,
+then margin, and both numbers survive a reader checking them.
 
 Two constraints keep the number honest. **More partitions is not more
 order** — per-entity order comes from the routing key, not the count;
