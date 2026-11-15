@@ -231,6 +231,30 @@ private static void VerifyHandleFailures() => RegisterAndValidate(services =>
             });
         });
     }));
+
+/// <summary>
+/// Guides/Scale out — the page's single code block: the billing endpoint
+/// registration that deploys byte-identical in every instance (same
+/// stream, same consumer class, same group). That is the whole page-point:
+/// scale-out changes topology, not API, so there is nothing else to
+/// register — the SAC warning knob (SingleActiveConsumer) is deliberately
+/// NOT exercised here, because the page's doctrine is to leave it at its
+/// default (true), which this registration does implicitly.
+/// </summary>
+private static void VerifyScaleOut() => RegisterAndValidate(services =>
+    services.AddStreamBus((_, cfg) =>
+    {
+        cfg.Host("localhost", "/", h => h.Credentials("guest", "guest"));
+
+        cfg.Publish<ScaleOutSample.OrderPlaced>("orders");
+
+        // From "Nothing in your code changes" — identical in every
+        // instance; the group "billing" is the consumer's identity.
+        cfg.ReceiveEndpoint("orders", e =>
+        {
+            e.Consumer<ScaleOutSample.OrderConsumer>("billing");
+        });
+    }));
 }
 
 /// <summary>
@@ -238,6 +262,21 @@ private static void VerifyHandleFailures() => RegisterAndValidate(services =>
 /// namespace so the snippet shape matches the page. Skips the logging lines
 /// (not part of registration) and never connects — the harness only builds.
 /// </summary>
+internal static class ScaleOutSample
+{
+    public sealed record OrderPlaced(string OrderId);
+
+    public sealed class OrderConsumer(ILogger<OrderConsumer> log) : IConsumer<OrderPlaced>
+    {
+        public Task Consume(ConsumeContext<OrderPlaced> context)
+        {
+            log.LogInformation("Billing order {OrderId} at offset {Offset}",
+                context.Message.OrderId, context.Offset);
+            return Task.CompletedTask;
+        }
+    }
+}
+
 internal static class GetStartedSample
 {
     public sealed record OrderPlaced(string OrderId);
