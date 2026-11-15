@@ -1,5 +1,7 @@
 using System.Reflection;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using StreamBus;
 
 namespace StreamBus.DocsSnippets;
@@ -64,6 +66,40 @@ internal static class Program
             cfg.Host("localhost", "/", h => h.Credentials("guest", "guest"))));
 
     /// <summary>
+    /// Guides/Get started — the page's registration block (Host + Publish +
+    /// ReceiveEndpoint + UseRetry) plus the blocking-start host options.
+    /// </summary>
+    /// <remarks>
+    /// The <c>OrderPlaced</c>, <c>OrderConsumer</c>, and <c>OrderPublisher</c>
+    /// classes from the page's full Program.cs are reproduced here in
+    /// <see cref="GetStartedSample"/>; registration-time validation covers
+    /// the consumer binding, group requirement, and retry policy.
+    /// </remarks>
+    private static void VerifyGetStarted() => RegisterAndValidate(services =>
+    {
+        services.AddStreamBus((_, cfg) =>
+        {
+            cfg.Host("localhost", "/", h => h.Credentials("guest", "guest"));
+
+            cfg.Publish<GetStartedSample.OrderPlaced>("orders");
+
+            cfg.ReceiveEndpoint("orders", e =>
+            {
+                e.Consumer<GetStartedSample.OrderConsumer>("billing");
+                e.UseRetry(r => r.Immediate(3));
+            });
+        });
+
+        services.AddOptions<StreamBusHostOptions>().Configure(o =>
+        {
+            o.WaitUntilStarted = true;
+            o.StartTimeout = TimeSpan.FromSeconds(30);
+        });
+
+        services.AddHostedService<GetStartedSample.OrderPublisher>();
+    });
+
+    /// <summary>
     /// Concepts/Middleware — the composed registration sample that teaches
     /// scoping and ordering: bus-wide publish/consume filters plus one
     /// endpoint-scoped consume filter. The filter classes and message types
@@ -87,6 +123,41 @@ internal static class Program
                 e.UseConsumeFilter<MiddlewareSample.EnrichmentFilter>();
             });
         }));
+}
+
+/// <summary>
+/// Types from the Guides/Get started page's Program.cs, isolated in their own
+/// namespace so the snippet shape matches the page. Skips the logging lines
+/// (not part of registration) and never connects — the harness only builds.
+/// </summary>
+internal static class GetStartedSample
+{
+    public sealed record OrderPlaced(string OrderId);
+
+    public sealed class OrderConsumer(ILogger<OrderConsumer> log) : IConsumer<OrderPlaced>
+    {
+        public Task Consume(ConsumeContext<OrderPlaced> context)
+        {
+            log.LogInformation("Order {OrderId} at offset {Offset}", context.Message.OrderId, context.Offset);
+            return Task.CompletedTask;
+        }
+    }
+
+    public sealed class OrderPublisher(IStreamBus bus, ILogger<OrderPublisher> log)
+        : BackgroundService
+    {
+        private readonly IStreamBus _bus = bus;
+        private readonly ILogger<OrderPublisher> _log = log;
+
+        protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+        {
+            while (!stoppingToken.IsCancellationRequested)
+            {
+                await _bus.PublishAsync(new OrderPlaced(OrderId: Guid.NewGuid().ToString("N")), stoppingToken);
+                await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken);
+            }
+        }
+    }
 }
 
 internal static class MiddlewareSample

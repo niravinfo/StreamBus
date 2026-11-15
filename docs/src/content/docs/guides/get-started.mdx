@@ -1,0 +1,188 @@
+---
+title: Get started
+description: A complete runnable app — install StreamBus, enable the stream plugins on your broker, and publish and consume your first typed message.
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+## Prerequisites
+
+| Requirement | Notes |
+|---|---|
+| .NET 10 SDK | StreamBus targets `net10.0`. |
+| RabbitMQ 4.x | With the stream plugin enabled (below). |
+| A non-`guest` user for remote brokers | RabbitMQ refuses `guest` from non-localhost connections. |
+
+## Enable the stream plugins
+
+RabbitMQ Streams is served by a plugin; a stock broker does not listen
+on the stream port until it is enabled. Enable both plugins:
+
+- **`rabbitmq_stream`** — the stream protocol itself; listens on port
+  `5552` by default.
+- **`rabbitmq_stream_management`** — the `api/stream/*` endpoints in
+  the management UI, for inspecting and killing stream connections.
+
+<Tabs>
+  <TabItem label="Linux">
+    ```bash
+    rabbitmq-plugins enable rabbitmq_stream rabbitmq_stream_management
+    ```
+  </TabItem>
+  <TabItem label="Windows">
+    ```powershell
+    rabbitmq-plugins.bat enable rabbitmq_stream rabbitmq_stream_management
+    ```
+  </TabItem>
+</Tabs>
+
+Plugin enablement is asynchronous: the stream listener accepts
+connections a few seconds after the command returns, and the broker
+log (`rabbit@host.log`) shows the plugins starting. If the client
+can't connect on `5552`, that log is the first place to look.
+
+The stream listener can be reconfigured in `rabbitmq.conf`
+(`stream.listeners.tcp.default`, advertised host/port); StreamBus
+connects to whatever the broker advertises.
+
+## Install the package
+
+```xml
+<PackageReference Include="StreamBus" Version="0.4.0-beta.1" />
+```
+
+StreamBus depends on the extension packages you already use
+(`Microsoft.Extensions.Hosting`, `Microsoft.Extensions.Diagnostics.HealthChecks`)
+and the official `RabbitMQ.Stream.Client` for the wire protocol — you
+add one package.
+
+## Build the app
+
+This is a complete, runnable console app: a bus registration, a
+publisher worker, and a consumer — in about 40 lines. If the log
+vs queue model is new to you, read [Streams](/concepts/streams/)
+first; this page stays on the code side of it.
+
+```csharp title="Program.cs"
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using StreamBus;
+
+var builder = Host.CreateApplicationBuilder(args);
+
+builder.Services.AddStreamBus((context, cfg) =>
+{
+    cfg.Host("localhost", "/", h => h.Credentials("guest", "guest"));
+
+    cfg.Publish<OrderPlaced>("orders");
+
+    cfg.ReceiveEndpoint("orders", e =>
+    {
+        e.Consumer<OrderConsumer>("billing");
+        e.UseRetry(r => r.Immediate(3));
+    });
+});
+
+builder.Services.AddOptions<StreamBusHostOptions>().Configure(o =>
+{
+    o.WaitUntilStarted = true;
+    o.StartTimeout = TimeSpan.FromSeconds(30);
+});
+
+builder.Services.AddHostedService<OrderPublisher>();
+
+await builder.Build().RunAsync();
+
+public sealed record OrderPlaced(string OrderId);
+
+public sealed class OrderConsumer(ILogger<OrderConsumer> log) : IConsumer<OrderPlaced>
+{
+    public Task Consume(ConsumeContext<OrderPlaced> context)
+    {
+        log.LogInformation("Order {OrderId} at offset {Offset}", context.Message.OrderId, context.Offset);
+        return Task.CompletedTask;
+    }
+}
+
+public sealed class OrderPublisher(IStreamBus bus, ILogger<OrderPublisher> log)
+    : BackgroundService
+{
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        // Blocking start is configured above, so the bus is already
+        // connected when the worker begins.
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            await bus.PublishAsync(new OrderPlaced(OrderId: Guid.NewGuid().ToString("N")), stoppingToken);
+            log.LogInformation("Published one order");
+            await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken);
+        }
+    }
+}
+```
+
+Run it with `dotnet run`. Every second a message travels the whole
+path, and the console shows both sides:
+
+```
+info: OrderPublisher[0] Published one order
+info: OrderConsumer[0] Order ea7b... at offset 0
+info: OrderPublisher[0] Published one order
+info: OrderConsumer[0] Order 4f2c... at offset 1
+```
+
+Stop it with `Ctrl+C`, run it again, and the offsets continue where
+the `billing` group left off: the broker stores the group's cursor.
+That resume is [the consumer group](/concepts/consumers/) doing its
+job — the one idea worth understanding before you scale past a
+single instance.
+
+## How the pieces line up
+
+Read the registration the way the library does:
+
+- `cfg.Host("localhost", "/", ...)` — connect to this broker and
+  virtual host. Exactly one host per bus.
+- `cfg.Publish<OrderPlaced>("orders")` — "messages of type
+  `OrderPlaced` live in the stream `orders`", and declare that stream
+  at startup if it's missing. That registration is what makes
+  publishing possible without naming the stream again — the route is
+  a registration decision, not something the message carries.
+- `cfg.ReceiveEndpoint("orders", e => ...)` — an endpoint on the same
+  stream: a consumer class, a consumer group, and its failure
+  behavior. The group (`"billing"`) is the offset cursor identity;
+  naming it is required — StreamBus never guesses one for you.
+- `e.UseRetry(r => r.Immediate(3))` — if `Consume` throws, retry
+  immediately up to three times. What happens after the retries run
+  out is covered in [Exceptions](/concepts/exceptions/).
+- The `AddOptions<StreamBusHostOptions>` block — opt into a blocking
+  start: the host waits (up to 30 seconds) until the connection and
+  consumer are attached before `RunAsync` finishes starting. The
+  default is non-blocking.
+
+There is no separate "start the bus" call: `AddStreamBus` registers a
+hosted service, so `RunAsync` connects, declares the `orders` stream,
+and starts the `billing` consumer. The publisher injects the bus like
+any other service.
+
+## What happens at startup
+
+1. The bus connects to the broker (supervised; reconnects on failure).
+2. The `orders` stream is declared if it doesn't exist.
+3. The `billing` consumer group gets a broker-side cursor: it resumes
+   where it last left off, or reads the stream from the first offset
+   on a fresh group. Each distinct group name is an independent
+   cursor.
+4. With `WaitUntilStarted = true`, the host waits for all of that —
+   bounded by `StartTimeout`.
+
+## Where to go next
+
+- Why this feels like writing to a log, and what that changes →
+  [Streams](/concepts/streams/)
+- What makes `OrderPlaced` a good message → [Messages](/concepts/messages/)
+- The rest of the outbound API (properties, headers, super streams,
+  raw bytes) → [Producers](/concepts/producers/)
+- Groups as cursors, and how to scale beyond one instance →
+  [Consumers](/concepts/consumers/)
