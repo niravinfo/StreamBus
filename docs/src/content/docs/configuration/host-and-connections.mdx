@@ -1,0 +1,140 @@
+---
+title: Host & connections
+description: Broker connection options, serializer selection, and the host start/stop budgets that govern every StreamBus bus.
+---
+
+This page is the reference for everything between your application and the
+broker process: the connection knobs inside `Host`, the serializer switch,
+the `StreamBusHostOptions` start/stop budgets, and the readiness and
+connection-state types that govern how the bus waits for and reports on the
+broker. How hosting works — why `AddStreamBus` registers a hosted service
+and what that buys you — is covered in
+[Concepts: Introduction](/concepts/introduction/); why the connection keeps
+supervising and resuming consumers after an outage is covered in
+[Concepts: Streams](/concepts/streams/).
+
+## Connection options
+
+`Host` is required exactly once per bus — a second call throws at
+registration. Its callback configures the connection; the defaults match a
+standard RabbitMQ 4.x install, so pass these only when yours differ:
+
+```csharp
+cfg.Host("localhost", "/", h =>
+{
+    h.Credentials("guest", "guest");
+    h.StreamPort(5552);   // RabbitMQ stream protocol port
+    h.AmqpPort(5672);     // used only for AMQP dead-letter queues
+    h.Heartbeat(TimeSpan.FromSeconds(60));
+    h.MonitorInterval(TimeSpan.FromSeconds(5));
+    h.ProducersPerConnection(1);
+    h.ConsumersPerConnection(1);
+});
+```
+
+| Option | Default | Meaning |
+|---|---|---|
+| `Credentials(user, password)` | none | Broker credentials; both must be non-null. `guest`/`guest` works only on a machine-local broker — remote deployments need a dedicated non-`guest` user. |
+| `StreamPort` | `5552` | Stream-protocol port. |
+| `AmqpPort` | `5672` | AMQP port, used only when an endpoint declares an AMQP dead-letter queue. No queue destination, no AMQP connection. |
+| `Heartbeat` | 60s | Requested heartbeat interval; must be positive. |
+| `MonitorInterval` | 5s | How often the connection supervisor checks the broker handle for closure; positive, at most 60s. |
+| `ProducersPerConnection` | `1` | Producers multiplexed per connection (1–255). |
+| `ConsumersPerConnection` | `1` | Consumers multiplexed per connection (1–255). |
+| `UseTls` | off | Enables TLS for both transports and switches the default ports to the conventional TLS ports (5551 stream, 5671 AMQP) unless you set ports explicitly. The full TLS option set is on [Transport security](/configuration/transport-security/). |
+
+## Serializer
+
+Messages are JSON by default (`System.Text.Json`, content type
+`application/json`). Adjust the JSON options per bus:
+
+```csharp
+cfg.Serializer(json => json.PropertyNamingPolicy = JsonNamingPolicy.CamelCase);
+```
+
+Or replace the serializer entirely with any `IStreamSerializer` — three
+members: `Serialize<T>`, `Deserialize<T>`, and a `ContentType` string that
+is stamped on every published message:
+
+```csharp
+cfg.Serializer(new MyCompactSerializer());
+```
+
+Behavior notes: one serializer per bus, used for typed publishes, consumer
+deserialization, and `Headers.GetJson<T>`. A body that fails to
+deserialize surfaces as `StreamBusDeserializationException`, which — like
+every consumer failure — enters the endpoint's retry schedule.
+
+## Startup and shutdown budgets
+
+StreamBus registers a hosted service; its start/stop behavior is
+configured through the standard options pattern. Startup is non-blocking
+by default: connections, declarations, and consumer attaches continue in
+the background while the application serves traffic, and the health check
+reports the truth meanwhile.
+
+```csharp
+builder.Services.AddOptions<StreamBusHostOptions>().Configure(o =>
+{
+    o.WaitUntilStarted = true;
+    o.StartTimeout = TimeSpan.FromSeconds(30);
+    o.StopTimeout = TimeSpan.FromSeconds(20);
+    o.ConsumerStopTimeout = TimeSpan.FromSeconds(5);
+});
+```
+
+All five options of `StreamBusHostOptions`:
+
+| Option | Default | Meaning |
+|---|---|---|
+| `WaitUntilStarted` | `false` | Block host startup until every bus connection is ready and topology is declared. |
+| `StartTimeout` | `null` | Budget for the blocking wait; `null` waits indefinitely (host shutdown always unblocks it, so there is no deadlock). A set budget throws `StreamBusTimeoutException` on expiry. |
+| `WaitUntilConsumersAttached` | `true` | When blocking, also wait until every typed consumer is attached. A consumer that cannot attach retries indefinitely; the wait ends on the timeout, not on the first consumer failure. |
+| `StopTimeout` | `null` | Overall shutdown budget; on expiry, remaining stop steps are abandoned with warnings. |
+| `ConsumerStopTimeout` | `null` | Per-consumer stop budget during shutdown; may be set on its own. |
+
+Validation: every timeout must be positive when set, and
+`ConsumerStopTimeout` must not exceed `StopTimeout` when both are set —
+violations throw `StreamBusConfigurationException` at host start/stop.
+
+## Readiness policies
+
+Readiness answers "how long does this call wait for the broker to be
+ready?" — per call site, independently of hosting. Every wire-touching
+operation takes a `ReadinessPolicy`:
+
+| Policy | Meaning |
+|---|---|
+| `ReadinessPolicy.Default` | Fail fast: do not wait. A not-ready connection throws `StreamBusNotReadyException`. This is the publish default. |
+| `ReadinessPolicy.UpTo(timeout)` | Bounded wait; on expiry, `StreamBusNotReadyException` (publish) or `BusReadiness.TimedOut` (explicit waits). |
+| `ReadinessPolicy.Forever` | Wait until ready or cancelled. |
+
+Where each applies: publishes take one via `PublishOptions.Readiness`
+(default `ReadinessPolicy.Default`), receive endpoints take one via
+`e.Readiness(...)` for their attach (default the same), and
+`bus.WaitUntilReadyAsync(policy, ct)` lets code gate itself explicitly.
+The policy bounds the readiness wait only — the broker-confirmation wait
+on a publish is the separate `ConfirmTimeout`.
+
+## Connection states
+
+Each bus owns a connection supervisor that keeps the broker connection and
+latches a state, visible on `IStreamBus.State` and on the
+[health check](/configuration/observability/):
+
+| `BusConnectionState` | Meaning |
+|---|---|
+| `Starting` | First connection attempt in flight. |
+| `Ready` | Connected; producers and consumers operate. |
+| `TransientFailure` | A transient failure occurred; reconnecting with backoff. Publishes surface `StreamBusPublishTransientException`; endpoints detach and re-attach. |
+| `Fatal` | Unrecoverable — protocol, TLS, or authentication failure. No automatic retry; operator action required. |
+
+After a reconnect, consumers resume from their consumer group's stored
+offset — plus the redelivered tail explained in
+[Concepts: Streams](/concepts/streams/).
+
+## Next
+
+Connection knobs affect the bus as a whole. The next page covers what you
+can tune per receive endpoint and per declared stream:
+[Endpoint options](/configuration/endpoint-options/).

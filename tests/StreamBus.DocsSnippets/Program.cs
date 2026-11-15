@@ -397,6 +397,59 @@ private static void VerifyScaleOut() => RegisterAndValidate(services =>
                 e.DeadLetterToStream("orders-errors", s => s.MaxAge(TimeSpan.FromDays(30)));
             });
         }));
+
+    /// <summary>
+    /// Configuration/Host &amp; connections — the page's complete snippets:
+    /// the connection-options Host block (every knob on
+    /// <c>IHostConfigurator</c> exercised with non-default values plus a
+    /// JSON <c>Serializer</c> adjustment) and, on a second marker bus, the
+    /// custom-serializer <c>Serializer(IStreamSerializer)</c> call (the
+    /// page's <c>MyCompactSerializer</c>, defined in
+    /// <see cref="HostAndConnectionsSample"/>). The <c>AddOptions&lt;StreamBusHostOptions&gt;</c>
+    /// block is registration-side only here: ValidateStart/ValidateStop run
+    /// at host start/stop, which the harness never triggers. The readiness
+    /// policy mentions are inline fragments (PublishOptions.Readiness,
+    /// e.Readiness, WaitUntilReadyAsync) covered compile-only on other
+    /// pages; the state table is prose.
+    /// </summary>
+    private static void VerifyHostAndConnections() => RegisterAndValidate(services =>
+    {
+        // From "Connection options" + "Serializer" (JSON adjustment): the
+        // default bus with every connection knob shown on the page.
+        services.AddStreamBus((_, cfg) =>
+        {
+            cfg.Host("localhost", "/", h =>
+            {
+                h.Credentials("guest", "guest");
+                h.StreamPort(5552);
+                h.AmqpPort(5672);
+                h.Heartbeat(TimeSpan.FromSeconds(60));
+                h.MonitorInterval(TimeSpan.FromSeconds(5));
+                h.ProducersPerConnection(1);
+                h.ConsumersPerConnection(1);
+            });
+
+            cfg.Serializer(json => json.PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase);
+        });
+
+        // From "Serializer" (full replacement): the page's
+        // cfg.Serializer(new MyCompactSerializer()) call on its own bus.
+        services.AddStreamBus<HostAndConnectionsSample.CompactBus>((_, cfg) =>
+        {
+            cfg.Host("localhost", "/compact", h => h.Credentials("guest", "guest"));
+            cfg.Serializer(new HostAndConnectionsSample.MyCompactSerializer());
+        });
+
+        // From "Startup and shutdown budgets": the options pattern block;
+        // registration only — validation runs at host start/stop.
+        services.AddOptions<StreamBusHostOptions>().Configure(o =>
+        {
+            o.WaitUntilStarted = true;
+            o.StartTimeout = TimeSpan.FromSeconds(30);
+            o.StopTimeout = TimeSpan.FromSeconds(20);
+            o.ConsumerStopTimeout = TimeSpan.FromSeconds(5);
+        });
+    });
 }
 
 /// <summary>
@@ -849,4 +902,30 @@ internal static class ReplayAStreamSample
             Name = "orders-replay-audit",
             MaxAge = TimeSpan.FromDays(30),
         }, cancellationToken);
+}
+
+/// <summary>
+/// Types from Configuration/Host &amp; connections. The custom serializer
+/// reproduces the page's <c>MyCompactSerializer</c> fragment as a real
+/// <c>IStreamSerializer</c> so the <c>Serializer(IStreamSerializer)</c>
+/// call registers (and, in principle, works); the marker type exists
+/// because the harness registers it on a second bus to keep the default
+/// bus's connection block in one AddStreamBus call, matching the page's
+/// one-bus presentation. Nothing here is invoked beyond registration.
+/// </summary>
+internal static class HostAndConnectionsSample
+{
+    // The second bus's marker; the page shows a single (default) bus.
+    public sealed class CompactBus;
+
+    public sealed class MyCompactSerializer : IStreamSerializer
+    {
+        public string ContentType => "application/vnd.acme+compact";
+
+        public byte[] Serialize<T>(T message)
+            => System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(message);
+
+        public T Deserialize<T>(ReadOnlyMemory<byte> body)
+            => System.Text.Json.JsonSerializer.Deserialize<T>(body.Span)!;
+    }
 }
