@@ -47,7 +47,7 @@ Three registration facts hold in both directions, and each is enforced loudly:
 
 - **Filters are singletons.** A filter is resolved once from the root provider and cached for the bus's (or endpoint's) lifetime, so it must be thread-safe. A scoped or transient registration is rejected when the bus is built or the endpoint attaches — it would silently become a captive dependency.
 - **Each message still gets its own DI scope.** Do not inject scoped services into a filter's constructor; resolve them per message from `context.Services`, the same per-delivery scope the handler runs in.
-- **The same filter registered twice for overlapping messages throws at registration.** A duplicate would run twice per pipeline, so it is a configuration error naming the filter — never a quiet double-execution.
+- **The same filter registered twice in one scope throws at registration.** A duplicate would run twice per pipeline, so it is a configuration error naming the filter — never a quiet double-execution. The check is per scope: bus-wide filters and one endpoint's filters are checked separately, so a filter registered bus-wide *and* on an endpoint is not an error — it runs twice for that endpoint's deliveries, so register each filter in the one scope that fits it.
 
 ## What is a filter?
 
