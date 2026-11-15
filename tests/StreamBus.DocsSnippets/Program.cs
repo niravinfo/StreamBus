@@ -503,6 +503,60 @@ private static void VerifyScaleOut() => RegisterAndValidate(services =>
             });
         });
     });
+
+    /// <summary>
+    /// Configuration/Retry &amp; dead letters — the page's two registration
+    /// shapes in one bus: the raw <c>RetryPolicy</c> record at bus level
+    /// (bounded — the raw-record snippet), and the endpoint carrying the
+    /// dead-letter-queue snippet shape (<c>Immediate</c> schedule, one
+    /// <c>DeadLetterToQueue</c> destination with quorum type and a non-default
+    /// <c>ConfirmTimeout</c>). Schedule-method and exhaustion-matrix rows are
+    /// tables with no unique registration shapes; the other schedule methods,
+    /// <c>DeadLetterToStream</c>, <c>ErrorPublishTimeout</c>, and
+    /// <c>OnExhausted</c> are exercised on other pages' registrations
+    /// (Handle failures, Endpoint options), and at most one destination per
+    /// endpoint is the rule the single queue call keeps visible.
+    /// </summary>
+    private static void VerifyRetryAndDeadLetters() => RegisterAndValidate(services =>
+    {
+        services.AddStreamBus((_, cfg) =>
+        {
+            cfg.Host("localhost", "/", h => h.Credentials("guest", "guest"));
+
+            // From "RetryPolicy record": the page's raw-record block, bus-wide.
+            cfg.UseRetry(new RetryPolicy
+            {
+                MaxAttempts = 5,
+                BaseDelay = TimeSpan.FromSeconds(1),
+                MaxDelay = TimeSpan.FromSeconds(30),
+                MaxJitter = TimeSpan.FromMilliseconds(200),
+                DelayCalculator = null,
+            });
+
+            cfg.Publish<RetryAndDeadLettersSample.PaymentFailed>("payments");
+
+            // From "Dead-letter destinations": bounded schedule + one queue
+            // destination with a non-default confirmation budget.
+            cfg.ReceiveEndpoint("payments", e =>
+            {
+                e.Consumer<RetryAndDeadLettersSample.PaymentConsumer>("payments-ops");
+                e.UseRetry(r => r.Immediate(5));
+                e.DeadLetterToQueue("payments-errors", DeadLetterQueueType.QuorumQueue,
+                    q => q.ConfirmTimeout(TimeSpan.FromSeconds(15)));
+            });
+        });
+    });
+}
+
+/// <summary>Marker types for Configuration/Retry &amp; dead letters.</summary>
+internal static class RetryAndDeadLettersSample
+{
+    public sealed record PaymentFailed(string PaymentId);
+
+    public sealed class PaymentConsumer : IConsumer<PaymentFailed>
+    {
+        public Task Consume(ConsumeContext<PaymentFailed> context) => Task.CompletedTask;
+    }
 }
 
 /// <summary>
