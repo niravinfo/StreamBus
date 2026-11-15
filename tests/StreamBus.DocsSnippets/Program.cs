@@ -119,6 +119,41 @@ internal static class Program
         }));
 
     /// <summary>
+    /// Guides/Consume events — the page's two endpoint registrations: the
+    /// billing endpoint (group "billing") and the audit endpoint (group
+    /// "audit") on the SAME "orders" stream, proving the two-endpoint
+    /// pattern validates. The consumer classes and the ConsumeContext tour
+    /// snippets (coordinates, MessageId dedup, typed header getters,
+    /// Services resolve) live in <see cref="ConsumeEventsSample"/> so their
+    /// syntax compiles; only the registration is exercised (needs no broker).
+    /// The start_offset/StartOffset FAQ prose has no snippet on the page.
+    /// </summary>
+    private static void VerifyConsumeEvents() => RegisterAndValidate(services =>
+    {
+        services.AddScoped<ConsumeEventsSample.IInvoicer, ConsumeEventsSample.Invoicer>();
+
+        services.AddStreamBus((_, cfg) =>
+        {
+            cfg.Host("localhost", "/", h => h.Credentials("guest", "guest"));
+
+            cfg.Publish<ConsumeEventsSample.OrderPlaced>("orders");
+
+            // Billing's endpoint, from the page's registration block.
+            cfg.ReceiveEndpoint("orders", e =>
+            {
+                e.Consumer<ConsumeEventsSample.OrderConsumer>("billing");
+            });
+
+            // Audit's endpoint from "A second team wants the same events":
+            // same stream, different group — an independent cursor.
+            cfg.ReceiveEndpoint("orders", e =>
+            {
+                e.Consumer<ConsumeEventsSample.AuditConsumer>("audit");
+            });
+        });
+    });
+
+    /// <summary>
     /// Concepts/Middleware — the composed registration sample that teaches
     /// scoping and ordering: bus-wide publish/consume filters plus one
     /// endpoint-scoped consume filter. The filter classes and message types
@@ -224,6 +259,78 @@ internal static class PublishAnEventSample
 
     internal static void ExplicitTarget()
         => bus.PublishAsync("orders-audit", new OrderPlaced(OrderId: "o-1"), ct);
+}
+
+internal static class ConsumeEventsSample
+{
+    public sealed record OrderPlaced(string OrderId);
+
+    public sealed record ServiceLevel(string Tier, TimeSpan Target);
+
+    public interface IInvoicer
+    {
+        void Invoice(OrderPlaced order);
+    }
+
+    public sealed class Invoicer : IInvoicer
+    {
+        public void Invoice(OrderPlaced order) { }
+    }
+
+    private static readonly HashSet<Guid> _seen = new();
+
+    public sealed class OrderConsumer(ILogger<OrderConsumer> log) : IConsumer<OrderPlaced>
+    {
+        public Task Consume(ConsumeContext<OrderPlaced> context)
+        {
+            log.LogInformation("Billing order {OrderId} at offset {Offset}",
+                context.Message.OrderId, context.Offset);
+            return Task.CompletedTask;
+        }
+    }
+
+    // Compile-only stand-ins for the page's context-tour snippets; never
+    // executed by the harness (consuming needs a live broker).
+    internal static void Coordinates(ConsumeContext<OrderPlaced> context, ILogger log)
+        => log.LogInformation("Stream {Stream} partition {Partition} offset {Offset}",
+            context.Stream, context.Partition, context.Offset);
+
+    internal static Task DedupById(ConsumeContext<OrderPlaced> context)
+    {
+        var firstTime = _seen.Add(context.MessageId ?? Guid.Empty);
+        if (!firstTime)
+        {
+            return Task.CompletedTask; // duplicate delivery — skip
+        }
+        return Task.CompletedTask;
+    }
+
+    internal sealed class TenantAwareConsumer : IConsumer<OrderPlaced>
+    {
+        public Task Consume(ConsumeContext<OrderPlaced> context)
+        {
+            string? tenant = context.Headers.GetString("x-tenant");
+            int? priority = context.Headers.GetInt("x-priority");
+            var sla = context.Headers.GetJson<ServiceLevel>("x-sla");
+            return Task.CompletedTask;
+        }
+    }
+
+    internal static void ResolveScoped(ConsumeContext<OrderPlaced> context)
+    {
+        var invoicer = context.Services.GetRequiredService<IInvoicer>();
+        invoicer.Invoice(context.Message);
+    }
+
+    public sealed class AuditConsumer(ILogger<AuditConsumer> log) : IConsumer<OrderPlaced>
+    {
+        public Task Consume(ConsumeContext<OrderPlaced> context)
+        {
+            log.LogInformation("Audit order {OrderId} at offset {Offset}",
+                context.Message.OrderId, context.Offset);
+            return Task.CompletedTask;
+        }
+    }
 }
 
 internal static class MiddlewareSample

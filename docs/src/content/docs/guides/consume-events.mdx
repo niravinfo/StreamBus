@@ -1,0 +1,231 @@
+---
+title: Consume events
+description: Subscribe your service to a stream — register a receive endpoint, name its group, read everything the delivery carries, and let a second team consume the same events without touching your code.
+---
+
+Your billing service needs to react to every order: the checkout team is
+already appending `OrderPlaced` facts to the `orders` stream, and nobody
+there is going to call your API. This page is the how-to for the reading
+side: register an endpoint with a group name, write the consumer, work
+with what the delivery carries — and later, when a second team wants the
+same events, add them without a single change on your side. What a
+consumer *is* — groups as cursors, the lifecycle that replaces the
+per-message ack — is covered once in [Consumers](/concepts/consumers/);
+here we just do it.
+
+## Register an endpoint and its group
+
+A receive endpoint is your service's subscription: the stream, one typed
+consumer class, and the group name that identifies your cursor. Billing
+subscribes to `orders` like this:
+
+```csharp
+builder.Services.AddStreamBus((context, cfg) =>
+{
+    cfg.Host("localhost", "/", h => h.Credentials("guest", "guest"));
+
+    // ... other registrations ...
+
+    cfg.ReceiveEndpoint("orders", e =>
+    {
+        e.Consumer<OrderConsumer>("billing");
+    });
+});
+```
+
+The consumer is one class implementing `IConsumer<T>` for exactly one
+message type — the same `OrderPlaced` contract the publisher registered,
+shape and namespace agreed across teams:
+
+```csharp
+public sealed class OrderConsumer(ILogger<OrderConsumer> log) : IConsumer<OrderPlaced>
+{
+    public Task Consume(ConsumeContext<OrderPlaced> context)
+    {
+        log.LogInformation("Billing order {OrderId} at offset {Offset}",
+            context.Message.OrderId, context.Offset);
+        return Task.CompletedTask;
+    }
+}
+```
+
+That's the whole subscription. It runs from startup — no consumer class
+to register separately, no "start listening" call — because
+`AddStreamBus` registers a hosted service that attaches the endpoint when
+the host starts (see [Get started](/guides/get-started/) for the full
+application).
+
+**Name the group after your service, not after the stream.** The group
+(`"billing"`) is the cursor identity: the broker stores one offset per
+group, and everything about resume, failover, and duplicates hangs off
+that name. StreamBus requires it and never derives one — so the only
+question is what *you* name it. The doctrine: `"billing"`, `"audit"`,
+`"shipping-analytics"` — each group is one service's reading position,
+and it stays correct for the life of that service. The anti-pattern is
+naming it after the data (`"orders-readers"`, `"orders-group"`): the name
+then looks shareable, and one day a second service copies your
+registration, shares your cursor, and both services silently skip
+messages the other already consumed. If the name answers "who reads?",
+nobody borrows it by accident. (Two instances of the *same* service
+sharing one group is a different, legitimate case —
+[Scale out](/guides/scale-out/) owns it.)
+
+## The delivery, close-up
+
+The `ConsumeContext<OrderPlaced>` your `Consume` method receives is the
+entire delivery: the typed message, plus everything about where it came
+from and what was attached along the way. You will not need most of it
+most of the time — these are the parts that earn their keep.
+
+**Where the message came from.** Every delivery carries its coordinates —
+which log, which slice of it, and how far in:
+
+```csharp
+log.LogInformation("Stream {Stream} partition {Partition} offset {Offset}",
+    context.Stream, context.Partition, context.Offset);
+```
+
+The offset is the cursor position this delivery occupies — useful for
+logging, and the number you will reach for when a replay ever needs to
+target "back to there" ([Replay a stream](/guides/replay-a-stream/)).
+`RoutingKey` is `null` on a plain stream; it is set only when the
+publisher routed the message into a super stream partition
+([Partition a stream](/guides/partition-a-stream/)).
+
+**Who sent it, and when.** The identity properties come straight from
+the AMQP envelope. `MessageId` is always stamped by the publisher (a
+GUID when not supplied) — it's the anchor for deduplicating under
+[at-least-once](/concepts/streams/#at-least-once). `CorrelationId` is
+never invented; `SentTime` is UTC, normalized by the publisher:
+
+```csharp
+var firstTime = _seen.Add(context.MessageId ?? Guid.Empty);
+if (!firstTime)
+{
+    return Task.CompletedTask; // duplicate delivery — skip
+}
+```
+
+**The context publishers attach.** Headers arrive exactly as they were
+published — your application properties plus any a publish filter
+stamped ([Publish an event](/guides/publish-an-event/) covers the
+writing side). Read them with the typed getters; `GetJson<T>` uses the
+bus serializer when a header carries a small object as JSON:
+
+```csharp
+public sealed class TenantAwareConsumer : IConsumer<OrderPlaced>
+{
+    public Task Consume(ConsumeContext<OrderPlaced> context)
+    {
+        string? tenant = context.Headers.GetString("x-tenant");
+        int? priority = context.Headers.GetInt("x-priority");
+        var sla = context.Headers.GetJson<ServiceLevel>("x-sla");
+        // tenant, priority, and sla drive which billing queue handles it...
+        return Task.CompletedTask;
+    }
+}
+```
+
+`GetString`, `GetInt`, `GetLong`, and `GetBool` return `null` when the
+key is absent — a missing header is a normal condition to handle, not an
+error.
+
+**Services scoped to this delivery.** Each delivery runs in a fresh
+dependency-injection scope, and `context.Services` is it. Prefer
+constructor injection on the consumer class — that is the same scope —
+but for a mid-method resolve, or inside a class that can't take
+constructor dependencies, the scope is there:
+
+```csharp
+var invoicer = context.Services.GetRequiredService<IInvoicer>();
+```
+
+A scoped service, like a `DbContext`, is created for this delivery and
+disposed with it — a natural unit of work per message.
+
+**Cancellation.** `context.CancellationToken` covers this delivery: it
+fires when the endpoint is stopping or the delivery is being abandoned.
+Pass it into every async call you make inside `Consume`, the same way
+you would in any hosted code — a handler that ignores cancellation
+delays shutdown.
+
+## A second team wants the same events
+
+Six months in, the audit team needs every order too — their own storage,
+their own pace, no dependency on billing's progress. On a queue this
+would be a topology negotiation. On a stream it is one endpoint, because
+**different groups are independent readers**: each has its own cursor
+and receives every message. They add this to *their* service's bus
+registration:
+
+```csharp
+cfg.ReceiveEndpoint("orders", e =>
+{
+    e.Consumer<AuditConsumer>("audit");
+});
+```
+
+Same `orders` stream, same `OrderPlaced` contract — but the group is
+`"audit"`, so the cursor is theirs. Nothing about billing changed:
+no code, no offset, no coordination. The audit service's group starts at
+the stream's first offset (a fresh group reads from the beginning — see
+the FAQ below), so they get the full history immediately, and from then
+on the two groups advance independently. If audit's service is down for
+an hour, *audit's* cursor waits; billing never notices. That is the
+"different groups = independent feeds" doctrine from
+[Consumers](/concepts/consumers/) doing real work — and the reason the
+group name doctrine above matters: `"audit"` is self-describing in a way
+`"orders-2"` never would be.
+
+## Throwing means scheduling
+
+When `Consume` throws, the message is not lost and not skipped — the
+delivery is held and retried on the endpoint's retry schedule, and only
+when attempts run out does the failure get handed off (a dead letter, an
+error stream, an `OnExhausted` callback), letting the cursor move past
+it. There is no try/catch to write here: configuring that schedule — and
+choosing what happens when it gives up — is its own guide:
+[Handle failures](/guides/handle-failures/).
+
+## FAQ
+
+### Can two instances of my service share the group?
+
+Yes — that is exactly what the group is *for*, with one caveat that
+depends on which kind of stream you are reading. Two instances of
+billing running with group `"billing"` are one logical consumer: on a
+plain stream they are failover (one active, one standing by, no extra
+throughput); on a super stream the partitions spread across them and
+both work. The details, and the warning about disabling
+single-active-consumer, live in [Scale out](/guides/scale-out/).
+
+### What happens if my service crashes mid-batch?
+
+The tail is redelivered. Delivery is at-least-once: the group's offset
+is stored after your handler completes (by default after every message),
+so a crash or detach means everything since the last *stored* offset is
+delivered again on restart. Duplicates are the normal outcome — make
+handlers idempotent and deduplicate with `MessageId`
+([Streams](/concepts/streams/) teaches why). Storing less often trades
+fewer offset writes for a longer redelivered tail; the
+`OffsetStore` knobs are tabulated in
+[Endpoint options](/configuration/endpoint-options/).
+
+### Where does my very first message come from?
+
+A group with no stored cursor needs to start somewhere, and
+`StartOffset` decides: the default `ResumeOrFirst` resumes a stored
+offset or reads from the stream's first offset on a fresh group;
+`ResumeOrNext` skips to head instead of replaying history;
+`ResumeOrFail` refuses to attach a fresh group (protecting you from
+accidentally processing history); `AlwaysFirst` and `AlwaysNext` force
+the choice even for groups that have a stored offset. Fresh group +
+default = your first delivery includes the stream's whole retained
+history, bounded by [retention](/concepts/streams/). The full option
+table: [Endpoint options](/configuration/endpoint-options/).
+
+## Next
+
+A consumer that throws is a consumer whose schedule you own — retries,
+exhaustion, and where failed messages land:
+[Handle failures](/guides/handle-failures/).
