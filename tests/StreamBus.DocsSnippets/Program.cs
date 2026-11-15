@@ -450,6 +450,59 @@ private static void VerifyScaleOut() => RegisterAndValidate(services =>
             o.ConsumerStopTimeout = TimeSpan.FromSeconds(5);
         });
     });
+    /// <summary>
+    /// Configuration/Endpoint options — this page is tables, so the harness
+    /// exercises one registration that tours the exotic endpoint knobs
+    /// with non-default values: a super endpoint with a matching routed
+    /// publish (StartOffset, offset-store cadence, attach readiness,
+    /// Partitions on the endpoint), plus a plain endpoint carrying an
+    /// error-stream destination and publish-timeout fragment. The
+    /// SingleActiveConsumer knob is deliberately left at its default
+    /// (true), keeping the default visible in the code; the
+    /// DeadLetterToQueue/OnExhausted shapes are owned by other pages'
+    /// registrations.
+    /// </summary>
+    private static void VerifyEndpointOptions() => RegisterAndValidate(services =>
+    {
+        services.AddStreamBus((_, cfg) =>
+        {
+            cfg.Host("localhost", "/", h => h.Credentials("guest", "guest"));
+
+            // The super-stream pair: publish spec owns the partition kind,
+            // endpoint states the count from the consuming side, agreeing.
+            cfg.PublishSuper<EndpointOptionsSample.OrderPlaced>("orders-super", s =>
+            {
+                s.Partitions(3);
+                s.MaxAge(TimeSpan.FromDays(30));
+                s.LeaderLocator(StreamLeaderLocator.LeastLeaders);
+            });
+
+            // From "Endpoint options": the exotic knobs with non-default
+            // values; SAC stays at its default.
+            cfg.ReceiveEndpoint("orders-super", e =>
+            {
+                e.Consumer<EndpointOptionsSample.OrderConsumer>("billing");
+                e.Partitions(3);
+                e.StartOffset(StartOffset.ResumeOrNext);
+                e.OffsetStore(new OffsetStoreOptions
+                {
+                    StoreEveryMessages = 500,
+                    MaxFlushInterval = TimeSpan.FromSeconds(5),
+                });
+                e.Readiness(ReadinessPolicy.UpTo(TimeSpan.FromSeconds(10)));
+            });
+
+            // From "Endpoint options": the exhaustion-pointer knobs — a
+            // stream destination with a spec knob plus the publish timeout.
+            cfg.ReceiveEndpoint("payments", e =>
+            {
+                e.Consumer<EndpointOptionsSample.PaymentConsumer>("payments-ops");
+                e.UseRetry(r => r.Immediate(5));
+                e.DeadLetterToStream("payments-dlq", s => s.MaxAge(TimeSpan.FromDays(14)));
+                e.ErrorPublishTimeout(TimeSpan.FromSeconds(10));
+            });
+        });
+    });
 }
 
 /// <summary>
@@ -494,6 +547,33 @@ internal static class PartitionAStreamSample
                 return Task.CompletedTask;
             },
             cancellationToken);
+    }
+}
+
+/// <summary>
+/// Types from Configuration/Endpoint options. The page is option tables,
+/// so these are the two consumer shapes its snippets reference; only the
+/// registration is exercised (consuming needs a live broker).
+/// </summary>
+internal static class EndpointOptionsSample
+{
+    public sealed record OrderPlaced(string OrderId);
+
+    public sealed record PaymentFailed(string PaymentId);
+
+    public sealed class OrderConsumer(ILogger<OrderConsumer> log) : IConsumer<OrderPlaced>
+    {
+        public Task Consume(ConsumeContext<OrderPlaced> context)
+        {
+            log.LogInformation("Billing order {OrderId} at offset {Offset}",
+                context.Message.OrderId, context.Offset);
+            return Task.CompletedTask;
+        }
+    }
+
+    public sealed class PaymentConsumer : IConsumer<PaymentFailed>
+    {
+        public Task Consume(ConsumeContext<PaymentFailed> context) => Task.CompletedTask;
     }
 }
 
