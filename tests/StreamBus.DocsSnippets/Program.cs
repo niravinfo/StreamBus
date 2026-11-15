@@ -62,4 +62,63 @@ internal static class Program
     private static void VerifyHarnessSmoke() => RegisterAndValidate(services =>
         services.AddStreamBus((_, cfg) =>
             cfg.Host("localhost", "/", h => h.Credentials("guest", "guest"))));
+
+    /// <summary>
+    /// Concepts/Middleware — the composed registration sample that teaches
+    /// scoping and ordering: bus-wide publish/consume filters plus one
+    /// endpoint-scoped consume filter. The filter classes and message types
+    /// live in this namespace so the snippet shape matches the page while
+    /// staying isolated from other pages' samples.
+    /// </summary>
+    private static void VerifyMiddleware() => RegisterAndValidate(services => services
+        .AddSingleton<MiddlewareSample.TenantFilter>()
+        .AddSingleton<MiddlewareSample.MetricsFilter>()
+        .AddSingleton<MiddlewareSample.EnrichmentFilter>()
+        .AddStreamBus((_, cfg) =>
+        {
+            cfg.Host("localhost", "/", h => h.Credentials("guest", "guest"));
+
+            cfg.UsePublishFilter<MiddlewareSample.TenantFilter>();
+            cfg.UseConsumeFilter<MiddlewareSample.MetricsFilter>();
+
+            cfg.ReceiveEndpoint("orders", e =>
+            {
+                e.Consumer<MiddlewareSample.OrderConsumer>("billing");
+                e.UseConsumeFilter<MiddlewareSample.EnrichmentFilter>();
+            });
+        }));
+}
+
+internal static class MiddlewareSample
+{
+    public sealed record OrderPlaced(Guid OrderId);
+
+    public sealed class TenantScope
+    {
+        public string Tenant { get; set; } = "default";
+    }
+
+    public sealed class TenantFilter(TenantScope ambient) : IStreamPublishFilter
+    {
+        public Task OnPublish(PublishContext context, PublishNext next)
+        {
+            context.Headers.Set("x-tenant", ambient.Tenant);
+            return next();
+        }
+    }
+
+    public sealed class MetricsFilter : IStreamConsumeFilter
+    {
+        public Task OnConsume(ConsumeContext context, ConsumeNext next) => next();
+    }
+
+    public sealed class EnrichmentFilter : IStreamConsumeFilter
+    {
+        public Task OnConsume(ConsumeContext context, ConsumeNext next) => next();
+    }
+
+    public sealed class OrderConsumer : IConsumer<OrderPlaced>
+    {
+        public Task Consume(ConsumeContext<OrderPlaced> context) => Task.CompletedTask;
+    }
 }
