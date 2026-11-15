@@ -328,6 +328,44 @@ private static void VerifyScaleOut() => RegisterAndValidate(services =>
     });
 
     /// <summary>
+    /// Guides/Add cross-cutting logic — the page's registration blocks: the
+    /// publish filter END TO END with its singleton DI wiring (TenantFilter +
+    /// TenantScope, the AddSingleton pairing the concept page elides), the
+    /// bus-wide consume enrichment filter, and the two-type-argument typed
+    /// filter overloads (the page's preferred form). The TenantEnrichmentFilter's
+    /// SetPayload and the consumer's GetPayload run per delivery, so the
+    /// classes live in <see cref="AddCrossCuttingLogicSample"/> and only the
+    /// registration is exercised; singleton-lifetime validation runs at
+    /// registration/build time, same as VerifyMiddleware.
+    /// </summary>
+    private static void VerifyAddCrossCuttingLogic() => RegisterAndValidate(services =>
+    {
+        services.AddSingleton<AddCrossCuttingLogicSample.TenantScope>();
+        services.AddSingleton<AddCrossCuttingLogicSample.TenantFilter>();
+        services.AddSingleton<AddCrossCuttingLogicSample.TenantEnrichmentFilter>();
+        services.AddSingleton<AddCrossCuttingLogicSample.OrderPublishFilter>();
+        services.AddSingleton<AddCrossCuttingLogicSample.OrderValidationFilter>();
+
+        services.AddStreamBus((_, cfg) =>
+        {
+            cfg.Host("localhost", "/", h => h.Credentials("guest", "guest"));
+
+            cfg.Publish<AddCrossCuttingLogicSample.OrderPlaced>("orders");
+
+            // From "Stamp every publish" and "Typed or universal?".
+            cfg.UsePublishFilter<AddCrossCuttingLogicSample.TenantFilter>();
+            cfg.UsePublishFilter<AddCrossCuttingLogicSample.OrderPublishFilter, AddCrossCuttingLogicSample.OrderPlaced>();
+
+            // From "Enrich every delivery" (bus-wide) and the typed form.
+            cfg.UseConsumeFilter<AddCrossCuttingLogicSample.TenantEnrichmentFilter>();
+            cfg.UseConsumeFilter<AddCrossCuttingLogicSample.OrderValidationFilter, AddCrossCuttingLogicSample.OrderPlaced>();
+
+            cfg.ReceiveEndpoint("orders", e =>
+                e.Consumer<AddCrossCuttingLogicSample.BillingConsumer>("billing"));
+        });
+    });
+
+    /// <summary>
     /// Guides/Replay a stream — the page's registration-level snippets: the
     /// typed temporary replay endpoint (own group "billing-replay-2026-11",
     /// StartOffset.AlwaysFirst, bounded retry, dead-letter destination) that
@@ -691,6 +729,67 @@ internal static class HandleFailuresSample
                 return Task.CompletedTask;
             },
             cancellationToken);
+    }
+}
+
+internal static class AddCrossCuttingLogicSample
+{
+    public sealed record OrderPlaced(string OrderId);
+
+    public sealed record TenantInfo(string Tenant);
+
+    // The singleton ambient source from "Stamp every publish".
+    public sealed class TenantScope
+    {
+        public string Tenant { get; set; } = "default";
+    }
+
+    public sealed class TenantFilter(TenantScope ambient) : IStreamPublishFilter
+    {
+        public Task OnPublish(PublishContext context, PublishNext next)
+        {
+            context.Headers.Set("x-tenant", ambient.Tenant);
+            return next();
+        }
+    }
+
+    // From "Enrich every delivery": reads the tenant back and hands it to
+    // the consumer as a typed payload.
+    public sealed class TenantEnrichmentFilter : IStreamConsumeFilter
+    {
+        public Task OnConsume(ConsumeContext context, ConsumeNext next)
+        {
+            if (context.Headers.GetString("x-tenant") is { } tenant)
+            {
+                context.SetPayload(new TenantInfo(tenant));
+            }
+            return next();
+        }
+    }
+
+    public sealed class BillingConsumer : IConsumer<OrderPlaced>
+    {
+        public Task Consume(ConsumeContext<OrderPlaced> context)
+        {
+            var tenant = context.GetPayload<TenantInfo>();
+            return Task.CompletedTask;
+        }
+    }
+
+    // From "Typed or universal?": both typed registration targets for the
+    // page's preferred two-type-argument overloads.
+    public sealed class OrderPublishFilter : IStreamPublishFilter<OrderPlaced>
+    {
+        public Task OnPublish(PublishContext<OrderPlaced> context, PublishNext next)
+        {
+            context.Headers.Set("x-order-id", context.Message.OrderId);
+            return next();
+        }
+    }
+
+    public sealed class OrderValidationFilter : IStreamConsumeFilter<OrderPlaced>
+    {
+        public Task OnConsume(ConsumeContext<OrderPlaced> context, ConsumeNext next) => next();
     }
 }
 
