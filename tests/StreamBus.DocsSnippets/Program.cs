@@ -177,6 +177,60 @@ internal static class Program
                 e.UseConsumeFilter<MiddlewareSample.EnrichmentFilter>();
             });
         }));
+
+/// <summary>
+/// Guides/Handle failures — the page's registration snippets: the bounded
+/// schedules (Exponential on billing, Immediate on payments), the explicit
+/// stream dead-letter destination with MaxAge, and the OnExhausted
+/// callback publishing the raw body to its target stream. The commented
+/// queue alternative (QuorumQueue + ConfirmTimeout) on the page is
+/// replaced here with the stream call the later sections build on — the
+/// page presents the two as either/or because a second DeadLetterTo* call
+/// on one endpoint throws. The ErrorEnvelope drain loop and the
+/// PaymentsConsumer live in <see cref="HandleFailuresSample"/> so their
+/// syntax compiles; consuming needs a live broker, so only registration is
+/// exercised.
+/// </summary>
+private static void VerifyHandleFailures() => RegisterAndValidate(services =>
+    services.AddStreamBus((_, cfg) =>
+    {
+        cfg.Host("localhost", "/", h => h.Credentials("guest", "guest"));
+
+        cfg.Publish<HandleFailuresSample.OrderPlaced>("orders");
+        cfg.Publish<HandleFailuresSample.PaymentFailed>("payments-dlq");
+
+        // From "Bound the schedule, name the destination": bounded schedule,
+        // derived hand-off (no destination declared).
+        cfg.ReceiveEndpoint("orders", e =>
+        {
+            e.Consumer<HandleFailuresSample.OrderConsumer>("billing");
+            e.UseRetry(r => r.Exponential(4,
+                TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(30)));
+        });
+
+        // The explicit-destination form: named error stream with MaxAge. The
+        // page shows this as an alternative shape of the SAME billing
+        // endpoint; the harness registers it under its own group so both
+        // shapes exercise registration validation in one run.
+        cfg.ReceiveEndpoint("orders", e =>
+        {
+            e.Consumer<HandleFailuresSample.OrderConsumer>("billing-explicit");
+            e.UseRetry(r => r.Immediate(5));
+            e.DeadLetterToStream("orders-errors", s => s.MaxAge(TimeSpan.FromDays(30)));
+        });
+
+        // From "When attempts run out": OnExhausted owns the outcome.
+        cfg.ReceiveEndpoint("payments", e =>
+        {
+            e.Consumer<HandleFailuresSample.PaymentsConsumer>("payments-ops");
+            e.UseRetry(r => r.Immediate(5));
+            e.OnExhausted(async (ctx, ct) =>
+            {
+                var bus = ctx.GetService<IStreamBus>();
+                await bus.PublishRawAsync("payments-dlq", ctx.Body, new PublishOptions(), ct);
+            });
+        });
+    }));
 }
 
 /// <summary>
@@ -364,5 +418,59 @@ internal static class MiddlewareSample
     public sealed class OrderConsumer : IConsumer<OrderPlaced>
     {
         public Task Consume(ConsumeContext<OrderPlaced> context) => Task.CompletedTask;
+    }
+}
+
+/// <summary>
+/// Types and compile-only call shapes from Guides/Handle failures. The
+/// drain loop reproduces the page's ErrorEnvelope reading snippet verbatim
+/// in form; it is never invoked (consuming needs a live broker). The
+/// dead-letter queue alternative shown on the page is compile-checked
+/// fragment-free: its signature lives in
+/// <c>DeadLetterToQueue(name, DeadLetterQueueType, q => q.ConfirmTimeout(...))</c>
+/// and is exercised as the commented either/or on the page.
+/// </summary>
+internal static class HandleFailuresSample
+{
+    public sealed record OrderPlaced(string OrderId);
+
+    public sealed record PaymentFailed(string PaymentId, string Reason);
+
+    public sealed class OrderConsumer(ILogger<OrderConsumer> log) : IConsumer<OrderPlaced>
+    {
+        public Task Consume(ConsumeContext<OrderPlaced> context)
+        {
+            log.LogInformation("Billing order {OrderId} at offset {Offset}",
+                context.Message.OrderId, context.Offset);
+            return Task.CompletedTask;
+        }
+    }
+
+    public sealed class PaymentsConsumer : IConsumer<PaymentFailed>
+    {
+        public Task Consume(ConsumeContext<PaymentFailed> context) => Task.CompletedTask;
+    }
+
+    // Compile-only stand-ins; never invoked.
+    private static IStreamBus bus = null!;
+    private static CancellationToken ct = CancellationToken.None;
+
+    internal static async Task DrainErrorStream(CancellationToken cancellationToken)
+    {
+        await using var inspector = await bus.ConsumeAsync(
+            "orders-errors",
+            new ConsumeOptions { ConsumerGroup = "error-inspector", StartOffset = StartOffset.AlwaysFirst },
+            ctx =>
+            {
+                if (ErrorEnvelope.TryParse("orders-errors", ctx.Body.ToArray(), ctx.Headers.All, out var envelope)
+                    && envelope is not null)
+                {
+                    Console.WriteLine(
+                        $"{envelope.ExceptionType} at {envelope.SourceStream}/{envelope.SourceOffset}: " +
+                        $"{envelope.ExceptionMessage}");
+                }
+                return Task.CompletedTask;
+            },
+            cancellationToken);
     }
 }
