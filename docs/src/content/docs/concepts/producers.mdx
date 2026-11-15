@@ -1,0 +1,43 @@
+---
+title: Producers
+description: What publishing means on a stream — one verb, routes decided at registration, broker-confirmed appends, and why the routing key is the only source of per-entity order.
+---
+
+On a stream, publishing means one thing: **appending a fact to a stream**. If you are coming from MassTransit or another queue-based toolkit, unlearn the send/publish dichotomy first — there is no "send to a queue" versus "publish to everyone" split here, because there is no dispatch at all. There is one verb. You append a message to a log, and whoever wants to read it reads it.
+
+The destination is not a per-call decision either. In StreamBus you register each message type against a stream once, when the bus is configured — `cfg.Publish<OrderPlaced>("orders");` is the whole idea — and every later publish of that type goes to that stream. The call site never names a destination; **the route table is your declaration of truth**. A reader of your code learns where a fact goes by reading the registration block, not by chasing call sites, and an error in the table is a configuration error that surfaces at registration time — not a message that quietly lands in the wrong log.
+
+## Registered routes
+
+A publish route binds one message type to one stream on one bus. From that registration come three guarantees worth internalizing:
+
+- **Resolution is by type, not by argument.** When you publish an `OrderPlaced`, StreamBus looks up the route registered for that type and appends to its stream. No stream name is passed, no default is picked, nothing is inferred.
+- **Ambiguity is rejected, not resolved.** The same message type registered on two streams of the same bus fails at registration with an exception naming the type and both streams — StreamBus will not pick one for you. Register each type on exactly one stream per bus.
+- **Kind must match.** Streams are plain or super (see [Streams](/concepts/streams/#super-streams)), and the registration says which. Calling the plain publish method against a super-stream registration — or the super method against a plain one — throws, with a message that names the method you should have used instead. The wrong tool is not silently repurposed.
+
+The practical walkthrough — declaring a route, publishing, handling headers and options — is a guide's job: see [Publish an event](/guides/publish-an-event/).
+
+## Confirmation
+
+Every publish is broker-confirmed. The `Task` you get back does not complete when the bytes are handed to a socket — it completes when the broker confirms the append, and it faults if the confirmation does not come back clean. Awaiting it is therefore more than politeness: the point at which that task succeeds is the point at which your fact is durably in the log, and the point at which you stop being responsible for it.
+
+The same confirmation is why **publishing is at-least-once, not exactly-once**. A publish that fails ambiguously — a timeout, a dropped connection, a crash after the send but before the confirm — may already have been appended; retrying it appends the same fact twice. StreamBus never assigns a producer name (RabbitMQ Streams only deduplicates published messages for a *named* producer), so the broker filters nothing between your instances: identical appends from any number of instances all land. That is deliberate — it is what lets any number of application instances publish to the same stream — and its price is that publishing, like consuming, can deliver the same logical fact more than once. Plan for duplicates when you retry a publish; consumers deduplicate with `MessageId` (see [Messages](/concepts/messages/#deduplicating-under-at-least-once)).
+
+## Choosing a partition
+
+On a super stream, the append does not choose its own partition — you do, with a **routing key** supplied at the publish call (the super-stream publish method requires one; forgetting it is a compile error, not a runtime surprise). The key selects the partition: every message published with the same key lands on the same partition, in the order it was confirmed.
+
+That is the whole ordering story, and it deserves its status as doctrine: **same key, same partition, same order.** A stream's total order exists per partition, so per-entity order across a super stream comes only from a consistent routing key — publish an order's facts keyed by its order id, and they stay in order no matter which instance publishes them. Publish them with different keys (or without care), and nothing orders them. The message shape cannot rescue this; the log has no other sequencing mechanism.
+
+Creating super streams, choosing partition counts, and the declare-time rules that keep producers and consumers in agreement are covered in the [partitioning guide](/guides/partition-a-stream/).
+
+## Where to get a bus
+
+Publishing needs a bus instance, and — consistent with everything above — you do not construct one. You inject it:
+
+- `IStreamBus` — the bus registered by the plain `AddStreamBus` call; in most applications this is the one you want.
+- `IStreamBus<TBus>` — a bus identified by a marker type, when your application runs more than one bus and each message type's home is determined per bus.
+
+Injecting an unregistered bus fails at construction with standard .NET dependency-injection errors — never a null. How multiple buses are registered, resolved, and kept distinct is its own topic: see [Use multiple buses](/guides/use-multiple-buses/).
+
+With the append side settled, the other half of the story is reading back: continue with [Consumers](/concepts/consumers/).
