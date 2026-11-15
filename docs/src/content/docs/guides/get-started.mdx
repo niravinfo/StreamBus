@@ -177,6 +177,35 @@ any other service.
 4. With `WaitUntilStarted = true`, the host waits for all of that —
    bounded by `StartTimeout`.
 
+## FAQ
+
+### The client cannot connect — nothing listens on port 5552. What first?
+
+Enable the plugins (above) and check the broker log: enablement is
+asynchronous, so the stream listener accepts connections a few seconds
+after the command returns. A stock broker does not open the stream
+port at all.
+
+### Why am I refused with the `guest` user?
+
+RabbitMQ refuses `guest` from non-localhost connections. Use a
+dedicated, non-`guest` user as soon as your broker is not on your
+machine (see the prerequisites table).
+
+### Is the `WaitUntilStarted` block required?
+
+No. It opts you into a blocking start — `RunAsync` waits until the
+connection, stream declaration, and consumer attach finish (bounded
+by `StartTimeout`). The default is a non-blocking start; this page
+uses the blocking form only so the console app's first publish is
+guaranteed a ready bus.
+
+### I stopped and restarted the app — why did consuming resume where it left off?
+
+The `"billing"` group is a broker-side cursor: the broker stores the
+group's offset, and restart resumes after it. Each distinct group
+name is an independent cursor — see [Consumers](/concepts/consumers/).
+
 ## Where to go next
 
 - Why this feels like writing to a log, and what that changes →

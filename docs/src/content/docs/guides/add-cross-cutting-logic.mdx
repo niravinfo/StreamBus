@@ -125,7 +125,8 @@ builder.Services.AddStreamBus((context, cfg) =>
 {
     cfg.Host("localhost", "/", h => h.Credentials("guest", "guest"));
 
-    cfg.Publish<OrderPlaced>("orders");
+    // ... the bus's publish routes, as registered above ...
+
     cfg.UseConsumeFilter<TenantEnrichmentFilter>();      // every delivery, every endpoint
 
     cfg.ReceiveEndpoint("orders", e =>

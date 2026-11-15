@@ -40,7 +40,7 @@ builder.Services.AddStreamBus<OrdersBus>((context, cfg) =>
     cfg.Host("localhost", "/orders", h => h.Credentials("orders-app", "secret"));
 
     cfg.Publish<OrderPlaced>("orders");
-    cfg.ReceiveEndpoint("orders", e => e.Consumer<OrdersConsumer>("billing"));
+    cfg.ReceiveEndpoint("orders", e => e.Consumer<OrdersConsumer>("orders-team"));
 });
 
 builder.Services.AddStreamBus<BillingBus>((context, cfg) =>

@@ -143,9 +143,10 @@ Every registration that names a stream is a statement about what that
 stream *is*, and startup reconciles them — by verifying, never by
 re-partitioning:
 
-- **Kind must match.** A `PublishSuper` registration against a stream a
-  `Publish` (or a plain endpoint) calls plain is a startup error naming
-  both references — the message type, both kinds, and the stream. A
+- **Kind must match.** If `PublishSuper` targets a stream that a
+  `Publish` (or a plain receive endpoint) also targets, the mixed kinds
+  are a startup error naming both references — the message type, both
+  kinds, and the stream. A
   plain stream already sitting on the broker where a super stream is
   expected (or vice versa) fails the same way: expected shape stated,
   actual shape stated.
