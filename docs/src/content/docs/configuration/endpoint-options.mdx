@@ -1,0 +1,112 @@
+---
+title: Endpoint options
+description: Reference for every option on a receive endpoint and every declare-time knob on the stream spec, including the startup agreement rules.
+---
+
+This page is the reference for everything you can set on a receive endpoint
+(`e =>` inside `ReceiveEndpoint`) and for the declare-time knobs a
+registration can put on the stream spec. What the options *mean* (consumer
+groups, cursors, at-least-once) is taught in
+[Concepts: Consumers](/concepts/consumers/); this page only tabulates the
+knobs and their defaults.
+
+## Endpoint options
+
+```csharp
+cfg.ReceiveEndpoint("orders", e =>
+{
+    e.Consumer<OrderConsumer>("billing");
+    e.StartOffset(StartOffset.ResumeOrNext);
+    e.OffsetStore(new OffsetStoreOptions
+    {
+        StoreEveryMessages = 500,
+        MaxFlushInterval = TimeSpan.FromSeconds(5),
+    });
+    e.Readiness(ReadinessPolicy.UpTo(TimeSpan.FromSeconds(10)));
+});
+```
+
+Every option on `IReceiveEndpointConfigurator`:
+
+| Option | Default | Meaning |
+|---|---|---|
+| `Consumer<T>(group)` | required | The endpoint's single typed consumer and its consumer group. Exactly once per endpoint; the group is the cursor identity, required, at most 255 UTF-8 bytes. |
+| `SuperStream(enabled)` | off | Marks the endpoint's stream as a super stream (all partitions are consumed). |
+| `Partitions(n)` | none | Partition count for a super-stream endpoint; `>= 1`. Super-stream references only; setting it on a plain endpoint throws at registration. Agree with every other reference to the stream (see below). |
+| `SingleActiveConsumer(enabled)` | `true` | Only one instance in the group receives deliveries. `false` fans out to every instance. Never run two offset writers on one group outside SAC ([Concepts: Consumers](/concepts/consumers/)). |
+| `StartOffset(policy)` | `ResumeOrFirst` | Where the group starts when no stored offset exists, and how a stored offset is treated. Values below. |
+| `OffsetStore(options)` | `StoreEveryMessages = 1`, `MaxFlushInterval = null` | Broker-side offset persistence cadence. Values below. |
+| `Readiness(policy)` | `ReadinessPolicy.Default` | Gates the consumer *attach*: fail fast, wait bounded, or wait indefinitely on a not-ready connection. Same `ReadinessPolicy` type tabulated on [Host & connections](/configuration/host-and-connections/). |
+| `UseRetry(...)` | bus-wide schedule, no attempt limit | This endpoint's retry schedule, overriding the bus-wide one. Syntax and schedules live in [Retry & dead letters](/configuration/retry-and-dead-letters/). |
+| `DeadLetterToStream(name, spec)` | none | Error-stream destination for exhausted messages; at most one dead-letter destination per endpoint, partitions not allowed on the destination. |
+| `DeadLetterToQueue(name, type)` | none | Durable AMQP queue destination; at most one destination per endpoint, `DeadLetterQueueType` must be defined. |
+| `ErrorPublishTimeout(timeout)` | `null` | Timeout for the confirmed publish to the error-stream hand-off; `null` waits indefinitely, values below one second are raised to one second. |
+| `OnExhausted(handler)` | none | Callback that owns the outcome for exhausted messages; shadows a declared dead-letter destination with a startup warning. Returning advances past the message; throwing recycles the attach (redeliver, never skip). |
+| `UseConsumeFilter<T>()` (and typed/type/factory/instance overloads) | none | Endpoint-scoped consume filter, in addition to any bus-wide ones. Filters are registered as singletons and cached per bus; the typed two-argument overload avoids a trim/AOT hazard. See [Add cross-cutting logic](/guides/add-cross-cutting-logic/). |
+
+`StartOffset` values:
+
+| Value | Meaning |
+|---|---|
+| `ResumeOrFirst` | Resume from the stored offset, or the very first offset when none is stored (default). |
+| `ResumeOrNext` | Resume from the stored offset, or the next offset after attach when none is stored. |
+| `ResumeOrFail` | Resume from the stored offset; fail attachment when none is stored. |
+| `AlwaysFirst` | Ignore any stored offset and start from the very first offset. |
+| `AlwaysNext` | Ignore any stored offset and start from the next offset after attach. |
+
+`OffsetStoreOptions` members:
+
+| Member | Default | Meaning |
+|---|---|---|
+| `StoreEveryMessages` | `1` | Store the offset after this many messages; `1` stores every delivery. |
+| `MaxFlushInterval` | `null` | Also flush the stored offset at least every this often; `null` disables the time-based flush. |
+
+## Stream-spec knobs
+
+Any registration that names a stream (`Publish`, `PublishSuper`, the
+endpoint itself, an error-stream destination) can also state declare-time
+facts about that stream via the same builder surface. All members are
+optional; unset members fall back to the broker default at declare time:
+
+| Knob | Default | Meaning |
+|---|---|---|
+| `MaxAge` | broker default | Retention bound after which older segments are truncated; must be positive when set. |
+| `MaxLengthBytes` | broker default | Total stream size bound in bytes; `>= 1` when set. |
+| `MaxSegmentSizeBytes` | broker default | Size of a single segment file in bytes; `>= 1` when set. |
+| `LeaderLocator` | `LeastLeaders` | Leader placement at declare time: `LeastLeaders`, `ClientLocal`, or `Random`. |
+| `Partitions` | none | Super-stream references only. Partition count, `>= 1`; on plain-stream builders the member does not exist, so the invalid state is not expressible. |
+
+The builder setters return `void` on purpose: no fluent chaining, one
+statement per knob:
+
+```csharp
+cfg.Publish<OrderPlaced>("orders", s =>
+{
+    s.MaxAge(TimeSpan.FromDays(30));
+    s.MaxLengthBytes(1_000_000_000);
+    s.MaxSegmentSizeBytes(500_000_000);
+    s.LeaderLocator(StreamLeaderLocator.LeastLeaders);
+});
+```
+
+## Agreement rules
+
+Every registration that names a stream is a statement about what that
+stream *is*, and startup reconciles the statements by verifying, never by
+re-partitioning. The full prose rules and worked examples live in
+[Partition a stream](/guides/partition-a-stream/); the reference summary:
+
+| Rule | What startup does |
+|---|---|
+| Kind must match | A `PublishSuper` against a stream a `Publish` or plain endpoint calls plain is a startup error naming both references: message type, both kinds, and the stream. A plain stream sitting where a super stream is expected (or vice versa) fails the same way. |
+| Same knob, same value | Two registrations that both set the same knob (`Partitions`, `MaxAge`, `MaxLengthBytes`, `MaxSegmentSizeBytes`, `LeaderLocator`) must set the *same* value; conflicts name both claims. |
+| Single-setter fills | A knob set by exactly one registration to the stream fills the declaration for everyone; only disagreement is an error. |
+| Missing partition count fails | A super stream that does not exist on the broker and has no registration resolving its partition count fails at startup, naming the message type and the stream. |
+| Broker wins | If the super stream already exists, its partition count is the truth: matching registrations succeed silently, disagreeing ones fail loudly, and nothing ever adds or removes partitions. |
+
+## Next
+
+Endpoint options govern a consumer's identity and start point. What happens
+when its handler keeps failing (schedules, attempt limits, and the
+dead-letter destinations) is next:
+[Retry & dead letters](/configuration/retry-and-dead-letters/).

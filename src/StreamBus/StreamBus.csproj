@@ -8,7 +8,7 @@
          version comes from the release tag. -->
     <VersionPrefix>0.2.0</VersionPrefix>
     <Authors>Nirav Patel</Authors>
-    <Description>MassTransit-style client for RabbitMQ streams on .NET 10.</Description>
+    <Description>A modern .NET client for RabbitMQ Streams. Publish and consume typed messages, with retries and dead-lettering built in.</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageTags>rabbitmq;rabbitmq-streams;streams;messaging;message-bus;dotnet</PackageTags>

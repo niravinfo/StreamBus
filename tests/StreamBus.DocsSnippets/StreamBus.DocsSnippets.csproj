@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>StreamBus.DocsSnippets</RootNamespace>
+    <!-- Docs snippets intentionally declare sample records in the global
+         namespace so pages can be copy-pasted into the harness verbatim. -->
+    <NoWarn>$(NoWarn);CA1050</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/StreamBus/StreamBus.csproj" />
+  </ItemGroup>
+</Project>

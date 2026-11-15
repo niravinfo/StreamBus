@@ -1,0 +1,286 @@
+---
+title: Add cross-cutting logic
+description: Stamp, enrich, and select messages without touching business code - write publish and consume filters, register them in DI, and hand values to the consumer with payloads.
+---
+
+Every message your services publish needs the tenant id stamped on it.
+The obvious implementation, passing the tenant into every call site and
+adding the header in every producer, is a tax you pay forever, and the one
+place that forgets is the bug you find in production. The same story
+repeats for correlation ids, metrics, and enrichment several consumers
+would otherwise copy-paste. StreamBus gives these concerns a home that
+runs *around* the pipelines instead of inside your code: **filters**,
+one per concern, registered once.
+
+If you haven't read what a filter *is* (where it sits in the publish
+and consume pipelines, the `next` contract, and the skip-versus-forward
+rules), start with [Middleware](/concepts/middleware/). This guide owns
+the practical half: writing the class, registering it in DI, and
+choosing between the typed and universal forms.
+
+## Stamp every publish
+
+The scenario, concretely: an ambient `TenantScope` holds the current
+tenant for the executing request, and every outbound message must carry
+it in an `x-tenant` header. A publish filter is a class implementing
+`IStreamPublishFilter` with one method:
+
+```csharp
+// Services/TenantFilter.cs
+public sealed class TenantScope
+{
+    public string Tenant { get; set; } = "default";
+}
+
+public sealed class TenantFilter(TenantScope ambient) : IStreamPublishFilter
+{
+    public Task OnPublish(PublishContext context, PublishNext next)
+    {
+        context.Headers.Set("x-tenant", ambient.Tenant); // filter writes win over call-site headers
+        return next();                                   // continuation: serialize and send
+    }
+}
+```
+
+Because publish filters run **before serialization**, whatever this
+method writes into `context.Headers` is what goes on the wire.
+
+Now register it, the part the concept page left out. A filter is
+resolved **once** when the bus is built and cached for the bus
+lifetime, so it must be a singleton. StreamBus registers the type for
+you when you call `UsePublishFilter`, but only if nothing else
+registered it. An explicit `AddSingleton` in your composition root is
+the honest form, because *you* control the lifetime, and the wrong
+one is rejected loudly:
+
+```csharp
+builder.Services.AddSingleton<TenantScope>();
+builder.Services.AddSingleton<TenantFilter>();   // a filter lives once, for the whole bus
+
+builder.Services.AddStreamBus((context, cfg) =>
+{
+    cfg.Host("localhost", "/", h => h.Credentials("guest", "guest"));
+
+    cfg.Publish<OrderPlaced>("orders");
+    cfg.UsePublishFilter<TenantFilter>();        // every publish on this bus
+});
+```
+
+That is the entire contract for the producer side: no producer class
+knows the tenant header exists, yet every message carries it.
+
+## Enrich every delivery
+
+The consume side is the same shape with a different interface, and
+one extra power. A filter implementing `IStreamConsumeFilter` runs
+after deserialization, before your handler; it can enrich the context,
+skip the delivery, or pass computed values down the pipeline.
+
+Take the mirror of the publish stamp: read the tenant back and stash
+it where the handler can use it, without every consumer re-reading
+the header. `context.Services` is the per-delivery DI scope the handler
+runs in, so scoped services resolve there; do **not** inject scoped
+services into the filter's constructor. The filter itself is a
+singleton, and a scoped dependency captured at construction would be a
+captive one.
+
+```csharp
+// Services/TenantEnrichmentFilter.cs
+public sealed class TenantEnrichmentFilter : IStreamConsumeFilter
+{
+    public Task OnConsume(ConsumeContext context, ConsumeNext next)
+    {
+        if (context.Headers.GetString("x-tenant") is { } tenant)
+        {
+            context.SetPayload(new TenantInfo(tenant));   // typed hand-off, not a header round-trip
+        }
+        return next();
+    }
+}
+
+public sealed record TenantInfo(string Tenant);
+```
+
+The consumer picks it up, filter to handler, with no shared mutable
+bag:
+
+```csharp
+public sealed class BillingConsumer : IConsumer<OrderPlaced>
+{
+    public Task Consume(ConsumeContext<OrderPlaced> context)
+    {
+        var tenant = context.GetPayload<TenantInfo>();  // set by an earlier filter
+        // ... bill for context.Message, attributed to tenant.Tenant
+        return Task.CompletedTask;
+    }
+}
+```
+
+Registration comes in two scopes, bus-wide and per-endpoint:
+
+```csharp
+builder.Services.AddSingleton<TenantEnrichmentFilter>();
+
+builder.Services.AddStreamBus((context, cfg) =>
+{
+    cfg.Host("localhost", "/", h => h.Credentials("guest", "guest"));
+
+    // ... the bus's publish routes, as registered above ...
+
+    cfg.UseConsumeFilter<TenantEnrichmentFilter>();      // every delivery, every endpoint
+
+    cfg.ReceiveEndpoint("orders", e =>
+    {
+        e.Consumer<BillingConsumer>("billing");
+        // e.UseConsumeFilter<SomeLocalFilter>();        // this endpoint's deliveries only
+    });
+});
+```
+
+Bus-wide filters run first, then the endpoint's own. A per-endpoint
+filter sees everything the bus-wide ones stamped, which is exactly
+the ordering that makes enrichment compose.
+
+The consume side's extra power is the **skip**: a consume filter that
+returns *without* calling `next` decides the delivery is done. The
+handler is not invoked, and the offset still advances. Selective
+handling without touching the retry machinery. When to use it, and
+the at-most-once rule it lives under, is the
+[Middleware](/concepts/middleware/) page's story.
+
+## The `next` delegate, one sentence per side
+
+- **Publish:** call `next` exactly once and await it. There is no
+  legal way to drop or fork a message on the way to the wire.
+- **Consume:** call `next` at most once: zero calls is the skip, and
+  every path either awaits `next()` or deliberately does not.
+
+Both contracts, why they differ, and the exceptions that enforce them
+(category: `StreamBusFilterContractException`, never mistaken for a
+transport failure) are the theory half on the
+[Middleware](/concepts/middleware/) page. The working rule when in
+doubt: `return await next()`.
+
+## What a filter can change, and what it cannot
+
+Practical list, per context:
+
+- **Can:** write headers (a filter's
+  write overwrites a value set at the call site via
+  `context.Headers.Set(...)`), remove headers, and
+  stash typed payloads with `SetPayload<T>` / read them back with
+  `GetPayload<T>`.
+- **Cannot:** change the stream, the routing, or the destination.
+  They were resolved from the registration (the route table)
+  before your filter saw the context, and the context objects simply
+  expose no property to mutate. *Routing is a registration
+  decision, not a middleware decision*; a reader of your code learns
+  where a message goes from the `AddStreamBus` block, and a filter
+  that could rewrite it would destroy that guarantee.
+
+A payload's lifetime is the delivery: earlier filters' writes are
+visible to later filters and to the handler, nothing leaves the
+process, and a retried delivery starts with a clean payload set. If
+your filter is deciding what a message *means*, it has become
+business logic; move it into the consumer.
+
+## Typed or universal?
+
+Both interfaces above are the universal form: they run for *every*
+publish or delivery on the bus. When a concern belongs to one message
+type only, use the typed variants (`IStreamPublishFilter<TMessage>`
+and `IStreamConsumeFilter<TMessage>`), which receive a typed context
+and attach only to that message type:
+
+```csharp
+// Runs only for OrderPlaced publishes; the payments pipeline never sees it.
+public sealed class OrderPublishFilter : IStreamPublishFilter<OrderPlaced>
+{
+    public Task OnPublish(PublishContext<OrderPlaced> context, PublishNext next)
+    {
+        context.Headers.Set("x-order-id", context.Message.OrderId); // typed access, no casting
+        return next();
+    }
+}
+```
+
+Register it with the two-type-argument overload of the same call:
+
+```csharp
+cfg.UsePublishFilter<OrderPublishFilter, OrderPlaced>();
+cfg.UseConsumeFilter<OrderValidationFilter, OrderPlaced>();
+```
+
+The reason that overload is the one to reach for is trimming and
+Native AOT: the plain `UsePublishFilter<TFilter>()` / `UseConsumeFilter<TFilter>()`
+and `Type`-argument forms *discover* the filter's typed interfaces
+with reflection at runtime and close the generic adapter then. That is
+a trimming hazard (the analyzer attributes on those overloads say so),
+and dynamic code under AOT. The two-type-argument form builds the
+adapter at the call site, so no generic type is closed at runtime.
+It removes that one hazard; it does not by itself make the whole
+library trim/AOT-safe, because the default serializer is still
+reflection-based.
+
+## Runnable examples
+
+The `examples/` directory carries these filters as complete runnable
+programs, worth reading next to this page:
+
+- `examples/StreamBus.Examples.Producer/TenantFilter.cs` and
+  `CorrelationIdFilter.cs`, universal publish filters (the exact
+  tenant stamp above, plus a W3C-style correlation id)
+- `examples/StreamBus.Examples.Producer/OrderPublishFilter.cs`, the
+  typed publish filter form
+- `examples/StreamBus.Examples.Consumer/TenantFilter.cs`, a consume
+  filter resolving a per-delivery scoped `TenantScope` from
+  `context.Services`
+- `examples/StreamBus.Examples.Consumer/OrderEventFilter.cs`, a
+  typed consume filter that rejects a poison shape by throwing (the
+  throw follows the normal retry path)
+
+## FAQ
+
+### Why does my filter have to be a singleton, and what about scoped services?
+
+A filter is resolved once when the bus is built (or the consumer
+attaches) and cached for that lifetime, so every concurrent delivery
+flows through the same instance: it must be thread-safe, hold no
+per-message state, and be registered as a singleton. A scoped or
+transient registration is rejected right there with a
+`StreamBusConfigurationException` naming the filter; cached as it
+would be, a scoped registration would silently become a captive
+dependency. Scoped services still work per message: resolve them from
+`context.Services`, the same per-delivery scope the handler runs in.
+
+### Why did the same filter registered twice throw?
+
+Both pipelines check at registration time, and a duplicate throws
+`StreamBusConfigurationException`. A filter that appears twice in one
+pipeline would simply run twice per message, double-stamping headers
+or double-counting metrics, and the error is the cheap way to learn
+that. The check knows about message types: a typed filter registered
+once for `OrderPlaced` and again for `PaymentMade` is *not* a
+duplicate, since no message would see it twice. The inverse caution,
+because the check is per scope (bus-wide list, endpoint list): do not
+register the same filter bus-wide **and** on an endpoint, because nothing
+stops that pair, and every delivery to the endpoint would run it
+twice. Register each filter once, in the one scope that fits it.
+
+### Which registration overload should I use for a typed filter?
+
+The two-type-argument one (`UsePublishFilter<TFilter, TMessage>` /
+`UseConsumeFilter<TFilter, TMessage>`), always. The one-argument and
+`Type`-argument forms exist for the universal and dynamically-chosen
+cases; for typed filters they close the generic adapter with
+reflection at runtime, which is the trimming/AOT hazard above, for
+zero benefit when the types are known at compile time.
+
+## Next
+
+Filters close the Guides tier: you can now publish, consume, recover,
+replay, and wrap both pipelines in cross-cutting behavior. What
+remains is applying StreamBus in production, and that is a
+configuration story: hosts and connections, endpoint options, retry
+and dead-letter tables, observability, TLS. Start with
+[Host & connections](/configuration/host-and-connections/).

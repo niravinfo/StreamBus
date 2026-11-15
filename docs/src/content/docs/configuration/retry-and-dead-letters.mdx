@@ -1,0 +1,104 @@
+---
+title: Retry & dead letters
+description: Reference for retry schedule methods, the RetryPolicy record, the exhaustion configuration matrix, dead-letter destination options, and the exception hierarchy.
+---
+
+This page tabulates the retry schedule methods, the raw `RetryPolicy` record, the exhaustion configuration matrix, the dead-letter destination options, and the exception hierarchy. The prose how-to, bounding a schedule, choosing a destination, and the never-skip hand-off contract, lives in [Handle failures](/guides/handle-failures/); the doctrine behind failed-delivery handling lives in [Concepts: Exceptions](/concepts/exceptions/).
+
+Schedules exist at two levels: one bus-wide default via `cfg.UseRetry(...)`, and one optional override per endpoint via `e.UseRetry(...)`. Every endpoint inherits the bus-wide schedule unless it sets its own. A retry configurator callback must set exactly one schedule; schedule methods overwrite each other, the last call wins, and a callback that sets none throws at registration.
+
+## Schedule methods
+
+| Method | Attempts it sets | Delay between attempts |
+|---|---|---|
+| `Immediate(retries)` | `retries + 1` total | none |
+| `Interval(retries, delay)` | `retries + 1` total | fixed `delay` |
+| `Intervals(d1, d2, ...)` | one per delay, plus the first delivery | per-retry, in order |
+| `Exponential(retryCount, minDelay, maxDelay)` | `retryCount + 1` total | `minDelay` doubled per attempt, capped at `maxDelay`, no jitter |
+| `None()` | `1` | the first failure exhausts immediately |
+
+Attempt counts are **totals including the first delivery**: `Immediate(5)` is six attempts, one delivery plus five retries. Validation: `retries`/`retryCount` must be non-negative, `Interval` delay non-negative, `Intervals` requires at least one non-negative delay, and `Exponential` delays must be positive.
+
+## RetryPolicy record
+
+For schedules the configurator cannot express, both levels also accept a raw `RetryPolicy` record:
+
+```csharp
+cfg.UseRetry(new RetryPolicy
+{
+    MaxAttempts = 5,
+    BaseDelay = TimeSpan.FromSeconds(1),
+    MaxDelay = TimeSpan.FromSeconds(30),
+    MaxJitter = TimeSpan.FromMilliseconds(200),
+    DelayCalculator = null,
+});
+```
+
+| Field | Default | Meaning |
+|---|---|---|
+| `MaxAttempts` | `null` | Total attempts per message including the first; `null` means no attempt limit (retried forever), `1` means no retry. A hand-off destination or `OnExhausted` callback requires a value. |
+| `BaseDelay` | `200 ms` | Base delay for the exponential schedule; growth is fixed at ×2 per attempt. |
+| `MaxDelay` | `30 s` | Upper bound for a computed delay. |
+| `MaxJitter` | `1 s` | Maximum random jitter added to a computed delay. |
+| `DelayCalculator` | `null` | Optional caller-supplied delay function `(attempt, exception)`; when set, it overrides the exponential schedule. Throwing or negative results fall back safely: the exception is logged and the exponential knobs are used, negative values are clamped to zero. |
+
+Note that `Exponential(...)` on the configurator differs from the raw record's defaults: it sets `MaxJitter` to zero (deterministic delays) and uses the `minDelay`/`maxDelay` you pass as `BaseDelay`/`MaxDelay`.
+
+## Exhaustion matrix
+
+When the attempt limit runs out, StreamBus hands the message over. The outcome depends only on what the endpoint configured:
+
+| Attempt limit | Exhaustion config | Outcome |
+|---|---|---|
+| set | `DeadLetterToStream` / `DeadLetterToQueue` | hand-off to the destination, then advance |
+| set | `OnExhausted` callback | the callback owns the outcome; a declared destination is shadowed, with a startup warning; returning advances, throwing recycles the attach (redeliver, never skip) |
+| set | neither | hand-off to the derived destination: durable classic queue `{stream}_error` |
+| unset (default) | neither | retry forever: the message stays at the head of its partition |
+| unset | destination or callback | configuration error at registration: a hand-off needs an attempt limit |
+| `None()` | any | immediate hand-off or callback on the first failure |
+
+## Dead-letter destinations
+
+A destination is declared at most once per endpoint; a second `DeadLetterTo*` call throws at registration. The shapes:
+
+```csharp
+cfg.ReceiveEndpoint("payments", e =>
+{
+    e.Consumer<PaymentConsumer>("payments-ops");
+    e.UseRetry(r => r.Immediate(5));
+    e.DeadLetterToQueue("payments-errors", DeadLetterQueueType.QuorumQueue,
+        q => q.ConfirmTimeout(TimeSpan.FromSeconds(15)));
+});
+```
+
+| Option | Default | Meaning |
+|---|---|---|
+| `DeadLetterToStream(name, spec?)` | none | An error **stream** destination, declared at startup with the destination's `StreamOptions`, the same stream-spec knobs as any other registration (`MaxAge`, `MaxLengthBytes`, `MaxSegmentSizeBytes`, `LeaderLocator` on [Endpoint options](/configuration/endpoint-options/)). Partitions are not allowed on an error-stream destination. |
+| `DeadLetterToQueue(name, type, spec?)` | none | A durable AMQP **queue** destination (classic or quorum via `DeadLetterQueueType`), declared over AMQP at startup: the only place StreamBus opens an AMQP connection. |
+| `ErrorPublishTimeout(timeout)` | `null` | Timeout for the confirmed publish to an error-stream hand-off; `null` waits indefinitely, values below one second are raised to one second. |
+| queue `ConfirmTimeout(timeout)` | `10 s` | Confirmation budget for a queue hand-off (`IErrorQueueOptionsBuilder`); must be positive, independent of the stream publish timeout. |
+
+With no destination declared, a bounded schedule derives one: the durable classic queue `{stream}_error`. Both hand-off paths bound the publish so a lost confirmation cannot wedge the partition, and a fatal failure recycles the attach for redelivery: the message is never skipped.
+
+## Exception hierarchy
+
+Every StreamBus exception derives from the abstract `StreamBusException`, so one `catch` covers the whole library surface. Doctrine, which failures are transient, which are poison, and what the runtime does with each, lives in [Concepts: Exceptions](/concepts/exceptions/).
+
+| Exception | Meaning |
+|---|---|
+| `StreamBusException` | Abstract base of every StreamBus exception. |
+| `StreamBusConfigurationException` | Invalid or contradictory configuration. |
+| `StreamBusStreamConfigurationConflictException` | Existing broker topology disagrees with the declaration. |
+| `StreamBusFilterContractException` | A filter violated the pipeline contract (returned before its continuation completed, or double-continued on publish). |
+| `StreamBusDeserializationException` | The payload does not match the consumer's type. |
+| `StreamBusNotReadyException` | The bus is not ready yet. |
+| `StreamBusPublishTransientException` | A publish failed transiently; the producer was discarded. |
+| `StreamBusPublishException` | A publish failed without a transient classification. |
+| `StreamBusStreamNotFoundException` | A referenced stream is missing. |
+| `StreamBusTimeoutException` | A budget expired; the outcome may be unknown. |
+| `StreamBusFatalException` | The bus connection is fatal. |
+
+## Next
+
+Retry schedules decide *when* a message gets another chance; observability tells you everything the bus is doing in the meantime:
+[Observability](/configuration/observability/).

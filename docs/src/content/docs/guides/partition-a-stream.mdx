@@ -1,0 +1,204 @@
+---
+title: Partition a stream
+description: Split a busy stream into a super stream end to end - routed publishing by routing key, partitioned consume that spreads across instances, the one-partition ops read, and the declaration rules that keep every process agreeing.
+---
+
+The `orders` stream has outgrown a single log: the write rate is fine, but
+the reader can't keep up, and splitting the *work* must not split the
+*ordering*: every event for one order still has to arrive in the order it
+happened. A **super stream** is the answer: one logical stream, several
+physical partitions, and a routing key that guarantees *same key, same
+partition, same order* while the partitions give your consumers parallel
+hands. Why you'd choose this route, and how to size the partition count,
+is decided in [Scale out](/guides/scale-out/); this page is the mechanics,
+publish side through consume side.
+
+A super stream is a set of physical streams named
+`{super-name}-{index}` (`orders-super-0`, `orders-super-1`, …) tied
+together by a broker-side binding. You never address a partition when
+publishing or consuming through StreamBus's registered APIs: you address
+the super stream, and the routing key picks the partition.
+
+## Register the routed publish
+
+A super-stream publish route is declared like a plain one, with two
+differences: the `PublishSuper` registration, and a partition count
+that the declaration needs in order to create the topology:
+
+```csharp
+builder.Services.AddStreamBus((context, cfg) =>
+{
+    cfg.Host("localhost", "/", h => h.Credentials("guest", "guest"));
+
+    cfg.PublishSuper<OrderPlaced>("orders-super", s => s.Partitions(3));
+});
+```
+
+The partition count can also come from the consuming side: an endpoint
+attached to the super stream declares it with `e.Partitions(3)`. Every
+registration that mentions the stream must agree on the count; if the
+*publish* side and *every* endpoint omit it, startup refuses to guess:
+
+> `Message … is registered with PublishSuper for super stream
+> 'orders-super' with no partitions. Set Partitions on the PublishSuper
+> registration (s.Partitions(n)) or Partitions on a consuming endpoint.`
+
+The error names the message type and the stream, the two facts you need
+to fix whichever registration is incomplete.
+
+The `Partitions` knob exists only on the super-stream builders. The plain
+`Publish` spec has no such member (see
+[Publish an event](/guides/publish-an-event/)), and a plain publish whose
+*target* turns out to be a super stream fails with an error that names
+both sides: which registration said what, which stream, and which call you
+meant to use.
+
+## Publish with the routing key
+
+The super-stream publish is a different call because it takes a
+**required routing key**, a compile-time parameter, so a super publish
+without a key never compiles at all:
+
+```csharp
+await bus.PublishSuperAsync(new OrderPlaced(OrderId: "o-1"), "o-1", ct);
+```
+
+The key decides everything about ordering, so choose it deliberately:
+
+- **The key is your order's identity.** All events keyed by the same
+  value land on the same partition, in publish order, forever. For
+  order-scoped work, the order id (`"o-1"`) is the natural key; for
+  tenant-scoped work, the tenant id keeps one tenant's traffic together.
+- **The key must be stable for the entity's lifetime.** This is the
+  identity-mapping doctrine: *same key, same partition, same order*. It
+  holds per key, so two different orders may interleave on the same
+  partition, and that's fine, because nothing orders them relative to
+  each other anyway.
+- **Don't key on a value that changes meaning.** A timestamp or a
+  random id per message spreads messages uniformly but orders nothing;
+  at that point you have plain partitioning, not per-entity order.
+
+The confirmation semantics are identical to a plain publish
+([Producers](/concepts/producers/)): the returned task completes when the
+broker has confirmed the append to its partition.
+
+## Attach the consumers
+
+Consuming a super stream looks exactly like consuming a plain one:
+register an endpoint on the super-stream *name*, and the same group
+spreads across instances:
+
+```csharp
+cfg.ReceiveEndpoint("orders-super", e =>
+{
+    e.Consumer<OrderConsumer>("billing");
+    e.Partitions(3);
+});
+```
+
+Deploy two instances of billing with that identical registration and
+single-active-consumer applies **per partition**: each instance becomes
+the active consumer for some subset of the three partitions, so the group
+now has genuinely parallel readers (the failover mechanics are the ones
+[Scale out](/guides/scale-out/) walks through). StreamBus discovers the
+partition streams from the broker and runs one consumer loop per
+partition inside each instance, so the group `billing` is one cursor
+identity *per partition*.
+
+Only the endpoint declaration adds `Partitions`; the `IConsumer<T>`
+handler, the group-naming rule (name it after the consuming service),
+and the at-least-once discipline carry over unchanged from
+[Consume events](/guides/consume-events/).
+
+## Reading one partition
+
+Partition streams are plain streams with composed names;
+`orders-super-1` is readable exactly like any other. Ops needs this:
+inspecting a stuck partition, replaying a slice, or draining one
+partition's backlog without touching the live consumers. Because it is
+a *plain* stream read, use the raw `ConsumeAsync` with its own throwaway
+group so you never disturb `billing`'s cursors:
+
+```csharp
+await using var reader = await bus.ConsumeAsync(
+    "orders-super-1",
+    new ConsumeOptions { ConsumerGroup = "ops-look", StartOffset = StartOffset.AlwaysFirst },
+    ctx =>
+    {
+        Console.WriteLine($"offset {ctx.Offset}: {ctx.MessageId}");
+        return Task.CompletedTask;
+    },
+    ct);
+```
+
+When this read is the *right tool*, and the caution that a throwaway
+group is still a real cursor, is a decision for the
+[replay guide](/guides/replay-a-stream/); this page owns the how.
+Different groups get everything in parallel, so `ops-look` costs billing
+nothing but broker reads.
+
+## When declarations disagree
+
+Every registration that names a stream is a statement about what that
+stream *is*, and startup reconciles them by verifying, never by
+re-partitioning:
+
+- **Kind must match.** If `PublishSuper` targets a stream that a
+  `Publish` (or a plain receive endpoint) also targets, the mixed kinds
+  are a startup error naming both references: the message type, both
+  kinds, and the stream. A
+  plain stream already sitting on the broker where a super stream is
+  expected (or vice versa) fails the same way: expected shape stated,
+  actual shape stated.
+- **The partition count must agree wherever it's said.** Two
+  registrations that both set `Partitions` must set the *same number*;
+  the conflict message names both claims.
+- **The broker's existing count wins.** If the super stream already
+  exists on the broker, its partition count is the truth: a registration
+  that matches it succeeds silently, one that disagrees fails loudly,
+  and nothing ever adds or removes partitions on an existing super
+  stream. Changing the count means building a new super stream and
+  replaying into it ([Scale out](/guides/scale-out/) explains why the
+  count is permanent).
+
+The same agreement logic covers the tuning knobs (`MaxAge`,
+`MaxLengthBytes`, segment size, leader locator): declared once, verified
+against each other and the broker, never silently reconciled.
+
+## FAQ
+
+### How many partitions should I pick?
+
+Start from the slowest handler's throughput and the stream's peak rate.
+The division method (with a worked example) lives in
+[Scale out](/guides/scale-out/), along with the reason more partitions
+never buys more order and the broker's own account limits on how many
+streams you may create. Pick a number you can defend: the count is
+permanent for the life of the stream.
+
+### What breaks if my routing-key logic changes?
+
+Ordering moves, nothing else. Partition choice is purely
+`hash(key) into partition`, so changing the key *for a given entity*
+routes that entity's later events to a different partition than its
+earlier ones. The per-entity order you built the super stream *for*
+exists only within one key's lifetime on one partition: events split
+across the old and new partition have no guaranteed relative order, and
+a replaying consumer will interleave them. Treat a key-algorithm change
+like a stream-identity change: version it deliberately, and if it must
+not reorder, keep the key mapping stable instead.
+
+### Can a plain-stream consumer read a super stream?
+
+No; the kinds conflict at attach. An endpoint (or raw consume) treats
+the stream as plain, but a super stream's content lives behind its
+binding, and startup's reconciliation rejects the combination with an
+error naming what each side expected. Read the super stream with a
+super endpoint, or read one named partition (`orders-super-1`) as the
+plain stream it is; that's the whole reason the composed names exist.
+
+## Next
+
+Different buses for different brokers or vhosts: marker types, the DI
+resolution model, and what fails when the marker is wrong:
+[Use multiple buses](/guides/use-multiple-buses/).

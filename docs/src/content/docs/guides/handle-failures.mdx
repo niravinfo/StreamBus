@@ -1,0 +1,243 @@
+---
+title: Handle failures
+description: Bound your retry schedule, choose where exhausted messages land, inspect the error envelope, and recover failed messages after a fix.
+---
+
+Most failures are boring. A database deadlock, a downstream service that is
+busy for five seconds: these usually clear on the second attempt, and a
+bounded retry schedule is exactly the tool for them. The rest (a payload
+your consumer can't parse, a validation that will never pass) never clear
+at all, and retrying them just parks the partition wearing a busy light.
+This page is the how-to for both: bind a schedule to the endpoint, decide
+where the attempts land when they run out, read what arrives there, and
+put messages back once you've fixed the cause. What a failure *is* on a
+log (no per-message ack, the blocked-partition consequence, the
+transient-vs-poison doctrine) is taught once in
+[Exceptions](/concepts/exceptions/); here we configure it.
+
+## Bound the schedule, name the destination
+
+Billing's endpoint takes an `OrderPlaced`, invoices it, and occasionally
+trips over a deadlock. Give the endpoint a bounded schedule, and give the
+failures somewhere to land:
+
+```csharp
+cfg.ReceiveEndpoint("orders", e =>
+{
+    e.Consumer<OrderConsumer>("billing");
+    e.UseRetry(r => r.Exponential(4,
+        TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(30)));
+});
+```
+
+`Exponential(4, 1s, 30s)` delivers the message once, retries it up to four
+times with delays doubling from one second and capped at thirty, and then
+gives up: five attempts total. Notice what is *not* there. No
+destination. When an endpoint has a bounded schedule but no hand-off
+configured, StreamBus derives one: the message is published to a classic
+queue named `{stream}_error` (`orders_error` here) with the original body
+and the failure's metadata attached. That queue shows up in the RabbitMQ
+management UI like any other queue: ops can watch it grow at 2am, purge
+it, or drain it, without knowing anything about StreamBus. When a message
+lands there, the offset finally advances and the rest of the partition
+flows on.
+
+If `{stream}_error` isn't what you want, name the destination yourself,
+one per endpoint; a second `DeadLetterTo*` call throws at registration:
+
+```csharp
+cfg.ReceiveEndpoint("orders", e =>
+{
+    e.Consumer<OrderConsumer>("billing");
+    e.UseRetry(r => r.Immediate(5));
+
+    e.DeadLetterToStream("orders-errors", s => s.MaxAge(TimeSpan.FromDays(30)));
+    // or, if ops drains this by hand:
+    // e.DeadLetterToQueue("orders-errors", DeadLetterQueueType.QuorumQueue,
+    //     q => q.ConfirmTimeout(TimeSpan.FromSeconds(15)));
+});
+```
+
+The full exhaustion matrix (what each combination of schedule, destination,
+and callback does) and the destination option tables live in
+[Retry & dead letters](/configuration/retry-and-dead-letters/). Two things
+are worth carrying with you: the queue hand-off is `ConfirmTimeout`-bounded
+(it never wedges the partition waiting on a lost confirmation), and a
+hand-off requires an attempt limit. A destination declared against an
+unbounded schedule is a configuration error at registration, because it
+would never fire.
+
+## Schedules that fit the failure
+
+A configurator callback sets **exactly one** schedule: schedule calls
+overwrite each other, and a callback that sets none throws. The five
+keywords, with what each is for:
+
+| Schedule | Total attempts | Delay pattern | Fits |
+|---|---|---|---|
+| `Immediate(3)` | 4 | none | cheap, instantly-recoverable failures |
+| `Interval(3, delay)` | 4 | fixed | downstream that needs a beat to recover |
+| `Intervals(200ms, 2s, 10s)` | 4 | per-retry, in order | a rise you shape yourself |
+| `Exponential(5, 1s, 60s)` | 6 | 1s × 2^(attempt − 1), capped, no jitter | a busy service; the default instinct |
+| `None()` | 1 | none | failures you want to hand off immediately |
+
+Attempt counts are **totals, including the first delivery**:
+`Immediate(5)` is six attempts, one delivery plus five retries.
+`Exponential(retryCount, minDelay, maxDelay)` takes the *retry* count, so
+`Exponential(4, ...)` above is five attempts.
+
+## When attempts run out
+
+Once the attempt limit hits, the message is exhausted and handed off.
+Whatever the destination, three guarantees hold: the original body and
+the sender's headers travel unchanged (nothing is repackaged), a
+transiently failing hand-off retries without advancing (the message is
+never skipped), and the offset advances only after the hand-off succeeds.
+
+**Queue or stream?** Pick by who acts on the failures. If humans drain
+them (an ops dashboard, a 2am alert), a **queue** is right: it's visible
+in the management UI, ops already know how to work it, and the derived
+`{stream}_error` default is exactly this. If the failures feed a *pipeline*,
+a service that tails failures, classifies them, or replays them
+automatically, an **error stream** is right: append-only, replayable from
+the beginning. Humans drain queues; services tail streams.
+
+**Full control: `OnExhausted`.** When neither stock destination fits (say,
+the failure should go to a stream your ops tooling owns, with its own
+message type), take the outcome into your own hands. Register a callback
+and it owns the exhaustion instead of any declared destination (a declared
+one is shadowed, with a startup warning):
+
+```csharp
+cfg.Publish<PaymentFailed>("payments-dlq");  // the callback's target
+
+cfg.ReceiveEndpoint("payments", e =>
+{
+    e.Consumer<PaymentsConsumer>("payments-ops");
+    e.UseRetry(r => r.Immediate(5));
+    e.OnExhausted(async (ctx, ct) =>
+    {
+        var bus = ctx.GetService<IStreamBus>();
+        await bus.PublishRawAsync("payments-dlq", ctx.Body, new PublishOptions(), ct);
+    });
+});
+```
+
+The callback receives the whole failed delivery in `ExhaustedContext`:
+source stream, partition, and offset; the raw `Body`; message and
+correlation ids; headers; the attempt count; the `Exception` itself; the
+failure timestamp; and the per-delivery DI scope. `ctx.GetService<T>()`
+resolves from it, which is how the snippet above reaches the bus. Return
+from the callback and the offset advances past the message; throw and the
+attach recycles for redelivery. StreamBus never silently skips.
+
+## Inspectable failures
+
+A dead letter is not an opaque blob. Alongside the untouched body and the
+sender's own headers, the hand-off stamps failure metadata under
+`streambus.error.*` headers:
+
+- `streambus.error.source-stream`, `source-partition`, and
+  `source-offset` say where the message failed.
+- `streambus.error.exception-type`, `exception-message`, and
+  `exception-stack` say what happened.
+- `streambus.error.attempts` says how many tries it got (a total, counting
+  the first delivery).
+- `streambus.error.failed-at` records when it exhausted, UTC.
+- Plus `message-id`, `correlation-id`, and `sent-time` when they were set.
+
+Because it's all plain AMQP application properties, any compatible client
+can drain the destination: a queue from the management UI or any AMQP
+tool, a stream with the raw consumer. For the code side, StreamBus ships
+`ErrorEnvelope` to parse the story back out. Say billing declared an error
+*stream* instead of the derived queue
+(`e.DeadLetterToStream("orders-errors")`, from the options above); here
+is the drain loop, raw-consuming the error stream, parsing each
+delivery, and doing something useful with the failure:
+
+```csharp
+await using var inspector = await bus.ConsumeAsync(
+    "orders-errors",
+    new ConsumeOptions { ConsumerGroup = "error-inspector", StartOffset = StartOffset.AlwaysFirst },
+    ctx =>
+    {
+        if (ErrorEnvelope.TryParse("orders-errors", ctx.Body.ToArray(), ctx.Headers.All, out var envelope)
+            && envelope is not null)
+        {
+            Console.WriteLine(
+                $"{envelope.ExceptionType} at {envelope.SourceStream}/{envelope.SourceOffset}: " +
+                $"{envelope.ExceptionMessage}");
+            // ... decide: alert, file a ticket, or archive
+        }
+        return Task.CompletedTask;
+    },
+    ct);
+```
+
+`TryParse` returns `false` for a body that isn't a StreamBus dead letter
+(say, a destination someone else wrote to), so a mixed queue is safe to drain.
+
+## Recover after a fix
+
+The failure was a serialization bug; you deployed the fix; the dead
+letters need to become orders again. The moves are: drain the destination
+(the loop above), decide per message (some failures are retriable, some
+are junk), and **re-publish the recovered messages as new messages, with
+fresh ids**. Never resurrect the old `MessageId`: at-least-once dedup
+machinery would treat the replay of an old id as the duplicate it looks
+like, and silently drop it.
+
+And the boundary here is deliberate. **StreamBus's responsibility ends at
+the hand-off.** The library guarantees the failure lands somewhere
+inspectable with its context intact; consuming from the error
+destination, diagnosing, and republishing are your application's job.
+
+:::note[Bind your schedules]
+A poison message won't retry away. The same body will fail identically on
+every attempt, forever, and on the default unbounded schedule that means
+the partition parks for good. Bound the schedule on every endpoint that
+can't afford a parked partition, and pick the hand-off with care
+([Retry & dead letters](/configuration/retry-and-dead-letters/) has the
+tables). Exception-level filtering (retry the transient ones, hand off
+the poison immediately) is on the roadmap; the intended semantics are
+described in [Exceptions](/concepts/exceptions/).
+:::
+
+## FAQ
+
+### Why not just retry forever?
+
+Because a stream cursor cannot skip. An unbounded schedule means there is
+no exhaustion, so no hand-off ever fires, and the offset never moves past
+the failing message. A poison exception retried forever parks its
+partition, and with it every message behind it, for as long as the
+service runs. Infinite patience isn't a reliability posture here; it's an
+outage with a busy light on.
+
+### One stuck message delays the whole partition. Really?
+
+It does, and that's back-pressure by design, not a defect. A stream
+delivers in order; the stored offset is the checkpoint, and it sits behind
+the failure until the failure resolves. That is the same mechanism that
+guarantees order for everything *behind* it, and it's why the fix is
+"bound the schedule and hand off," not "skip ahead": the cursor never
+guesses what you meant.
+
+### How many attempts should I configure?
+
+Judgment, guided by two questions. *How long does the failure you're
+bracing for actually last?* A deadlock clears in milliseconds; a restarted
+downstream service in tens of seconds. Shape the schedule's total span
+to comfortably outlast the transient case (that's what `Exponential`
+caps are for). *What does a failed handler cost?* The attempts run with
+the partition blocked, so a long ceiling on an expensive failure is a
+long stall. When you genuinely can't predict, a bounded exponential
+(5–6 attempts, tens of seconds of ceiling) plus a hand-off is a safe
+default; the exact per-schedule reference lives in
+[Retry & dead letters](/configuration/retry-and-dead-letters/).
+
+## Next
+
+Failures handled, billing keeps up. Until the day you deploy a second
+instance and start asking what happens to the group:
+[Scale out](/guides/scale-out/).

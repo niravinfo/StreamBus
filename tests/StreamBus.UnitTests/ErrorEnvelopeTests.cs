@@ -147,7 +147,7 @@ public sealed class ErrorEnvelopeTests
     [Fact]
     public void User_headers_travel_on_the_wire_as_plain_keys_not_as_a_blob()
     {
-        // MassTransit model: the original headers are carried as-is next to the
+        // The original headers are carried as-is next to the
         // error metadata; nothing repackaged into a single JSON field.
         var sample = Sample() with
         {

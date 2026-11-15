@@ -1,0 +1,147 @@
+---
+title: Scale out
+description: Run a second instance of your consumer - get failover for free on a plain stream, and real parallel throughput by partitioning the stream into a super stream.
+---
+
+Tomorrow, two instances of billing deploy instead of one. Tonight you
+want to know what that means: does each instance get half the orders?
+Does anything break? Does the group name care? The short version: on a
+plain stream a second instance buys you **failover, not throughput**,
+and the throughput answer is to split the stream itself. This page is the
+why of both, plus the one knob you must not turn. The group/SAC model
+behind it (one cursor per group, single-active-consumer as the
+gatekeeper) is taught once in
+[Consumers](/concepts/consumers/); here we apply it.
+
+## Nothing in your code changes
+
+The registration you wrote in [Consume events](/guides/consume-events/)
+is already the multi-instance registration. Both instances deploy with
+byte-identical bus code (same stream, same consumer, same group),
+because the group, not the process, is the consumer's identity:
+
+```csharp
+// identical in every instance of the billing service
+cfg.ReceiveEndpoint("orders", e =>
+{
+    e.Consumer<OrderConsumer>("billing");
+});
+```
+
+That's the last code on this page. Scaling out StreamBus is a topology
+question, not an API question.
+
+## A plain stream: failover only
+
+With the default `SingleActiveConsumer = true` (typed endpoints default
+it on; there is nothing to opt into), the broker admits **one active
+consumer per group** on a plain stream. Instance A reads; instance B
+attaches and stands by. If A dies, whether from crash, deploy, or network
+partition, the broker promotes B, which resumes from the group's stored offset and
+keeps going. Failover, for free, with no leader election of your own.
+
+What you do *not* get is speed. A plain stream has **one cursor per
+group**: the group's offset is a single number, and it can only be in
+one place. Two active readers would each receive every message, each
+believing it owns the checkpoint, so single-active-consumer exists
+precisely to make sure they don't. Adding instances to a plain-stream
+consumer adds standby capacity, not parallel readers.
+
+## The throughput answer: a super stream
+
+If billing must chew orders faster than one instance can, the stream has
+to split: a **super stream**, N partitions, each its own log, with the
+publisher routing every message to one partition by routing key. Then
+the same group spreads: single-active-consumer applies **per partition**,
+so with four partitions and two instances, each instance is the active
+consumer for two of them. Add instances up to the partition count and
+you add genuinely parallel readers, while every message for one entity
+(order, tenant…) still lands on one partition, in order, because the
+routing key chose it.
+
+Super streams change the publish side too, adding a routed publish and a
+partition count that must match on every node, so the how lives in its
+own guide: [Partition a stream](/guides/partition-a-stream/). What
+matters here is the decision: **if your bottleneck is one consumer's
+hands, partitioning is the only horizontal move.**
+
+:::warning[Don't disable SAC across processes]
+`SingleActiveConsumer = false` fans delivery out to *every* instance in
+the group. Inside one process, StreamBus guards the stored offset and
+rejects non-forward writes. Across processes there is no shared guard:
+two instances both receive every message (**duplicates, never skips**),
+and each stores its own idea of the cursor, so a lagging instance can
+drag the group's stored offset *backwards* (the
+`streambus_offset_regressed_total` counter exists for exactly this).
+The redelivered gap then arrives as a fresh wave of duplicates. Disable
+single-active-consumer only when the group's members are known to share
+one process, and on a plain stream, there is no throughput reason to.
+:::
+
+## Finding your partition count
+
+Start from the **slowest handler's throughput**, not from the stream's.
+A partition's messages are delivered serially, so one partition can
+never go faster than one instance processing one message at a time.
+Measure how many messages per second a single billing instance
+sustains (with its real handler and real dependencies), measure (or
+budget) the stream's peak rate, and divide. If one instance handles 70
+orders/second and the peak is 400, then 400 / 70 ≈ 5.7, so **six
+partitions**: six × 70 = 420 messages/second of partition capacity,
+comfortably over the peak. The failover margin is not in the partition
+count (six is what the *peak* needs) but in how many instances you
+run: seven instances against six partitions means one can die at full
+load and each survivor still owns one serial partition at its full 70,
+so the system keeps its 420 and the queue stays clear. Division first,
+then margin, and both numbers survive a reader checking them.
+
+Two constraints keep the number honest. **More partitions is not more
+order**; per-entity order comes from the routing key, not the count.
+six partitions order an order-id's events exactly as well as two,
+never better. And **the count is permanent**: a super stream's
+partition set is fixed at creation, the broker never shrinks or grows
+it, and a plain stream cannot gain partitions later. It would have to
+become a different stream. Changing your partition count means building
+a new super stream and replaying into it, so pick a number you can
+defend and treat it like a schema: revision-worthy, not tweak-worthy.
+(The declaration rules, and the conflict you get for disagreeing with
+the broker about the count, are tabulated in
+[Partition a stream](/guides/partition-a-stream/).)
+
+## FAQ
+
+### How do I decide the group name for scaling?
+
+The rule from [Consume events](/guides/consume-events/) holds
+unchanged: name the group **after the consuming service, never after
+the stream**. When billing runs two instances, `"billing"` is one
+logical consumer that happens to have two processes, which is exactly
+what the group is for. `"orders-group"` would be a cursor identity no
+instance owns and invites some *other* service to share by mistake.
+
+### Does adding instances change my delivery guarantees?
+
+No. Delivery stays **at-least-once** whether you run one instance or
+ten, on a plain stream or a super stream: offsets are stored after your
+handler completes, a crash or promote means the tail since the last
+stored offset is redelivered, and duplicates are the normal outcome.
+Scale-out changes *how many readers* exist, not the contract: your
+handlers stay idempotent and your `MessageId` dedup stays on
+([Streams](/concepts/streams/) teaches why).
+
+### What happens when a partition's consumer dies?
+
+SAC failover, then a redelivered tail. The broker notices the active
+consumer for that partition is gone and promotes a standby from the
+same group; it resumes from the group's stored offset for that
+partition, and everything processed-but-not-yet-stored arrives again
+(on the default store-every-message cadence, that tail is at most one
+message deep). If the dead instance was the *only* one, the partition
+waits for a process to come back. Other partitions never notice: one
+partition's failover is nobody else's outage.
+
+## Next
+
+Convinced, and need the steps? Routed publishing, partition counts,
+and the endpoint that spreads across instances:
+[Partition a stream](/guides/partition-a-stream/).

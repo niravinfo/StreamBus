@@ -1,0 +1,55 @@
+---
+title: Introduction
+description: What StreamBus is, the concepts worth understanding before you write code, and how this documentation is meant to be read.
+---
+
+import { CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+:::tip[Want to just run something?]
+Skip ahead to [Get started](/guides/get-started/); you can always come back for the concepts.
+
+**StreamBus is a .NET client for RabbitMQ Streams: you declare your streams and consumers in code, and it turns publishing, consuming, retries, dead-lettering, and connection supervision into configuration instead of infrastructure you own.**
+
+Before you start writing any code, and especially before you port assumptions over from a queue-based broker, it is worth understanding the model underneath. RabbitMQ Streams is an append-only log, and that one fact reshapes everything built on it: how consumers keep their place, what failure handling means, why duplicates are normal. The pages in this section explain that model so the API reads as deliberate design rather than a pile of options. An hour here saves the debugging that comes from treating a log like a queue.
+
+## Understand the concepts before you code
+
+Six ideas carry the whole library. Once they click, almost every option and default is predictable:
+
+- Streams are logs, not queues. A stream is an append-only log: messages are never removed on read, so any number of readers can replay the same history. If you are coming from AMQP queues, this is the first thing to unlearn.
+- **Readers track their position by offset, and the offset belongs to a consumer group.** A group is the cursor: instances sharing a group name split and resume the work; groups with different names each see every message.
+- Delivery is at-least-once. After a disconnect, the tail since the last stored offset is redelivered. Duplicates are expected, so handlers must tolerate them.
+- **A message is a fact, and its name should say so.** Events are named in the past tense, carry state rather than behavior, and form a contract shared by every service that reads them.
+- **A consumer is a typed handler plus a group name, registered against a stream.** It is not something you dispatch to ad hoc: the consumption topology is a registration decision.
+- **When a handler throws, the log does not care; StreamBus does.** There is no per-message ack to fall back on, so StreamBus retries on a schedule, hands exhausted messages to a dead letter, and only then moves on.
+
+Each of these has a page of its own:
+
+{/* LinkCard hrefs are JSX attributes, so the plugin does not rewrite them; the base path is hardcoded. */}
+
+<CardGrid>
+  <LinkCard title="Streams" href="/StreamBus/concepts/streams/"
+    description="Append-only logs: offsets, consumer groups, retention, and how streams differ from queues." />
+  <LinkCard title="Messages" href="/StreamBus/concepts/messages/"
+    description="What a good message looks like: naming, contracts, and the envelope every message carries." />
+  <LinkCard title="Producers" href="/StreamBus/concepts/producers/"
+    description="Publishing as appending a fact, broker confirmation, and how routes are decided at registration." />
+  <LinkCard title="Consumers" href="/StreamBus/concepts/consumers/"
+    description="Groups as cursors: scaling out, independent readers, and single-active consumer." />
+  <LinkCard title="Middleware" href="/StreamBus/concepts/middleware/"
+    description="The two pipelines around every publish and delivery, and what a filter may (and may never) change." />
+  <LinkCard title="Exceptions" href="/StreamBus/concepts/exceptions/"
+    description="Failure on a log: retry schedules, dead letters, and why a poison message parks a partition until bounded." />
+</CardGrid>
+
+## The learning path
+
+The documentation is organized in three tiers, meant to be read in this order:
+
+1. **Concepts** (this section) is the model: what a stream is, what a message is, what publishing and consuming mean here, and what happens on failure. No application code; teach first.
+2. **Guides** are the how: get started, publish an event, consume events, handle failures, scale out, and the rest, each one a focused, runnable walkthrough.
+3. **Configuration** is the reference: every host, endpoint, retry, and security option in tables, with defaults.
+
+StreamBus is built on `Microsoft.Extensions.Hosting` and dependency injection, so the shape should already be familiar. One `AddStreamBus` call registers your topology and a hosted service that starts it with the host. The bus is a background service you already know how to run, monitor, and shut down. There is no assembly scanning, no attributes, no settings binder: a reader of your code sees the entire message flow in the registration block, and that block is validated eagerly at startup rather than failing later at runtime.
+
+The reading order starts where the model starts: continue with [Streams](/concepts/streams/), the log-vs-queue foundation everything else builds on.

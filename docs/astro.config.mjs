@@ -1,5 +1,6 @@
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
+import { starlightBasePath } from 'starlight-base-path';
 
 // https://astro.build/config
 export default defineConfig({
@@ -8,8 +9,9 @@ export default defineConfig({
   base: '/StreamBus',
   integrations: [
     starlight({
+      plugins: [starlightBasePath()],
       title: 'StreamBus',
-      description: 'MassTransit-style client for RabbitMQ streams on .NET',
+      description: 'A modern .NET client for RabbitMQ Streams.',
       social: [
         {
           icon: 'github',
@@ -19,25 +21,41 @@ export default defineConfig({
       ],
       sidebar: [
         {
-          label: 'Getting Started',
-          items: [{ slug: 'guides/getting-started' }],
-        },
-        {
-          label: 'Core',
+          label: 'Concepts',
           items: [
-            { slug: 'guides/configuration' },
-            { slug: 'guides/publishing' },
-            { slug: 'guides/consuming' },
+            { slug: 'concepts/introduction' },
+            { slug: 'concepts/streams' },
+            { slug: 'concepts/messages' },
+            { slug: 'concepts/producers' },
+            { slug: 'concepts/consumers' },
+            { slug: 'concepts/middleware' },
+            { slug: 'concepts/exceptions' },
           ],
         },
         {
-          label: 'Advanced',
+          label: 'Guides',
           items: [
-            { slug: 'guides/errors' },
-            { slug: 'guides/observability' },
+            { slug: 'guides/get-started' },
+            { slug: 'guides/publish-an-event' },
+            { slug: 'guides/consume-events' },
+            { slug: 'guides/handle-failures' },
+            { slug: 'guides/scale-out' },
+            { slug: 'guides/partition-a-stream' },
+            { slug: 'guides/use-multiple-buses' },
+            { slug: 'guides/replay-a-stream' },
+            { slug: 'guides/add-cross-cutting-logic' },
           ],
         },
-        { slug: 'guides/changelog' },
+        {
+          label: 'Configuration',
+          items: [
+            { slug: 'configuration/host-and-connections' },
+            { slug: 'configuration/endpoint-options' },
+            { slug: 'configuration/retry-and-dead-letters' },
+            { slug: 'configuration/observability' },
+            { slug: 'configuration/transport-security' },
+          ],
+        },
       ],
     }),
   ],

@@ -1,0 +1,1097 @@
+using System.Reflection;
+using System.Security.Authentication;
+using System.Net.Security;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using StreamBus;
+
+namespace StreamBus.DocsSnippets;
+
+/// <summary>
+/// Harness that verifies every C# snippet shown in the docs compiles and
+/// passes <c>AddStreamBus</c> registration-time validation.
+/// </summary>
+/// <remarks>
+/// Each documentation page adds a <c>Verify&lt;Page&gt;()</c> method (e.g.
+/// <see cref="VerifyHarnessSmoke"/>); <see cref="Main"/> discovers and runs
+/// every <c>Verify*</c> method automatically. A failed registration prints
+/// <c>FAILED: &lt;page&gt; : &lt;message&gt;</c> and exits non-zero; success
+/// prints <c>ALL SNIPPET REGISTRATIONS VALID</c>.
+/// </remarks>
+internal static class Program
+{
+    internal static int Main()
+    {
+        var failures = 0;
+
+        foreach (var verify in typeof(Program).GetMethods(BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)
+            .Where(m => m.Name.StartsWith("Verify", StringComparison.Ordinal)
+                && m.ReturnType == typeof(void)
+                && m.GetParameters().Length == 0)
+            .OrderBy(m => m.Name, StringComparer.Ordinal))
+        {
+            try
+            {
+                verify.Invoke(null, null);
+            }
+            catch (TargetInvocationException ex)
+            {
+                failures++;
+                Console.Error.WriteLine($"FAILED: {verify.Name} : {ex.InnerException?.Message ?? ex.Message}");
+            }
+        }
+
+        if (failures > 0)
+            return 1;
+
+        Console.WriteLine("ALL SNIPPET REGISTRATIONS VALID");
+        return 0;
+    }
+
+    /// <summary>
+    /// Shared helper for page verification methods: applies <paramref name="configure"/>
+    /// to a fresh <see cref="IServiceCollection"/>, then builds the provider so
+    /// registration-time validation and container construction both run. No
+    /// broker connection is made (buses connect on host start, which we never trigger).
+    /// </summary>
+    internal static void RegisterAndValidate(Action<IServiceCollection> configure)
+    {
+        var services = new ServiceCollection();
+        configure(services);
+        using var provider = services.BuildServiceProvider();
+    }
+
+    // Listed first alphabetically by design: proves the harness pattern works.
+    private static void VerifyHarnessSmoke() => RegisterAndValidate(services =>
+        services.AddStreamBus((_, cfg) =>
+            cfg.Host("localhost", "/", h => h.Credentials("guest", "guest"))));
+
+    /// <summary>
+    /// Guides/Get started - the page's registration block (Host + Publish +
+    /// ReceiveEndpoint + UseRetry) plus the blocking-start host options.
+    /// </summary>
+    /// <remarks>
+    /// The <c>OrderPlaced</c>, <c>OrderConsumer</c>, and <c>OrderPublisher</c>
+    /// classes from the page's full Program.cs are reproduced here in
+    /// <see cref="GetStartedSample"/>; registration-time validation covers
+    /// the consumer binding, group requirement, and retry policy.
+    /// </remarks>
+    private static void VerifyGetStarted() => RegisterAndValidate(services =>
+    {
+        services.AddStreamBus((_, cfg) =>
+        {
+            cfg.Host("localhost", "/", h => h.Credentials("guest", "guest"));
+
+            cfg.Publish<GetStartedSample.OrderPlaced>("orders");
+
+            cfg.ReceiveEndpoint("orders", e =>
+            {
+                e.Consumer<GetStartedSample.OrderConsumer>("billing");
+                e.UseRetry(r => r.Immediate(3));
+            });
+        });
+
+        services.AddOptions<StreamBusHostOptions>().Configure(o =>
+        {
+            o.WaitUntilStarted = true;
+            o.StartTimeout = TimeSpan.FromSeconds(30);
+        });
+
+        services.AddHostedService<GetStartedSample.OrderPublisher>();
+    });
+
+    /// <summary>
+    /// Guides/Publish an event - the declare-route registration block.
+    /// The publish call snippets (basic pair, Properties/Headers,
+    /// Readiness/ConfirmTimeout budgets, PublishRawAsync, explicit-target
+    /// PublishAsync) are reproduced in <see cref="PublishAnEventSample"/>
+    /// so their syntax compiles, but are NOT executed: publishing needs a
+    /// live broker connection, which the harness never starts. The
+    /// explicit-target stream ("orders-audit") is intentionally NOT
+    /// registered (the page's point: it must be declared, not
+    /// auto-created), so only the page's registration block is here.
+    /// </summary>
+    private static void VerifyPublishAnEvent() => RegisterAndValidate(services =>
+        services.AddStreamBus((_, cfg) =>
+        {
+            cfg.Host("localhost", "/", h => h.Credentials("guest", "guest"));
+
+            cfg.Publish<PublishAnEventSample.OrderPlaced>("orders");
+        }));
+
+    /// <summary>
+    /// Guides/Consume events - the page's two endpoint registrations: the
+    /// billing endpoint (group "billing") and the audit endpoint (group
+    /// "audit") on the SAME "orders" stream, proving the two-endpoint
+    /// pattern validates. The consumer classes and the ConsumeContext tour
+    /// snippets (coordinates, MessageId dedup, typed header getters,
+    /// Services resolve) live in <see cref="ConsumeEventsSample"/> so their
+    /// syntax compiles; only the registration is exercised (needs no broker).
+    /// The start_offset/StartOffset FAQ prose has no snippet on the page.
+    /// </summary>
+    private static void VerifyConsumeEvents() => RegisterAndValidate(services =>
+    {
+        services.AddScoped<ConsumeEventsSample.IInvoicer, ConsumeEventsSample.Invoicer>();
+
+        services.AddStreamBus((_, cfg) =>
+        {
+            cfg.Host("localhost", "/", h => h.Credentials("guest", "guest"));
+
+            cfg.Publish<ConsumeEventsSample.OrderPlaced>("orders");
+
+            // Billing's endpoint, from the page's registration block.
+            cfg.ReceiveEndpoint("orders", e =>
+            {
+                e.Consumer<ConsumeEventsSample.OrderConsumer>("billing");
+            });
+
+            // Audit's endpoint from "A second team wants the same events":
+            // same stream, different group - an independent cursor.
+            cfg.ReceiveEndpoint("orders", e =>
+            {
+                e.Consumer<ConsumeEventsSample.AuditConsumer>("audit");
+            });
+        });
+    });
+
+    /// <summary>
+    /// Concepts/Middleware - the composed registration sample that teaches
+    /// scoping and ordering: bus-wide publish/consume filters plus one
+    /// endpoint-scoped consume filter. The filter classes and message types
+    /// live in this namespace so the snippet shape matches the page while
+    /// staying isolated from other pages' samples.
+    /// </summary>
+    private static void VerifyMiddleware() => RegisterAndValidate(services => services
+        .AddSingleton<MiddlewareSample.TenantFilter>()
+        .AddSingleton<MiddlewareSample.MetricsFilter>()
+        .AddSingleton<MiddlewareSample.EnrichmentFilter>()
+        .AddStreamBus((_, cfg) =>
+        {
+            cfg.Host("localhost", "/", h => h.Credentials("guest", "guest"));
+
+            cfg.UsePublishFilter<MiddlewareSample.TenantFilter>();
+            cfg.UseConsumeFilter<MiddlewareSample.MetricsFilter>();
+
+            cfg.ReceiveEndpoint("orders", e =>
+            {
+                e.Consumer<MiddlewareSample.OrderConsumer>("billing");
+                e.UseConsumeFilter<MiddlewareSample.EnrichmentFilter>();
+            });
+        }));
+
+/// <summary>
+/// Guides/Handle failures - the page's registration snippets: the bounded
+/// schedules (Exponential on billing, Immediate on payments), the explicit
+/// stream dead-letter destination with MaxAge, and the OnExhausted
+/// callback publishing the raw body to its target stream. The commented
+/// queue alternative (QuorumQueue + ConfirmTimeout) on the page is
+/// replaced here with the stream call the later sections build on - the
+/// page presents the two as either/or because a second DeadLetterTo* call
+/// on one endpoint throws. The ErrorEnvelope drain loop and the
+/// PaymentsConsumer live in <see cref="HandleFailuresSample"/> so their
+/// syntax compiles; consuming needs a live broker, so only registration is
+/// exercised.
+/// </summary>
+private static void VerifyHandleFailures() => RegisterAndValidate(services =>
+    services.AddStreamBus((_, cfg) =>
+    {
+        cfg.Host("localhost", "/", h => h.Credentials("guest", "guest"));
+
+        cfg.Publish<HandleFailuresSample.OrderPlaced>("orders");
+        cfg.Publish<HandleFailuresSample.PaymentFailed>("payments-dlq");
+
+        // From "Bound the schedule, name the destination": bounded schedule,
+        // derived hand-off (no destination declared).
+        cfg.ReceiveEndpoint("orders", e =>
+        {
+            e.Consumer<HandleFailuresSample.OrderConsumer>("billing");
+            e.UseRetry(r => r.Exponential(4,
+                TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(30)));
+        });
+
+        // The explicit-destination form: named error stream with MaxAge. The
+        // page shows this as an alternative shape of the SAME billing
+        // endpoint; the harness registers it under its own group so both
+        // shapes exercise registration validation in one run.
+        cfg.ReceiveEndpoint("orders", e =>
+        {
+            e.Consumer<HandleFailuresSample.OrderConsumer>("billing-explicit");
+            e.UseRetry(r => r.Immediate(5));
+            e.DeadLetterToStream("orders-errors", s => s.MaxAge(TimeSpan.FromDays(30)));
+        });
+
+        // From "When attempts run out": OnExhausted owns the outcome.
+        cfg.ReceiveEndpoint("payments", e =>
+        {
+            e.Consumer<HandleFailuresSample.PaymentsConsumer>("payments-ops");
+            e.UseRetry(r => r.Immediate(5));
+            e.OnExhausted(async (ctx, ct) =>
+            {
+                var bus = ctx.GetService<IStreamBus>();
+                await bus.PublishRawAsync("payments-dlq", ctx.Body, new PublishOptions(), ct);
+            });
+        });
+    }));
+
+/// <summary>
+/// Guides/Scale out - the page's single code block: the billing endpoint
+/// registration that deploys byte-identical in every instance (same
+/// stream, same consumer class, same group). That is the whole page-point:
+/// scale-out changes topology, not API, so there is nothing else to
+/// register - the SAC warning knob (SingleActiveConsumer) is deliberately
+/// NOT exercised here, because the page's doctrine is to leave it at its
+/// default (true), which this registration does implicitly.
+/// </summary>
+private static void VerifyScaleOut() => RegisterAndValidate(services =>
+    services.AddStreamBus((_, cfg) =>
+    {
+        cfg.Host("localhost", "/", h => h.Credentials("guest", "guest"));
+
+        cfg.Publish<ScaleOutSample.OrderPlaced>("orders");
+
+        // From "Nothing in your code changes" - identical in every
+        // instance; the group "billing" is the consumer's identity.
+        cfg.ReceiveEndpoint("orders", e =>
+        {
+            e.Consumer<ScaleOutSample.OrderConsumer>("billing");
+        });
+    }));
+
+    /// <summary>
+    /// Guides/Partition a stream - the page's two registration blocks: the
+    /// PublishSuper route declaring s.Partitions(3) on "orders-super", and the
+    /// billing endpoint attached to the SAME super stream (e.Partitions(3)
+    /// agrees with the publish spec, exercising the same-value agreement).
+    /// The PublishSuperAsync routing-key call and the one-partition raw
+    /// ConsumeAsync (physical name "orders-super-1", its own group) are
+    /// broker-touching calls, so they live in
+    /// <see cref="PartitionAStreamSample"/> compile-only; registration-time
+    /// validation covers the super kind, the partition requirement, and the
+    /// endpoint spec agreement.
+    /// </summary>
+    private static void VerifyPartitionAStream() => RegisterAndValidate(services =>
+        services.AddStreamBus((_, cfg) =>
+        {
+            cfg.Host("localhost", "/", h => h.Credentials("guest", "guest"));
+
+            // From "Register the routed publish": the PublishSuper spec owns
+            // the partition count.
+            cfg.PublishSuper<PartitionAStreamSample.OrderPlaced>("orders-super", s => s.Partitions(3));
+
+            // From "Attach the consumers": endpoint on the super stream,
+            // declaring the same count from the consuming side.
+            cfg.ReceiveEndpoint("orders-super", e =>
+            {
+                e.Consumer<PartitionAStreamSample.OrderConsumer>("billing");
+                e.Partitions(3);
+            });
+        }));
+
+    /// <summary>
+    /// Guides/Use multiple buses - the page's two-bus registration block:
+    /// two AddStreamBus&lt;TBus&gt; calls on different vhosts (/orders,
+    /// /billing), each with its own publish route and receive endpoint.
+    /// The marker classes live in <see cref="UseMultipleBusesSample"/>
+    /// exactly as the page declares them (empty, sealed, user-owned);
+    /// the CheckoutWorker/SharedConsumer shapes are compile-only there
+    /// because they need a built host. Registration-time validation
+    /// covers the once-per-marker rule, the per-bus route tables, and
+    /// the endpoint/group checks; no vhost sharing occurs here (the
+    /// page's shared-vhost and failure-mode sections have no snippet -
+    /// those throw, and the harness only asserts the passing shapes).
+    /// </summary>
+    private static void VerifyUseMultipleBuses() => RegisterAndValidate(services =>
+    {
+        services.AddStreamBus<UseMultipleBusesSample.OrdersBus>((_, cfg) =>
+        {
+            cfg.Host("localhost", "/orders", h => h.Credentials("orders-app", "secret"));
+
+            cfg.Publish<UseMultipleBusesSample.OrderPlaced>("orders");
+            cfg.ReceiveEndpoint("orders", e =>
+                e.Consumer<UseMultipleBusesSample.SharedConsumer>("orders-team"));
+        });
+
+        services.AddStreamBus<UseMultipleBusesSample.BillingBus>((_, cfg) =>
+        {
+            cfg.Host("localhost", "/billing", h => h.Credentials("billing-app", "secret"));
+
+            cfg.Publish<UseMultipleBusesSample.InvoiceIssued>("invoices", s => s.MaxAge(TimeSpan.FromDays(90)));
+            cfg.ReceiveEndpoint("invoices", e =>
+                e.Consumer<UseMultipleBusesSample.InvoicesConsumer>("billing"));
+
+            // From "Consumers and health, per bus": the same SharedConsumer
+            // class on a mirrored "orders" stream on billing's vhost - the
+            // one-message-type rule means "shared" shares the type, with
+            // distinct groups keeping the cursors separate.
+            cfg.ReceiveEndpoint("orders", e =>
+                e.Consumer<UseMultipleBusesSample.SharedConsumer>("billing-orders"));
+        });
+    });
+
+    /// <summary>
+    /// Guides/Add cross-cutting logic - the page's registration blocks: the
+    /// publish filter END TO END with its singleton DI wiring (TenantFilter +
+    /// TenantScope, the AddSingleton pairing the concept page elides), the
+    /// bus-wide consume enrichment filter, and the two-type-argument typed
+    /// filter overloads (the page's preferred form). The TenantEnrichmentFilter's
+    /// SetPayload and the consumer's GetPayload run per delivery, so the
+    /// classes live in <see cref="AddCrossCuttingLogicSample"/> and only the
+    /// registration is exercised; singleton-lifetime validation runs at
+    /// registration/build time, same as VerifyMiddleware.
+    /// </summary>
+    private static void VerifyAddCrossCuttingLogic() => RegisterAndValidate(services =>
+    {
+        services.AddSingleton<AddCrossCuttingLogicSample.TenantScope>();
+        services.AddSingleton<AddCrossCuttingLogicSample.TenantFilter>();
+        services.AddSingleton<AddCrossCuttingLogicSample.TenantEnrichmentFilter>();
+        services.AddSingleton<AddCrossCuttingLogicSample.OrderPublishFilter>();
+        services.AddSingleton<AddCrossCuttingLogicSample.OrderValidationFilter>();
+
+        services.AddStreamBus((_, cfg) =>
+        {
+            cfg.Host("localhost", "/", h => h.Credentials("guest", "guest"));
+
+            cfg.Publish<AddCrossCuttingLogicSample.OrderPlaced>("orders");
+
+            // From "Stamp every publish" and "Typed or universal?".
+            cfg.UsePublishFilter<AddCrossCuttingLogicSample.TenantFilter>();
+            cfg.UsePublishFilter<AddCrossCuttingLogicSample.OrderPublishFilter, AddCrossCuttingLogicSample.OrderPlaced>();
+
+            // From "Enrich every delivery" (bus-wide) and the typed form.
+            cfg.UseConsumeFilter<AddCrossCuttingLogicSample.TenantEnrichmentFilter>();
+            cfg.UseConsumeFilter<AddCrossCuttingLogicSample.OrderValidationFilter, AddCrossCuttingLogicSample.OrderPlaced>();
+
+            cfg.ReceiveEndpoint("orders", e =>
+                e.Consumer<AddCrossCuttingLogicSample.BillingConsumer>("billing"));
+        });
+    });
+
+    /// <summary>
+    /// Guides/Replay a stream - the page's registration-level snippets: the
+    /// typed temporary replay endpoint (own group "billing-replay-2026-11",
+    /// StartOffset.AlwaysFirst, bounded retry, dead-letter destination) that
+    /// powers both "Replay into a new group" (typed variant) and "Replay with
+    /// the failure pipeline". The raw ConsumeAsync replay loop, the
+    /// Get/SetConsumerOffsetAsync offset surgery, and the ad-hoc
+    /// bus.Topology.Ensure*Async declaration are runtime broker operations -
+    /// they live in <see cref="ReplayAStreamSample"/> compile-only; the page
+    /// snippets are fragment-grade, and invoking ConsumeAsync here would
+    /// throw without a broker, so only AddStreamBus-side registration is
+    /// exercised.
+    /// </summary>
+    private static void VerifyReplayAStream() => RegisterAndValidate(services =>
+        services.AddStreamBus((_, cfg) =>
+        {
+            cfg.Host("localhost", "/", h => h.Credentials("guest", "guest"));
+
+            cfg.Publish<ReplayAStreamSample.OrderPlaced>("orders");
+
+            // From "Replay into a new group" (typed) / "Replay with the
+            // failure pipeline": fresh group, AlwaysFirst, bounded schedule,
+            // named error destination.
+            cfg.ReceiveEndpoint("orders", e =>
+            {
+                e.Consumer<ReplayAStreamSample.ReplayConsumer>("billing-replay-2026-11");
+                e.StartOffset(StartOffset.AlwaysFirst);
+                e.UseRetry(r => r.Exponential(4,
+                    TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(30)));
+                e.DeadLetterToStream("orders-errors", s => s.MaxAge(TimeSpan.FromDays(30)));
+            });
+        }));
+
+    /// <summary>
+    /// Configuration/Host &amp; connections - the page's complete snippets:
+    /// the connection-options Host block (every knob on
+    /// <c>IHostConfigurator</c> exercised with non-default values plus a
+    /// JSON <c>Serializer</c> adjustment) and, on a second marker bus, the
+    /// custom-serializer <c>Serializer(IStreamSerializer)</c> call (the
+    /// page's <c>MyCompactSerializer</c>, defined in
+    /// <see cref="HostAndConnectionsSample"/>). The <c>AddOptions&lt;StreamBusHostOptions&gt;</c>
+    /// block is registration-side only here: ValidateStart/ValidateStop run
+    /// at host start/stop, which the harness never triggers. The readiness
+    /// policy mentions are inline fragments (PublishOptions.Readiness,
+    /// e.Readiness, WaitUntilReadyAsync) covered compile-only on other
+    /// pages; the state table is prose.
+    /// </summary>
+    private static void VerifyHostAndConnections() => RegisterAndValidate(services =>
+    {
+        // From "Connection options" + "Serializer" (JSON adjustment): the
+        // default bus with every connection knob shown on the page.
+        services.AddStreamBus((_, cfg) =>
+        {
+            cfg.Host("localhost", "/", h =>
+            {
+                h.Credentials("guest", "guest");
+                h.StreamPort(5552);
+                h.AmqpPort(5672);
+                h.Heartbeat(TimeSpan.FromSeconds(60));
+                h.MonitorInterval(TimeSpan.FromSeconds(5));
+                h.ProducersPerConnection(1);
+                h.ConsumersPerConnection(1);
+            });
+
+            cfg.Serializer(json => json.PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase);
+        });
+
+        // From "Serializer" (full replacement): the page's
+        // cfg.Serializer(new MyCompactSerializer()) call on its own bus.
+        services.AddStreamBus<HostAndConnectionsSample.CompactBus>((_, cfg) =>
+        {
+            cfg.Host("localhost", "/compact", h => h.Credentials("guest", "guest"));
+            cfg.Serializer(new HostAndConnectionsSample.MyCompactSerializer());
+        });
+
+        // From "Startup and shutdown budgets": the options pattern block;
+        // registration only - validation runs at host start/stop.
+        services.AddOptions<StreamBusHostOptions>().Configure(o =>
+        {
+            o.WaitUntilStarted = true;
+            o.StartTimeout = TimeSpan.FromSeconds(30);
+            o.StopTimeout = TimeSpan.FromSeconds(20);
+            o.ConsumerStopTimeout = TimeSpan.FromSeconds(5);
+        });
+    });
+    /// <summary>
+    /// Configuration/Endpoint options - this page is tables, so the harness
+    /// exercises one registration that tours the exotic endpoint knobs
+    /// with non-default values: a super endpoint with a matching routed
+    /// publish (StartOffset, offset-store cadence, attach readiness,
+    /// Partitions on the endpoint), plus a plain endpoint carrying an
+    /// error-stream destination and publish-timeout fragment. The
+    /// SingleActiveConsumer knob is deliberately left at its default
+    /// (true), keeping the default visible in the code; the
+    /// DeadLetterToQueue/OnExhausted shapes are owned by other pages'
+    /// registrations.
+    /// </summary>
+    private static void VerifyEndpointOptions() => RegisterAndValidate(services =>
+    {
+        services.AddStreamBus((_, cfg) =>
+        {
+            cfg.Host("localhost", "/", h => h.Credentials("guest", "guest"));
+
+            // The super-stream pair: publish spec owns the partition kind,
+            // endpoint states the count from the consuming side, agreeing.
+            cfg.PublishSuper<EndpointOptionsSample.OrderPlaced>("orders-super", s =>
+            {
+                s.Partitions(3);
+                s.MaxAge(TimeSpan.FromDays(30));
+                s.LeaderLocator(StreamLeaderLocator.LeastLeaders);
+            });
+
+            // From "Endpoint options": the exotic knobs with non-default
+            // values; SAC stays at its default.
+            cfg.ReceiveEndpoint("orders-super", e =>
+            {
+                e.Consumer<EndpointOptionsSample.OrderConsumer>("billing");
+                e.Partitions(3);
+                e.StartOffset(StartOffset.ResumeOrNext);
+                e.OffsetStore(new OffsetStoreOptions
+                {
+                    StoreEveryMessages = 500,
+                    MaxFlushInterval = TimeSpan.FromSeconds(5),
+                });
+                e.Readiness(ReadinessPolicy.UpTo(TimeSpan.FromSeconds(10)));
+            });
+
+            // From "Endpoint options": the exhaustion-pointer knobs - a
+            // stream destination with a spec knob plus the publish timeout.
+            cfg.ReceiveEndpoint("payments", e =>
+            {
+                e.Consumer<EndpointOptionsSample.PaymentConsumer>("payments-ops");
+                e.UseRetry(r => r.Immediate(5));
+                e.DeadLetterToStream("payments-dlq", s => s.MaxAge(TimeSpan.FromDays(14)));
+                e.ErrorPublishTimeout(TimeSpan.FromSeconds(10));
+            });
+        });
+    });
+
+    /// <summary>
+    /// Configuration/Transport security - the page's two registration
+    /// snippets in one bus: the bare <c>UseTls()</c> (its port-switching
+    /// behavior is configuration, not a distinct shape) and the full
+    /// options block (<c>ServerName</c>, <c>ClientCertificate</c>,
+    /// <c>AcceptableCertificateErrors</c>, <c>ProtocolVersion</c>), plus an
+    /// explicit <c>StreamPort</c> proving the explicit-ports-always-win
+    /// rule. The client certificate file is checked at connect time, so
+    /// the path is never validated here - the harness never connects.
+    /// </summary>
+    private static void VerifyTransportSecurity() => RegisterAndValidate(services =>
+        services.AddStreamBus((_, cfg) =>
+        {
+            // From "Enable TLS" and "Options": one registration carrying
+            // both shapes; the second UseTls wins (last call wins).
+            cfg.Host("localhost", "/", h =>
+            {
+                h.Credentials("guest", "guest");
+                h.UseTls();
+                h.StreamPort(5551);
+                h.UseTls(tls =>
+                {
+                    tls.ServerName("localhost");
+                    tls.ClientCertificate("./certs/client.pfx", "pw");
+                    tls.AcceptableCertificateErrors(SslPolicyErrors.None);
+                    tls.ProtocolVersion(SslProtocols.Tls13);
+                });
+            });
+        }));
+
+    /// <summary>
+    /// Configuration/Retry &amp; dead letters - the page's two registration
+    /// shapes in one bus: the raw <c>RetryPolicy</c> record at bus level
+    /// (bounded - the raw-record snippet), and the endpoint carrying the
+    /// dead-letter-queue snippet shape (<c>Immediate</c> schedule, one
+    /// <c>DeadLetterToQueue</c> destination with quorum type and a non-default
+    /// <c>ConfirmTimeout</c>). Schedule-method and exhaustion-matrix rows are
+    /// tables with no unique registration shapes; the other schedule methods,
+    /// <c>DeadLetterToStream</c>, <c>ErrorPublishTimeout</c>, and
+    /// <c>OnExhausted</c> are exercised on other pages' registrations
+    /// (Handle failures, Endpoint options), and at most one destination per
+    /// endpoint is the rule the single queue call keeps visible.
+    /// </summary>
+    private static void VerifyRetryAndDeadLetters() => RegisterAndValidate(services =>
+    {
+        services.AddStreamBus((_, cfg) =>
+        {
+            cfg.Host("localhost", "/", h => h.Credentials("guest", "guest"));
+
+            // From "RetryPolicy record": the page's raw-record block, bus-wide.
+            cfg.UseRetry(new RetryPolicy
+            {
+                MaxAttempts = 5,
+                BaseDelay = TimeSpan.FromSeconds(1),
+                MaxDelay = TimeSpan.FromSeconds(30),
+                MaxJitter = TimeSpan.FromMilliseconds(200),
+                DelayCalculator = null,
+            });
+
+            cfg.Publish<RetryAndDeadLettersSample.PaymentFailed>("payments");
+
+            // From "Dead-letter destinations": bounded schedule + one queue
+            // destination with a non-default confirmation budget.
+            cfg.ReceiveEndpoint("payments", e =>
+            {
+                e.Consumer<RetryAndDeadLettersSample.PaymentConsumer>("payments-ops");
+                e.UseRetry(r => r.Immediate(5));
+                e.DeadLetterToQueue("payments-errors", DeadLetterQueueType.QuorumQueue,
+                    q => q.ConfirmTimeout(TimeSpan.FromSeconds(15)));
+            });
+        });
+    });
+}
+
+/// <summary>Marker types for Configuration/Retry &amp; dead letters.</summary>
+internal static class RetryAndDeadLettersSample
+{
+    public sealed record PaymentFailed(string PaymentId);
+
+    public sealed class PaymentConsumer : IConsumer<PaymentFailed>
+    {
+        public Task Consume(ConsumeContext<PaymentFailed> context) => Task.CompletedTask;
+    }
+}
+
+/// <summary>
+/// Types and compile-only call shapes from Guides/Partition a stream. The
+/// routed publish (required routing key) and the one-partition raw read
+/// reproduce the page's snippets verbatim in form; neither is invoked -
+/// both need a live broker.
+/// </summary>
+internal static class PartitionAStreamSample
+{
+    public sealed record OrderPlaced(string OrderId);
+
+    public sealed class OrderConsumer(ILogger<OrderConsumer> log) : IConsumer<OrderPlaced>
+    {
+        public Task Consume(ConsumeContext<OrderPlaced> context)
+        {
+            log.LogInformation("Billing order {OrderId} at offset {Offset}",
+                context.Message.OrderId, context.Offset);
+            return Task.CompletedTask;
+        }
+    }
+
+    // Compile-only stand-ins; never invoked.
+    private static IStreamBus bus = null!;
+    private static CancellationToken ct = CancellationToken.None;
+
+    // From "Publish with the routing key": s.Partitions(3) from the
+    // registration made "o-1" a required argument.
+    internal static void RoutedPublish()
+        => bus.PublishSuperAsync(new OrderPlaced(OrderId: "o-1"), "o-1", ct);
+
+    // From "Reading one partition": the ONE ops snippet on the page -
+    // physical partition name, raw ConsumeAsync, its own throwaway group.
+    internal static async Task ReadOnePartition(CancellationToken cancellationToken)
+    {
+        await using var reader = await bus.ConsumeAsync(
+            "orders-super-1",
+            new ConsumeOptions { ConsumerGroup = "ops-look", StartOffset = StartOffset.AlwaysFirst },
+            ctx =>
+            {
+                Console.WriteLine($"offset {ctx.Offset}: {ctx.MessageId}");
+                return Task.CompletedTask;
+            },
+            cancellationToken);
+    }
+}
+
+/// <summary>
+/// Types from Configuration/Endpoint options. The page is option tables,
+/// so these are the two consumer shapes its snippets reference; only the
+/// registration is exercised (consuming needs a live broker).
+/// </summary>
+internal static class EndpointOptionsSample
+{
+    public sealed record OrderPlaced(string OrderId);
+
+    public sealed record PaymentFailed(string PaymentId);
+
+    public sealed class OrderConsumer(ILogger<OrderConsumer> log) : IConsumer<OrderPlaced>
+    {
+        public Task Consume(ConsumeContext<OrderPlaced> context)
+        {
+            log.LogInformation("Billing order {OrderId} at offset {Offset}",
+                context.Message.OrderId, context.Offset);
+            return Task.CompletedTask;
+        }
+    }
+
+    public sealed class PaymentConsumer : IConsumer<PaymentFailed>
+    {
+        public Task Consume(ConsumeContext<PaymentFailed> context) => Task.CompletedTask;
+    }
+}
+
+internal static class UseMultipleBusesSample
+{
+    // The page's marker types: empty, sealed, owned by the application.
+    public sealed class OrdersBus;
+
+    public sealed class BillingBus;
+
+    public sealed record OrderPlaced(string OrderId);
+
+    public sealed record InvoiceIssued(string InvoiceId);
+
+    // One consumer class serving both buses - compiled, never constructed.
+    // A consumer class handles exactly one message type, so "shared" means
+    // the same message type on both buses (the page's mirrored-orders case).
+    public sealed class SharedConsumer : IConsumer<OrderPlaced>
+    {
+        public Task Consume(ConsumeContext<OrderPlaced> context) => Task.CompletedTask;
+    }
+
+    public sealed class InvoicesConsumer : IConsumer<InvoiceIssued>
+    {
+        public Task Consume(ConsumeContext<InvoiceIssued> context) => Task.CompletedTask;
+    }
+
+    // From "Injecting a bus": the checkout worker on the orders bus -
+    // compile-only; running it needs a live host.
+    public sealed class CheckoutWorker(IStreamBus<OrdersBus> orders) : BackgroundService
+    {
+        protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+        {
+            await orders.WaitUntilReadyAsync(ReadinessPolicy.Forever, stoppingToken);
+            await orders.PublishAsync(new OrderPlaced("o-1"), stoppingToken);
+        }
+    }
+}
+
+internal static class ScaleOutSample
+{
+    public sealed record OrderPlaced(string OrderId);
+
+    public sealed class OrderConsumer(ILogger<OrderConsumer> log) : IConsumer<OrderPlaced>
+    {
+        public Task Consume(ConsumeContext<OrderPlaced> context)
+        {
+            log.LogInformation("Billing order {OrderId} at offset {Offset}",
+                context.Message.OrderId, context.Offset);
+            return Task.CompletedTask;
+        }
+    }
+}
+
+internal static class GetStartedSample
+{
+    public sealed record OrderPlaced(string OrderId);
+
+    public sealed class OrderConsumer(ILogger<OrderConsumer> log) : IConsumer<OrderPlaced>
+    {
+        public Task Consume(ConsumeContext<OrderPlaced> context)
+        {
+            log.LogInformation("Order {OrderId} at offset {Offset}", context.Message.OrderId, context.Offset);
+            return Task.CompletedTask;
+        }
+    }
+
+    public sealed class OrderPublisher(IStreamBus bus, ILogger<OrderPublisher> log)
+        : BackgroundService
+    {
+        private readonly IStreamBus _bus = bus;
+        private readonly ILogger<OrderPublisher> _log = log;
+
+        protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+        {
+            while (!stoppingToken.IsCancellationRequested)
+            {
+                await _bus.PublishAsync(new OrderPlaced(OrderId: Guid.NewGuid().ToString("N")), stoppingToken);
+                await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken);
+            }
+        }
+    }
+}
+
+/// <summary>
+/// Types and compile-only call shapes from Guides/Publish an event. The
+/// methods reproduce the page's publish-call snippets verbatim in form so
+/// their syntax and option/property names compile against src/StreamBus, but
+/// nothing is invoked - publishing needs a live broker.
+/// </summary>
+internal static class PublishAnEventSample
+{
+    public sealed record OrderPlaced(string OrderId);
+
+    // Compile-only stand-ins; never invoked.
+    private static IStreamBus bus = null!;
+    private static CancellationToken ct = CancellationToken.None;
+    private static Guid correlationId = Guid.NewGuid();
+    private static ReadOnlyMemory<byte> preSerializedBytes = ReadOnlyMemory<byte>.Empty;
+
+    internal static void BasicPair()
+        => bus.PublishAsync(new OrderPlaced(OrderId: "o-1"), ct);
+
+    internal static void PropertiesAndHeaders()
+        => bus.PublishAsync(new OrderPlaced(OrderId: "o-1"), new PublishOptions
+        {
+            Properties = new StreamMessageProperties
+            {
+                CorrelationId = correlationId,
+                Headers = new Dictionary<string, object?>
+                {
+                    ["x-tenant"] = "acme",
+                    ["x-retry-hint"] = 3,
+                },
+            },
+        }, ct);
+
+    internal static void Budgets()
+        => bus.PublishAsync(new OrderPlaced(OrderId: "o-1"), new PublishOptions
+        {
+            Readiness = ReadinessPolicy.UpTo(TimeSpan.FromSeconds(10)),
+            ConfirmTimeout = TimeSpan.FromSeconds(5),
+        }, ct);
+
+    internal static void RawPublish()
+        => bus.PublishRawAsync("orders", preSerializedBytes, new PublishOptions(), ct);
+
+    internal static void ExplicitTarget()
+        => bus.PublishAsync("orders-audit", new OrderPlaced(OrderId: "o-1"), ct);
+}
+
+internal static class ConsumeEventsSample
+{
+    public sealed record OrderPlaced(string OrderId);
+
+    public sealed record ServiceLevel(string Tier, TimeSpan Target);
+
+    public interface IInvoicer
+    {
+        void Invoice(OrderPlaced order);
+    }
+
+    public sealed class Invoicer : IInvoicer
+    {
+        public void Invoice(OrderPlaced order) { }
+    }
+
+    private static readonly HashSet<Guid> _seen = new();
+
+    public sealed class OrderConsumer(ILogger<OrderConsumer> log) : IConsumer<OrderPlaced>
+    {
+        public Task Consume(ConsumeContext<OrderPlaced> context)
+        {
+            log.LogInformation("Billing order {OrderId} at offset {Offset}",
+                context.Message.OrderId, context.Offset);
+            return Task.CompletedTask;
+        }
+    }
+
+    // Compile-only stand-ins for the page's context-tour snippets; never
+    // executed by the harness (consuming needs a live broker).
+    internal static void Coordinates(ConsumeContext<OrderPlaced> context, ILogger log)
+        => log.LogInformation("Stream {Stream} partition {Partition} offset {Offset}",
+            context.Stream, context.Partition, context.Offset);
+
+    internal static Task DedupById(ConsumeContext<OrderPlaced> context)
+    {
+        var firstTime = _seen.Add(context.MessageId ?? Guid.Empty);
+        if (!firstTime)
+        {
+            return Task.CompletedTask; // duplicate delivery, skip it
+        }
+        return Task.CompletedTask;
+    }
+
+    internal sealed class TenantAwareConsumer : IConsumer<OrderPlaced>
+    {
+        public Task Consume(ConsumeContext<OrderPlaced> context)
+        {
+            string? tenant = context.Headers.GetString("x-tenant");
+            int? priority = context.Headers.GetInt("x-priority");
+            var sla = context.Headers.GetJson<ServiceLevel>("x-sla");
+            return Task.CompletedTask;
+        }
+    }
+
+    internal static void ResolveScoped(ConsumeContext<OrderPlaced> context)
+    {
+        var invoicer = context.Services.GetRequiredService<IInvoicer>();
+        invoicer.Invoice(context.Message);
+    }
+
+    public sealed class AuditConsumer(ILogger<AuditConsumer> log) : IConsumer<OrderPlaced>
+    {
+        public Task Consume(ConsumeContext<OrderPlaced> context)
+        {
+            log.LogInformation("Audit order {OrderId} at offset {Offset}",
+                context.Message.OrderId, context.Offset);
+            return Task.CompletedTask;
+        }
+    }
+}
+
+internal static class MiddlewareSample
+{
+    public sealed record OrderPlaced(Guid OrderId);
+
+    public sealed class TenantScope
+    {
+        public string Tenant { get; set; } = "default";
+    }
+
+    public sealed class TenantFilter(TenantScope ambient) : IStreamPublishFilter
+    {
+        public Task OnPublish(PublishContext context, PublishNext next)
+        {
+            context.Headers.Set("x-tenant", ambient.Tenant);
+            return next();
+        }
+    }
+
+    public sealed class MetricsFilter : IStreamConsumeFilter
+    {
+        public Task OnConsume(ConsumeContext context, ConsumeNext next) => next();
+    }
+
+    public sealed class EnrichmentFilter : IStreamConsumeFilter
+    {
+        public Task OnConsume(ConsumeContext context, ConsumeNext next) => next();
+    }
+
+    public sealed class OrderConsumer : IConsumer<OrderPlaced>
+    {
+        public Task Consume(ConsumeContext<OrderPlaced> context) => Task.CompletedTask;
+    }
+}
+
+/// <summary>
+/// Types and compile-only call shapes from Guides/Handle failures. The
+/// drain loop reproduces the page's ErrorEnvelope reading snippet verbatim
+/// in form; it is never invoked (consuming needs a live broker). The
+/// dead-letter queue alternative shown on the page is compile-checked
+/// fragment-free: its signature lives in
+/// <c>DeadLetterToQueue(name, DeadLetterQueueType, q => q.ConfirmTimeout(...))</c>
+/// and is exercised as the commented either/or on the page.
+/// </summary>
+internal static class HandleFailuresSample
+{
+    public sealed record OrderPlaced(string OrderId);
+
+    public sealed record PaymentFailed(string PaymentId, string Reason);
+
+    public sealed class OrderConsumer(ILogger<OrderConsumer> log) : IConsumer<OrderPlaced>
+    {
+        public Task Consume(ConsumeContext<OrderPlaced> context)
+        {
+            log.LogInformation("Billing order {OrderId} at offset {Offset}",
+                context.Message.OrderId, context.Offset);
+            return Task.CompletedTask;
+        }
+    }
+
+    public sealed class PaymentsConsumer : IConsumer<PaymentFailed>
+    {
+        public Task Consume(ConsumeContext<PaymentFailed> context) => Task.CompletedTask;
+    }
+
+    // Compile-only stand-ins; never invoked.
+    private static IStreamBus bus = null!;
+    private static CancellationToken ct = CancellationToken.None;
+
+    internal static async Task DrainErrorStream(CancellationToken cancellationToken)
+    {
+        await using var inspector = await bus.ConsumeAsync(
+            "orders-errors",
+            new ConsumeOptions { ConsumerGroup = "error-inspector", StartOffset = StartOffset.AlwaysFirst },
+            ctx =>
+            {
+                if (ErrorEnvelope.TryParse("orders-errors", ctx.Body.ToArray(), ctx.Headers.All, out var envelope)
+                    && envelope is not null)
+                {
+                    Console.WriteLine(
+                        $"{envelope.ExceptionType} at {envelope.SourceStream}/{envelope.SourceOffset}: " +
+                        $"{envelope.ExceptionMessage}");
+                }
+                return Task.CompletedTask;
+            },
+            cancellationToken);
+    }
+}
+
+internal static class AddCrossCuttingLogicSample
+{
+    public sealed record OrderPlaced(string OrderId);
+
+    public sealed record TenantInfo(string Tenant);
+
+    // The singleton ambient source from "Stamp every publish".
+    public sealed class TenantScope
+    {
+        public string Tenant { get; set; } = "default";
+    }
+
+    public sealed class TenantFilter(TenantScope ambient) : IStreamPublishFilter
+    {
+        public Task OnPublish(PublishContext context, PublishNext next)
+        {
+            context.Headers.Set("x-tenant", ambient.Tenant);
+            return next();
+        }
+    }
+
+    // From "Enrich every delivery": reads the tenant back and hands it to
+    // the consumer as a typed payload.
+    public sealed class TenantEnrichmentFilter : IStreamConsumeFilter
+    {
+        public Task OnConsume(ConsumeContext context, ConsumeNext next)
+        {
+            if (context.Headers.GetString("x-tenant") is { } tenant)
+            {
+                context.SetPayload(new TenantInfo(tenant));
+            }
+            return next();
+        }
+    }
+
+    public sealed class BillingConsumer : IConsumer<OrderPlaced>
+    {
+        public Task Consume(ConsumeContext<OrderPlaced> context)
+        {
+            var tenant = context.GetPayload<TenantInfo>();
+            return Task.CompletedTask;
+        }
+    }
+
+    // From "Typed or universal?": both typed registration targets for the
+    // page's preferred two-type-argument overloads.
+    public sealed class OrderPublishFilter : IStreamPublishFilter<OrderPlaced>
+    {
+        public Task OnPublish(PublishContext<OrderPlaced> context, PublishNext next)
+        {
+            context.Headers.Set("x-order-id", context.Message.OrderId);
+            return next();
+        }
+    }
+
+    public sealed class OrderValidationFilter : IStreamConsumeFilter<OrderPlaced>
+    {
+        public Task OnConsume(ConsumeContext<OrderPlaced> context, ConsumeNext next) => next();
+    }
+}
+
+/// <summary>
+/// Types and compile-only call shapes from Guides/Replay a stream. The
+/// fresh-group replay loop, the Get/SetConsumerOffsetAsync pair, and the
+/// ad-hoc EnsureStreamAsync declaration reproduce the page's snippets
+/// verbatim in form; none is invoked - all three need a live broker, and the
+/// harness only asserts registration-time validation.
+/// </summary>
+internal static class ReplayAStreamSample
+{
+    public sealed record OrderPlaced(string OrderId);
+
+    public sealed class ReplayConsumer(ILogger<ReplayConsumer> log) : IConsumer<OrderPlaced>
+    {
+        public Task Consume(ConsumeContext<OrderPlaced> context)
+        {
+            log.LogInformation("Replaying order {OrderId} at offset {Offset}",
+                context.Message.OrderId, context.Offset);
+            return Task.CompletedTask;
+        }
+    }
+
+    // Compile-only stand-ins; never invoked.
+    private static IStreamBus bus = null!;
+    private static CancellationToken ct = CancellationToken.None;
+    private static ulong targetOffset = 5; // the chosen rewind point
+
+    // From "Replay into a new group": throwaway group, AlwaysFirst, raw
+    // untyped read of history the group never consumed.
+    internal static async Task ReplayIntoNewGroup(CancellationToken cancellationToken)
+    {
+        await using var replayer = await bus.ConsumeAsync(
+            "orders",
+            new ConsumeOptions { ConsumerGroup = "billing-replay-2026-11", StartOffset = StartOffset.AlwaysFirst },
+            ctx =>
+            {
+                Console.WriteLine($"offset {ctx.Offset}: {ctx.MessageId}");
+                return Task.CompletedTask;
+            },
+            cancellationToken);
+    }
+
+    // From "Rewind an existing group": read the cursor, then move it; the
+    // group resumes AFTER the stored offset.
+    internal static async Task RewindExistingGroup(CancellationToken cancellationToken)
+    {
+        ulong? current = await bus.GetConsumerOffsetAsync("orders", "billing", 0, cancellationToken);
+        await bus.SetConsumerOffsetAsync("orders", "billing", 0, targetOffset, cancellationToken);
+    }
+
+    // From "Ad-hoc declarations": idempotent operator-driven topology.
+    internal static Task EnsureAuditStream(CancellationToken cancellationToken)
+        => bus.Topology.EnsureStreamAsync(new StreamDeclaration
+        {
+            Name = "orders-replay-audit",
+            MaxAge = TimeSpan.FromDays(30),
+        }, cancellationToken);
+}
+
+/// <summary>
+/// Types from Configuration/Host &amp; connections. The custom serializer
+/// reproduces the page's <c>MyCompactSerializer</c> fragment as a real
+/// <c>IStreamSerializer</c> so the <c>Serializer(IStreamSerializer)</c>
+/// call registers (and, in principle, works); the marker type exists
+/// because the harness registers it on a second bus to keep the default
+/// bus's connection block in one AddStreamBus call, matching the page's
+/// one-bus presentation. Nothing here is invoked beyond registration.
+/// </summary>
+internal static class HostAndConnectionsSample
+{
+    // The second bus's marker; the page shows a single (default) bus.
+    public sealed class CompactBus;
+
+    public sealed class MyCompactSerializer : IStreamSerializer
+    {
+        public string ContentType => "application/vnd.acme+compact";
+
+        public byte[] Serialize<T>(T message)
+            => System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(message);
+
+        public T Deserialize<T>(ReadOnlyMemory<byte> body)
+            => System.Text.Json.JsonSerializer.Deserialize<T>(body.Span)!;
+    }
+}

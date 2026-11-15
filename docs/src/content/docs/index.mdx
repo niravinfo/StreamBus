@@ -1,33 +1,30 @@
 ---
 title: StreamBus
-description: MassTransit-style client for RabbitMQ streams on .NET
+description: A modern .NET client for RabbitMQ Streams.
 template: splash
 hero:
-  tagline: MassTransit-style client for RabbitMQ streams on .NET 10. Typed publish, consumer-group endpoints, global retry, and first-class error handling — all with explicit, fluent configuration.
+  tagline: A modern .NET client for RabbitMQ Streams. Publish and consume typed messages, with retries and dead-lettering built in.
   actions:
-    # NOTE: hero links are rendered verbatim, so the base path is hardcoded.
+    # NOTE: the starlight-base-path plugin prefixes these with the site base at build time.
     - text: Get Started
-      link: /StreamBus/guides/getting-started/
+      link: /concepts/introduction/
       icon: right-arrow
-    - text: View on GitHub
-      link: https://github.com/niravinfo/StreamBus
+    - text: Build the app
+      link: /guides/get-started/
       icon: external
 ---
 
-import { Card, CardGrid } from '@astrojs/starlight/components';
+import { CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+{/* LinkCard hrefs are JSX attributes; the plugin does not rewrite them, so the base path is hardcoded. */}
 
 <CardGrid>
-  <Card title="Typed Publish" icon="paper-airplane">
-    Publish typed messages without manual serialization. Super-stream routing keys are compile-time checked.
-  </Card>
-  <Card title="Consumer Groups" icon="group">
-    `ReceiveEndpoint`s with first-class, required consumer-group identity — a super
-    stream's partitions scale across instances; different groups are independent.
-  </Card>
-  <Card title="Retry & Errors" icon="warning">
-    Global retry with per-endpoint override, exhaustion destinations, and a per-stream classic `{stream}_error` queue.
-  </Card>
-  <Card title="Explicit Config" icon="settings">
-    No binders, no JSON discovery. Every option is a fluent configurator method, validated once at registration.
-  </Card>
+  <LinkCard title="Concepts" icon="open-book" href="/StreamBus/concepts/streams/"
+    description="Start with the RabbitMQ Streams model: super streams, partitions, and the message lifecycle that shapes everything StreamBus does." />
+  <LinkCard title="Guides" icon="rocket" href="/StreamBus/guides/get-started/"
+    description="Hands-on walkthroughs: publish your first event, consume with a typed handler, and scale out across instances." />
+  <LinkCard title="Handle failures" icon="warning" href="/StreamBus/guides/handle-failures/"
+    description="Configure retry schedules and dead-letter destinations so a bad message never stalls your consumers." />
+  <LinkCard title="Configuration" icon="settings" href="/StreamBus/configuration/observability/"
+    description="Health data, metrics, logs, TLS, and per-endpoint options; every setting is explicit, validated code." />
 </CardGrid>
