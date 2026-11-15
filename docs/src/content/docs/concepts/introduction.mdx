@@ -3,7 +3,7 @@ title: Introduction
 description: What StreamBus is, the concepts worth understanding before you write code, and how this documentation is meant to be read.
 ---
 
-import { Card, CardGrid } from '@astrojs/starlight/components';
+import { CardGrid, LinkCard } from '@astrojs/starlight/components';
 
 :::tip[Want to just run something?]
 Skip ahead to [Get started](/guides/get-started/) — you can always come back for the concepts.
@@ -25,25 +25,21 @@ Six ideas carry the whole library. Once they click, almost every option and defa
 
 Each of these has a page of its own:
 
+{/* LinkCard hrefs are JSX attributes — the plugin does not rewrite them, so the base path is hardcoded. */}
+
 <CardGrid>
-  <Card title="Streams" href="/concepts/streams/">
-    Append-only logs: offsets, consumer groups, retention, and how streams differ from queues.
-  </Card>
-  <Card title="Messages" href="/concepts/messages/">
-    What a good message looks like: naming, contracts, and the envelope every message carries.
-  </Card>
-  <Card title="Producers" href="/concepts/producers/">
-    Publishing as appending a fact, broker confirmation, and how routes are decided at registration.
-  </Card>
-  <Card title="Consumers" href="/concepts/consumers/">
-    Groups as cursors: scaling out, independent readers, and single-active consumer.
-  </Card>
-  <Card title="Middleware" href="/concepts/middleware/">
-    The two pipelines around every publish and delivery, and what a filter may — and may never — change.
-  </Card>
-  <Card title="Exceptions" href="/concepts/exceptions/">
-    Failure on a log: retry schedules, dead letters, and why a poison message parks a partition until bounded.
-  </Card>
+  <LinkCard title="Streams" href="/StreamBus/concepts/streams/"
+    description="Append-only logs: offsets, consumer groups, retention, and how streams differ from queues." />
+  <LinkCard title="Messages" href="/StreamBus/concepts/messages/"
+    description="What a good message looks like: naming, contracts, and the envelope every message carries." />
+  <LinkCard title="Producers" href="/StreamBus/concepts/producers/"
+    description="Publishing as appending a fact, broker confirmation, and how routes are decided at registration." />
+  <LinkCard title="Consumers" href="/StreamBus/concepts/consumers/"
+    description="Groups as cursors: scaling out, independent readers, and single-active consumer." />
+  <LinkCard title="Middleware" href="/StreamBus/concepts/middleware/"
+    description="The two pipelines around every publish and delivery, and what a filter may — and may never — change." />
+  <LinkCard title="Exceptions" href="/StreamBus/concepts/exceptions/"
+    description="Failure on a log: retry schedules, dead letters, and why a poison message parks a partition until bounded." />
 </CardGrid>
 
 ## The learning path
