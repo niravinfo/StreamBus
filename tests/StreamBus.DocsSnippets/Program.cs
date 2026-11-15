@@ -100,6 +100,25 @@ internal static class Program
     });
 
     /// <summary>
+    /// Guides/Publish an event — the declare-route registration block.
+    /// The publish call snippets (basic pair, Properties/Headers,
+    /// Readiness/ConfirmTimeout budgets, PublishRawAsync, explicit-target
+    /// PublishAsync) are reproduced in <see cref="PublishAnEventSample"/>
+    /// so their syntax compiles, but are NOT executed: publishing needs a
+    /// live broker connection, which the harness never starts. The
+    /// explicit-target stream ("orders-audit") is intentionally NOT
+    /// registered (the page's point: it must be declared, not
+    /// auto-created), so only the page's registration block is here.
+    /// </summary>
+    private static void VerifyPublishAnEvent() => RegisterAndValidate(services =>
+        services.AddStreamBus((_, cfg) =>
+        {
+            cfg.Host("localhost", "/", h => h.Credentials("guest", "guest"));
+
+            cfg.Publish<PublishAnEventSample.OrderPlaced>("orders");
+        }));
+
+    /// <summary>
     /// Concepts/Middleware — the composed registration sample that teaches
     /// scoping and ordering: bus-wide publish/consume filters plus one
     /// endpoint-scoped consume filter. The filter classes and message types
@@ -158,6 +177,53 @@ internal static class GetStartedSample
             }
         }
     }
+}
+
+/// <summary>
+/// Types and compile-only call shapes from Guides/Publish an event. The
+/// methods reproduce the page's publish-call snippets verbatim in form so
+/// their syntax and option/property names compile against src/StreamBus, but
+/// nothing is invoked — publishing needs a live broker.
+/// </summary>
+internal static class PublishAnEventSample
+{
+    public sealed record OrderPlaced(string OrderId);
+
+    // Compile-only stand-ins; never invoked.
+    private static IStreamBus bus = null!;
+    private static CancellationToken ct = CancellationToken.None;
+    private static Guid correlationId = Guid.NewGuid();
+    private static ReadOnlyMemory<byte> preSerializedBytes = ReadOnlyMemory<byte>.Empty;
+
+    internal static void BasicPair()
+        => bus.PublishAsync(new OrderPlaced(OrderId: "o-1"), ct);
+
+    internal static void PropertiesAndHeaders()
+        => bus.PublishAsync(new OrderPlaced(OrderId: "o-1"), new PublishOptions
+        {
+            Properties = new StreamMessageProperties
+            {
+                CorrelationId = correlationId,
+                Headers = new Dictionary<string, object?>
+                {
+                    ["x-tenant"] = "acme",
+                    ["x-retry-hint"] = 3,
+                },
+            },
+        }, ct);
+
+    internal static void Budgets()
+        => bus.PublishAsync(new OrderPlaced(OrderId: "o-1"), new PublishOptions
+        {
+            Readiness = ReadinessPolicy.UpTo(TimeSpan.FromSeconds(10)),
+            ConfirmTimeout = TimeSpan.FromSeconds(5),
+        }, ct);
+
+    internal static void RawPublish()
+        => bus.PublishRawAsync("orders", preSerializedBytes, new PublishOptions(), ct);
+
+    internal static void ExplicitTarget()
+        => bus.PublishAsync("orders-audit", new OrderPlaced(OrderId: "o-1"), ct);
 }
 
 internal static class MiddlewareSample
