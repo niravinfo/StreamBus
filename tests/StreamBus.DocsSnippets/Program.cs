@@ -285,6 +285,47 @@ private static void VerifyScaleOut() => RegisterAndValidate(services =>
                 e.Partitions(3);
             });
         }));
+
+    /// <summary>
+    /// Guides/Use multiple buses — the page's two-bus registration block:
+    /// two AddStreamBus&lt;TBus&gt; calls on different vhosts (/orders,
+    /// /billing), each with its own publish route and receive endpoint.
+    /// The marker classes live in <see cref="UseMultipleBusesSample"/>
+    /// exactly as the page declares them (empty, sealed, user-owned);
+    /// the CheckoutWorker/SharedConsumer shapes are compile-only there
+    /// because they need a built host. Registration-time validation
+    /// covers the once-per-marker rule, the per-bus route tables, and
+    /// the endpoint/group checks; no vhost sharing occurs here (the
+    /// page's shared-vhost and failure-mode sections have no snippet —
+    /// those throw, and the harness only asserts the passing shapes).
+    /// </summary>
+    private static void VerifyUseMultipleBuses() => RegisterAndValidate(services =>
+    {
+        services.AddStreamBus<UseMultipleBusesSample.OrdersBus>((_, cfg) =>
+        {
+            cfg.Host("localhost", "/orders", h => h.Credentials("orders-app", "secret"));
+
+            cfg.Publish<UseMultipleBusesSample.OrderPlaced>("orders");
+            cfg.ReceiveEndpoint("orders", e =>
+                e.Consumer<UseMultipleBusesSample.SharedConsumer>("orders-team"));
+        });
+
+        services.AddStreamBus<UseMultipleBusesSample.BillingBus>((_, cfg) =>
+        {
+            cfg.Host("localhost", "/billing", h => h.Credentials("billing-app", "secret"));
+
+            cfg.Publish<UseMultipleBusesSample.InvoiceIssued>("invoices", s => s.MaxAge(TimeSpan.FromDays(90)));
+            cfg.ReceiveEndpoint("invoices", e =>
+                e.Consumer<UseMultipleBusesSample.InvoicesConsumer>("billing"));
+
+            // From "Consumers and health, per bus": the same SharedConsumer
+            // class on a mirrored "orders" stream on billing's vhost — the
+            // one-message-type rule means "shared" shares the type, with
+            // distinct groups keeping the cursors separate.
+            cfg.ReceiveEndpoint("orders", e =>
+                e.Consumer<UseMultipleBusesSample.SharedConsumer>("billing-orders"));
+        });
+    });
 }
 
 /// <summary>
@@ -329,6 +370,42 @@ internal static class PartitionAStreamSample
                 return Task.CompletedTask;
             },
             cancellationToken);
+    }
+}
+
+internal static class UseMultipleBusesSample
+{
+    // The page's marker types: empty, sealed, owned by the application.
+    public sealed class OrdersBus;
+
+    public sealed class BillingBus;
+
+    public sealed record OrderPlaced(string OrderId);
+
+    public sealed record InvoiceIssued(string InvoiceId);
+
+    // One consumer class serving both buses — compiled, never constructed.
+    // A consumer class handles exactly one message type, so "shared" means
+    // the same message type on both buses (the page's mirrored-orders case).
+    public sealed class SharedConsumer : IConsumer<OrderPlaced>
+    {
+        public Task Consume(ConsumeContext<OrderPlaced> context) => Task.CompletedTask;
+    }
+
+    public sealed class InvoicesConsumer : IConsumer<InvoiceIssued>
+    {
+        public Task Consume(ConsumeContext<InvoiceIssued> context) => Task.CompletedTask;
+    }
+
+    // From "Injecting a bus": the checkout worker on the orders bus —
+    // compile-only; running it needs a live host.
+    public sealed class CheckoutWorker(IStreamBus<OrdersBus> orders) : BackgroundService
+    {
+        protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+        {
+            await orders.WaitUntilReadyAsync(ReadinessPolicy.Forever, stoppingToken);
+            await orders.PublishAsync(new OrderPlaced("o-1"), stoppingToken);
+        }
     }
 }
 

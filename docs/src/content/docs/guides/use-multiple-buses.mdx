@@ -1,0 +1,216 @@
+---
+title: Use multiple buses
+description: Run orders and billing on different brokers or virtual hosts in one application — marker types pick the bus, message types pick the stream, and DI fails loudly when the marker is wrong.
+---
+
+Your checkout service is living a double life: order events belong to the
+`/orders` vhost the orders team operates, while invoices are a billing
+concern, produced and consumed inside billing's `/billing` vhost with its
+own credentials and retention rules. One application, two independent
+sets of streams, two connections. StreamBus makes that two *buses* — and
+the entire model for telling them apart is one small type per bus.
+
+## Mark the buses
+
+Every bus needs an identity, and the identity is a **marker type** — any
+empty class you own. It never appears in a message, a stream, or a
+configuration value; its only job is to close the generic
+`AddStreamBus<TBus>` and `IStreamBus<TBus>` so the container — and your
+constructor parameters — can tell the buses apart:
+
+```csharp
+public sealed class OrdersBus;
+public sealed class BillingBus;
+```
+
+Marker types are chosen by you, never generated or derived, because the
+identity of a bus is a *statement about your architecture* ("these are
+the orders streams"), not something a library should guess.
+
+## Register both buses
+
+Each `AddStreamBus<TBus>` call is a complete, independent bus: its own
+host and vhost, serializer settings, publish routes, endpoints, retry
+schedules, and filters. Registering orders and billing as two buses on
+two vhosts of the same broker:
+
+```csharp
+builder.Services.AddStreamBus<OrdersBus>((context, cfg) =>
+{
+    cfg.Host("localhost", "/orders", h => h.Credentials("orders-app", "secret"));
+
+    cfg.Publish<OrderPlaced>("orders");
+    cfg.ReceiveEndpoint("orders", e => e.Consumer<OrdersConsumer>("billing"));
+});
+
+builder.Services.AddStreamBus<BillingBus>((context, cfg) =>
+{
+    cfg.Host("localhost", "/billing", h => h.Credentials("billing-app", "secret"));
+
+    cfg.Publish<InvoiceIssued>("invoices", s => s.MaxAge(TimeSpan.FromDays(90)));
+    cfg.ReceiveEndpoint("invoices", e => e.Consumer<InvoicesConsumer>("billing"));
+});
+```
+
+Each marker may be registered **at most once** — a second
+`AddStreamBus<OrdersBus>` throws at registration. The non-generic
+`AddStreamBus` (no marker) registers the *default bus*, resolvable as
+plain `IStreamBus`, and is likewise once-per-application. Registration is
+validated eagerly, just like the single-bus case
+([Get started](/guides/get-started/)): bad or contradictory configuration
+throws while `AddStreamBus` runs, not later at startup.
+
+Two buses may also share one vhost (same broker connection, different
+logical traffic) as long as their **connection settings agree** — user,
+password, host, ports, heartbeat, connection pool, TLS. A second bus
+registering the same vhost with conflicting settings throws at
+registration; where settings agree, the first registration's connection
+options are the ones used.
+
+## How resolution works
+
+The whole multi-bus model is one doctrine worth stating in one breath:
+
+> **The marker type selects the bus; the message type selects the stream
+> on that bus.**
+
+Publishing, consuming, and every route lookup happen through one bus at
+a time, and each bus keeps its **own route table**. `orders.PublishAsync(new
+OrderPlaced(...))` — where `orders` is an `IStreamBus<OrdersBus>` —
+resolves `OrderPlaced` against the OrdersBus route table only, and lands
+on that bus's connection and vhost. The same message type registered on
+BillingBus reads perfectly fine and resolves independently, because the
+routes live in *per-bus* tables keyed first by marker. The buses never
+see each other's registrations.
+
+This also means a wrong route is a **loud** failure, not a silent one.
+`IStreamBus<OrdersBus>` and `IStreamBus<BillingBus>` are different DI
+service types, so a marker that isn't registered fails at construction
+(below), and a marker that *is* registered can only ever resolve the
+routes declared on that bus — there is no path where a publish quietly
+lands on the other bus's broker. Within one bus, a message type
+registered on two streams is resolvable only with an explicit stream
+target — the ambiguity is rejected at publish with an error naming both
+streams — but the same type on two *buses* is not an ambiguity at all;
+each bus resolves its own.
+
+## Injecting a bus
+
+Your code asks for the bus by its marker, and the container wires the
+right one:
+
+```csharp
+public sealed class CheckoutWorker(IStreamBus<OrdersBus> orders) : BackgroundService
+{
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        await orders.WaitUntilReadyAsync(ReadinessPolicy.Forever, stoppingToken);
+        await orders.PublishAsync(new OrderPlaced("o-1"), stoppingToken);
+    }
+}
+```
+
+Two failure modes are worth knowing as doctrine, because you *will* hit
+the first one eventually:
+
+- **Constructor injection never yields null — it throws.** Injecting a
+  marker that isn't registered (say `IStreamBus<AuditBus>` when no
+  `AddStreamBus<AuditBus>` call exists) fails with
+  ``InvalidOperationException: Unable to resolve service for type
+  'StreamBus.IStreamBus`1[...AuditBus]' ...`` the moment the consuming
+  class is first constructed. That is exactly what you want: a missing bus is
+  a configuration bug, and this is the standard .NET DI behavior for an
+  unregistered required dependency. A bus that is registered under a
+  *different* marker than the one you injected is the same failure.
+- **Plain `IStreamBus` only exists if the non-generic `AddStreamBus`
+  registered it.** `AddStreamBus<TBus>` registers `IStreamBus<TBus>`
+  only — never the non-generic interface. If every bus in your
+  application is marker-typed, injecting plain `IStreamBus` fails with
+  the same `Unable to resolve service` exception. That is not a bug;
+  with multiple buses there is no meaningful "the" bus, and the
+  container should not pick one for you.
+
+The softer APIs follow standard .NET DI semantics: `GetService<IStreamBus<TBus>>()`
+(or a constructor parameter with a `null` default) returns `null` for an
+unregistered bus instead of throwing. Use those only when a bus is
+genuinely optional in the environment; a bus your code *needs* should be
+a required injection so the failure is loud and early.
+
+## Consumers and health, per bus
+
+A consumer class can serve two buses — StreamBus binds one message type
+per consumer class, so "shared" means the same class consuming the same
+message type on both buses (say, an org-wide `SharedConsumer` reading
+each bus's copy of the orders stream). Each `ReceiveEndpoint` still
+needs its own consumer group, and the rule that keeps this safe is that
+a group identity is scoped **per (stream, vhost)** — its cursor lives on
+the broker, not in your process:
+
+```csharp
+// On OrdersBus — orders on vhost /orders
+cfg.ReceiveEndpoint("orders", e => e.Consumer<SharedConsumer>("orders-team"));
+
+// On BillingBus — billing's mirrored copy of orders, on vhost /billing
+cfg.ReceiveEndpoint("orders", e => e.Consumer<SharedConsumer>("billing-team"));
+```
+
+Two buses on *different* vhosts can even reuse the same group name with
+no interference — the cursors are separate because the vhosts are. But
+two buses sharing one vhost must use distinct groups for the same
+stream, or they would share a single cursor and steal each other's
+messages. Name groups after the consuming team, as always
+([Consume events](/guides/consume-events/)), and the collision question
+answers itself.
+
+Health data keeps the buses attributable: each bus contributes its own
+row keyed `bus:{vhost}|{busType}`, so two buses on one vhost are still
+distinguishable in the aggregator's data. The key shape and the rest of
+the health surface are documented in
+[Observability](/configuration/observability/).
+
+## FAQ
+
+### I injected a bus and got "Unable to resolve service" — why?
+
+Almost always: you injected a service type that no `AddStreamBus`
+overload registered. Which overload registers which service type:
+
+| You registered | Resolvable as | Notes |
+|---|---|---|
+| `AddStreamBus(...)` | `IStreamBus` | The default bus; at most once per application |
+| `AddStreamBus<TBus>(...)` | `IStreamBus<TBus>` | One per marker; never registers plain `IStreamBus` |
+
+So the two classic mistakes: injecting plain `IStreamBus` when every
+bus you registered is marker-typed (register the default bus, or inject
+the marker), and injecting marker `A` when the routes live on marker
+`B` (inject the marker whose bus you mean — that is the whole reason
+markers exist). The exception fires when the consuming class is first
+constructed, which for hosted services is at host start.
+
+### Can two buses share one vhost?
+
+Yes, when their connection settings agree. Registrations for the same
+vhost must match on user, password, host, ports, heartbeat, connection
+pool, and TLS; a conflict throws at registration with the vhost named.
+Where settings agree, the first registration's connection options win
+and the buses share the connection supervisor. Keep their groups and
+streams distinct — on a shared vhost a group identity is a real cursor
+either bus can collide with.
+
+### Can the same message type live on two buses?
+
+Yes — and it needs no special handling. Each bus resolves message types
+against its own route table, so `OrderPlaced` can be registered to
+`orders` on OrdersBus and to `orders-mirror` on a recovery bus, and each
+publish resolves through whichever bus instance you call it on. The
+ambiguous case is *within one bus*: register `OrderPlaced` to two
+streams on the same bus, and publishing without an explicit target
+throws at publish with both streams named — the fix there is the
+explicit-target `PublishAsync(stream, message, ...)`
+([Publish an event](/guides/publish-an-event/)), not a second bus.
+
+## Next
+
+A second bus is also one of the tools replay work reaches for — or
+bypasses: fresh groups, rewound offsets, and partition reads:
+[Replay a stream](/guides/replay-a-stream/).
