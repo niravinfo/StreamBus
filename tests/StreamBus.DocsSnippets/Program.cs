@@ -255,13 +255,83 @@ private static void VerifyScaleOut() => RegisterAndValidate(services =>
             e.Consumer<ScaleOutSample.OrderConsumer>("billing");
         });
     }));
+
+    /// <summary>
+    /// Guides/Partition a stream — the page's two registration blocks: the
+    /// PublishSuper route declaring s.Partitions(3) on "orders-super", and the
+    /// billing endpoint attached to the SAME super stream (e.Partitions(3)
+    /// agrees with the publish spec, exercising the same-value agreement).
+    /// The PublishSuperAsync routing-key call and the one-partition raw
+    /// ConsumeAsync (physical name "orders-super-1", its own group) are
+    /// broker-touching calls, so they live in
+    /// <see cref="PartitionAStreamSample"/> compile-only; registration-time
+    /// validation covers the super kind, the partition requirement, and the
+    /// endpoint spec agreement.
+    /// </summary>
+    private static void VerifyPartitionAStream() => RegisterAndValidate(services =>
+        services.AddStreamBus((_, cfg) =>
+        {
+            cfg.Host("localhost", "/", h => h.Credentials("guest", "guest"));
+
+            // From "Register the routed publish": the PublishSuper spec owns
+            // the partition count.
+            cfg.PublishSuper<PartitionAStreamSample.OrderPlaced>("orders-super", s => s.Partitions(3));
+
+            // From "Attach the consumers": endpoint on the super stream,
+            // declaring the same count from the consuming side.
+            cfg.ReceiveEndpoint("orders-super", e =>
+            {
+                e.Consumer<PartitionAStreamSample.OrderConsumer>("billing");
+                e.Partitions(3);
+            });
+        }));
 }
 
 /// <summary>
-/// Types from the Guides/Get started page's Program.cs, isolated in their own
-/// namespace so the snippet shape matches the page. Skips the logging lines
-/// (not part of registration) and never connects — the harness only builds.
+/// Types and compile-only call shapes from Guides/Partition a stream. The
+/// routed publish (required routing key) and the one-partition raw read
+/// reproduce the page's snippets verbatim in form; neither is invoked —
+/// both need a live broker.
 /// </summary>
+internal static class PartitionAStreamSample
+{
+    public sealed record OrderPlaced(string OrderId);
+
+    public sealed class OrderConsumer(ILogger<OrderConsumer> log) : IConsumer<OrderPlaced>
+    {
+        public Task Consume(ConsumeContext<OrderPlaced> context)
+        {
+            log.LogInformation("Billing order {OrderId} at offset {Offset}",
+                context.Message.OrderId, context.Offset);
+            return Task.CompletedTask;
+        }
+    }
+
+    // Compile-only stand-ins; never invoked.
+    private static IStreamBus bus = null!;
+    private static CancellationToken ct = CancellationToken.None;
+
+    // From "Publish with the routing key": s.Partitions(3) from the
+    // registration made "o-1" a required argument.
+    internal static void RoutedPublish()
+        => bus.PublishSuperAsync(new OrderPlaced(OrderId: "o-1"), "o-1", ct);
+
+    // From "Reading one partition": the ONE ops snippet on the page —
+    // physical partition name, raw ConsumeAsync, its own throwaway group.
+    internal static async Task ReadOnePartition(CancellationToken cancellationToken)
+    {
+        await using var reader = await bus.ConsumeAsync(
+            "orders-super-1",
+            new ConsumeOptions { ConsumerGroup = "ops-look", StartOffset = StartOffset.AlwaysFirst },
+            ctx =>
+            {
+                Console.WriteLine($"offset {ctx.Offset}: {ctx.MessageId}");
+                return Task.CompletedTask;
+            },
+            cancellationToken);
+    }
+}
+
 internal static class ScaleOutSample
 {
     public sealed record OrderPlaced(string OrderId);
