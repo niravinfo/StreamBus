@@ -1,4 +1,6 @@
 using System.Reflection;
+using System.Security.Authentication;
+using System.Net.Security;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -503,6 +505,36 @@ private static void VerifyScaleOut() => RegisterAndValidate(services =>
             });
         });
     });
+
+    /// <summary>
+    /// Configuration/Transport security — the page's two registration
+    /// snippets in one bus: the bare <c>UseTls()</c> (its port-switching
+    /// behavior is configuration, not a distinct shape) and the full
+    /// options block (<c>ServerName</c>, <c>ClientCertificate</c>,
+    /// <c>AcceptableCertificateErrors</c>, <c>ProtocolVersion</c>), plus an
+    /// explicit <c>StreamPort</c> proving the explicit-ports-always-win
+    /// rule. The client certificate file is checked at connect time, so
+    /// the path is never validated here — the harness never connects.
+    /// </summary>
+    private static void VerifyTransportSecurity() => RegisterAndValidate(services =>
+        services.AddStreamBus((_, cfg) =>
+        {
+            // From "Enable TLS" and "Options": one registration carrying
+            // both shapes; the second UseTls wins (last call wins).
+            cfg.Host("localhost", "/", h =>
+            {
+                h.Credentials("guest", "guest");
+                h.UseTls();
+                h.StreamPort(5551);
+                h.UseTls(tls =>
+                {
+                    tls.ServerName("localhost");
+                    tls.ClientCertificate("./certs/client.pfx", "pw");
+                    tls.AcceptableCertificateErrors(SslPolicyErrors.None);
+                    tls.ProtocolVersion(SslProtocols.Tls13);
+                });
+            });
+        }));
 
     /// <summary>
     /// Configuration/Retry &amp; dead letters — the page's two registration

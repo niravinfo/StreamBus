@@ -1,0 +1,71 @@
+---
+title: Transport security
+description: Enable TLS for the stream and AMQP connections and tune certificate validation.
+---
+
+TLS is off by default: with no `UseTls` call, both transports — the
+stream protocol, and the AMQP connection used only for
+[dead-letter queues](/configuration/retry-and-dead-letters/) — speak
+plain TCP.
+
+## Enable TLS
+
+```csharp
+cfg.Host("localhost", "/", h =>
+{
+    h.Credentials("guest", "guest");
+    h.UseTls();
+});
+```
+
+Enabling TLS switches both transports at once — there is no
+per-transport toggle — and, unless you set ports explicitly, moves
+the defaults to the conventional RabbitMQ TLS ports (stream `5551`,
+AMQP `5671`). Explicit `StreamPort`/`AmqpPort` calls always win,
+regardless of call order (the ports themselves live on
+[Host & connections](/configuration/host-and-connections/)).
+
+## Options
+
+```csharp
+cfg.Host("localhost", "/", h =>
+{
+    h.Credentials("guest", "guest");
+    h.UseTls(tls =>
+    {
+        tls.ServerName("localhost");
+        tls.ClientCertificate("./certs/client.pfx", "pw");
+        tls.AcceptableCertificateErrors(SslPolicyErrors.None);
+        tls.ProtocolVersion(SslProtocols.Tls13);
+    });
+});
+```
+
+| Option | Default | Meaning |
+|---|---|---|
+| `ServerName` | the host name | The name used for certificate validation (SNI and name matching). Set it when connecting through a load balancer whose certificate name differs from the host you dial. |
+| `ClientCertificate(path, password?)` | none | A PFX client certificate for mutual TLS. The file's existence is checked at connect time. |
+| `AcceptableCertificateErrors` | `SslPolicyErrors.None` | Policy errors tolerated despite failing validation. Private-CA deployments commonly pass `RemoteCertificateChainErrors`. |
+| `ProtocolVersion` | OS default (`SslProtocols.None`) | Allowed protocol versions; anything below TLS 1.2 is rejected. |
+
+:::warning[Hostname verification is the TLS attack surface]
+Accepting `RemoteCertificateNameMismatch` or
+`RemoteCertificateNotAvailable` disables hostname verification — the
+protection against man-in-the-middle attacks — and should not be
+used in production.
+:::
+
+Calling `UseTls` again replaces the previous TLS settings (last call
+wins).
+
+On the broker side, a TLS listener must be configured. A working
+reference setup — mounted certificate plus the configuration fragment
+— lives in the repository's integration tests:
+`tests/StreamBus.IntegrationTests/TlsBroker.cs`.
+
+## Next
+
+That completes the configuration reference. Every option tabulated in
+this tier plugs into the same `AddStreamBus` registration you started
+with — if you want to see them assembled end to end, go back to
+[Get started](/guides/get-started/) and build something.
