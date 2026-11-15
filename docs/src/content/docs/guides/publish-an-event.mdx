@@ -144,8 +144,9 @@ you. An undeclared target surfaces `StreamBusStreamNotFoundException`
 immediately (declare it in the topology or via
 `bus.Topology.EnsureStreamAsync` first), because guessing the difference
 between "typo" and "not created yet" is exactly the kind of silent fix this
-library doesn't do. If the target stream is a super stream, use the
-explicit `PublishSuperAsync` overload with its required routing key.
+library doesn't do. If the target stream is a
+[super stream](/guides/partition-a-stream/), use the explicit
+`PublishSuperAsync` overload with its required routing key.
 
 ## FAQ
 
