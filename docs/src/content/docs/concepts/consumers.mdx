@@ -19,7 +19,7 @@ The same truth, stated from the other end: two instances running with the *same*
 
 Here is what actually happens for one delivered message, and where the checkpoint lives:
 
-For each delivery, StreamBus opens a fresh dependency-injection scope, resolves your consumer from it, deserializes the message, and calls `Consume`. If the call completes without throwing, the delivery counts as done, and the group's offset is stored on a cadence — not per message. If the call throws, the offset does not move: the message is retried on the endpoint's schedule, and only when the failure is finally handed off (a dead letter, an error stream, an `OnExhausted` callback) does the consumer move past it. **The offset store is the checkpoint** — that is the entire role the per-message ack plays in a queue, collapsed into "where was this group's cursor last saved."
+For each delivery, StreamBus opens a fresh dependency-injection scope, resolves your consumer from it, deserializes the message, and calls `Consume`. If the call completes without throwing, the delivery counts as done, and the group's offset is stored — by default after every message, and tunable to every N messages or a time interval if you prefer to batch the writes. If the call throws, the offset does not move: the message is retried on the endpoint's schedule, and only when the failure is finally handed off (a dead letter, an error stream, an `OnExhausted` callback) does the consumer move past it. **The offset store is the checkpoint** — that is the entire role the per-message ack plays in a queue, collapsed into "where was this group's cursor last saved."
 
 Every consequence you care about follows from that collapse:
 

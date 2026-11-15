@@ -52,10 +52,10 @@ The stored offset belongs to a **consumer group** on a stream (or on one partiti
 - Two instances with the *same* group name share one cursor — that is how you scale out and fail over: the work is split between them, and whichever survives resumes from the shared position.
 - Two consumers with *different* group names are fully independent readers — each receives every message, at its own pace, without affecting the others.
 
-The offset is stored on the broker side, on a cadence, *after* processing — not per message. That gap between "processed" and "stored" is not a defect; it is the trade you make for a log's throughput and replayability, and it has one consequence you must design for.
+The offset is stored on the broker side *after* processing — by default after every message, and only batched (every N messages, or every so often) if you configure a sparser cadence. Whatever the cadence, a delivery that is in flight or handled-but-not-yet-stored is not on record anywhere, and that gap between "handled" and "recorded" is why a detached consumer gets its tail redelivered — not a defect, but the one consequence you must design for.
 
 :::caution[Delivery is at-least-once]
-Because the cursor is stored after processing and only every so often, a consumer that detaches mid-flight gets the tail of its progress redelivered. Duplicates are a normal, expected event — not a bug, not a misconfiguration. Handlers must be idempotent, or deduplicate using the message's `MessageId` (see [Messages](/concepts/messages/)).
+Because the cursor is only ever stored after processing (and, if you batch the stores, only every so often), a consumer that detaches mid-flight gets the tail of its progress redelivered. Duplicates are a normal, expected event — not a bug, not a misconfiguration. Handlers must be idempotent, or deduplicate using the message's `MessageId` (see [Messages](/concepts/messages/)).
 :::
 
 ## Super streams
