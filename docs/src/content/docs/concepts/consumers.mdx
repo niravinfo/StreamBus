@@ -61,4 +61,4 @@ The consumer is resolved from a dependency-injection scope created for that deli
 
 ## What runs before your handler
 
-Between the broker delivering bytes and your `Consume` firing, the delivery passes through stages: the message arrives, consume filters run, the message is deserialized, and only then is the handler invoked. That is one sentence of timeline and all this page needs — what a filter is, what it may change, and the very different contract a consume filter has about calling `next` is the next concept: continue with [Middleware](/concepts/middleware/).
+Between the broker delivering bytes and your `Consume` firing, the delivery passes through stages: the message arrives, is deserialized, then the consume filters run — seeing the already-typed message — and only then is the handler invoked. A message that cannot be deserialized never reaches a filter or the handler, and never burns the retry budget. That is one sentence of timeline and all this page needs — what a filter is, what it may change, and the very different contract a consume filter has about calling `next` is the next concept: continue with [Middleware](/concepts/middleware/).
