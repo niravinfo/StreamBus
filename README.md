@@ -1,10 +1,8 @@
-<p align="center">
-  <a href="https://github.com/niravinfo/StreamBus/actions/workflows/build.yml"><img src="https://github.com/niravinfo/StreamBus/actions/workflows/build.yml/badge.svg" alt="Build" /></a>
-  <a href="https://www.nuget.org/packages/StreamBus"><img src="https://img.shields.io/nuget/vpre/StreamBus.svg" alt="NuGet" /></a>
-  <a href="https://www.nuget.org/packages/StreamBus"><img src="https://img.shields.io/nuget/dt/StreamBus.svg" alt="NuGet downloads" /></a>
-  <a href="https://github.com/niravinfo/StreamBus/blob/main/LICENSE"><img src="https://img.shields.io/github/license/niravinfo/StreamBus" alt="License: MIT" /></a>
-  <a href="#"><img src="https://img.shields.io/badge/.NET-10-512BD4" alt=".NET 10" /></a>
-</p>
+[![Build](https://github.com/niravinfo/StreamBus/actions/workflows/build.yml/badge.svg)](https://github.com/niravinfo/StreamBus/actions/workflows/build.yml)
+[![NuGet](https://img.shields.io/nuget/vpre/StreamBus.svg)](https://www.nuget.org/packages/StreamBus)
+[![NuGet downloads](https://img.shields.io/nuget/dt/StreamBus.svg)](https://www.nuget.org/packages/StreamBus)
+[![License: MIT](https://img.shields.io/github/license/niravinfo/StreamBus.svg)](https://github.com/niravinfo/StreamBus/blob/main/LICENSE)
+[![.NET 10](https://img.shields.io/badge/.NET-10-512BD4)](https://github.com/niravinfo/StreamBus)
 
 # StreamBus
 
@@ -85,7 +83,7 @@ For more information, see the docs at **[niravinfo.github.io/StreamBus](https://
 - [Transport security](https://niravinfo.github.io/StreamBus/configuration/transport-security/) - secure connections with TLS
 - [Releases](https://github.com/niravinfo/StreamBus/releases)
 
-Runnable examples live in [`examples/`](examples/).
+Runnable examples live in the [examples directory](https://github.com/niravinfo/StreamBus/tree/main/examples).
 
 ## Contributing
 
@@ -94,4 +92,4 @@ RabbitMQ 4.x with the stream plugins enabled.
 
 ## License
 
-[MIT](LICENSE)
+[MIT](https://github.com/niravinfo/StreamBus/blob/main/LICENSE)
