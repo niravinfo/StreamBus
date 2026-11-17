@@ -26,11 +26,52 @@ Which failures deserve retries? The doctrine is old and reliable:
 - **Transient failures deserve retries.** A deadlock, a dropped connection, a downstream service that is briefly busy. These clear on their own, and a second or third attempt succeeds. Retry is exactly the right tool.
 - **Poison failures never fix themselves.** A validation failure, a `NullReferenceException` from a bug, an unrecognized enum value in the payload: the same message will fail identically on every attempt, forever. Retrying it is not patience; it is a parked partition wearing a busy light.
 
-Today, StreamBus retries every exception type through the same schedule, so the difference between the two is yours to act on. The mitigation available now: give the endpoint a **bounded schedule plus a hand-off** so poison fails fast, lands somewhere inspectable, and stops blocking the line. The how-to is the [Handle failures](/guides/handle-failures/) guide, and the option tables live in [Retry & dead letters](/configuration/retry-and-dead-letters/).
+StreamBus can now make that distinction for you. Add `Handle<TException>` / `Ignore<TException>` to a retry schedule and the classifier decides, per failure, whether the message gets another attempt or goes straight to the hand-off. With no filters configured, the original behavior stands: every exception follows the same schedule.
 
-:::note[Planned: exception filtering]
-**Planned: exception filtering.** A future release adds `Handle<TException>` / `Ignore<TException>` on the retry configurator so a schedule can retry transient exceptions while immediately handing off poison ones. Semantics (intended): a handled type retries; an ignored type exhausts on first failure and goes to the configured hand-off; with none configured, today's behavior (all exceptions retry) continues.
-:::
+### How the classifier decides
+
+```mermaid
+flowchart TD
+    A["Handler throws an exception"] --> B{"Any Handle / Ignore rules configured?"}
+
+    B -->|No| R["RETRY — today's behavior"]
+    B -->|Yes| C{"Does an Ignore rule match?"}
+
+    C -->|Yes| I["IGNORED — no retry"]
+    C -->|No| D{"Any Handle rules configured?"}
+
+    D -->|No| R
+    D -->|Yes| E{"Does a Handle rule match?"}
+    E -->|Yes| R
+    E -->|No| U["UNHANDLED — no retry"]
+
+    R --> F{"Attempts left in the schedule?"}
+    F -->|Yes| G["Wait the delay, retry the same message<br/>partition stays blocked, order preserved"]
+    G --> A
+    F -->|No| X["EXHAUSTED — attempt limit reached"]
+
+    I --> H
+    U --> H
+    X --> H["HAND-OFF to dead-letter queue,<br/>error stream, or OnExhausted callback"]
+
+    H --> Z["Now advance the offset<br/>and move to the next message"]
+```
+
+```csharp
+e.UseRetry(r =>
+{
+    r.Handle<SqlException>();                  // retry these
+    r.Ignore<ValidationException>();           // never retry these
+    r.Ignore<ArgumentException>(x => x.ParamName == "orderTotal");
+    r.Exponential(5, TimeSpan.FromSeconds(5), TimeSpan.FromMinutes(5));
+});
+```
+
+`Exponential(5, min: 5s, max: 5min)` means six attempts — the first delivery plus five retries — with waits of **5s, 10s, 20s, 40s, 80s** before each retry. The delay grows every time, capped at five minutes.
+
+The four outcomes are worth spelling out. A `SqlException` is handled, so it follows the schedule. A `ValidationException`, or an `ArgumentException` whose `ParamName` is `orderTotal`, is ignored and hands off on the first failure. Any other exception is unhandled — a `Handle` rule exists, so it is not in the allowlist — and also hands off immediately. A type rule matches subclasses and exceptions wrapped inside an `AggregateException`; when a type matches both a `Handle` and an `Ignore` rule, `Ignore` wins.
+
+A filtered policy **must have a bounded attempt limit**: StreamBus never advances the offset without a hand-off, and a hand-off requires a limit. Configuring filters without one is a registration error. The how-to is the [Handle failures](/guides/handle-failures/) guide, and the option tables live in [Retry & dead letters](/configuration/retry-and-dead-letters/).
 
 ## The pieces of the machinery
 

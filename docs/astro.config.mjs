@@ -1,5 +1,6 @@
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
+import mermaid from 'astro-mermaid';
 import { starlightBasePath } from 'starlight-base-path';
 
 // https://astro.build/config
@@ -8,6 +9,7 @@ export default defineConfig({
   site: 'https://niravinfo.github.io',
   base: '/StreamBus',
   integrations: [
+    mermaid(),
     starlight({
       plugins: [starlightBasePath()],
       title: 'StreamBus',
