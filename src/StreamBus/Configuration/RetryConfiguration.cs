@@ -370,6 +370,27 @@ internal sealed record DerivedExhaustion(
     DeadLetterOptions? Queue,
     bool DestinationShadowed);
 
+/// <summary>
+/// Exception filters need somewhere to send an ignored or unhandled failure.
+/// StreamBus forbids a hand-off on an unbounded schedule, so a filtered policy
+/// must have an attempt limit.
+/// </summary>
+internal static class RetryFilterValidation
+{
+    public static void Validate(RetryPolicy policy, string context)
+    {
+        ArgumentNullException.ThrowIfNull(policy);
+        ArgumentException.ThrowIfNullOrWhiteSpace(context);
+        if (policy.Filters is { HasRules: true } && policy.MaxAttempts is null)
+        {
+            throw new StreamBusConfigurationException(
+                $"{context} configures Handle/Ignore exception filters with a retry schedule that has no attempt limit. " +
+                "A bounded schedule is required so ignored or unhandled exceptions have a hand-off destination. " +
+                "Bind it with Immediate, Interval, Intervals, Exponential, or None.");
+        }
+    }
+}
+
 internal static class RetryDerivation
 {
     public static DerivedExhaustion Derive(
@@ -383,6 +404,7 @@ internal static class RetryDerivation
         ArgumentException.ThrowIfNullOrWhiteSpace(stream);
         ArgumentException.ThrowIfNullOrWhiteSpace(busName);
         var effective = endpoint ?? global ?? new RetryPolicy();
+        RetryFilterValidation.Validate(effective, $"Bus {busName}: endpoint '{stream}'");
         var bounded = effective.MaxAttempts.HasValue;
         if (!bounded)
         {
