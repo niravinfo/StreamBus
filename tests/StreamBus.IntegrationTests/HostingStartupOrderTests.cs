@@ -119,8 +119,8 @@ public sealed class HostingStartupOrderTests : IAsyncDisposable
     [Fact]
     public async Task Default_starts_without_blocking()
     {
-        // MassTransit parity proof: AddStreamBus alone (default options)
-        // lets a real host reach started in seconds with no broker at all.
+        // AddStreamBus alone (default options) lets a real host reach started
+        // in seconds with no broker at all.
         var ct = TestContext.Current.CancellationToken;
         var port = ClosedPort();
         var started = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);

@@ -36,6 +36,14 @@ public sealed record RetryPolicy
     /// schedule; throwing or negative results fall back safely.
     /// </summary>
     public Func<int, Exception, TimeSpan>? DelayCalculator { get; init; }
+
+    /// <summary>
+    /// Exception filters that classify a failure before the schedule is consulted.
+    /// <see langword="null"/> (or a set with no rules) means every exception is
+    /// retried; attached by the <c>UseRetry</c> configurator, never by the raw
+    /// record path.
+    /// </summary>
+    internal ExceptionFilterSet? Filters { get; init; }
 }
 
 /// <summary>
