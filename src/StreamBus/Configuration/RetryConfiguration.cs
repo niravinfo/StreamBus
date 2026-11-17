@@ -133,7 +133,7 @@ public sealed record ExhaustedContext
 /// one the endpoint retries forever. Schedule methods overwrite each other;
 /// the last call wins.
 /// </summary>
-public interface IRetryConfigurator
+public interface IRetryConfigurator : IExceptionConfigurator
 {
     /// <summary>Retries <paramref name="retries"/> times with no delay between attempts.</summary>
     /// <param name="retries">Retry count after the first attempt; zero allows no retries.</param>
@@ -173,9 +173,54 @@ public interface IRetryConfigurator
     internal RetryPolicy BuildPolicy();
 }
 
+/// <summary>
+/// Classifies handler exceptions for a retry policy. <c>Handle</c> rules are
+/// the exceptions worth retrying; <c>Ignore</c> rules never retry.
+/// Both accumulate; an Ignore match wins when both match the same exception.
+/// </summary>
+public interface IExceptionConfigurator
+{
+    /// <summary>Handles the given exception types (they may be retried).</summary>
+    void Handle(params Type[] exceptionTypes);
+
+    /// <summary>Handles exceptions of type <typeparamref name="T"/> and its subclasses.</summary>
+    void Handle<T>() where T : Exception;
+
+    /// <summary>Handles exceptions of either given type.</summary>
+    void Handle<T1, T2>() where T1 : Exception where T2 : Exception;
+
+    /// <summary>Handles exceptions of any of the three given types.</summary>
+    void Handle<T1, T2, T3>() where T1 : Exception where T2 : Exception where T3 : Exception;
+
+    /// <summary>Handles exceptions accepted by <paramref name="filter"/>.</summary>
+    void Handle(Func<Exception, bool> filter);
+
+    /// <summary>Handles exceptions of type <typeparamref name="T"/> accepted by <paramref name="filter"/>.</summary>
+    void Handle<T>(Func<T, bool> filter) where T : Exception;
+
+    /// <summary>Ignores the given exception types (they are never retried).</summary>
+    void Ignore(params Type[] exceptionTypes);
+
+    /// <summary>Ignores exceptions of type <typeparamref name="T"/> and its subclasses.</summary>
+    void Ignore<T>() where T : Exception;
+
+    /// <summary>Ignores exceptions of either given type.</summary>
+    void Ignore<T1, T2>() where T1 : Exception where T2 : Exception;
+
+    /// <summary>Ignores exceptions of any of the three given types.</summary>
+    void Ignore<T1, T2, T3>() where T1 : Exception where T2 : Exception where T3 : Exception;
+
+    /// <summary>Ignores exceptions accepted by <paramref name="filter"/>.</summary>
+    void Ignore(Func<Exception, bool> filter);
+
+    /// <summary>Ignores exceptions of type <typeparamref name="T"/> accepted by <paramref name="filter"/>.</summary>
+    void Ignore<T>(Func<T, bool> filter) where T : Exception;
+}
+
 internal sealed class RetryConfigurator : IRetryConfigurator
 {
     private RetryPolicy? _pending;
+    private readonly ExceptionFilterSet _filters = new();
 
     public void Immediate(int retries)
     {
@@ -239,8 +284,75 @@ internal sealed class RetryConfigurator : IRetryConfigurator
         };
     }
 
+    public void Handle(params Type[] exceptionTypes)
+    {
+        ValidateTypes(exceptionTypes);
+        _filters.AddInclude(exceptionTypes);
+    }
+
+    public void Handle<T>() where T : Exception => Handle(typeof(T));
+
+    public void Handle<T1, T2>() where T1 : Exception where T2 : Exception
+        => Handle(typeof(T1), typeof(T2));
+
+    public void Handle<T1, T2, T3>() where T1 : Exception where T2 : Exception where T3 : Exception
+        => Handle(typeof(T1), typeof(T2), typeof(T3));
+
+    public void Handle(Func<Exception, bool> filter)
+    {
+        ArgumentNullException.ThrowIfNull(filter);
+        _filters.AddInclude(filter);
+    }
+
+    public void Handle<T>(Func<T, bool> filter) where T : Exception
+    {
+        ArgumentNullException.ThrowIfNull(filter);
+        _filters.AddInclude(filter);
+    }
+
+    public void Ignore(params Type[] exceptionTypes)
+    {
+        ValidateTypes(exceptionTypes);
+        _filters.AddExclude(exceptionTypes);
+    }
+
+    public void Ignore<T>() where T : Exception => Ignore(typeof(T));
+
+    public void Ignore<T1, T2>() where T1 : Exception where T2 : Exception
+        => Ignore(typeof(T1), typeof(T2));
+
+    public void Ignore<T1, T2, T3>() where T1 : Exception where T2 : Exception where T3 : Exception
+        => Ignore(typeof(T1), typeof(T2), typeof(T3));
+
+    public void Ignore(Func<Exception, bool> filter)
+    {
+        ArgumentNullException.ThrowIfNull(filter);
+        _filters.AddExclude(filter);
+    }
+
+    public void Ignore<T>(Func<T, bool> filter) where T : Exception
+    {
+        ArgumentNullException.ThrowIfNull(filter);
+        _filters.AddExclude(filter);
+    }
+
+    private static void ValidateTypes(Type[] exceptionTypes)
+    {
+        ArgumentNullException.ThrowIfNull(exceptionTypes);
+        if (exceptionTypes.Length == 0)
+            throw new StreamBusConfigurationException("Handle/Ignore requires at least one exception type.");
+        if (Array.Exists(exceptionTypes, static type => type is null))
+            throw new StreamBusConfigurationException("Handle/Ignore exception types must not be null.");
+        if (Array.Exists(exceptionTypes, static type => !typeof(Exception).IsAssignableFrom(type)))
+            throw new StreamBusConfigurationException("Handle/Ignore types must derive from System.Exception.");
+    }
+
     RetryPolicy IRetryConfigurator.BuildPolicy()
-        => _pending ?? throw new StreamBusConfigurationException("UseRetry requires a schedule: Immediate, Interval, Intervals, Exponential, or None.");
+    {
+        var policy = _pending
+            ?? throw new StreamBusConfigurationException("UseRetry requires a schedule: Immediate, Interval, Intervals, Exponential, or None.");
+        return policy with { Filters = _filters.HasRules ? _filters : null };
+    }
 }
 
 internal enum ExhaustionKind
