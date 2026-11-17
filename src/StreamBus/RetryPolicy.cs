@@ -44,6 +44,34 @@ public sealed record RetryPolicy
     /// record path.
     /// </summary>
     internal ExceptionFilterSet? Filters { get; init; }
+
+    internal RetryDecision Decide(Exception ex)
+    {
+        ArgumentNullException.ThrowIfNull(ex);
+        return Filters?.Decide(ex) ?? RetryDecision.Retry;
+    }
+}
+
+/// <summary>
+/// The single retry/exhaust decision shared by the dispatch loop and its tests.
+/// A non-Retry filter decision exhausts immediately; otherwise the attempt limit
+/// decides.
+/// </summary>
+internal static class RetryDecisionEvaluator
+{
+    public static bool ShouldExhaust(RetryPolicy policy, Exception ex, int attempts)
+    {
+        ArgumentNullException.ThrowIfNull(ex);
+        return ShouldExhaust(policy.Decide(ex), policy, attempts);
+    }
+
+    public static bool ShouldExhaust(RetryDecision decision, RetryPolicy policy, int attempts)
+    {
+        ArgumentNullException.ThrowIfNull(policy);
+        ArgumentOutOfRangeException.ThrowIfLessThan(attempts, 1);
+        return decision != RetryDecision.Retry
+            || (policy.MaxAttempts is { } max && attempts >= max);
+    }
 }
 
 /// <summary>

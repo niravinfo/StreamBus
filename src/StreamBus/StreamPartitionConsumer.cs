@@ -634,10 +634,17 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                     catch (Exception ex)
                     {
                         StreamBusActivity.RecordException(activity, ex);
+                        var decision = _options.Retry.Decide(ex);
                         var unbounded = _options.Retry.MaxAttempts is null;
-                        var exhausted = !unbounded && attempts >= _options.Retry.MaxAttempts!.Value;
+                        var exhausted = RetryDecisionEvaluator.ShouldExhaust(decision, _options.Retry, attempts);
                         var mode = unbounded ? "no-limit" : "limited";
-                        if (RetryDelays.ShouldLogRetryWarning(attempts))
+                        if (decision != RetryDecision.Retry)
+                        {
+                            _logger.LogWarning(ex,
+                                "Consume handler failed for stream {Stream} partition {Partition} offset {Offset} (attempt {Attempt}, mode {Mode}); {Decision} by the exception filter; handing off without retrying.",
+                                _stream, _partitionIndex, offset, attempts, mode, decision);
+                        }
+                        else if (RetryDelays.ShouldLogRetryWarning(attempts))
                             _logger.LogWarning(ex,
                                 "Consume handler failed for stream {Stream} partition {Partition} offset {Offset} (attempt {Attempt}, mode {Mode}); retrying in-handler.",
                                 _stream, _partitionIndex, offset, attempts, mode);
@@ -647,6 +654,14 @@ internal sealed class StreamPartitionConsumer : IAsyncDisposable
                                 _stream, _partitionIndex, offset, attempts, mode);
                         if (exhausted)
                         {
+                            if (_options.OnExhausted is null && _options.DeadLetter is null && _options.ErrorStream is null)
+                            {
+                                _logger.LogWarning(ex,
+                                    "No hand-off is configured for stream {Stream} partition {Partition} offset {Offset}; recycling the attach (redeliver, never skip).",
+                                    _stream, _partitionIndex, offset);
+                                FailAttach(attach, offset, ex, "No hand-off configured for filtered exhaustion");
+                                return;
+                            }
                             await ExhaustAsync(consumer, offset, consumeContext, attempts, ex, attach, sendHeaders.Snapshot()).ConfigureAwait(false);
                             return;
                         }
