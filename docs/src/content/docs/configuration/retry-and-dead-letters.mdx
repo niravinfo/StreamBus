@@ -44,6 +44,26 @@ cfg.UseRetry(new RetryPolicy
 
 Note that `Exponential(...)` on the configurator differs from the raw record's defaults: it sets `MaxJitter` to zero (deterministic delays) and uses the `minDelay`/`maxDelay` you pass as `BaseDelay`/`MaxDelay`.
 
+## Exception filters
+
+`Handle` and `Ignore` rules decide whether a failure is retried *before* the schedule is consulted. They live on the same retry configurator as the schedule methods:
+
+| Method | Effect |
+|---|---|
+| `Handle<T>()` / `Handle(params Type[])` | Retry matching exceptions, including subclasses. |
+| `Handle<T1, T2>()` / `Handle<T1, T2, T3>()` | Retry any of the given types. |
+| `Handle(Func<Exception, bool>)` / `Handle<T>(Func<T, bool>)` | Retry exceptions accepted by the predicate. |
+| The six matching `Ignore` overloads | Never retry matching exceptions. |
+
+Rules accumulate across calls, independent of the schedule method, and an endpoint's `UseRetry` replaces the bus-wide policy — filters included. With no rules at all, every exception is retried, as before.
+
+- `Handle` is an include rule; `Ignore` is an exclude rule. When both match, **`Ignore` wins**.
+- A type rule matches subclasses, the base-exception chain (`GetBaseException()`), and — for `AggregateException` — each inner exception and its base exception.
+- A predicate rule is tested against those same candidates when they are assignable to `T`.
+- An ignored or unhandled failure exhausts on the current attempt (normally 1) and takes the normal hand-off path.
+
+Filters require a bounded schedule: a hand-off needs an attempt limit, so configuring `Handle` or `Ignore` with `MaxAttempts == null` is a registration error. See [Exceptions](/concepts/exceptions/#how-the-classifier-decides) for the flow diagram and a worked example with an escalating delay.
+
 ## Exhaustion matrix
 
 When the attempt limit runs out, StreamBus hands the message over. The outcome depends only on what the endpoint configured:

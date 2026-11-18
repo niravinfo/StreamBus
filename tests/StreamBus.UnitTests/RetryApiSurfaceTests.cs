@@ -1,3 +1,5 @@
+using System.Linq;
+using System.Reflection;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace StreamBus.UnitTests;
@@ -75,4 +77,35 @@ public sealed class RetryApiSurfaceTests
         var options = Assert.Single(sp.GetRequiredService<StreamBusConsumerStore>().Registrations).Options;
         Assert.Equal(2, options.Retry.MaxAttempts);
     }
+
+    [Fact]
+    public void Retry_configurator_inherits_the_exception_filter_overloads()
+    {
+        Assert.Contains(typeof(IRetryConfigurator).GetInterfaces(), i => i == typeof(IExceptionConfigurator));
+
+        var methods = typeof(IExceptionConfigurator).GetMethods();
+        foreach (var name in new[] { "Handle", "Ignore" })
+        {
+            Assert.Contains(methods, m => m.Name == name && HasParamsTypeArray(m));
+            Assert.Contains(methods, m => m.Name == name && m.GetGenericArguments().Length == 1 && m.GetParameters().Length == 0);
+            Assert.Contains(methods, m => m.Name == name && m.GetGenericArguments().Length == 2 && m.GetParameters().Length == 0);
+            Assert.Contains(methods, m => m.Name == name && m.GetGenericArguments().Length == 3 && m.GetParameters().Length == 0);
+            Assert.Contains(methods, m => m.Name == name && m.GetGenericArguments().Length == 1 && IsPredicateParameter(m.GetParameters().SingleOrDefault()));
+            Assert.Contains(methods, m => m.Name == name && m.GetGenericArguments().Length == 0
+                && m.GetParameters().Length == 1 && m.GetParameters()[0].ParameterType == typeof(Func<Exception, bool>));
+        }
+    }
+
+    private static bool HasParamsTypeArray(MethodInfo method)
+    {
+        var parameters = method.GetParameters();
+        return parameters.Length == 1
+            && parameters[0].ParameterType == typeof(Type[])
+            && parameters[0].IsDefined(typeof(ParamArrayAttribute));
+    }
+
+    private static bool IsPredicateParameter(ParameterInfo? parameter)
+        => parameter is not null
+            && parameter.ParameterType.IsGenericType
+            && parameter.ParameterType.GetGenericTypeDefinition() == typeof(Func<,>);
 }

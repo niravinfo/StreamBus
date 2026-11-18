@@ -198,10 +198,31 @@ every attempt, forever, and on the default unbounded schedule that means
 the partition parks for good. Bound the schedule on every endpoint that
 can't afford a parked partition, and pick the hand-off with care
 ([Retry & dead letters](/configuration/retry-and-dead-letters/) has the
-tables). Exception-level filtering (retry the transient ones, hand off
-the poison immediately) is on the roadmap; the intended semantics are
-described in [Exceptions](/concepts/exceptions/).
+tables). Filtering by exception type is covered next.
 :::
+
+## Choose which exceptions to retry
+
+A bounded schedule with a hand-off already stops poison from parking a partition. Exception filters make the distinction explicit: `Handle` lists the failures worth retrying, `Ignore` lists the ones that are not, and everything else follows the same rule. The [flow diagram](/concepts/exceptions/#how-the-classifier-decides) shows every branch.
+
+```csharp
+e.UseRetry(r =>
+{
+    r.Handle<SqlException>();                  // retry these
+    r.Ignore<ValidationException>();           // never retry these
+    r.Ignore<ArgumentException>(x => x.ParamName == "orderTotal");
+    r.Exponential(5, TimeSpan.FromSeconds(5), TimeSpan.FromMinutes(5));
+});
+```
+
+`Exponential(5, min: 5s, max: 5min)` gives six attempts with waits of
+**5s, 10s, 20s, 40s, 80s**. A `SqlException` follows that schedule; the two
+ignored cases go straight to the hand-off on the first failure; any other
+exception is unhandled (a `Handle` rule exists) and also goes straight to
+the hand-off. A type rule matches subclasses and aggregate-wrapped failures,
+and `Ignore` wins if both rules match. Because filters can hand a message
+off early, a filtered policy requires a bounded attempt limit — registering
+one without a limit is a configuration error.
 
 ## FAQ
 

@@ -3,7 +3,7 @@ title: Producers
 description: "What publishing means on a stream: one verb, routes decided at registration, broker-confirmed appends, and why the routing key is the only source of per-entity order."
 ---
 
-On a stream, publishing means one thing: **appending a fact to a stream**. If you are coming from MassTransit or another queue-based toolkit, unlearn the send/publish dichotomy first. There is no "send to a queue" versus "publish to everyone" split here, because there is no dispatch at all. There is one verb. You append a message to a log, and whoever wants to read it reads it.
+On a stream, publishing means one thing: **appending a fact to a stream**. If you are coming from a queue-based toolkit, unlearn the send/publish dichotomy first. There is no "send to a queue" versus "publish to everyone" split here, because there is no dispatch at all. There is one verb. You append a message to a log, and whoever wants to read it reads it.
 
 The destination is not a per-call decision either. In StreamBus you register each message type against a stream once, when the bus is configured (`cfg.Publish<OrderPlaced>("orders");` is the whole idea), and every later publish of that type goes to that stream. The call site never names a destination; **the route table is your declaration of truth**. A reader of your code learns where a fact goes by reading the registration block, not by chasing call sites, and an error in the table is a configuration error that surfaces at registration time, not a message that quietly lands in the wrong log.
 

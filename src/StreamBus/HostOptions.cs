@@ -1,10 +1,9 @@
 namespace StreamBus;
 
 /// <summary>
-/// Host-wide start/stop behavior for StreamBus, mirroring MassTransit's
-/// <c>BusOptions</c>. Configured through the options pattern; validated by
-/// <see cref="ValidateStart"/> / <see cref="ValidateStop"/> before the hosted
-/// service uses the values.
+/// Host-wide start/stop behavior for StreamBus. Configured through the options
+/// pattern; validated by <see cref="ValidateStart"/> / <see cref="ValidateStop"/>
+/// before the hosted service uses the values.
 /// </summary>
 public sealed class StreamBusHostOptions
 {

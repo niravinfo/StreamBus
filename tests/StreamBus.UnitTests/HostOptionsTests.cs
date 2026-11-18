@@ -3,7 +3,7 @@ namespace StreamBus.UnitTests;
 public sealed class HostOptionsTests
 {
     [Fact]
-    public void Defaults_match_MassTransit()
+    public void Defaults_are_non_blocking()
     {
         var options = new StreamBusHostOptions();
 

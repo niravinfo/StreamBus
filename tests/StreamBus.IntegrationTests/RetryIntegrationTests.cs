@@ -163,6 +163,87 @@ public sealed class RetryIntegrationTests : IAsyncDisposable
     public async Task Skip_with_max_attempts_1_hands_off_after_one_attempt()
         => await RunSkipCaseAsync(1, 1);
 
+    private async Task RunFilterCaseAsync(
+        Action<ExceptionFilterSet> configureFilters,
+        int maxAttempts,
+        int expectedAttempts,
+        Func<Exception>? poison = null)
+    {
+        var filters = new ExceptionFilterSet();
+        configureFilters(filters);
+        var stream = Unique("retry-filter-src");
+        var error = Unique("retry-filter-src.error");
+        var admin = await ConnectAdminAsync();
+        await using var _ = admin;
+        await admin.CreateStream(new StreamSpec(stream));
+        _streams.Add(stream);
+        await admin.CreateStream(ErrorSpec(error));
+        _streams.Add(error);
+        await using var pub = await BusInstance.StartAsync("pub");
+        try
+        {
+            foreach (var seq in Enumerable.Range(0, 5))
+                await pub.Bus.PublishRawAsync(stream, Body($"k:{seq}"), new PublishOptions(), TestContext.Current.CancellationToken);
+        }
+        finally { await pub.DisposeAsync(); }
+        await using var inst = await BusInstance.StartAsync("i");
+        var got = new List<int>();
+        var attempts = new Dictionary<int, int>();
+        var c = await inst.Bus.ConsumeAsync(stream,
+            new ConsumeOptions
+            {
+                ConsumerGroup = "grp-filter",
+                Retry = new RetryPolicy { MaxAttempts = maxAttempts, Filters = filters },
+                ErrorStream = new ErrorStreamOptions { Stream = error },
+            },
+            ctx =>
+            {
+                var (_, seq) = Parse(ctx.Body);
+                lock (attempts) attempts[seq] = attempts.TryGetValue(seq, out var n) ? n + 1 : 1;
+                if (seq == 2) throw poison?.Invoke() ?? new InvalidOperationException("poison 2");
+                lock (got) got.Add(seq);
+                return Task.CompletedTask;
+            }, TestContext.Current.CancellationToken);
+        await WaitForAsync(() => Count(got) == 4, TimeSpan.FromSeconds(90), "post-handoff drain");
+        await c.DisposeAsync();
+        Assert.Equal(new[] { 0, 1, 3, 4 }, got);
+        Assert.Equal(expectedAttempts, attempts[2]);
+        var errors = new List<string>();
+        var ec = await inst.Bus.ConsumeAsync(error,
+            new ConsumeOptions { ConsumerGroup = "grp-filter-err", StartOffset = StartOffset.AlwaysFirst },
+            ctx =>
+            {
+                lock (errors) errors.Add(System.Text.Encoding.UTF8.GetString(ctx.Body.Span));
+                return Task.CompletedTask;
+            }, TestContext.Current.CancellationToken);
+        await WaitForAsync(() => Count(errors) == 1, TimeSpan.FromSeconds(60), "error drain");
+        await ec.DisposeAsync();
+        Assert.Equal("k:2", errors[0]);
+        Assert.Equal(4UL, await inst.Bus.GetConsumerOffsetAsync(stream, "grp-filter", 0, TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task Ignored_exception_hands_off_after_one_attempt()
+        => await RunFilterCaseAsync(f => f.AddExclude(typeof(InvalidOperationException)), 5, 1);
+
+    [Fact]
+    public async Task Unhandled_exception_hands_off_after_one_attempt()
+        => await RunFilterCaseAsync(f => f.AddInclude(typeof(ArgumentException)), 5, 1);
+
+    [Fact]
+    public async Task Handled_exception_uses_configured_schedule()
+        => await RunFilterCaseAsync(f => f.AddInclude(typeof(InvalidOperationException)), 3, 3);
+
+    [Fact]
+    public async Task Predicate_ignore_hands_off_after_one_attempt()
+    {
+        Func<Exception> poison = () => new ArgumentException("bad", "orderTotal");
+        await RunFilterCaseAsync(
+            f => f.AddExclude<ArgumentException>(e => e.ParamName == "orderTotal"), 5, 1, poison);
+        await RunFilterCaseAsync(
+            f => f.AddExclude<ArgumentException>(e => e.ParamName == "somethingElse"), 3, 3, poison);
+    }
+
     [Fact]
     public async Task Strict_retry_window_survives_kill_without_skip()
     {

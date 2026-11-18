@@ -305,6 +305,7 @@ internal sealed class StreamConsumerRegistry
         {
             throw new StreamBusConfigurationException("ConsumeOptions.Retry.MaxAttempts must be >= 1 when set.");
         }
+        RetryFilterValidation.Validate(retry, "ConsumeOptions");
         if (options.ErrorStream is not null && options.OnExhausted is not null)
         {
             throw new StreamBusConfigurationException(
