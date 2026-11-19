@@ -24,7 +24,7 @@ The decision belongs to **the assembly being compiled, not the app running it**:
 - Turning it off in your project does **not** recompile StreamBus. If the net11 StreamBus asset was built with runtime async, your app still calls those runtime-async methods.
 - Likewise, a .NET 10 app is unaffected — it resolves the net10 asset, which cannot use runtime async.
 
-This is a behavioral change worth knowing about when reading live stack traces: runtime-async methods show the real call chain instead of state-machine frames. Exception stack traces are unchanged.
+This is a behavioral change worth knowing about when reading stack traces. A live stack captured inside a runtime-async method shows the real method name rather than state-machine frames (`MoveNext`). A thrown exception still points at the same source line, but its top frame may show the real method name instead of the generated state-machine type. `AsyncLocal<T>` values flow across `await` the same way in both modes.
 
 ## .NET 11 hardware baseline
 
