@@ -1,5 +1,9 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
+    <!-- Opt out of the shared TargetFrameworks in Directory.Build.props: the
+         examples are a deliberate net10 consumer canary. -->
+    <TargetFramework>net10.0</TargetFramework>
+    <TargetFrameworks></TargetFrameworks>
     <OutputType>Exe</OutputType>
     <RootNamespace>StreamBus.Examples.Consumer</RootNamespace>
     <!-- Top-level example programs intentionally declare sample records in the
