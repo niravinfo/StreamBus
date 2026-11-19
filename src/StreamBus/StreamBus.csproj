@@ -1,5 +1,9 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
+    <!-- Runtime async is a net11-only compiler feature. It is deliberately not
+         inherited from Directory.Build.props so examples and net10 builds keep
+         classic state machines. To roll back, remove this flag and rebuild clean. -->
+    <Features Condition="'$(TargetFramework)' == 'net11.0'">$(Features);runtime-async=on</Features>
     <RootNamespace>StreamBus</RootNamespace>
     <AssemblyName>StreamBus</AssemblyName>
     <IsPackable>true</IsPackable>
