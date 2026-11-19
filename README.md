@@ -2,7 +2,7 @@
 [![NuGet](https://img.shields.io/nuget/vpre/StreamBus.svg)](https://www.nuget.org/packages/StreamBus)
 [![NuGet downloads](https://img.shields.io/nuget/dt/StreamBus.svg)](https://www.nuget.org/packages/StreamBus)
 [![License: MIT](https://img.shields.io/github/license/niravinfo/StreamBus.svg)](https://github.com/niravinfo/StreamBus/blob/main/LICENSE)
-[![.NET 10](https://img.shields.io/badge/.NET-10-512BD4)](https://github.com/niravinfo/StreamBus)
+[![.NET 10 | 11](https://img.shields.io/badge/.NET-10%20%7C%2011-512BD4)](https://github.com/niravinfo/StreamBus)
 
 # StreamBus
 
@@ -15,7 +15,7 @@ A modern .NET client for RabbitMQ Streams. Publish and consume typed messages, w
 ## Install
 
 ```xml
-<PackageReference Include="StreamBus" Version="0.4.0-beta.1" />
+<PackageReference Include="StreamBus" Version="0.5.1" />
 ```
 
 ## Quick start
@@ -81,6 +81,7 @@ For more information, see the docs at **[niravinfo.github.io/StreamBus](https://
 - [Retry & dead letters](https://niravinfo.github.io/StreamBus/configuration/retry-and-dead-letters/) - retry and dead-letter configuration
 - [Observability](https://niravinfo.github.io/StreamBus/configuration/observability/) - health data, metrics, logs
 - [Transport security](https://niravinfo.github.io/StreamBus/configuration/transport-security/) - secure connections with TLS
+- [Framework support](https://niravinfo.github.io/StreamBus/configuration/framework-support/) - supported .NET versions and runtime async behavior
 - [Releases](https://github.com/niravinfo/StreamBus/releases)
 
 Runnable examples live in the [examples directory](https://github.com/niravinfo/StreamBus/tree/main/examples).
