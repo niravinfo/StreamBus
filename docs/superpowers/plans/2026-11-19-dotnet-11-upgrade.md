@@ -274,4 +274,13 @@ git commit -m "feat: enable runtime async for the net11 asset"
 
 ## Audit results
 
-(filled in by Task 4)
+Recorded 2026-11-19 (net11 unit suite and code inspection; integration tests deferred, see last line):
+
+- Runtime async: enabled for the net11 asset only in Task 6; net10 asset unchanged. Single switch is `Features` (verified against SDK 11.0.100), rollback is removing the flag and rebuilding clean.
+- `Microsoft.Extensions.*` in shared framework: restore/build succeed with `10.0.15` on both TFMs; no duplicate/shared-framework conflict observed. Conditional per-TFM versions not needed.
+- DI scope disposal aggregates exceptions: PASS — scope disposal sites (`Bus.cs`, `StreamPartitionConsumer.cs`, `FilterRegistrationSupport.cs`) use `using`/`await using` with no catch matching a specific disposal exception type, so aggregation cannot change StreamBus behavior.
+- `IHost.RunAsync`/`StopAsync` throwing on `BackgroundService` failure: N/A to StreamBus's `IHostedService`; fire-and-forget supervisor/topology tasks in `Hosting.cs` already attach `ContinueWith(OnlyOnFaulted)` handlers that log faults — behavior unchanged on net11 (551/551 unit tests pass).
+- Numeric/precision changes: PASS — `WireEncodingTests` 10/10 pass on net11; production code contains no `decimal` casts (only `double` for metrics histograms and backoff math) and no `DateOnly`/`TimeOnly`.
+- Minimum hardware baseline: documented in the framework-support page (Task 5).
+- Not applicable (with reason): ASP.NET Core/Kestrel/OpenAPI/response compression, HTTP semconv tags (no ASP.NET dependency); EF Core/SqlClient (no EF dependency); chained configuration (code-only config, no settings binder); SignalR/gRPC/Blazor/MAUI/union types/`Tensor<T>` (unused).
+- Integration tests on both TFMs: deferred to CI — Docker daemon is unavailable on this Windows host (`docker info` cannot connect to the Linux engine). CI's `integration-tests` job runs both TFM legs.
