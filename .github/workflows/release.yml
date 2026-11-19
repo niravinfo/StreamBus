@@ -148,6 +148,12 @@ jobs:
           echo "Packages produced:"
           ls -lh ./artifacts/ 
 
+      - name: Verify packaged assets
+        run: |
+          set -euo pipefail
+          unzip -l "./artifacts/StreamBus.${VERSION}.nupkg" | grep -q 'lib/net10.0/StreamBus.dll'
+          unzip -l "./artifacts/StreamBus.${VERSION}.nupkg" | grep -q 'lib/net11.0/StreamBus.dll'
+
       # Guard against version drift: the package file name must carry exactly the
       # version that was resolved from the tag.
       - name: Verify the packaged version
