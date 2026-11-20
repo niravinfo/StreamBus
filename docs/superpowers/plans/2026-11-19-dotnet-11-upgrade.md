@@ -17,7 +17,8 @@
 - Public API surfaces of both assets must be identical; no public member behind `#if`.
 - `global.json` pins `11.0.100` with `rollForward: latestFeature`; CI installs `10.0.x` and `11.0.x`.
 - `TreatWarningsAsErrors=true` stays on; new analyzer diagnostics get narrow, commented suppressions only.
-- `Microsoft.Extensions.* = 10.0.15`, `RabbitMQ.Stream.Client = 1.13.0`, `RabbitMQ.Client = 7.2.2`, `Testcontainers.RabbitMq = 4.17.0` for both TFMs in phase 1.
+- `Microsoft.Extensions.Hosting`/`.Logging.Abstractions`/`.Diagnostics.HealthChecks`: `10.0.15` for net10, `11.0.0` for net11 (conditional `PackageVersion`). `RabbitMQ.Stream.Client = 1.13.0`, `RabbitMQ.Client = 7.2.2`, `Testcontainers.RabbitMq = 4.17.0` for both TFMs.
+- `VersionPrefix = 1.0.0` fixed in the library csproj for local builds; published versions always come from the release tag via `-p:Version` / `-p:PackageVersion`.
 - Runtime async is enabled only in `src/StreamBus/StreamBus.csproj` via `Features` when `$(TargetFramework) == 'net11.0'`; rollback is removing that flag and rebuilding clean (`UseRuntimeAsync=false` is inert on SDK 11.0.100).
 - No new branches, no git worktrees.
 
@@ -277,7 +278,8 @@ git commit -m "feat: enable runtime async for the net11 asset"
 Recorded 2026-11-19 (net11 unit suite and code inspection; integration tests deferred, see last line):
 
 - Runtime async: enabled for the net11 asset only in Task 6; net10 asset unchanged. Single switch is `Features` (verified against SDK 11.0.100), rollback is removing the flag and rebuilding clean.
-- `Microsoft.Extensions.*` in shared framework: restore/build succeed with `10.0.15` on both TFMs; no duplicate/shared-framework conflict observed. Conditional per-TFM versions not needed.
+- `Microsoft.Extensions.*` in shared framework: central versions are now conditional — net10 resolves 10.0.15, net11 resolves 11.0.0 (verified in `project.assets.json`). Packed nuspec has per-TFM dependency groups (net10: 10.0.15 for all three; net11: 11.0.0 for Hosting and HealthChecks, with Logging.Abstractions correctly omitted because the .NET 11 shared framework provides it). No restore/build/test regression on either TFM.
+- `VersionPrefix = 1.0.0` for local builds only; a net10 consumer restored `StreamBus.1.0.0` from a local feed and ran successfully. Published versions remain tag-driven via `release.yml`.
 - DI scope disposal aggregates exceptions: PASS — scope disposal sites (`Bus.cs`, `StreamPartitionConsumer.cs`, `FilterRegistrationSupport.cs`) use `using`/`await using` with no catch matching a specific disposal exception type, so aggregation cannot change StreamBus behavior.
 - `IHost.RunAsync`/`StopAsync` throwing on `BackgroundService` failure: N/A to StreamBus's `IHostedService`; fire-and-forget supervisor/topology tasks in `Hosting.cs` already attach `ContinueWith(OnlyOnFaulted)` handlers that log faults — behavior unchanged on net11 (551/551 unit tests pass).
 - Numeric/precision changes: PASS — `WireEncodingTests` 10/10 pass on net11; production code contains no `decimal` casts (only `double` for metrics histograms and backoff math) and no `DateOnly`/`TimeOnly`.

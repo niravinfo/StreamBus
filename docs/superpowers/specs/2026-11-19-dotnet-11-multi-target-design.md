@@ -37,7 +37,7 @@ The resolution is to ship **one NuGet package with two assets**, `net10.0` and `
 ## Constraints (current repository facts)
 
 - `Directory.Build.props` sets a single global `<TargetFramework>net10.0</TargetFramework>`, `TreatWarningsAsErrors=true`, `AnalysisLevel=latest-recommended`, `IsTestingPlatformApplication=false` (a documented xunit.v3/.NET 10 SDK workaround), and per-project `NoWarn` rules.
-- `Directory.Packages.props` uses central package management with transitive pinning; `Microsoft.Extensions.*` are `10.0.15`, `RabbitMQ.Stream.Client` is `1.13.0`, `RabbitMQ.Client` is `7.2.2`, `Testcontainers.RabbitMq` is `4.17.0`.
+- `Directory.Packages.props` uses central package management with transitive pinning. `Microsoft.Extensions.Hosting`, `.Logging.Abstractions` and `.Diagnostics.HealthChecks` are versioned per TFM: `10.0.15` for `net10.0`, `11.0.0` for `net11.0` (conditional `PackageVersion` items). `RabbitMQ.Stream.Client` is `1.13.0`, `RabbitMQ.Client` is `7.2.2`, `Testcontainers.RabbitMq` is `4.17.0`.
 - Projects inheriting the TFM: `src/StreamBus`, `tests/StreamBus.UnitTests`, `tests/StreamBus.IntegrationTests` (Testcontainers), `tests/StreamBus.DocsSnippets` (compiles documentation samples), and the two `examples/` apps.
 - `build.yml` (build/unit/pack), `build.yml` (integration), and `release.yml` install only `dotnet-version: 10.0.x`. Release version comes from the git tag via `release.yml`, not `VersionPrefix`.
 - The development machine already has SDK `11.0.100` installed (alongside `10.0.404`), so the SDK pin can be validated locally without installing anything.
@@ -94,8 +94,9 @@ Set `<TargetFrameworks>net10.0;net11.0</TargetFrameworks>` once in `Directory.Bu
 
 ### Dependencies and analyzer hygiene
 
-- Keep `Microsoft.Extensions.*` at `10.0.15` for both TFMs in phase 1 — net11 can consume net10 packages, and moving to 11.0.x is not required to compile. If the SDK 11 resolution shows duplicate/shared-framework conflicts, introduce conditional `PackageVersion` items per TFM (a later, documented change, not part of phase 1).
+- Version `Microsoft.Extensions.Hosting`, `.Logging.Abstractions` and `.Diagnostics.HealthChecks` conditionally by TFM (`10.0.15` for net10, `11.0.0` for net11). This keeps existing net10 consumers on their current dependency versions while aligning the net11 asset with the .NET 11 stack. Verify the packed nuspec has one dependency group per TFM with the correct versions; `Logging.Abstractions` is intentionally absent from the net11 group because it is provided by the shared framework.
 - Keep RabbitMQ package versions unchanged; verify net11 restore succeeds with their existing assets.
+- Keep `VersionPrefix` fixed at `1.0.0` in `src/StreamBus/StreamBus.csproj` for local builds only. Published versions always come from the release tag through `-p:Version` / `-p:PackageVersion` in `release.yml`; the fixed prefix is never the source of truth for NuGet.
 - New diagnostics from SDK 11 analyzers under `TreatWarningsAsErrors` are handled with narrowly scoped, commented suppressions in `Directory.Build.props`, never by disabling `TreatWarningsAsErrors` or raising `NoWarn` globally.
 
 ### Public API parity
@@ -142,7 +143,7 @@ Not applicable, with reason: ASP.NET Core/Kestrel/OpenAPI/response compression a
 | Risk | Mitigation / rollback |
 | --- | --- |
 | SDK 11 analyzers break the build (warnings are errors) | Targeted, commented suppressions; never disable `TreatWarningsAsErrors`. |
-| net11 restore conflict from `Microsoft.Extensions` 10.0.15 / shared framework | Defer to conditional per-TFM `PackageVersion`; phase 1 can still ship with 10.0.15 on both if it restores cleanly. |
+| Conditional `Microsoft.Extensions` versions resolve incorrectly in the packed nuspec | Verify both dependency groups after pack (net10 → 10.0.15, net11 → 11.0.0); roll back to a single 10.0.15 version for both assets if a group is wrong. |
 | Runtime async changes behavior or breaks RabbitMQ client interop | Phases 2–3 are isolated; rollback is removing `runtime-async=on` from `Features` and rebuilding clean (`UseRuntimeAsync=false` is inert on SDK 11.0.100). |
 | Public API drift between assets | `#if` rule plus API-surface tests in both TFM legs. |
 | CI time doubles with two test legs | Keep one build/pack; parallelize the two test legs in the matrix. |
