@@ -203,7 +203,7 @@ git commit -m "docs: record .NET 11 behavioral change audit"
 
 - [ ] **Step 1: Update README**
 
-Change the badge to `.NET 10 | 11`, replace the stale `0.4.0-beta.1` install version with the current stable `0.5.1`, and add a link to the framework-support page in the Documentation list.
+Change the badge to `.NET 10 | 11`, replace the hard-coded install version with `dotnet add package StreamBus` (resolves the latest stable release at install time and pins it in the consumer's project file), and add a link to the framework-support page in the Documentation list. Apply the same install-snippet change to `get-started.mdx`.
 
 - [ ] **Step 2: Add the framework-support page**
 

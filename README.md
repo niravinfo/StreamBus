@@ -14,8 +14,8 @@ A modern .NET client for RabbitMQ Streams. Publish and consume typed messages, w
 
 ## Install
 
-```xml
-<PackageReference Include="StreamBus" Version="0.5.1" />
+```shell
+dotnet add package StreamBus
 ```
 
 ## Quick start
