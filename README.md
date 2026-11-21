@@ -2,7 +2,8 @@
 [![NuGet](https://img.shields.io/nuget/vpre/StreamBus.svg)](https://www.nuget.org/packages/StreamBus)
 [![NuGet downloads](https://img.shields.io/nuget/dt/StreamBus.svg)](https://www.nuget.org/packages/StreamBus)
 [![License: MIT](https://img.shields.io/github/license/niravinfo/StreamBus.svg)](https://github.com/niravinfo/StreamBus/blob/main/LICENSE)
-[![.NET 10 | 11](https://img.shields.io/badge/.NET-10%20%7C%2011-512BD4)](https://github.com/niravinfo/StreamBus)
+[![.NET 10](https://img.shields.io/badge/.NET-10-512BD4)](https://github.com/niravinfo/StreamBus)
+[![.NET 11](https://img.shields.io/badge/.NET-11-512BD4)](https://github.com/niravinfo/StreamBus)
 
 # StreamBus
 
