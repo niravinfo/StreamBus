@@ -1,7 +1,5 @@
 <Project>
   <PropertyGroup>
-    <!-- Default for every project: the shipped library and all test/snippet
-         projects build both assets. Examples opt out below by clearing this. -->
     <TargetFrameworks>net10.0;net11.0</TargetFrameworks>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
