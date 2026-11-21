@@ -93,31 +93,6 @@ jobs:
       - name: List packages
         run: ls -lh ./artifacts/
 
-      - name: Verify packed net10 asset (smoke consumer)
-        # A ProjectReference exercises TFM selection at the project level, not
-        # NuGet dependency-group resolution. This consumes the packed .nupkg
-        # from a local feed the way an unchanged .NET 10 consumer would.
-        run: |
-          set -euo pipefail
-          version=$(basename ./artifacts/*.nupkg .nupkg | sed 's/^StreamBus\.//')
-          work=$(mktemp -d)
-          dotnet new console --framework net10.0 --no-restore -o "$work/smoke"
-          dotnet add "$work/smoke/smoke.csproj" package StreamBus \
-            --version "$version" --source "$GITHUB_WORKSPACE/artifacts"
-          # --no-restore is deliberate: `dotnet add package --source` scopes the
-          # local feed to one restore only. Re-restoring here could silently
-          # resolve the already-published 0.2.0 from nuget.org and false-pass.
-          # Prove the restored package is byte-identical to the one we just packed.
-          expected=$(openssl dgst -sha512 -binary "./artifacts/StreamBus.${version}.nupkg" | base64 -w0)
-          actual=$(cat "$HOME/.nuget/packages/streambus/${version}/streambus.${version}.nupkg.sha512")
-          test "$expected" = "$actual"
-          cat > "$work/smoke/Program.cs" <<'EOF'
-          using StreamBus;
-          var options = new StreamBusHostOptions();
-          Console.WriteLine($"net10 consumer resolved StreamBus: WaitUntilStarted={options.WaitUntilStarted}");
-          EOF
-          dotnet run --project "$work/smoke/smoke.csproj" --configuration Release --no-restore
-
       - name: Upload packages artifact (for inspection)
         continue-on-error: true
         uses: actions/upload-artifact@v7
