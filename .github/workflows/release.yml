@@ -122,9 +122,27 @@ jobs:
       - name: Test (unit + integration)
         # The integration suite starts its own broker via Testcontainers, so nothing
         # is published that has not been verified against a real RabbitMQ.
-        run: >
-          dotnet test StreamBus.slnx --no-build --configuration Release -p:Version=${{ env.VERSION }}
-          --logger trx --results-directory ./artifacts/test-results
+        # One TFM at a time: a solution-wide `dotnet test` starts all four test
+        # assemblies together, and the connection-chaos tests timed out under
+        # that load during the v0.8.0 release.
+        run: |
+          set -euo pipefail
+          dotnet test tests/StreamBus.UnitTests/StreamBus.UnitTests.csproj \
+            --no-build --configuration Release --framework net10.0 \
+            -p:Version=${{ env.VERSION }} --logger trx \
+            --results-directory ./artifacts/test-results
+          dotnet test tests/StreamBus.UnitTests/StreamBus.UnitTests.csproj \
+            --no-build --configuration Release --framework net11.0 \
+            -p:Version=${{ env.VERSION }} --logger trx \
+            --results-directory ./artifacts/test-results
+          dotnet test tests/StreamBus.IntegrationTests/StreamBus.IntegrationTests.csproj \
+            --no-build --configuration Release --framework net10.0 \
+            -p:Version=${{ env.VERSION }} --logger trx \
+            --results-directory ./artifacts/test-results
+          dotnet test tests/StreamBus.IntegrationTests/StreamBus.IntegrationTests.csproj \
+            --no-build --configuration Release --framework net11.0 \
+            -p:Version=${{ env.VERSION }} --logger trx \
+            --results-directory ./artifacts/test-results
 
       - name: Upload test results
         if: always()
