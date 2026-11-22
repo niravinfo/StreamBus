@@ -1,12 +1,8 @@
 name: Release dry run
 
 on:
-  workflow_dispatch:
-    inputs:
-      version:
-        description: "Version to validate (e.g. 0.8.0-dryrun)."
-        required: true
-        type: string
+  push:
+    branches: [fix/release-sequential-tests]
 
 permissions:
   contents: read
@@ -28,16 +24,7 @@ jobs:
             11.0.x
 
       - name: Determine version
-        env:
-          INPUT_VERSION: ${{ inputs.version }}
-        run: |
-          set -euo pipefail
-          VERSION="${INPUT_VERSION#v}"
-          if ! echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
-            echo "::error::invalid version $VERSION"
-            exit 1
-          fi
-          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+        run: echo "VERSION=0.8.0-dryrun" >> "$GITHUB_ENV"
 
       - name: Restore
         run: dotnet restore StreamBus.slnx
