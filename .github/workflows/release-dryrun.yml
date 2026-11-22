@@ -1,0 +1,84 @@
+name: Release dry run
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to validate (e.g. 0.8.0-dryrun)."
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Build, test, pack (no publish)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: |
+            10.0.x
+            11.0.x
+
+      - name: Determine version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          VERSION="${INPUT_VERSION#v}"
+          if ! echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::invalid version $VERSION"
+            exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Restore
+        run: dotnet restore StreamBus.slnx
+
+      - name: Build (Release)
+        run: >
+          dotnet build StreamBus.slnx --no-restore --configuration Release
+          -p:ContinuousIntegrationBuild=true
+          -p:Version=${{ env.VERSION }}
+          -p:PackageVersion=${{ env.VERSION }}
+
+      - name: Test (unit + integration)
+        run: |
+          set -euo pipefail
+          dotnet test tests/StreamBus.UnitTests/StreamBus.UnitTests.csproj \
+            --no-build --configuration Release --framework net10.0 \
+            -p:Version=${{ env.VERSION }} --logger trx \
+            --results-directory ./artifacts/test-results
+          dotnet test tests/StreamBus.UnitTests/StreamBus.UnitTests.csproj \
+            --no-build --configuration Release --framework net11.0 \
+            -p:Version=${{ env.VERSION }} --logger trx \
+            --results-directory ./artifacts/test-results
+          dotnet test tests/StreamBus.IntegrationTests/StreamBus.IntegrationTests.csproj \
+            --no-build --configuration Release --framework net10.0 \
+            -p:Version=${{ env.VERSION }} --logger trx \
+            --results-directory ./artifacts/test-results
+          dotnet test tests/StreamBus.IntegrationTests/StreamBus.IntegrationTests.csproj \
+            --no-build --configuration Release --framework net11.0 \
+            -p:Version=${{ env.VERSION }} --logger trx \
+            --results-directory ./artifacts/test-results
+
+      - name: Pack
+        run: |
+          set -euo pipefail
+          dotnet pack StreamBus.slnx --no-build --configuration Release --output ./artifacts \
+            -p:ContinuousIntegrationBuild=true \
+            -p:PackageVersion=${{ env.VERSION }} \
+            -p:Version=${{ env.VERSION }}
+
+      - name: Verify packaged assets
+        run: |
+          set -euo pipefail
+          unzip -l "./artifacts/StreamBus.${VERSION}.nupkg" | grep -q 'lib/net10.0/StreamBus.dll'
+          unzip -l "./artifacts/StreamBus.${VERSION}.nupkg" | grep -q 'lib/net11.0/StreamBus.dll'
