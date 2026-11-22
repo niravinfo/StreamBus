@@ -1,12 +1,16 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
+    <!-- Runtime async is a net11-only compiler feature. It is deliberately not
+         inherited from Directory.Build.props so examples and net10 builds keep
+         classic state machines. To roll back, remove this flag and rebuild clean. -->
+    <Features Condition="'$(TargetFramework)' == 'net11.0'">$(Features);runtime-async=on</Features>
     <RootNamespace>StreamBus</RootNamespace>
     <AssemblyName>StreamBus</AssemblyName>
     <IsPackable>true</IsPackable>
     <PackageId>StreamBus</PackageId>
-    <!-- 0.2.0 is the shared-message-context breaking release; the published
-         version comes from the release tag. -->
-    <VersionPrefix>0.2.0</VersionPrefix>
+    <!-- Fixed prefix for local builds. Published versions always come from the
+         release tag via release.yml (-p:Version / -p:PackageVersion). -->
+    <VersionPrefix>1.0.0</VersionPrefix>
     <Authors>Nirav Patel</Authors>
     <Description>A modern .NET client for RabbitMQ Streams. Publish and consume typed messages, with retries and dead-lettering built in.</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>

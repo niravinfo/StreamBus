@@ -28,7 +28,9 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v6
         with:
-          dotnet-version: 10.0.x
+          dotnet-version: |
+            10.0.x
+            11.0.x
 
       - name: Restore
         run: dotnet restore StreamBus.slnx
@@ -36,13 +38,26 @@ jobs:
       - name: Build (Release)
         run: dotnet build StreamBus.slnx --no-restore --configuration Release
 
-      - name: Unit tests
+      - name: Build docs snippets (net10.0 / net11.0)
+        # DocsSnippets is intentionally not in StreamBus.slnx, so restore it explicitly.
+        run: |
+          dotnet restore tests/StreamBus.DocsSnippets/StreamBus.DocsSnippets.csproj
+          dotnet build tests/StreamBus.DocsSnippets/StreamBus.DocsSnippets.csproj --no-restore --configuration Release
+
+      - name: Unit tests (net10.0)
         # Classic VSTest mode (Directory.Build.props sets IsTestingPlatformApplication=false),
         # so `dotnet test <project>` is the supported invocation.
         run: >
           dotnet test tests/StreamBus.UnitTests/StreamBus.UnitTests.csproj
-          --no-build --configuration Release
-          --logger "trx;LogFileName=unit.trx"
+          --no-build --configuration Release --framework net10.0
+          --logger "trx;LogFileName=unit-net10.trx"
+          --results-directory ./artifacts/test-results
+
+      - name: Unit tests (net11.0)
+        run: >
+          dotnet test tests/StreamBus.UnitTests/StreamBus.UnitTests.csproj
+          --no-build --configuration Release --framework net11.0
+          --logger "trx;LogFileName=unit-net11.trx"
           --results-directory ./artifacts/test-results
 
       - name: Upload unit test results
@@ -53,7 +68,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: unit-test-results
-          path: ./artifacts/test-results/*.trx
+          path: ./artifacts/test-results/unit-*.trx
           if-no-files-found: warn
           retention-days: 3
 
@@ -71,6 +86,9 @@ jobs:
             echo "::error::expected exactly one .nupkg and one .snupkg, found ${#packages[@]} and ${#symbols[@]}"
             exit 1
           fi
+          # Both target assets must be present in the single package.
+          unzip -l ./artifacts/*.nupkg | grep -q 'lib/net10.0/StreamBus.dll'
+          unzip -l ./artifacts/*.nupkg | grep -q 'lib/net11.0/StreamBus.dll'
 
       - name: List packages
         run: ls -lh ./artifacts/
@@ -100,7 +118,9 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v6
         with:
-          dotnet-version: 10.0.x
+          dotnet-version: |
+            10.0.x
+            11.0.x
 
       - name: Restore
         run: dotnet restore StreamBus.slnx
@@ -108,11 +128,18 @@ jobs:
       - name: Build (Release)
         run: dotnet build StreamBus.slnx --no-restore --configuration Release
 
-      - name: Integration tests
+      - name: Integration tests (net10.0)
         run: >
           dotnet test tests/StreamBus.IntegrationTests/StreamBus.IntegrationTests.csproj
-          --no-build --configuration Release
-          --logger "trx;LogFileName=integration.trx"
+          --no-build --configuration Release --framework net10.0
+          --logger "trx;LogFileName=integration-net10.trx"
+          --results-directory ./artifacts/test-results
+
+      - name: Integration tests (net11.0)
+        run: >
+          dotnet test tests/StreamBus.IntegrationTests/StreamBus.IntegrationTests.csproj
+          --no-build --configuration Release --framework net11.0
+          --logger "trx;LogFileName=integration-net11.trx"
           --results-directory ./artifacts/test-results
 
       - name: Upload test results
@@ -122,6 +149,6 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: integration-test-results
-          path: ./artifacts/test-results/*.trx
+          path: ./artifacts/test-results/integration-*.trx
           if-no-files-found: warn
           retention-days: 7

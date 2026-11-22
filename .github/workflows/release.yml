@@ -46,7 +46,9 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v6
         with:
-          dotnet-version: 10.0.x
+          dotnet-version: |
+            10.0.x
+            11.0.x
 
       - name: Determine package version
         id: version
@@ -145,6 +147,12 @@ jobs:
             -p:Version=${{ env.VERSION }}
           echo "Packages produced:"
           ls -lh ./artifacts/ 
+
+      - name: Verify packaged assets
+        run: |
+          set -euo pipefail
+          unzip -l "./artifacts/StreamBus.${VERSION}.nupkg" | grep -q 'lib/net10.0/StreamBus.dll'
+          unzip -l "./artifacts/StreamBus.${VERSION}.nupkg" | grep -q 'lib/net11.0/StreamBus.dll'
 
       # Guard against version drift: the package file name must carry exactly the
       # version that was resolved from the tag.

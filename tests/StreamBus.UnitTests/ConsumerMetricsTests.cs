@@ -27,14 +27,19 @@ public sealed class ConsumerMetricsTests : IDisposable
 
     public void Dispose() => _listener.Dispose();
 
+    private (string Instrument, double Value, KeyValuePair<string, object?>[] Tags)[] Snapshot()
+    {
+        lock (_measurements) return _measurements.ToArray();
+    }
+
     [Fact]
     public void Fallback_and_rejected_counters_emit_with_tags()
     {
         StreamBusMetrics.Shared.RecordFallback("vh", "bus", "stream", 0, "ref", "ResumeOrFirst");
         StreamBusMetrics.Shared.RecordStoreRejected("vh", "bus", "stream", 0, "ref");
-        Assert.Contains(_measurements, m => m.Instrument == "streambus_offset_fallback_total"
+        Assert.Contains(Snapshot(), m => m.Instrument == "streambus_offset_fallback_total"
             && m.Tags.Any(t => t.Key == "branch" && (string?)t.Value == "ResumeOrFirst"));
-        Assert.Contains(_measurements, m => m.Instrument == "streambus_offset_store_rejected_total");
+        Assert.Contains(Snapshot(), m => m.Instrument == "streambus_offset_store_rejected_total");
     }
 
     [Fact]
@@ -44,8 +49,8 @@ public sealed class ConsumerMetricsTests : IDisposable
         using (StreamBusMetrics.Shared.TrackPartition("vh", "b", "backlog-s", 2, "r", state))
         {
             _listener.RecordObservableInstruments();
-            Assert.Contains(_measurements, m => m.Instrument == "streambus_partition_backlog" && m.Value == 5);
-            Assert.DoesNotContain(_measurements, m => m.Instrument == "streambus_partition_lag");
+            Assert.Contains(Snapshot(), m => m.Instrument == "streambus_partition_backlog" && m.Value == 5);
+            Assert.DoesNotContain(Snapshot(), m => m.Instrument == "streambus_partition_lag");
         }
     }
 
@@ -56,7 +61,7 @@ public sealed class ConsumerMetricsTests : IDisposable
         using (StreamBusMetrics.Shared.TrackPartition("vh", "b", "s", 1, "r", state))
         {
             _listener.RecordObservableInstruments();
-            Assert.Contains(_measurements, m => m.Instrument == "streambus_partition_inflight" && m.Value == 3);
+            Assert.Contains(Snapshot(), m => m.Instrument == "streambus_partition_inflight" && m.Value == 3);
         }
         // gauge observations are pull-based; scope disposal only stops future observations.
     }

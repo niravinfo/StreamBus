@@ -3,6 +3,7 @@
 [![NuGet downloads](https://img.shields.io/nuget/dt/StreamBus.svg)](https://www.nuget.org/packages/StreamBus)
 [![License: MIT](https://img.shields.io/github/license/niravinfo/StreamBus.svg)](https://github.com/niravinfo/StreamBus/blob/main/LICENSE)
 [![.NET 10](https://img.shields.io/badge/.NET-10-512BD4)](https://github.com/niravinfo/StreamBus)
+[![.NET 11](https://img.shields.io/badge/.NET-11-512BD4)](https://github.com/niravinfo/StreamBus)
 
 # StreamBus
 
@@ -14,8 +15,8 @@ A modern .NET client for RabbitMQ Streams. Publish and consume typed messages, w
 
 ## Install
 
-```xml
-<PackageReference Include="StreamBus" Version="0.4.0-beta.1" />
+```shell
+dotnet add package StreamBus
 ```
 
 ## Quick start
