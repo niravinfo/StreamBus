@@ -56,7 +56,6 @@ export default defineConfig({
             { slug: 'configuration/retry-and-dead-letters' },
             { slug: 'configuration/observability' },
             { slug: 'configuration/transport-security' },
-            { slug: 'configuration/framework-support' },
           ],
         },
       ],
