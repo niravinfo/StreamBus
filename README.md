@@ -10,7 +10,7 @@
 A modern .NET client for RabbitMQ Streams. Publish and consume typed messages, with retries and dead-lettering built in.
 
 - Every receive endpoint declares its consumer group, so a super stream's partitions spread across instances.
-- Retries and dead-lettering are configuration: global or per-endpoint retry schedules, exhausted messages go to an error stream, a queue, or a default `{stream}_error` queue.
+- Retries and dead-lettering are configuration: global or per-endpoint retry schedules, with exhausted messages going to an error stream or a queue.
 - Configuration is code only. Every option is a validated configurator call, with no settings binder and no JSON discovery.
 
 ## Install
